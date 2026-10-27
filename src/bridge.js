@@ -24,6 +24,7 @@ import { classifyIncomingWake } from './autonomy-policy.js';
 import { compactModelMessage, describeAge } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel } from './media-normalize.js';
+import { isFfmpegAvailable } from './ffmpeg-resolve.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
@@ -1015,6 +1016,10 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  const ffmpegAvailable = isFfmpegAvailable({ ffmpegPath: process.env.FFMPEG_PATH || null });
+  if (!ffmpegAvailable) {
+    log('⚠️ 未检测到 FFmpeg：超过 1 MiB 的图片可能无法压缩；动图无法生成多帧预览，且超过上限时可能无法提供。请安装 FFmpeg、设置 FFMPEG_PATH 或将 ffmpeg 加入 PATH，然后重启桥接。');
+  }
   if (cfg.dsh.autoDetectPort !== false) {
     const endpoint = await discoverDshBaseUrl(cfg.dsh.baseUrl);
     if (endpoint.source === 'ambiguous') {
@@ -2306,6 +2311,7 @@ async function main() {
             ok: true,
             dshReady,
             presetAvailable: dshPresetIds.includes('desktop-agent'),
+            ffmpegAvailable,
             sessionId: desktopAgentSessionId || null,
             found: desktopAgentSessionId ? !!live : false,
             running: live?.running === true,

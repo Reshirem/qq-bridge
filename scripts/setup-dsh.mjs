@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { BUNDLE_DIR, PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patches.mjs';
+import { isFfmpegAvailable } from '../src/ffmpeg-resolve.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -346,4 +347,9 @@ for (const name of BUNDLE_NAMES) links[name] = ensureBundle(name);
 patchProfilePackage(links);
 reportLegacyPresetDir();
 autoInstallProfileBundles();
+if (isFfmpegAvailable({ ffmpegPath: process.env.FFMPEG_PATH || null })) {
+  log('FFmpeg detected; image resizing and animated-sticker previews are available.');
+} else {
+  log('WARNING: FFmpeg not detected. Images above 1 MiB may be unavailable to the model; animated stickers cannot get a multi-frame preview and may be unavailable when over the image limit. Install FFmpeg, set FFMPEG_PATH (or add ffmpeg to PATH), then restart the bridge.');
+}
 log('Done. Restart DSH (or reload the profile) so the new presets/MCP take effect.');

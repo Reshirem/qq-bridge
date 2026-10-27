@@ -334,6 +334,11 @@ async function refreshDesktopAgentStatus(force = false) {
       else { label = '会话空闲，可继续探索'; tone = 'meta'; summaryLabel = '空闲'; hint = '点击“启动自主探索”或发送具体任务'; }
       status.textContent = label + (info.sessionId ? ` · ${info.sessionId}` : '');
       status.className = tone;
+      const mediaWarning = document.getElementById('desktopAgentMediaWarning');
+      mediaWarning.hidden = info.ffmpegAvailable !== false;
+      mediaWarning.textContent = info.ffmpegAvailable === false
+        ? '未检测到 FFmpeg：超过 1 MiB 的图片可能无法提供给模型；动图无法生成多帧预览，且超过上限时可能无法读取。请安装 FFmpeg 并设置 FFMPEG_PATH 或加入 PATH，然后重启桥接。'
+        : '';
       summary.textContent = summaryLabel;
       summaryHint.textContent = hint;
       const startButton = document.getElementById('desktopAgentStart');

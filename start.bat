@@ -1,6 +1,8 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+rem Prefer an explicit FFMPEG_PATH; otherwise detect the portable sibling install.
+if not defined FFMPEG_PATH if exist "%~dp0..\ffmpeg\bin\ffmpeg.exe" set "FFMPEG_PATH=%~dp0..\ffmpeg\bin\ffmpeg.exe"
 rem Harden state/ ACLs (Windows needs WRITE_DAC; the directory owner normally has it,
 rem so no UAC prompt in the usual case). This NEVER blocks startup: if it cannot get
 rem permission it prints a copy-pasteable command and exits 0.

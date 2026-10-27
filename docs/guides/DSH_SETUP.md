@@ -57,6 +57,19 @@ node scripts/build-agent-preset-patches.mjs
 
 个人桌面助手要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status` 及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。未由本桥接注册的 SnowLuma 群管理 API不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
+### 图片与动图依赖
+
+图片读取工具会把大图缩小后再交给模型，并把 GIF/动态表情抽帧拼图；这些处理需要 FFmpeg。安装脚本和桥接启动时都会检查 FFmpeg，控制台的会话面板也会显示缺失警告。没有 FFmpeg 时，小图通常仍可读取，但超过 1 MiB 的图片可能无法提供给模型；动图无法生成多帧预览，超过上限时也可能无法读取。
+
+安装 FFmpeg 后，把 `FFMPEG_PATH` 指向 `ffmpeg.exe`，或将其所在目录加入 `PATH`。例如在 PowerShell 中：
+
+```powershell
+$env:FFMPEG_PATH = 'C:\tools\ffmpeg\bin\ffmpeg.exe'
+npm start
+```
+
+该写法只对当前 PowerShell 窗口及其启动的进程生效。若通过 `start.bat` 启动，脚本会在未设置 `FFMPEG_PATH` 时自动检查仓库旁边的 `..\ffmpeg\bin\ffmpeg.exe`；其它安装位置请在 Windows 用户环境变量中设置 `FFMPEG_PATH`。修改环境变量后重新打开启动窗口并重启桥接。图片工具失败时，助手会收到具体原因；缺少 FFmpeg 时应向用户说明部署依赖未配置。
+
 更新 `desktop-agent` preset 并重启 DSH 后，已存在的全局 DSH session 仍保留创建时的 preset。打开桥接 WebUI 的“全局桌面助手”面板，选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
 
 ## 验证

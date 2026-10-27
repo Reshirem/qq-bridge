@@ -71,6 +71,7 @@ Key settings:
 | `snowluma.httpUrl` | OneBot **HTTP API** URL (e.g. `http://127.0.0.1:3000`); do not point this at the WebSocket port or you will get HTTP 426 |
 | `ownerQQ` | Optional administrator QQ for compatible QQ admin commands; it can also come from the DSH `qq-mode.ownerQQ` setting |
 | `socialV2.attentionKeywords` | Optional keyword list for group-chat attention signals; matching sends metadata only, not message text |
+| `socialV2.media` | Incoming image/sticker limits: `maxBytes` (8 MB per message by default), `maxPixels` (64 MP per image), and `maxCount` (5 per message). Images sent to the model are normally kept under 1 MiB; resizing large images and extracting animated-sticker frames require FFmpeg. See the [DSH setup guide](docs/guides/DSH_SETUP.md#图片与动图依赖) |
 | `allow.private` / `allow.groups` | Whitelist used by console direct test-send actions; the global agent's SnowLuma tools can target any valid QQ key |
 | `consolePort` / `consoleToken` | Fixed local console port (default `3100`) and access token. The bridge exits if the port is occupied; a blank token is generated and saved to `state/console-token`. After login, the browser session uses an HttpOnly cookie |
 
