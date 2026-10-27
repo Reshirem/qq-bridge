@@ -7,7 +7,7 @@
 在运行 DSH 的设备上获取仓库并安装依赖：
 
 ```bash
-git clone https://github.com/Derpyu520/qq-bridge.git
+git clone https://github.com/Reshirem/qq-bridge.git
 cd qq-bridge
 npm install
 ```
