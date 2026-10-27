@@ -1,6 +1,6 @@
 # DSH 端安装说明
 
-本文说明如何把 `qq-bridge` 的固定 QQ 会话 preset 与安全 MCP 工具安装到目标 DSH profile。每个允许的 QQ 会话使用独立、持久的 DSH session，并固定采用 `qq-chat-v2`；`qq-chat` 只用于隔离的黑话学习会话。这里不配置或切换 DSH 运行模式。
+本文说明如何把 `qq-bridge` 的固定 QQ 会话 preset 与安全 MCP 工具安装到目标 DSH profile。每个允许的 QQ 会话使用独立、持久的 DSH session，并固定采用 `qq-chat-v2`。这里不配置或切换 DSH 运行模式。
 
 ## 安装
 
@@ -34,7 +34,7 @@ DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
 
 脚本会：
 
-1. 从 `dsh/agent-presets/` 的权威源生成 `qq-chat` 与 `qq-chat-v2` 的 bundle patch，并注册 `qq-agent-presets`。
+1. 从 `dsh/agent-presets/` 的权威源生成固定 `qq-chat-v2` 的 bundle patch，并注册 `qq-agent-presets`。
 2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe` 三个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`。
 3. 注册 `qq-agent-presets` 和 host 配置插件 bundle。host 插件的既有包名 `qq-mode-console` 为兼容性名称，当前仅承载管理配置，不提供运行模式切换。
 4. 尝试执行 `dsh plugin --profile <profile> install` 安装 bundle 依赖；如 DSH CLI 不可用，会提示手动执行命令。
@@ -49,7 +49,7 @@ node scripts/build-agent-preset-patches.mjs
 
 > DSH 0.1.7 起不再读取旧的 `~/.dsh/.agent-presets/<name>/` 目录。安装脚本只报告并保留该旧目录，不会删除或迁移其中的手工修改；如有自定义内容，请自行合并到仓库源文件。
 
-安装完成后，重启 DSH（或重新加载 profile），使 preset 和 MCP 工具生效。脚本不设置 `qq-mode`，也不创建 `state/mode.json`；旧版本留下的值不再参与运行。
+安装完成后，重启 DSH（或重新加载 profile），使 preset 和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`；历史 `qq-mode` 兼容命名空间仍承载 `ownerQQ` 管理员配置，旧 `mode` 字段不参与运行。
 
 ## 验证
 

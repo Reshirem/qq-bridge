@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 const original = args.includes('--original');
 const record = args.includes('--record-baseline');
 const artifacts = args.find(x => x.startsWith('--artifacts='))?.slice('--artifacts='.length);
-const views = ['overview', 'sessions', 'persona', 'social-v2', 'slang', 'usage', 'access', 'operations', 'reference'];
+const views = ['overview', 'sessions', 'persona', 'social-v2', 'usage', 'access', 'operations', 'reference'];
 const retiredUiIds = JSON.parse((await readFile(join(here, 'console-ui-legacy-ids.json'), 'utf8')).replace(/^\uFEFF/, ''));
 const requiredRuntimeIds = [
   'statusText', 'sessionList', 'pendingList', 'activity',
@@ -23,7 +23,6 @@ const requiredRuntimeIds = [
   'v2SleepMinMs', 'v2SleepMaxMs', 'v2MaxWakeMin', 'v2MaxWakeHour', 'v2BatchWindowMs',
   'v2MaxSendMin', 'v2MaxSendHour', 'v2ToolLogLoad', 'v2ToolLogClear', 'v2ToolLogOutput',
   'v2SessionSelect', 'v2SessionRefresh',
-  'voiceRefreshBtn', 'voiceList', 'voiceSendTarget', 'voiceSendDryRun', 'voiceSendBtn',
   'v2StickerEnabled', 'v2StickerSyncTtlSec', 'v2StickerMaxList', 'v2StickerPromptMax',
   'v2StickerIncludePrompt', 'v2StickerCollectEnabled',
   'restartBtn', 'clearWsBtn', 'tsSend', 'aiNotifySend', 'consoleTokenSave',
@@ -133,14 +132,14 @@ try {
     assert.equal(await page.locator('#simPromptPreset option[value="qq-chat"]').count(), 0, 'The prompt editor must not offer the v1 qq-chat preset');
   });
 
-  if (!original) await test('All nine navigation destinations work and preserve unsaved form values across polling', async () => {
+  if (!original) await test('All eight navigation destinations work and preserve unsaved form values across polling', async () => {
     for (const view of views) {
       await navigate(view);
       const visiblePages = await page.locator('[data-page]').evaluateAll(nodes => nodes.filter(x => x.getClientRects().length && getComputedStyle(x).visibility !== 'hidden').map(x => x.dataset.page));
       assert(visiblePages.length > 0, `${view} has no visible content`);
       assert(visiblePages.every(x => x === view), `${view} exposes another page: ${visiblePages.join(', ')}`);
     }
-    const drafts = { wlGroups: '100001, 100002', roleInput: '未保存的角色', v2SleepMinMs: '42', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
+    const drafts = { wlGroups: '100001, 100002', roleInput: '未保存的角色', v2SleepMinMs: '42', tsMsg: '未发送的测试消息' };
     for (const [id, value] of Object.entries(drafts)) await fill(id, value);
     await navigate('overview');
     await page.waitForTimeout(3300); // Exercise the real 3-second status polling interval.
@@ -231,27 +230,6 @@ try {
     assert.deepEqual(await clickWrite('#v2ResumeBtn', '/api/socialV2/activity'), { paused: false });
   });
 
-  await test('Slang add, search, confirm modal, tab switching and parameter contracts', async () => {
-    for (const [id, value] of Object.entries({ slangContent: '测试词条', slangMeaning: '很棒', slangUsage: '赞美', slangExample: '这个效果很棒。' })) await fill(id, value);
-    assert.deepEqual(await clickWrite('#slangAdd', '/api/slang'), { content: '测试词条', meaning: '很棒', usage: '赞美', example: '这个效果很棒。' });
-    await (await reveal('.slang-tab[data-slang-tab="confirmed"]')).click();
-    await fill('slangSearchConfirmed', '测试词条');
-    assert.equal(await page.locator('#slangConfirmedList tbody tr').count(), 2, 'Filtered table should contain header and one entry');
-    await (await reveal('.slang-tab[data-slang-tab="candidate"]')).click();
-    await page.locator('[data-slang-confirm="demo-candidate"]').click();
-    await fill('slangModalMeaning', '感到安慰');
-    await fill('slangModalUsage', '轻松聊天');
-    await fill('slangModalExample', '有被治愈到。');
-    await fill('slangModalRisk', '无');
-    await fill('slangModalSources', 'https://example.invalid/offline-source');
-    assert.deepEqual(await clickWrite('#slangModalDirectConfirm', '/api/slang/demo-candidate/confirm'), { meaning: '感到安慰', usage: '轻松聊天', example: '有被治愈到。', risk: '无', sources: ['https://example.invalid/offline-source'] });
-    await fill('slangExtractMin', 14);
-    await fill('slangThresholds', '3，6 12');
-    const config = await clickWrite('#slangConfigSave', '/api/slang/config');
-    assert.equal(config.extractMinMessages, 14);
-    assert.deepEqual(config.inferenceThresholds, [3, 6, 12]);
-  });
-
   await test('Test message and AI notification reach only the mock endpoints', async () => {
     await (await reveal('#tsKind')).selectOption('group');
     await fill('tsId', '123456789');
@@ -277,7 +255,7 @@ try {
     }
   });
 
-  if (!original) await test('Sessions, logs, voice/stickers, access and operations remain available', async () => {
+  if (!original) await test('Sessions, logs, stickers, access and operations remain available', async () => {
     await navigate('sessions');
     await page.waitForFunction(() => document.getElementById('sessionList')?.textContent.includes('group:123456789'));
     assert.match(await page.locator('#sessionList').textContent(), /private:100001/);
@@ -297,17 +275,6 @@ try {
     assert.equal(clearResponse.status(), 200);
     await page.waitForFunction(() => document.getElementById('v2ToolLogOutput')?.textContent.includes('空'));
 
-    const [voiceResponse] = await Promise.all([
-      page.waitForResponse(response => new URL(response.url()).pathname === '/api/voice/list' && response.request().method() === 'GET'),
-      (await reveal('#voiceRefreshBtn')).click(),
-    ]);
-    assert.equal(voiceResponse.status(), 200);
-    assert.match(await page.locator('#voiceList').textContent(), /演示-问候\.mp3/);
-    await fill('voiceSendTarget', 'group:123456789');
-    await check('voiceSendDryRun', true);
-    const voiceSend = await clickWrite('#voiceSendBtn', '/api/voice/send');
-    assert.deepEqual(voiceSend, { target: 'group:123456789', file: '演示-问候.mp3', dryRun: true });
-
     await navigate('access');
     assert.ok(await page.locator('#wlSave').isVisible());
     await navigate('operations');
@@ -326,11 +293,10 @@ try {
     assert.match((await page.textContent('#metricUsageHitRate')).trim(), /%$/, '缓存命中率应为百分比');
     assert.match((await page.textContent('#metricUsagePerTurn')).trim(), /^¥\d/, '平均每轮应为货币金额');
 
-    // 按会话（群 / 私聊 / 内部）明细
+    // 按会话（群 / 私聊）明细
     const conversations = await page.textContent('#usageConversations');
     assert.match(conversations, /group:123456789/, '按会话表应列出群会话');
     assert.match(conversations, /private:100001/, '按会话表应列出私聊会话');
-    assert.match(conversations, /internal:黑话学习/, '按会话表应列出内部（黑话学习）用量');
     assert.match(conversations, /¥/, '按会话表应显示花费列');
     assert.match(conversations, /未命中输入/, '按会话表应拆分缓存命中 / 未命中');
 
@@ -417,7 +383,7 @@ try {
         await navigate(view);
         const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
         assert(dimensions.document <= dimensions.viewport + 1, `${width}px / ${view}: ${JSON.stringify(dimensions)}`);
-        if (artifacts && width === 390 && ['overview', 'social-v2', 'slang'].includes(view)) {
+        if (artifacts && width === 390 && ['overview', 'social-v2'].includes(view)) {
           await mkdir(resolve(artifacts), { recursive: true });
           await page.screenshot({ path: resolve(artifacts, `mobile-${view}.png`), fullPage: true, animations: 'disabled' });
         }
@@ -615,7 +581,7 @@ try {
   if (artifacts) {
     await mkdir(resolve(artifacts), { recursive: true });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    for (const view of original ? ['overview'] : ['overview', 'persona', 'social-v2', 'slang', 'access']) {
+    for (const view of original ? ['overview'] : ['overview', 'persona', 'social-v2', 'access']) {
       await navigate(view);
       await page.screenshot({ path: resolve(artifacts, `${original ? 'original' : 'desktop'}-${view}.png`), fullPage: true, animations: 'disabled' });
     }

@@ -67,7 +67,6 @@ function usageSummaryFixture() {
   const conversations = [
     usageConversationFixture('group:123456789', { cacheMiss: 41230, cacheHit: 1284000, cacheWrite: 0, output: 18420, reasoning: 0 }, 0.2886, 42, 231),
     usageConversationFixture('private:100001', { cacheMiss: 8600, cacheHit: 210400, cacheWrite: 0, output: 3900, reasoning: 0 }, 0.0467, 9, 48),
-    usageConversationFixture('internal:黑话学习', { cacheMiss: 2200, cacheHit: 18000, cacheWrite: 0, output: 900, reasoning: 0 }, 0.0075, 3, 11),
   ];
   const buckets = conversations.reduce((acc, c) => ({
     cacheMiss: acc.cacheMiss + c.buckets.cacheMiss,
@@ -311,18 +310,12 @@ export function makeFixtureState() {
       wake: { sleepMinMs: 60000, sleepMaxMs: 0, maxWakePerMinute: 1, maxWakePerHour: 12, batchWindowMs: 8000, noActionLimit: 3, maxWakeConfigReminders: 2 },
       send: { burstEnabled: true, burstMaxMessages: 8, burstIntervalMinMs: 1000, burstIntervalMaxMs: 3000, longGapProbability: 0.2, longGapMinMs: 5000, longGapMaxMs: 10000, maxSendPerMinute: 8, maxSendPerHour: 60, maxMessageChars: 500, maxGapMs: 10000, gapBaseMs: 800, gapPerCharMs: 20 },
       wait: { defaultMs: 30000, minMs: 5000, maxMs: 600000, defaultQuietMs: 8000, minQuietAfterNewMs: 10000 },
-      sticker: { enabled: true, syncTtlMs: 60000, maxListCount: 100, includeInPrompt: true, promptMaxStickers: 8, collect: { enabled: true, maxPerMinute: 2, maxPerHour: 10, maxRemarkChars: 20 } },
+      sticker: { enabled: true, syncTtlMs: 60000, maxListCount: 100, includeInPrompt: true, promptMaxStickers: 8, collect: { enabled: true, maxPerMinute: 2, maxPerHour: 10 } },
       context: { recentLimit: 100, unreadLimit: 30, contextWindow: 20 },
       feedback: { maxLength: 500, notifyOwnerOnError: false },
     },
     // 会话初始提示词（离线示例）：整段内容都是虚构的演示文本。
     initPrompt: '离线示例：这是一个演示用的群聊环境说明，不会写进任何真实配置。',
-    slangConfig: { enabled: true, extractMinMessages: 10, extractCooldownMs: 300000, inferenceThresholds: [2, 4, 8], injectMax: 8, learnerPreset: 'qq-chat', workspaceTitle: 'QQ 黑话学习', autoResearch: true },
-    slang: [
-      { id: 'demo-candidate', content: '有被治愈到', meaning: '感到温暖和安慰', status: 'candidate', count: 4, source: 'auto', evidence: [{ sender: '演示群友', text: '今天这张图，有被治愈到。' }], createdAt: timestamp, updatedAt: timestamp },
-      { id: 'demo-confirmed', content: '绝绝子', meaning: '很好、很棒', usage: '表达赞美', example: '这个设计绝绝子。', status: 'confirmed', count: 12, source: 'manual', createdAt: timestamp, updatedAt: timestamp },
-      { id: 'demo-rejected', content: '测试噪声', meaning: '', risk: '演示排除项', status: 'rejected', count: 1, source: 'auto', createdAt: timestamp, updatedAt: timestamp },
-    ],
     security: { interceptNotify: true },
     // state/ 的 ACL 是否已收紧。离线演示默认给「未收紧」，这样告警条在预览里可见
     // （真实场景：Windows 上未以管理员身份运行桥接时就是这个状态）。
@@ -449,7 +442,6 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
-          case '/api/socialV2/memory': return json({ ok: true, raw: { activeTopics: [{ text: '周末的阅读计划', pendingQuestion: '有没有推荐的书？' }], pendingThoughts: [{ text: '分享一张风景照片', motivation: '轻松交流' }], memberImpressions: { 演示群友: { traits: ['友善', '喜欢技术'], interactionCount: 6 } } } });
           case '/api/socialV2/state': return json({ ok: true, key: url.searchParams.get('key'), wakeConfig: { infinite: false, sleepUntil: '2026-09-20T09:00:00.000Z', batchWindowMs: 8000, wakeCount: 4 }, wakeSafety: { guaranteed: true }, unreadCount: 2, lastWakeReason: 'atMention' });
           case '/api/socialV2/states': return json({ ok: true, conversations: state.sessions.map(x => ({ key: x.key, unreadCount: 2 })) });
           case '/api/socialV2/initial-prompt': {
@@ -469,20 +461,6 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
               createdAt: Date.now(), updatedAt: Date.now(), maxChars: 2000, writable: true
             });
           }
-          // 语音库（离线示例：不含任何真实音频路径）
-          case '/api/voice/list':
-          case '/api/socialV2/voices': return json({
-            ok: true,
-            key: url.searchParams.get('key') || 'group:123456789',
-            count: 2,
-            voices: [
-              { name: '演示-问候.mp3', ok: true, bytes: 20480, detail: '2秒 · 20.0 KB · mp3 · 24.0kHz · 单声道', seconds: 2 },
-              { name: '演示-太长.wav', ok: false, bytes: 99999999, error: '时长 12分00秒 超过上限 5分00秒' },
-            ],
-            limits: { maxSeconds: 300, maxBytes: 20971520, maxPerMinute: 2, maxPerHour: 10 },
-            hint: '用 qq_send_voice 传 name 即可把其中一个当语音发出去',
-          });
-          case '/api/slang': return json({ ok: true, entries: state.slang, config: state.slangConfig });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
           // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是
           // `icacls DIR /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /T /C` —— 正是那句
@@ -553,8 +531,6 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
               exists: !!text, updatedAt: Date.now(), maxChars: 2000
             });
           }
-          case '/api/slang/config': state.slangConfig = body; return json({ ok: true });
-          case '/api/slang': state.slang.push({ ...body, id: `demo-${state.slang.length + 1}`, status: 'confirmed', source: 'manual', count: 1 }); return json({ ok: true });
           case '/api/security':
             if (body.rehardenStateDir === true) {
               // 离线演示：把「重新检测」当成一次成功的收紧（真实实现要管理员权限）
@@ -565,39 +541,14 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true });
           case '/api/console/token': return json({ ok: true, token: body.token || 'offline-demo-token-123456', generated: !body.token });
           case '/api/test-send': return json({ ok: true, message_id: 'mock-message-001' });
-          // 语音试发（操作者通道）：离线只回执，不产生任何真实 QQ 消息
-          case '/api/voice/send': return json(body.dryRun
-            ? { ok: true, dryRun: true, target: body.target, file: body.file, detail: '2秒 · 20.0 KB · mp3 · 24.0kHz · 单声道', verified: false }
-            : { ok: true, target: body.target, file: body.file, detail: '2秒 · 20.0 KB · mp3', messageId: 9001, verified: true, limits: { maxSeconds: 300, maxBytes: 20971520, maxPerMinute: 2, maxPerHour: 10 } });
           case '/api/console/notify-ai': return json({ ok: true, sessionId: 'mock-dsh-session' });
           case '/api/restart': return json({ ok: true, message: '离线预览：已模拟重启，实际服务未改变。' });
           case '/api/workspace/reset': state.sessions = []; return json({ ok: true, archivedCount: 3 });
           case '/api/session/reset': state.sessions = state.sessions.filter(x => x.key !== body.key); return json({ ok: true });
-          case '/api/slang/extract': return json({ ok: true });
-          case '/api/slang/research': return json({ ok: true, count: body.ids?.length || 1 });
-          case '/api/slang/batch-confirm':
-          case '/api/slang/batch-reject':
-          case '/api/slang/batch-delete': {
-            const ids = body.ids || [];
-            if (path.endsWith('delete')) state.slang = state.slang.filter(x => !ids.includes(x.id));
-            else state.slang.forEach(x => { if (ids.includes(x.id)) x.status = path.endsWith('confirm') ? 'confirmed' : 'rejected'; });
-            return json({ ok: true, count: ids.length, confirmed: ids.length, rejected: ids.length, deleted: ids.length });
-          }
           case '/api/social/flush':
-          case '/api/socialV2/wake':
-          case '/api/socialV2/memory-clear':
-          case '/api/socialV2/memory-update':
-          case '/api/socialV2/memory-remove': return json({ ok: true });
+          case '/api/socialV2/wake': return json({ ok: true });
           case '/api/tokens/reset': return json({ ok: true });
         }
-      }
-      const slangMatch = path.match(/^\/api\/slang\/([^/]+)(?:\/(confirm|reject))?$/);
-      if (slangMatch && ['POST', 'PATCH', 'DELETE'].includes(method)) {
-        const entry = state.slang.find(x => x.id === slangMatch[1]);
-        if (!entry) return json({ ok: false, error: '演示词条不存在' }, 404);
-        if (method === 'DELETE') state.slang = state.slang.filter(x => x !== entry);
-        else Object.assign(entry, body, slangMatch[2] ? { status: slangMatch[2] === 'confirm' ? 'confirmed' : 'rejected' } : {});
-        return json({ ok: true });
       }
       unknownRequests.push({ method, path });
       return json({ ok: false, error: `Unimplemented fixture route: ${method} ${path}` }, 404);

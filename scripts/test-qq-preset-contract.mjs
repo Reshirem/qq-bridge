@@ -69,12 +69,10 @@ test('social autonomy and visual, forwarding, sticker and web capabilities remai
     '【不要当群管家/主持人】', '普通对话默认 1 条，最多 2 条', '不要用空格断句',
     '不会自动发送到 QQ', 'qq_get_message_images', 'qq_get_forward_msg', 'nestedForwardIds',
     'qq_send_poke', 'qq_list_stickers', 'qq_get_sticker_image', 'qq_send_sticker',
-    'qq_collect_sticker', 'qq_sticker_note', 'qq_get_self_image',
+    'qq_collect_sticker', 'qq_get_self_image',
     'qq_set_sticker_remark', '只有管理端明确开启后才能用',
-    'qq_list_voices', 'qq_send_voice', 'verified=true 才代表这条语音确实落地',
-    '语音**默认是关闭的**', '不要假装发了语音',
     'mcp__web-search-safe__web_search', 'mcp__web-search-safe__web_fetch',
-  ]) assert.ok(prefix.includes(text), `missing capability or voice rule: ${text}`);
+  ]) assert.ok(prefix.includes(text), `missing capability or rule: ${text}`);
 });
 
 test('autonomy limits, fixed wake reasons and on-demand sleep remain described', () => {
@@ -84,10 +82,6 @@ test('autonomy limits, fixed wake reasons and on-demand sleep remain described',
     '没有周期性模型心跳',
     '设置一次性睡眠',
     '不要用 [SILENT]',
-    // 记忆面
-    '【记忆卫生】', 'qq_memory_append', 'qq_memory_query', 'qq_memory_remove', 'qq_memory_clear',
-    // 黑话面
-    'qq_slang_query', 'qq_slang_submit', '不重复提交',
     // 频率上限
     '普通闲聊约 3~5 轮一张', '别刷屏', '每条只能一张，不能附带文字', '当前回合确有理由时使用',
     // 会话令牌是硬前置，漏传会被拒绝。

@@ -14,13 +14,13 @@ const tests = [
   // 且只留下一行日志 —— 必须有登记期断言钉住（活 DSH 侧的实测见
   // scripts/test-dsh-session-retire.mjs）。
   'test-dsh-inbox-projection.mjs',
-  'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
+  'test-md-to-plain.mjs', 'test-mux-reconnect.mjs',
   'test-token-economy.mjs', 'test-wait-backlog.mjs', 'test-conversation-history.mjs',
   'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
   'test-reply-wait.mjs', 'test-preset-prompt.mjs', 'test-role-card.mjs',
   // 体检修复回归：无令牌智能体调用面、send-burst 失败回滚、唤醒限频重试、
   // 定时器类暂存唤醒补发、collector 生命周期、ownerQQ 覆盖语义、预设名校验、
-  // 旧唤醒 mode/triggers 迁移、memory-update 边界、wait 租约归一化、md/黑话/表情/账本；
+  // 旧唤醒 mode/triggers 迁移、wait 租约归一化、md/表情/账本；
   // 本轮新增：/api/send/* 失败路径的作用域错误（R15）、自主会话落库丢表情识别字段（R16）。
   'test-audit-regressions.mjs',
   // 图片/表情链路（动图/表情包字段、CDN 优先与 emoji_id 兜底）+ 联网搜索
@@ -34,18 +34,8 @@ const tests = [
   'test-v2-initial-prompt.mjs',
   // 令牌账本 / 价目表 与 体检修复回归（纯函数，无外部依赖）
   'test-token-usage.mjs', 'test-hardening.mjs',
-  // 语音发送（纯函数 + 端点存在性；真发语音只在 --live 或 CLI 里做）
-  'test-voice.mjs',
-  // 音量：参数校验 + 真的调用 ffmpeg 调音量 + 自算 RMS 验证增益
-  'test-voice-volume.mjs',
-  // 边界：并发/异常输入/上传限额/越权（纯函数段 + 可选的 live 段）
-  'test-voice-edge.mjs',
-  // 语音图形界面（参数解析/鉴权/路径穿越/文件名净化；live 段需普通终端）
-  'test-voice-gui.mjs',
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）
   'test-console-static.mjs',
-  // 语音系统整体结构检查（入口/依赖/端点/开关/文档一致性）
-  'test-voice-system.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）
   'test-snowluma-conn.mjs',
   // 启动器与编码（乱码根因：.cmd 里的非 ASCII 会被 cmd 按 ANSI 解码）

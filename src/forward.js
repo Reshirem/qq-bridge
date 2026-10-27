@@ -43,7 +43,6 @@ function segmentText(seg) {
     case 'at': return d.qq === 'all' ? '@全体成员' : `@${d.qq ?? ''}`;
     case 'face': return `[表情${d.id ?? ''}]`;
     case 'image': return '[图片]';
-    case 'record': return '[语音]';
     case 'video': return '[视频]';
     case 'file': return `[文件${d.name ?? ''}]`;
     case 'reply': return '[引用]';

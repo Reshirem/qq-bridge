@@ -342,7 +342,7 @@ export class NodeApiClient extends AbstractApiClient {
     if (discovered) this.launchToken = discovered;
   }
 
-  /** 持久化签名密钥（惰性探测 + 记忆）。 */
+  /** 持久化签名密钥（惰性探测后缓存）。 */
   browserSessionSecret() {
     if (this._secret === undefined) this._secret = readBrowserSessionSecret();
     return this._secret;

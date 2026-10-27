@@ -53,20 +53,6 @@
   "security": {
     "interceptNotify": true
   },
-  "slang": {
-    "enabled": true,
-    "extractMinMessages": 10,
-    "extractCooldownMs": 300000,
-    "inferenceThresholds": [
-      2,
-      4,
-      8
-    ],
-    "injectMax": 8,
-    "learnerPreset": "qq-chat",
-    "workspaceTitle": "QQ 黑话学习",
-    "autoResearch": true
-  },
   "socialV2": {
     "enabled": true,
     "tools": {
@@ -88,9 +74,6 @@
       "getGroupMembers": true,
       "setWakeConfig": true,
       "markRead": true,
-      "memory": true,
-      "slangQuery": true,
-      "slangSubmit": true,
       "getImages": true,
       "getForwardMsg": true,
       "sendPoke": true,
@@ -98,10 +81,8 @@
       "getStickerImage": true,
       "sendSticker": true,
       "setStickerRemark": false,
-      "stickerNote": true,
       "collectSticker": true,
-      "getSelfImage": true,
-      "sendVoice": false
+      "getSelfImage": true
     },
     "wake": {
       "sleepMinMs": 60000,
@@ -142,22 +123,8 @@
       "collect": {
         "enabled": true,
         "maxPerMinute": 2,
-        "maxPerHour": 10,
-        "maxRemarkChars": 20
+        "maxPerHour": 10
       }
-    },
-    "voice": {
-      "enabled": false,
-      "dir": "audio",
-      "maxSeconds": 300,
-      "maxBytes": 20971520,
-      "maxPerMinute": 2,
-      "maxPerHour": 10,
-      "allowAbsolutePath": false,
-      "defaultVolume": 1,
-      "loudness": "normal",
-      "ffmpegPath": "",
-      "autoReadback": true
     },
     "feedback": {
       "maxLength": 500,

@@ -1,7 +1,7 @@
 // 安全版 Web Search / Fetch MCP server（stdio）。由 DSH 的 MCP 客户端 spawn。
 //
 // 安全设计：
-// - 只暴露只读工具 `web_search` 与 `web_fetch`：查网络用语/梗/黑话、抓取网页正文。
+// - 只暴露只读工具 `web_search` 与 `web_fetch`：搜索公开信息并抓取网页正文。
 // - 不暴露任何本地文件、命令执行、写操作。
 // - 查询词做基础清洗：去 CQ 码、控制字符、超长截断。
 // - 搜索：优先走 **DSH 同一路 DeepSeek 联网搜索**（src/web-search.js：同一端点/模型/
@@ -13,7 +13,7 @@
 //   - 域名会先做 DNS 解析并检查全部解析结果，避免解析到内网；
 //   - 手动跟随重定向，每一跳都重新校验；
 //   - 响应体按字节流限量读取，避免超大响应拖垮进程。
-// - 搜索结果/抓取结果仅作为“候选解释”，最终是否入库仍由控制台人工确认。
+// - 搜索结果/抓取结果作为参考信息返回，不会写入本地状态。
 import path from 'node:path';
 import { safeFetch } from './safe-fetch.js';
 import { webSearch } from './web-search.js';
@@ -53,8 +53,8 @@ const server = new McpServer({ name: 'web-search-safe', version: '0.2.1-r1' });
 
 server.tool(
   'web_search',
-  '只读联网搜索：优先使用与 DSH 相同的 DeepSeek 联网搜索（结果更准、不把群里的词发给搜索引擎广告网络），不可用时自动回退 Bing。返回标题/URL/摘要，不执行任何本地操作。适合查网络用语、梗、事实性问题和热点。',
-  { query: z.string().describe('要搜索确认的网络用语/黑话/梗/事实性问题') },
+  '只读联网搜索：优先使用与 DSH 相同的 DeepSeek 联网搜索，不可用时自动回退 Bing。返回标题/URL/摘要，不执行任何本地操作。',
+  { query: z.string().describe('要查询的公开信息或事实性问题') },
   async ({ query }) => {
     const clean = sanitizeQuery(query);
     if (!clean) {

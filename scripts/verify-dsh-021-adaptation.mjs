@@ -21,7 +21,7 @@
 //        · 鉴权：本机签名密钥离线铸造 Cookie
 //        · settings/describe 可用，`qq-mode` 命名空间在列且可写
 //          （0.2.0 删除了 ctx.settings.register()，命名空间改由 entry id + Config 推导）
-//        · agentPresets/list 含 qq-chat / qq-chat-v2
+//        · agentPresets/list 含固定 preset qq-chat-v2
 //        · session/create 挂 preset + selectModel(deepseek-flash)
 //        · session/projections 一元 RPC 可用（读队列的主路径）
 //        · session/control 开场 baseline 是 value.projections[<id>].values.inbox
@@ -71,7 +71,7 @@ check('dsh-persona 仍拒绝旧字段 text（故障前提成立）', oldRejected
 /** DSH 0.2.1 的 agent loop 只注册这两个提示词变量（0.2.0 还有 `cwd`）。 */
 const DSH_PROMPT_VARIABLES = new Set(['provider', 'model']);
 
-for (const p of ['qq-chat', 'qq-chat-v2']) {
+for (const p of ['qq-chat-v2']) {
   const f = path.join(ROOT, 'dsh/agent-presets', p, 'agent.cordis.yml');
   const row = yaml.load(fs.readFileSync(f, 'utf8')).find((r) => r.id === 'persona');
   let schemaOk = false;
@@ -99,7 +99,7 @@ const presetPatches = await import(pathToFileURL(path.join(ROOT, 'scripts/build-
 for (const { file, changed } of presetPatches.buildPatches({ check: true, log: () => {} })) {
   check(`${path.relative(ROOT, file)} 与仓库源一致（未漂移）`, !changed);
 }
-for (const p of ['qq-chat', 'qq-chat-v2']) {
+for (const p of ['qq-chat-v2']) {
   const doc = yaml.load(fs.readFileSync(presetPatches.patchFileFor(p), 'utf8'));
   const row = doc?.[0]?.insert?.[0];
   check(`patch ${p}: 是 @deepseek-ai/dsh-agent-preset 行`, row?.name === '@deepseek-ai/dsh-agent-preset');
@@ -234,7 +234,7 @@ for (const f of ['src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-
 // 注意 spawnSync 在受限环境（DSH 沙箱的 workspace-write）会以 EPERM 失败——
 // 那是**环境**不允许起子进程，不是文件有语法错。这种情况显式记为跳过，
 // 否则会输出一串假失败，把真正的失败淹掉（实测踩过）。
-const SYNTAX_FILES = ['src/bridge.js', 'src/dsh-client.js', 'src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js', 'src/slang-learner.js', 'src/self-test.js', 'scripts/setup-dsh.mjs'];
+const SYNTAX_FILES = ['src/bridge.js', 'src/dsh-client.js', 'src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js', 'src/self-test.js', 'scripts/setup-dsh.mjs'];
 {
   const probe = spawnSync(process.execPath, ['--check', path.join(ROOT, 'src/dsh-client.js')], { encoding: 'utf8' });
   if (probe.error?.code === 'EPERM') {
@@ -265,7 +265,7 @@ const dm = st.value?.namespaces?.find((n) => n.ns === 'agent-default-model');
 check('DSH 全局默认模型 = deepseek-flash', dm?.value?.model === 'deepseek-flash', `当前 ${dm?.value?.model}`);
 const ap = await rpc('agentPresets/list', {});
 const presetIds = ap.value?.presets?.map((p) => p.id) ?? [];
-check('agentPresets/list 含 qq-chat 与 qq-chat-v2', presetIds.includes('qq-chat') && presetIds.includes('qq-chat-v2'), presetIds.join(', '));
+check('agentPresets/list 含固定 preset qq-chat-v2', presetIds.includes('qq-chat-v2'), presetIds.join(', '));
 // 0.1.7 把设置命名空间从 `agent-presets` 改名为 `agent-preset-registry`，而且「用户默认」
 // 是易失字段 selectedDefault，不会出现在 describe 的 value 里。部署默认由 registry 行的
 // config.default 决定（dsh-web-app 的 patch 写的是 standard）。桥接在 closedAgentPreset

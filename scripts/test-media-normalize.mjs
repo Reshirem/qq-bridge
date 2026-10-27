@@ -201,7 +201,7 @@ await test('真实大图（3000×2000）→ 降采样到长边上限以内', asy
 
 await test('抽帧失败（ffmpeg 超时/不可用）也不崩：退回首帧 + 说明', async () => {
   // 注意：不能靠「把 ffmpegPath 指到不存在的文件」来模拟不可用 —— resolveFfmpeg 在候选路径
-  // 都不存在时会回退到 PATH 里的 ffmpeg（这是语音功能就有的既定行为）。这里用 1ms 硬超时
+  // 都不存在时会回退到 PATH 里的 ffmpeg。这里用 1ms 硬超时
   // 让调用必然失败，验证的是**失败路径的契约**：不抛异常、小图按原样提供、note 说清原因。
   const out = await normalizeImageForModel(GIF_2, 'image/gif', {
     ...MEDIA_DEFAULTS, tmpDir: tmp, timeoutMs: 1

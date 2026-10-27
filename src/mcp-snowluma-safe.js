@@ -277,14 +277,6 @@ const TOOL_CONFIG_FLAGS = {
   qq_get_message_detail: 'getMessageDetail',
   qq_get_active_members: 'getActiveMembers',
   qq_get_group_members: 'getGroupMembers',
-  qq_memory_append: 'memory',
-  qq_memory_query: 'memory',
-  qq_memory_remove: 'memory',
-  qq_memory_clear: 'memory',
-  qq_slang_query: 'slangQuery',
-  qq_slang_submit: 'slangSubmit',
-  qq_send_voice: 'sendVoice',
-  qq_list_voices: 'sendVoice',
   // 下面这些曾经漏登记。漏一个不是"多注册一个工具"那么轻：桥接那边按 `v2ToolEnabled(flag)`
   // 在**调用期**一律 403，而这里不登记就等于"控制台显示已关闭、模型每次请求仍收到它的完整
   // 描述与参数 schema，然后调用它、再拿到 403"——既白烧 token（本文件开头 176 行起就是为省这份
@@ -298,7 +290,6 @@ const TOOL_CONFIG_FLAGS = {
   qq_send_sticker: 'sendSticker',
   qq_collect_sticker: 'collectSticker',
   qq_get_self_image: 'getSelfImage',
-  qq_sticker_note: 'stickerNote',
   qq_set_sticker_remark: 'setStickerRemark',
 };
 const disabledTools = [];
@@ -777,144 +768,6 @@ server.tool(
   }
 );
 
-server.tool(
-  'qq_memory_append',
-  '记录一条轻量记忆：activeTopic=进行中的话题；pendingThought=你想说但还没说的话；memberImpression=对某位群友的印象。记忆会持久化，并在后续唤醒/qq_get_prompt 中自动出现。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).describe('记忆类别'),
-    content: z.string().describe('记忆内容，例如话题、想说的话、对某人的印象标签'),
-    extra: z.object({
-      target: z.string().optional().describe('memberImpression 时的群友名字/昵称'),
-      participants: z.array(z.string()).optional().describe('activeTopic 的参与者列表'),
-      pendingQuestion: z.string().optional().describe('activeTopic 里还没问出口的问题'),
-      motivation: z.string().optional().describe('pendingThought 的动机，如 curiosity/sociability'),
-      expiresAtMs: z.number().optional().describe('pendingThought 过期毫秒数，默认 2 小时')
-    }).optional().describe('附加信息')
-  },
-  async ({ key, token, category, content, extra }) => {
-    try {
-      const data = await agentApi('/api/socialV2/memory-append', {
-        method: 'POST',
-        body: JSON.stringify({ key, category, content, extra: extra || {} }),
-        headers: { 'x-agent-token': token }
-      });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `记忆写入失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  'qq_memory_query',
-  '查看当前会话的轻量记忆：进行中的话题、你想说但还没说的话、对群友的印象（只读）。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).optional().describe('可选：只看某一类记忆')
-  },
-  async ({ key, token, category }) => {
-    try {
-      const q = new URLSearchParams({ key });
-      if (category) q.set('category', category);
-      const data = await agentApi(`/api/socialV2/memory?${q.toString()}`, { headers: { 'x-agent-token': token } });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `记忆读取失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  'qq_memory_remove',
-  '删除一条轻量记忆：activeTopic/pendingThought 用 content 匹配原文删除；memberImpression 用 target 参数指定群友名字删除。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).describe('记忆类别'),
-    content: z.string().optional().describe('要删除的话题/想法原文（memberImpression 不需要）'),
-    target: z.string().optional().describe('memberImpression 时要删除的群友名字')
-  },
-  async ({ key, token, category, content, target }) => {
-    try {
-      const data = await agentApi('/api/socialV2/memory-remove', {
-        method: 'POST',
-        body: JSON.stringify({ key, category, content: content || '', target: target || '' }),
-        headers: { 'x-agent-token': token }
-      });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `记忆删除失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  'qq_memory_clear',
-  '清空轻量记忆：不传 category 清空全部；传 activeTopic/pendingThought/memberImpression 只清空对应类别。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    category: z.enum(['activeTopic', 'pendingThought', 'memberImpression']).optional().describe('要清空的类别，缺省清空全部')
-  },
-  async ({ key, token, category }) => {
-    try {
-      const data = await agentApi('/api/socialV2/memory-clear', {
-        method: 'POST',
-        body: JSON.stringify({ key, category: category || '' }),
-        headers: { 'x-agent-token': token }
-      });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `记忆清空失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  'qq_slang_query',
-  '查看当前已确认的群聊黑话/梗/网络表达（只读）。返回已确认词条列表和格式化黑话表；遇到不熟悉的词可先查这里，再决定是否搜索/使用。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    q: z.string().optional().describe('可选搜索词，按词条/含义/用法/示例过滤')
-  },
-  async ({ key, token, q }) => {
-    try {
-      const query = q ? `&q=${encodeURIComponent(String(q))}` : '';
-      const data = await agentApi(`/api/socialV2/slang/query?key=${encodeURIComponent(key)}${query}`, { headers: { 'x-agent-token': token } });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `查询黑话失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  'qq_slang_submit',
-  '把你在群里经常看到但不确定含义/用法的陌生词、黑话、梗或网络表达提交给管理员筛选。提交后进入候选库，管理员确认后会被写入黑话提示词，成为你后续可查询和使用的记忆。',
-  {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-    content: z.string().describe('要提交的陌生词/黑话/梗（最多 50 字）'),
-    context: z.string().optional().describe('可选：你是在什么语境/哪条消息里看到的，帮助管理员判断')
-  },
-  async ({ key, token, content, context }) => {
-    try {
-      const data = await agentApi('/api/socialV2/slang/submit', {
-        method: 'POST',
-        body: JSON.stringify({ key, content, context: context || '' }),
-        headers: { 'x-agent-token': token }
-      });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `提交黑话失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
 // ── 图片/表情查看工具 ─────────────────────────────────────────────────────
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
@@ -961,11 +814,11 @@ if (cfg.socialV2?.tools?.getImages !== false) {
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.listStickers !== false) {
   server.tool(
     'qq_list_stickers',
-    '查看 QQ 账号上已收藏的表情包（自定义表情）列表：包含 emoji_id、备注 desc、本地笔记 localNote、标签 tags、使用次数等。可通过 query 按备注/笔记/标签搜索；无备注的表情可以先调用 qq_get_sticker_image 看图理解，再用 qq_sticker_note 记下含义。刚新增/删除表情后如需立即同步，请传 refresh=true。',
+    '查看 QQ 账号上已收藏的表情包（自定义表情）列表：包含 emoji_id、官方备注 desc、图片地址等。可通过 query 按备注搜索；无备注的表情可以调用 qq_get_sticker_image 看图理解。刚新增/删除表情后如需立即同步，请传 refresh=true。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      query: z.string().optional().describe('可选搜索词，按备注/本地笔记/标签/用法过滤'),
+      query: z.string().optional().describe('可选搜索词，按 QQ 备注或表情标识过滤'),
       count: z.number().optional().describe('最多返回条数，默认 48，受 socialV2.sticker.maxListCount 配置上限约束（当前通常 100）'),
       refresh: z.boolean().optional().describe('是否强制从 QQ 重新同步收藏表情，默认 false（走缓存）')
     },
@@ -990,7 +843,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.listSticker
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerImage !== false) {
   server.tool(
     'qq_get_sticker_image',
-    '获取指定收藏表情的图片内容并直接以图像返回给模型（视觉模型可“看懂”）。当 qq_list_stickers 返回的表情 desc/localNote 为空、或你想确认表情实际长什么样时调用。stickerId 可用 qq_list_stickers 返回的 id / md5 / url。动图表情会被抽帧拼成多格图（行优先：左上→右下），说明里会写帧数与网格尺寸；体积过大时会自动缩放，说明里会给出原始尺寸。',
+    '获取指定收藏表情的图片内容并直接以图像返回给模型（视觉模型可“看懂”）。当 qq_list_stickers 返回的表情没有备注、或你想确认表情实际长什么样时调用。stickerId 可用 qq_list_stickers 返回的 id / md5 / url。动图表情会被抽帧拼成多格图（行优先：左上→右下），说明里会写帧数与网格尺寸；体积过大时会自动缩放，说明里会给出原始尺寸。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -1045,79 +898,23 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectSticker !== false) {
   server.tool(
     'qq_collect_sticker',
-    '收藏当前会话里别人发的一张表情/图片到你的 QQ 收藏表情，并可写一句简短备注（如“好图偷了，兄弟”）。messageId 用 qq_get_unread_messages / qq_get_recent_messages 返回的 messageId 或 seq。注意：不要频繁收藏，只在真的觉得有意思/好用/戳中你时才偷图；收藏后你可以在 qq_list_stickers 里看到并继续使用。',
+    '收藏当前会话里别人发的一张表情/图片到你的 QQ 收藏表情。messageId 用 qq_get_unread_messages / qq_get_recent_messages 返回的 messageId 或 seq。注意：不要频繁收藏，只在真的觉得有意思/好用/戳中你时才收藏；收藏后你可以在 qq_list_stickers 里看到并继续使用。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      messageId: z.string().describe('要收藏的那条消息的 messageId 或 seq（来自 qq_get_unread_messages / qq_get_recent_messages）'),
-      remark: z.string().optional().describe('简短备注，最多 20 字，例如“好图偷了，兄弟”')
+      messageId: z.string().describe('要收藏的那条消息的 messageId 或 seq（来自 qq_get_unread_messages / qq_get_recent_messages）')
     },
-    async ({ key, token, messageId, remark }) => {
+    async ({ key, token, messageId }) => {
       try {
         const data = await agentApi('/api/socialV2/collect-sticker', {
           method: 'POST',
-          body: JSON.stringify({ key, messageId: String(messageId), remark: remark || '' }),
+          body: JSON.stringify({ key, messageId: String(messageId) }),
           headers: { 'x-agent-token': token },
           timeoutMs: 60000
         });
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `收藏表情失败：${error?.message ?? error}` }], isError: true };
-      }
-    }
-  );
-}
-
-if (cfg.socialV2?.voice?.enabled !== false && cfg.socialV2?.tools?.sendVoice !== false) {
-  server.tool(
-    'qq_send_voice',
-    '在指定会话发一条 QQ 语音（把语音库里准备好的音频当语音条发出去）；必须携带本会话令牌，且仅在该会话的 DSH 回合仍活动时可用。voice 传 qq_list_voices 返回的 name（文件名，可带子目录），也可以直接传语音库里的文件名（不带扩展名也能匹配）。注意：① 只能发语音库（qq-bridge/audio/）里的文件，不能发任意本地路径，也不能发 URL/base64；② 受时长与频率上限约束（见 qq_list_voices 的 limits），超限会被拒绝；③ 语音是「开口说话」的强表达，别滥用，闲聊里偶尔发一条即可；④ 返回的 verified=true 表示已经用 get_msg 回读到这条消息的 record 段（语音确实落地了）—— 只有 verified=true 才能对用户说你发了语音；⑤ readback 只对「收到的」语音有意义（QQ 会转写别人的语音），自己发的语音一般拿不到转写文本，默认关闭，别依赖它。',
-    {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      voice: z.string().describe('语音库里的文件名（来自 qq_list_voices 的 name，可带子目录/可省略扩展名）'),
-      label: z.string().optional().describe('可选：写进会话记录里的说明，如「说了句晚安」'),
-      verify: z.boolean().optional().describe('是否回读校验语音已落地（默认 true，建议保持开启）'),
-      readback: z.boolean().optional().describe('是否额外索取 QQ 转写文本（自己发的语音通常没有，默认 false）')
-    },
-    async ({ key, token, voice, label, verify, readback }) => {
-      try {
-        const data = await agentApi('/api/socialV2/send-voice', {
-          method: 'POST',
-          body: JSON.stringify({
-            key,
-            voice: String(voice),
-            label: label || '',
-            verify: verify !== false,
-            readback: readback === true,
-            token
-          }),
-          headers: { 'x-agent-token': token },
-          timeoutMs: 300000
-        });
-        return { content: [{ type: 'text', text: serializeModelData(data) }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `发送语音失败：${error?.message ?? error}` }], isError: true };
-      }
-    }
-  );
-
-  server.tool(
-    'qq_list_voices',
-    '查看可用的语音库（qq-bridge 的 audio 目录里准备好的音频文件）：文件名、时长、大小。想发语音前先调用这个看有哪些能发（名字用返回的 name）。返回里 limits 是时长/体积/频率上限。语音库里没有合适内容时不要硬发，也不要假装发了语音。',
-    {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      probe: z.boolean().optional().describe('是否逐个探测时长（默认 true；文件多时可传 false 加快）')
-    },
-    async ({ key, token, probe }) => {
-      try {
-        const q = new URLSearchParams({ key });
-        if (probe === false) q.set('probe', '0');
-        const data = await agentApi(`/api/socialV2/voices?${q.toString()}`, { headers: { 'x-agent-token': token } });
-        return { content: [{ type: 'text', text: serializeModelData(data) }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `获取语音库失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
@@ -1151,41 +948,10 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
   );
 }
 
-if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.stickerNote !== false) {
-  server.tool(
-    'qq_sticker_note',
-    '给一个收藏表情记录你自己的理解/备注/标签/用法，供以后选择表情时参考。这是本地记忆，不会修改 QQ 账号的官方备注；适合对没有备注的表情看图后记住含义。',
-    {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
-      stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）'),
-      note: z.string().optional().describe('你理解的表情含义/适合场景，最多 200 字'),
-      tags: z.array(z.string()).optional().describe('可选标签，如 ["嘲讽","笑哭","怼人"]'),
-      usage: z.string().optional().describe('可选用法说明，最多 200 字')
-    },
-    async ({ key, token, stickerId, note, tags, usage }) => {
-      try {
-        const payload = { key, stickerId: String(stickerId) };
-        if (note !== undefined && note !== null) payload.note = String(note);
-        if (tags !== undefined && tags !== null) payload.tags = Array.isArray(tags) ? tags.map(String) : [];
-        if (usage !== undefined && usage !== null) payload.usage = String(usage);
-        const data = await agentApi('/api/socialV2/sticker-note', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-          headers: { 'x-agent-token': token }
-        });
-        return { content: [{ type: 'text', text: serializeModelData(data) }] };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `记录表情备注失败：${error?.message ?? error}` }], isError: true };
-      }
-    }
-  );
-}
-
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerRemark !== false) {
   server.tool(
     'qq_set_sticker_remark',
-    '修改 QQ 账号里收藏表情的官方备注（desc）。这是写操作，会直接影响 QQ 账号的表情备注；仅在管理员明确允许（socialV2.tools.setStickerRemark=true）时可用。一般优先用 qq_sticker_note 记录自己的理解，不要随意改官方备注。',
+    '修改 QQ 账号里收藏表情的官方备注（desc）。这是写操作，会直接影响 QQ 账号的表情备注；仅在管理员明确允许（socialV2.tools.setStickerRemark=true）时可用。',
     {
       key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),

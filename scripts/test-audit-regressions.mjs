@@ -10,10 +10,8 @@
 //   R6  DSH 设置里的空 ownerQQ 不得覆盖 config.json
 //   R7  预设名必须先校验再拼路径（DSH 未连接时 resolvePresetName 会原样放行）
 //   R8  wake-config 迁移旧 mode/triggers 字段，并在 API 和落盘边界只保留受支持字段
-//   R9  memory-update 不得凭空建条目、不得写穿原型链
 //   R10 wait 的租约按归一化 key 记账（group:0456 与 group:456 是同一个会话）
 //   R11 mdToPlain：`*` 列表/乘法不被当成斜体；超长畸形输入不再 O(n²)
-//   R12 黑话提取的候选扫描次数有上限（大量 `[` 不得卡住事件循环）
 //   R13 表情备注截断不切开代理对
 //   R14 token 账本：被淘汰采样被新基线覆盖后不得重复计费
 //   R15 /api/send/* 失败路径的 st/now 越界（与 R2 同型，残留在这条旧发送工具真正走的端点）
@@ -25,7 +23,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import { mdToPlain } from '../src/md-to-plain.js';
-import { extractJsonArray } from '../src/slang-learner.js';
 import { sanitizeStickerText } from '../src/sticker-lib.js';
 import { createTokenLedger } from '../src/token-ledger.js';
 import { DEFAULT_PRICE_TABLE } from '../src/model-prices.js';
@@ -273,39 +270,6 @@ await test('R8 wake-config 迁移旧字段并在状态、提示词和落盘中�
   } finally { await h.close(); }
 });
 
-// ── R9. memory-update 不得凭空建条目 / 写穿原型链 ────────────────────────────
-await test('R9 memory-update 只编辑已有条目，不写穿 Object.prototype', async () => {
-  const h = await bridgeHarness();
-  try {
-    h.setMode('reserved2');
-    const st = h.getSocialV2State('group:456');
-    st.memberImpressions['群友A'] = { traits: ['友善'], interactionCount: 1, lastSeenAt: Date.now() };
-    await withServer(h, async (port) => {
-      const inherited = await call(port, '/api/socialV2/memory-update', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', category: 'memberImpression', target: 'toString', newContent: 'hacked' }
-      });
-      assert.equal(inherited.status, 404, '继承来的属性名不得被当成已有条目');
-      assert.equal(Object.prototype.hasOwnProperty.call(st.memberImpressions, 'toString'), false);
-      assert.equal(Object.prototype.toString.traits, undefined, '不得往内置函数对象上写属性');
-
-      const unknown = await call(port, '/api/socialV2/memory-update', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', category: 'memberImpression', target: '不存在的群友', newContent: 'x' }
-      });
-      assert.equal(unknown.status, 404, '不存在的条目不凭空创建（防止无限塞名字）');
-
-      const ok = await call(port, '/api/socialV2/memory-update', {
-        method: 'POST', token: st.agentToken, body: { key: 'group:456', category: 'memberImpression', target: '群友A', newContent: '幽默，爱接梗' }
-      });
-      assert.equal(ok.status, 200, ok.body);
-      // 跨 vm realm 的数组原型不同，deepEqual 会误判；逐元素断言。
-      const traits = st.memberImpressions['群友A'].traits;
-      assert.equal(traits.length, 2);
-      assert.equal(traits[0], '幽默');
-      assert.equal(traits[1], '爱接梗');
-    });
-  } finally { await h.close(); }
-});
-
 // ── R10. wait 租约按归一化 key 记账 ─────────────────────────────────────────
 await test('R10 group:0456 与 group:456 共用同一份 wait 租约', async () => {
   const h = await bridgeHarness({ config: { socialV2: { wait: { minMs: 300, maxMs: 800, defaultQuietMs: 0, minQuietAfterNewMs: 0 } } } });
@@ -347,15 +311,6 @@ await test('R11 mdToPlain 保留 * 列表与乘法式，且拒绝二次方退化
   mdToPlain(evil);
   const elapsed = Date.now() - t0;
   assert.ok(elapsed < 500, `畸形 Markdown 不得卡住事件循环（实际 ${elapsed}ms）`);
-});
-
-// ── R12. 黑话候选扫描次数有上限 ─────────────────────────────────────────────
-await test('R12 extractJsonArray 对大量 "[" 不退化（扫描次数有上限）', async () => {
-  const t0 = Date.now();
-  const out = extractJsonArray('['.repeat(100000));
-  const elapsed = Date.now() - t0;
-  assert.equal(out, null);
-  assert.ok(elapsed < 1000, `扫描必须有界（实际 ${elapsed}ms）`);
 });
 
 // ── R13. 表情文本截断不切开代理对 ──────────────────────────────────────────

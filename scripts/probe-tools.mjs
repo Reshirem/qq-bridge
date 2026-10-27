@@ -1,5 +1,5 @@
 // 端到端验证 QQ preset 的「工具面」与「工具协议」：
-//  1. 建会话挂 preset（qq-chat / qq-chat-v2）
+//  1. 建会话挂固定 preset（qq-chat-v2）
 //  2. 注入一条 prompt，要求 agent 调 mcp__snowluma-host__snowluma_status（不依赖 SnowLuma 在线）
 //  3. 观测 turn 事件里的 tool/call 与 tool/result，确认 MCP 工具真的可调用
 //  4. 同时确认本地危险工具（pwsh/bash 等）不在工具面里
@@ -12,7 +12,7 @@ import { probeCookie, probeRpc, probeMuxSocket, probeWorkspaceDir } from './prob
 const cookie = probeCookie();
 const rpc = probeRpc(cookie);
 
-const PRESET = process.argv[2] || 'qq-chat';
+const PRESET = process.argv[2] || 'qq-chat-v2';
 // 探测工作区建在系统临时目录：state/ 的 ACL 被收紧过，沙箱里写不进去。
 const dir = probeWorkspaceDir('tools');
 const ws = await rpc('workspace/create', { request: { path: dir } });

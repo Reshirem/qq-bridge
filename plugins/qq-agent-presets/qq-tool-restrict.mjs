@@ -3,8 +3,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-// 本文件是 qq-agent-presets bundle 里的**唯一权威实现**，由 qq-chat / qq-chat-v2 两个
-// agent preset 的 qq-tool-restrict 行共同引用（dsh/agent-presets/<preset>/qq-tool-restrict.mjs
+// 本文件是 qq-agent-presets bundle 里的**唯一权威实现**，由 qq-chat-v2
+// agent preset 的 qq-tool-restrict 行引用（dsh/agent-presets/<preset>/qq-tool-restrict.mjs
 // 只是个 re-export 壳，避免出现两份会漂移的实现）。
 //
 // 为什么引用方式是「包名/子路径」而不是 `./qq-tool-restrict.mjs`（DSH 0.1.7 的机制变化）：

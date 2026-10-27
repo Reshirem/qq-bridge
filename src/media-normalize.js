@@ -27,14 +27,14 @@
 // · **ffmpeg 缺失也不硬塞**：超线又压不动的，宁可回一句「太大，看不了」，也不发注定被 DSH 丢掉
 //   的字节（那样模型只会看到一行看不懂的错误）。
 //
-// 依赖：只用 node 内置 + voice-core 的 resolveFfmpeg（ffmpeg 定位的唯一实现）。
-// 子进程一律 `stdio: 'ignore'` + 写文件：受限沙箱里 pipe 会 EPERM（见 voice-core.js 开头的说明）。
+// 依赖：只用 node 内置 + ffmpeg helper 的 resolveFfmpeg（ffmpeg 定位的唯一实现）。
+// 子进程一律 `stdio: 'ignore'` + 写文件：受限沙箱里 pipe 会 EPERM。
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { resolveFfmpeg } from './voice-core.js';
+import { resolveFfmpeg } from './ffmpeg-resolve.js';
 
 /** 默认值集中一处，bridge.js 只做 config 覆盖（见 modelMediaLimits）。 */
 export const MEDIA_DEFAULTS = Object.freeze({
@@ -278,7 +278,7 @@ export function planAnimation(info, limits = {}) {
 /**
  * 跑一次 ffmpeg：输入/输出都走文件，stdio 全 ignore。
  *
- * 为什么不用管道：受限沙箱里 `spawn` + stdio:'pipe' 会直接 EPERM（voice-core.js 开头有同样记录）。
+ * 为什么不用管道：受限沙箱里 `spawn` + stdio:'pipe' 会直接 EPERM。
  * 代价是拿不到 ffmpeg 的 stderr —— 所以调用方只报「退出码 + 动作名」，不假装能诊断具体原因。
  */
 function runFfmpeg(ffmpeg, args, { timeoutMs = MEDIA_DEFAULTS.timeoutMs } = {}) {
@@ -304,7 +304,7 @@ function runFfmpeg(ffmpeg, args, { timeoutMs = MEDIA_DEFAULTS.timeoutMs } = {}) 
     child.on('error', (error) => settle({
       ok: false,
       error: error?.code === 'ENOENT'
-        ? '找不到 ffmpeg（设置 FFMPEG_PATH 或 config.json 的 socialV2.voice.ffmpegPath）'
+        ? '找不到 ffmpeg（设置环境变量 FFMPEG_PATH）'
         : `ffmpeg 不可用：${error?.message ?? error}`
     }));
     child.on('close', (code) => settle(code === 0 ? { ok: true } : { ok: false, error: `ffmpeg 退出码 ${code}` }));

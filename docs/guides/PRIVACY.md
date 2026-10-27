@@ -52,7 +52,7 @@ node scripts/privacy-scan.mjs --json         # 机读输出（给 CI 用）
     { "name": "我的真实群号", "pattern": "1001[0-9]{6}", "flags": "" }
   ],
   "denyFiles": ["notes/", "*.private.md"],
-  "allowPaths": ["docs/guides/VOICE.md", "scripts/console-ui-"]
+  "allowPaths": ["docs/guides/SECURITY_BASELINE.md", "scripts/console-ui-"]
 }
 ```
 
@@ -65,10 +65,7 @@ node scripts/privacy-scan.mjs --json         # 机读输出（给 CI 用）
 | --- | --- |
 | 还没 push | `git reset --soft` 回退提交、清掉敏感内容、重新提交 |
 | 已 push，但**没有被 fork / 没人拉过** | `git filter-repo --replace-text` 清历史，再 `git push --force`。要提前通知协作者 |
-| 已 push 且可能被 fork / 已公开一段时间 | **当作已泄露**：① 立刻**轮换**所有涉及的凭据（控制台令牌、SnowLuma token、DSH launch token 都是本地生成，轮换成本低）；② 再清历史；③ 新仓库（QSH）从干净起点开始，不带旧历史 |
-
-> 这也是 `QSH_FORK_AND_SITE_PLAN.md` 建议**新建仓库、不带 qq-bridge 历史**的原因之一：
-> 旧历史里既有 11 MB 演示视频，也有难以逐条确认的本地痕迹。新起点一次扫干净，成本最低。
+| 已 push 且可能被 fork / 已公开一段时间 | **当作已泄露**：① 立刻**轮换**所有涉及的凭据（控制台令牌、SnowLuma token、DSH launch token 都是本地生成，轮换成本低）；② 再清理历史；③ 如需迁移到新仓库，从确认过的干净内容重新发布，不复制敏感历史 |
 
 ## 五、CI 里怎么用
 
@@ -80,16 +77,18 @@ node scripts/privacy-scan.mjs --json         # 机读输出（给 CI 用）
 
 CI 上只扫**已跟踪**文件（未跟踪文件在干净 checkout 里不存在），命中即失败。
 
-## 六、本仓库 2026-09-20 的扫描结果（存档）
+## 六、2026-09-20 历史扫描记录
+
+> 以下只记录当时的扫描结果与迁移计划，不是当前文件清单。当前文档以 [docs/README.md](../README.md) 为准；当前待提交内容应重新运行隐私扫描。
 
 首次运行发现的问题，供拆分新仓库时逐条处理：
 
 | 文件 | 命中 | 处理建议 |
 | --- | --- | --- |
-| `public/console.html` | 真实群号 `100012` × 2 | **必须替换为占位符**（这是会随 QSH 一起发布的文件） |
+| `public/console.html` | 真实群号 `100012` × 2 | **必须替换为占位符**（这是随仓库发布的文件） |
 | `src/bridge.js` | `accessToken` 键名（配置读取处，无真实值） | 误报：键名不是值；已在规则里区分"有实际值" |
-| `docs/guides/PROJECT_GUIDE.md`、`docs/guides/VOICE.md` | 真实 QQ 号/群号、`C:\Users\<名字>`、`D:\<工作盘>` | **不带进新仓库**（旧项目的实现说明，已被 `QSH_PLAN.md` 取代） |
-| `docs/audits/*`、`docs/design/*`、`docs/research/*`、`docs/legacy/*` | 本机路径、真实 QQ 号 | 同上：**不带进新仓库**；只把 `AUDIT_FIXES` 与 `SECURITY_BASELINE` 带走（这两份已确认只含占位符） |
+| 当时的本地项目/语音指南 | 真实 QQ 号/群号与本机绝对路径 | 未纳入公开仓库；这些旧文件不属于当前文档集 |
+| 当时的本地审计、设计、调研和归档笔记 | 本机路径、真实 QQ 号 | 被 `.gitignore` 排除；当前文档索引不再链接它们 |
 | `scripts/test-*`、`scripts/console-ui-*`、`src/sensitive.js`、`config.example.json` | 刻意构造的假 ID / 假凭据 / 占位符 | 误报：已在 `allowPaths` 白名单里 |
 
-**结论**：真正必须在**代码**里改掉的只有 `public/console.html` 的群号；其余全部靠"不带进新仓库"解决。
+**历史结论**：当时必须在代码里改掉的是 `public/console.html` 中的群号；其余问题通过不发布本地文档解决。此结论不替代对当前改动的扫描。

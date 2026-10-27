@@ -1,9 +1,9 @@
-// 语音发送的共享内核：独立工具（上级 voice-tool/ 的 voice-cli.mjs / voice-gui.mjs）与桥接都用同一套规则。
+// 独立语音工具（上级 voice-tool/ 的 voice-cli.mjs / voice-gui.mjs）使用的共享内核。
 //
 // 这里的函数是**纯工具**（无全局副作用、不读 config 单例），调用方把配置传进来：
 //   - voice-cli.mjs / voice-gui.mjs（在 ../voice-tool/）：直连 SnowLuma，
 //     经 `../qq-bridge/src/voice-core.js` 引本文件（唯一实现，不复制）；配置读 voice-tool/config.json
-//   - src/bridge.js：自己管白名单/限流/审计，但音频解析与 ffprobe 探测复用这里
+//   - qq-bridge 的图片处理只复用通用 ffmpeg 路径解析（src/ffmpeg-resolve.js），不调用此语音内核
 //
 // 关键设计：ffprobe 结果**写临时文件**而不是走 stdout 管道。
 // 在受限沙箱（DSH workspace-write / 只读模式）里 spawn 一个 stdio:pipe 的子进程会直接
@@ -12,6 +12,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { resolveFfmpeg } from './ffmpeg-resolve.js';
+
+export { resolveFfmpeg };
 
 /** 网关能直接吃进去的音频扩展名（SnowLuma 会自动转 SILK）。 */
 export const AUDIO_EXTS = [
@@ -329,28 +332,6 @@ export function resolveAudioProcessing({ volume = 1, normalize = false, loudness
 }
 
 /**
- * 定位 ffmpeg：显式参数 → 环境变量 → PATH。
- *
- * 优先级按**实现**写文档：config.json 的 socialV2.voice.ffmpegPath 是"这台机器上 ffmpeg 在哪"的
- * 显式配置，比环境变量更具体，所以参数优先（旧注释写成"环境变量 → 参数"，与代码相反，
- * 照着注释去改代码就会把用户的显式配置降级成环境变量兜底）。
- *
- * 只返回**确实存在**的文件路径。两个候选都没 stat 成功时返回裸命令名 'ffmpeg'，交给 spawn 按 PATH
- * 解析；旧实现在这种情况下返回 `candidates[0]`，哪怕那个路径根本不存在 —— 调用方于是拿到一句
- * 无信息量的"启动失败"，而不是 ENOENT 分支里那句"请设置 FFMPEG_PATH 或在 config.json 里指定"。
- */
-export function resolveFfmpeg({ ffmpegPath = null, envVar = 'FFMPEG_PATH' } = {}) {
-  const candidates = [ffmpegPath, process.env[envVar]].filter(Boolean);
-  for (const c of candidates) {
-    try {
-      if (fs.statSync(c).isFile()) return c;
-    } catch {}
-  }
-  // PATH 里找（不真正执行，交给 spawn 时再报错）；绝不再回退到不存在的候选路径。
-  return 'ffmpeg';
-}
-
-/**
  * 用 ffmpeg 调整音量/响度，产出**新文件**。
  * 返回 { path, converted, volume, loudness, mode, detail, applied }。
  * 调用方负责在用完后删除 converted=true 的临时文件。
@@ -407,7 +388,7 @@ export async function processAudioVolume(file, {
     const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ code: -2, error: 'ffmpeg 超时' }); }, timeoutMs);
     child.on('error', (e) => {
       clearTimeout(timer);
-      resolve({ code: -1, error: e.code === 'ENOENT' ? '找不到 ffmpeg（请设置 FFMPEG_PATH 或在 config.json 里指定 socialV2.voice.ffmpegPath）' : `ffmpeg 不可用：${e.message}` });
+      resolve({ code: -1, error: e.code === 'ENOENT' ? '找不到 ffmpeg（请设置环境变量 FFMPEG_PATH 或将 ffmpeg 加入 PATH）' : `ffmpeg 不可用：${e.message}` });
     });
     child.on('close', (code) => { clearTimeout(timer); resolve({ code }); });
   });

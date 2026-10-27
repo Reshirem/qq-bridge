@@ -143,14 +143,12 @@ if (!hasVoiceTool()) {
 
 console.log('## 共享库符号完整性（防"用了但没 import"）');
 {
-  // 由来：send-voice.mjs 曾经调用 formatDuration 却没 import（重构成 shim 后暴露），
-  // 只有真的走 dry-run 才会炸。这里静态检查所有入口文件：凡是用了 voice-core 提供的
-  // 符号，就必须在 import 列表里（或在本文件内有定义）。
+  // 静态检查独立工具入口文件：凡是用了 voice-core 提供的符号，
+  // 就必须在 import 列表里（或在本文件内有定义）。
   const core = await import('../src/voice-core.js');
   const symbols = Object.keys(core).filter((k) => typeof core[k] === 'function' || /^[A-Z_]+$/.test(k));
-  // 入口清单：桥接侧用 ROOT 相对路径，独立工具侧用 voice-tool 相对路径（base 决定去哪找）。
+  // 入口清单只检查仓库外的独立工具（base 决定去哪找）。
   const entrypoints = [
-    { file: path.join(ROOT, 'scripts/send-voice.mjs') },
     { file: voiceToolPath('voice-cli.mjs') },
     { file: voiceToolPath('voice-gui.mjs') },
     { file: path.join(ROOT, 'src/bridge.js') }
@@ -160,7 +158,7 @@ console.log('## 共享库符号完整性（防"用了但没 import"）');
     if (!fs.existsSync(entryFile)) continue;
     const src = fs.readFileSync(entryFile, 'utf8');
     // 独立工具经 ../qq-bridge/src/ 引用共享库，桥接侧经 ./ 或 ../src/，两种都要认
-    const importedBlock = [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'[^']*(?:send-voice-lib|voice-core)\.js'/g)]
+    const importedBlock = [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'[^']*voice-core\.js'/g)]
       .map((m) => m[1]).join(',');
     const missing = symbols.filter((sym) => {
       const used = new RegExp(`(?<![\\w.$])${sym}\\s*[(,)\\[]`).test(src);

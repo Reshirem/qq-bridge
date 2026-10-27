@@ -49,7 +49,7 @@ const DEFAULT_RULES = {
     'scripts/privacy-', 'config.example.json', 'package-lock.json', 'src/sensitive.js',
     // 测试夹具/回归脚本：里面是刻意构造的假 ID 与假凭据
     'scripts/test-', 'scripts/console-ui-', 'scripts/fixtures/', 'scripts/audit-bridge-harness.mjs',
-    'scripts/check-onebot-status.mjs', 'scripts/send-test-group.mjs', 'scripts/send-voice.mjs',
+    'scripts/check-onebot-status.mjs', 'scripts/send-test-group.mjs',
     'scripts/setup-dsh.mjs', 'scripts/patch-', 'scripts/verify-', 'scripts/probe-',
     // ── 以下三项来自一次独立复核：在**全新克隆**里扫描会报 15 条命中，全部是误报，
     //    但它们此前只写在本地 privacy-rules.json（不入库）里，所以对外部验证者而言
