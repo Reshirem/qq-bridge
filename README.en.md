@@ -17,7 +17,7 @@ the repository map is in **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**, and codin
 ## Architecture
 
 ```
-QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH Web API (127.0.0.1:3080/api)
+QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH Web API (local; Desktop port discovered at startup)
                                                     ▲                      │
                                                     └── agent replies / questions / approvals ┘
 ```
@@ -42,7 +42,7 @@ QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH
 ## Requirements
 
 - Node.js >= 22.13
-- Running DeepSeek Harness Web (default `http://127.0.0.1:3080`)
+- Running DSH Desktop or Web API. Windows Desktop may assign a dynamic API port; `dsh.autoDetectPort` discovers it when the bridge starts. Fixed deployments use `dsh.baseUrl` (default `http://127.0.0.1:3080`).
 - Running SnowLuma with OneBot v11 WebSocket and HTTP API enabled
 
 ## Quick Start
@@ -61,15 +61,16 @@ Key settings:
 
 | Field | Description |
 | --- | --- |
-| `dsh.baseUrl` | DSH Web API URL, default `http://127.0.0.1:3080` |
+| `dsh.baseUrl` | Fixed DSH API URL and discovery fallback, default `http://127.0.0.1:3080` |
+| `dsh.autoDetectPort` | Default `true`. On Windows, detects the API listener owned by the DSH Desktop process when the bridge starts. Start DSH first; the discovered URL is used for this run and is not written to config. If none is found, `baseUrl` is used; if multiple APIs match and `baseUrl` is not one of them, startup refuses to guess. Configure `baseUrl` to select the intended endpoint |
 | `dsh.authToken` | DSH launch token (a process-launch credential). **Normally leave this empty**: with no token the bridge mints the session cookie offline from the persistent signing key in `~/.dsh/.credentials.yaml`, which depends on no per-process state (since DSH 0.1.7 the launch token lives only in memory — the one in the old logs belongs to a previous process and only yields a 401). A value here is honoured first if you set one |
 | `dsh.authHeader` / `dsh.authPrefix` | Legacy fields kept for compatibility; the current path uses Cookie auth and does not send this header |
 | `snowluma.wsUrl` | SnowLuma OneBot **WebSocket** URL (e.g. `ws://127.0.0.1:3001`) |
 | `snowluma.accessToken` | OneBot access token, leave empty if not configured |
 | `snowluma.httpUrl` | OneBot **HTTP API** URL (e.g. `http://127.0.0.1:3000`); do not point this at the WebSocket port or you will get HTTP 426 |
-| `ownerQQ` | Administrator QQ (highest privilege) |
+| `ownerQQ` | Optional administrator QQ. It can also come from the DSH `qq-mode.ownerQQ` setting. If neither is set, allowlisted conversations still work, but administrator commands and approvals are unavailable |
 | `allow.private` / `allow.groups` | Whitelist of QQ/group IDs |
-| `consolePort` | Local console port, default `3100` |
+| `consolePort` / `consoleToken` | Fixed local console port (default `3100`) and access token. The bridge exits if the port is occupied; a blank token is generated and saved to `state/console-token`. After login, the browser session uses an HttpOnly cookie |
 
 Start:
 
@@ -78,6 +79,7 @@ npm start
 ```
 
 Or double-click `start.bat` on Windows (guard mode with auto-restart).
+Start DSH before the bridge on Windows so Desktop API port discovery can find its current listener.
 
 ## DSH Setup on Another Device
 

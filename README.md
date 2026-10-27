@@ -46,7 +46,7 @@
 > 默认分支 `main` **就是**本版本，`git clone` 直接拿到，无需切换分支。
 
 ```
-QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──► DSH Web API (127.0.0.1:3080/api)
+QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──► DSH Web API（本机；桌面版端口启动时自动发现）
                                                 ▲                      │
                                                 └── agent 回复/提问/审批 ┘
 ```
@@ -93,7 +93,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
 
 ## 前置条件
 
-1. 运行中的 DeepSeek Harness Web（默认 `http://127.0.0.1:3080`）
+1. 运行中的 DeepSeek Harness Desktop 或 Web API。Windows 桌面版端口由桥接启动时自动发现；固定端口部署默认使用 `http://127.0.0.1:3080`
 2. 运行中的 SnowLuma，且配置好 OneBot WebSocket 与 HTTP API（默认 `ws://127.0.0.1:3001` / `http://127.0.0.1:3000`，`accessToken` 视配置填写）
 3. Node.js ≥ 22.13
 
@@ -111,7 +111,8 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 
 | 字段 | 说明 |
 | --- | --- |
-| `dsh.baseUrl` | DSH Web 地址，默认 `http://127.0.0.1:3080` |
+| `dsh.baseUrl` | 固定 DSH API 地址及自动发现的回退地址，默认 `http://127.0.0.1:3080` |
+| `dsh.autoDetectPort` | 默认 `true`。Windows DSH 桌面版可能动态分配 API 端口；桥接启动时会从 DSH 进程持有的本机监听端口中识别 API。启动桥接前先启动 DSH；发现的端口仅用于本次运行，不写回配置。未发现桌面 API 时使用 `baseUrl`；若匹配到多个 API 且 `baseUrl` 不在其中，桥接会拒绝猜测，需指定目标地址 |
 | `dsh.provider` / `dsh.model` / `dsh.reasoningEffort` | DSH 会话使用的模型/推理强度；若你的 DSH 没有示例中的模型，改成 DSH 设置页里可用的模型即可（选择失败只打日志，不阻塞启动） |
 | `dsh.authToken` | DSH launch token（进程启动凭据）。**通常应留空**：留空时桥接用 `~/.dsh/.credentials.yaml` 里持久化的签名密钥**离线铸造**会话 Cookie，不依赖任何进程期状态（DSH 0.1.7 起启动 token 只存在于内存、日志里那条是上一个进程的陈旧值，换 Cookie 只会 401）。只有显式填了才会优先走 token 交换 |
 | `dsh.authHeader` / `dsh.authPrefix` | 保留字段，当前新版 DSH 链路使用 Cookie 交换，不再直接发送该鉴权头 |
@@ -129,11 +130,11 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `webSearch.baseURL` / `model` / `maxUses` / `maxResults` | 搜索端点（默认 `https://api.deepseek.com/anthropic/v1`，必须 https 且解析到公网）、模型（默认 `deepseek-v4-flash`）、单次搜索最多用几次工具、返回条数上限 |
 | `workspaceTitle` | QQ 会话在 DSH 界面中的归组名称，默认「QQ 聊天」 |
 | `allow.private` / `allow.groups` | 白名单（QQ 号/群号数组）；留空且 `allowAllWhenEmpty: true` 时放行全部 |
+| `ownerQQ` | 可选的管理员 QQ；也可由 DSH 的 `qq-mode.ownerQQ` 设置提供。两处都未设置时，普通白名单会话仍可使用，但管理员命令和审批功能不可用 |
+| `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
 | `deny.*` | 黑名单，优先于白名单 |
 | `ackMessage` | 消息投递后的立即回复，空字符串关闭 |
 | `sendDelayMs` | QQ 连续发送间隔，防止触发频率限制 |
-| `consolePort` | 本地控制台端口，默认 `3100` |
-| `consoleToken` | 控制台访问令牌；留空时启动自动生成并保存到 `state/console-token` |
 
 > ⚠️ `allowAllWhenEmpty: true` 表示「白名单没填就全部放行」——把 agent 接入 QQ 等于把账号控制权交给了模型，建议先填白名单。
 
@@ -151,10 +152,10 @@ node scripts/setup-dsh.mjs
 
 ## 完整启动流程（从零开始）
 
-共 6 步。DSH 已安装并运行，缺的是 SnowLuma 本体 + 桥接侧的 DSH 端安装（**第 2、3 步最容易漏，漏了 QQ 上会毫无反应**）：
+共 6 步。先启动 DSH 和 SnowLuma，再安装并启动桥接。Windows DSH 桌面版的 API 端口可能动态变化，桥接会在启动时自动发现；固定端口部署使用 `dsh.baseUrl`。
 
-1. **DSH**（已运行，无需操作）
-   确认 `http://127.0.0.1:3080` 能打开即可。
+1. **启动 DSH**
+   确认 DSH 桌面版或 Web 服务正在运行。`3080` 是固定地址部署的默认值；Windows 桌面版的动态 API 端口由桥接启动时识别，所以应先开 DSH，再启动桥接。
 
 2. **装桥接并复制配置**
    ```bash
@@ -196,7 +197,7 @@ node scripts/setup-dsh.mjs
    ```bash
    npm start          # 前台运行（崩溃不自动重启）
    ```
-   看到 `SnowLuma 已连接` 即成功；然后 QQ 上给机器人账号发条消息测试。
+   看到 `SnowLuma 已连接` 且 DSH 就绪即成功；然后从白名单私聊机器人，或在群聊中 @ 机器人测试。
    Windows 想要「崩溃自动重启」请改用 `start.bat`（见下节）。
 
 ## 运行与运维
@@ -209,7 +210,7 @@ npm start          # 或双击 start.bat（守护模式：崩溃自动重启，�
 - **桥接只能运行一个实例**（有单实例锁，重复启动会被拒绝并提示"已有实例在运行"）
 - **用 start.bat 启动**（守护模式），窗口别关——桥接崩溃会在 5 秒后自动拉起
 - 桥接异常/消息无反应时：双击 `restart.bat`（自动杀旧实例 → 清理锁 → 重新启动守护）
-- **重启 DSH 通常不需要动桥接**：每 5 秒探活，DSH 不可用期间收到的 QQ 消息在桥接进程内排队（最多 50 条/会话，满后丢最旧项），恢复后尝试补投。桥接进程退出会丢失内存队列；断线期间已经结束的回复暂不保证补发。
+- **DSH 重启后的处理**：DSH Web 通常可由桥接每 5 秒探活并自动重连。Windows DSH 桌面版重启后可能换 API 端口；此时重启桥接以重新发现端口。DSH 不可用期间收到的 QQ 消息在桥接进程内排队（最多 50 条/会话，满后丢最旧项），恢复后尝试补投。桥接进程退出会丢失内存队列；断线期间已经结束的回复暂不保证补发。
 - 修改 `config.json` / `roles/` / `state/current-role.json` 后重启桥接生效；修改 `dsh/agent-presets/`（改完要跑 `node scripts/build-agent-preset-patches.mjs` 重新生成 bundle patch）或 MCP 配置后重启 DSH 生效
 
 日志示例：
@@ -229,7 +230,7 @@ npm start          # 或双击 start.bat（守护模式：崩溃自动重启，�
 node scripts/test-audit.mjs
 ```
 
-自主会话的 token 开销优化、消息水位协议、升级及回退说明（该专项分析为本地文档，未随仓库发布。）专项离线回归可运行 `npm run test:token`，已包含在上面的完整回归中。
+自主会话的 token 开销优化、消息水位协议与升级回退逻辑包含在完整离线回归中；如需单独运行该专项回归，可执行 `npm run test:token`。
 
 控制台「令牌与花费」看板的账本与价目表回归（峰谷分时、幂等折叠、基线合并、压缩与容错）：
 

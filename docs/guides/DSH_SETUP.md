@@ -12,7 +12,11 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl`、需要的 `snowluma.accessToken`、`ownerQQ`，以及明确的 `allow.groups` / `allow.private`。示例配置默认 fail-closed：空白名单且 `allowAllWhenEmpty: false` 时不会处理 QQ 会话。
+Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl`、需要的 `snowluma.accessToken`，以及明确的 `allow.groups` / `allow.private`。`ownerQQ` 是可选项；若配置文件和 DSH 的 `qq-mode.ownerQQ` 设置都没有管理员 QQ，普通白名单会话仍可运行，但管理员命令和审批不可用。示例配置默认 fail-closed：空白名单且 `allowAllWhenEmpty: false` 时不会处理 QQ 会话。
+
+Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接会在**每次启动时**识别由 DeepSeek Harness 进程持有并经 API 确认的本机监听端口，因此应先启动 DSH，再启动桥接。发现的 URL 只用于当前桥接进程，不写回 `config.json`。未发现桌面 API 时使用 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`）作为回退；非 Windows 或固定端口部署可设置 `dsh.autoDetectPort: false`。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会拒绝猜测；将 `dsh.baseUrl` 指向目标实例即可明确选择。DSH Desktop 重启后若换了端口，重启桥接以重新发现。
+
+这个 API 端口由 DSH 本身开放；profile 里的 MCP 插件通过 stdio 启动，不另开 API 端口。桥接控制台的 `consolePort` 是独立端口，默认固定为 `3100`，占用时会报错退出。
 
 运行安装脚本：
 
@@ -74,6 +78,7 @@ node scripts/test-audit-setup-guards.mjs
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否有三个 `mcp-*` 条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
 - **preset 未出现**：检查 `qq-agent-presets` bundle 是否注册并安装，再运行 `node scripts/build-agent-preset-patches.mjs --check`；修改源文件后需重新生成 patch 并重启 DSH。
 - **401 / Cookie 鉴权失败**：确认 `DSH_HOME` 指向当前 DSH 根目录且本机凭据可读。`dsh.authToken` 通常应留空；详见根目录 README 的配置说明。
+- **DSH Desktop 重启后桥接连不上**：桌面版可能在重启时换 API 端口；确认 DSH 已启动，再重启桥接触发端口重新发现。
 - **SnowLuma 收不到 QQ 事件**：桥接只探测 OneBot 网关，不启动或控制 SnowLuma。检查 SnowLuma 自己的日志、QQ 登录状态以及 OneBot HTTP/WebSocket 配置。
 
 ## 唤醒与消息读取模型

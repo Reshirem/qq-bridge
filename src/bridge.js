@@ -16,7 +16,7 @@ import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, render
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
-import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
+import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken, discoverDshBaseUrl } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
@@ -597,6 +597,7 @@ function loadConfig() {
   const cfg = {
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
+      autoDetectPort: true,
       provider: 'deepseek-official',
       // 多模态模型：DeepSeek-V41-Flash（DSH 模型目录里 inputModalities 含 image）。
       // 旧默认 deepseek-v4-flash-vision-exp 已被取代；config.json 未配置时用此兜底。
@@ -1235,6 +1236,18 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  if (cfg.dsh.autoDetectPort !== false) {
+    const endpoint = await discoverDshBaseUrl(cfg.dsh.baseUrl);
+    if (endpoint.source === 'ambiguous') {
+      throw new Error(`发现多个 DSH Desktop API 端口：${endpoint.candidates.join(', ')}。请在 config.json 里明确 dsh.baseUrl，或设置 dsh.autoDetectPort=false。`);
+    }
+    if (endpoint.source === 'desktop' && endpoint.baseUrl !== cfg.dsh.baseUrl) {
+      log(`自动发现 DSH Desktop API：${endpoint.baseUrl}（仅本次运行使用，不写回动态端口）`);
+      cfg.dsh.baseUrl = endpoint.baseUrl;
+    } else if (endpoint.source === 'fallback') {
+      log(`未发现 DSH Desktop API，暂用配置地址：${endpoint.baseUrl}`);
+    }
+  }
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
@@ -2163,6 +2176,21 @@ async function main() {
       const y = Buffer.from(b, 'utf8');
       return x.length === y.length && crypto.timingSafeEqual(x, y);
     };
+    const consoleCookieName = 'qq_bridge_console';
+    const consoleCookieHeader = () => `${consoleCookieName}=${encodeURIComponent(consoleToken)}; Path=/; HttpOnly; SameSite=Strict`;
+    const consoleCookieToken = (req) => {
+      for (const part of String(req.headers.cookie ?? '').split(';')) {
+        const separator = part.indexOf('=');
+        if (separator < 0 || part.slice(0, separator).trim() !== consoleCookieName) continue;
+        try { return decodeURIComponent(part.slice(separator + 1).trim()); } catch { return ''; }
+      }
+      return '';
+    };
+    const consoleTokenMatches = (req, url) => [
+      url.searchParams.get('token'),
+      req.headers['x-console-token'],
+      consoleCookieToken(req)
+    ].some((candidate) => tokenEq(candidate, consoleToken));
     const agentTokenOk = (key, token) => {
       const canonical = canonicalV2Key(key);
       const st = socialV2.conversations.get(canonical ?? key);
@@ -2286,21 +2314,49 @@ async function main() {
         sendJson({ ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
         return;
       }
-      // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
+      // 登录页只在本机接受 JSON POST；令牌通过后设置仅当前浏览器会话有效的 HttpOnly Cookie。
+      if (req.method === 'POST' && url.pathname === '/api/console/login') {
+        const contentType = String(req.headers['content-type'] ?? '');
+        if (!contentType.toLowerCase().includes('application/json')) {
+          sendJson({ ok: false, error: '登录请求必须是 application/json' }, 415);
+          return;
+        }
+        const origin = req.headers.origin;
+        if (origin) {
+          let originHost = '';
+          try { originHost = new URL(String(origin)).host; } catch {}
+          if (!allowedHosts.includes(originHost.toLowerCase())) {
+            sendJson({ ok: false, error: '跨站登录请求被拒绝' }, 403);
+            return;
+          }
+        }
+        const body = await readBody();
+        if (!tokenEq(String(body.token ?? '').trim(), consoleToken)) {
+          sendJson({ ok: false, error: '访问令牌不正确' }, 401);
+          return;
+        }
+        res.writeHead(204, { 'set-cookie': consoleCookieHeader(), ...SECURITY_HEADERS });
+        res.end();
+        return;
+      }
+      // 控制台鉴权：支持旧版请求头/查询参数，以及登录页设置的 HttpOnly Cookie。
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
-      const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
-      const tokenMatches = (() => {
-        if (!consoleToken) return false; // 上面已拒绝空令牌；真出现也只许失败关闭，绝不 return true
-        const a = Buffer.from(suppliedToken, 'utf8');
-        const b = Buffer.from(consoleToken, 'utf8');
-        if (a.length !== b.length) return false;
-        return crypto.timingSafeEqual(a, b);
-      })();
+      const tokenMatches = consoleTokenMatches(req, url);
       if (consoleToken && !tokenMatches) {
         if (req.method === 'GET' && url.pathname === '/') {
+          // 兼容旧的 ?token= 链接，但无效令牌不留在地址栏或浏览器历史中。
+          if (url.searchParams.has('token')) {
+            res.writeHead(303, { location: '/?login=invalid', ...SECURITY_HEADERS });
+            res.end();
+            return;
+          }
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
-          res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
+          try {
+            res.end(fs.readFileSync(path.join(ROOT, 'public', 'login.html'), 'utf8'));
+          } catch {
+            res.end('<!doctype html><meta charset="utf-8"><title>控制台登录</title><p>登录页面缺失：qq-bridge/public/login.html</p>');
+          }
         } else {
           sendJson({ ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
         }
@@ -2416,7 +2472,9 @@ async function main() {
           }
         }
         if (req.method === 'GET' && url.pathname === '/') {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+          const headers = { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS };
+          if (url.searchParams.has('token')) headers['set-cookie'] = consoleCookieHeader();
+          res.writeHead(200, headers);
           try {
             res.end(fs.readFileSync(path.join(ROOT, 'public', 'console.html'), 'utf8'));
           } catch {
@@ -2898,6 +2956,7 @@ async function main() {
           cfg.consoleToken = generated ? '' : newToken;
           atomicWriteText(path.join(STATE_DIR, 'console-token'), newToken);
           consoleToken = newToken;
+          res.setHeader('set-cookie', consoleCookieHeader());
           log(`控制台：访问令牌已${generated ? '重新生成' : '手动修改'}（不记录完整值）`);
           sendJson({ ok: true, token: newToken, generated });
           return;

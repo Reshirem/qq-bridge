@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
 import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
@@ -161,6 +162,68 @@ export function isLoopbackBase(baseUrl) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Find the current local API port assigned by DSH Desktop.
+ *
+ * On Windows the desktop app chooses a dynamic API port. It is separate from the
+ * bridge console port, and the MCP child processes use stdio rather than opening it.
+ * Inspect only loopback listeners owned by DeepSeek Harness, then confirm each one
+ * with an unauthenticated, read-only DSH API request. Other deployments keep their
+ * configured baseUrl as the fallback.
+ */
+export async function discoverDshBaseUrl(configuredBaseUrl, { enabled = true, timeoutMs = 700 } = {}) {
+  const fallback = String(configuredBaseUrl ?? 'http://127.0.0.1:3080').replace(/\/+$/, '');
+  if (!enabled || process.platform !== 'win32' || !isLoopbackBase(fallback)) {
+    return { baseUrl: fallback, source: 'configured', candidates: [] };
+  }
+
+  let ports = [];
+  try {
+    const query = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      "$processIds = @(Get-Process -Name 'DeepSeek Harness' | Select-Object -ExpandProperty Id)",
+      'if ($processIds.Count -gt 0) {',
+      "  Get-NetTCPConnection -State Listen | Where-Object { $processIds -contains $_.OwningProcess -and $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::1','::') } | ForEach-Object { $_.LocalPort } | Sort-Object -Unique",
+      '}'
+    ].join('\n');
+    const output = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', query], {
+      encoding: 'utf8', timeout: 4000, windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    ports = [...new Set(output.split(/\s+/).map((value) => Number(value.trim())))]
+      .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535);
+  } catch {
+    // Discovery is optional; preserve the explicit/default URL if the OS query fails.
+  }
+
+  async function isDshApi(baseUrl) {
+    try {
+      const response = await fetch(new URL('/api/agentPresets/list', baseUrl), {
+        method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs)
+      });
+      await response.body?.cancel();
+      // DSH authenticates this endpoint before method dispatch; 401 is its expected
+      // response to this deliberately unauthenticated fingerprint request.
+      return response.status === 401;
+    } catch {
+      return false;
+    }
+  }
+
+  const desktopUrls = await Promise.all(ports.map(async (port) => {
+    const url = `http://127.0.0.1:${port}`;
+    return await isDshApi(url) ? url : '';
+  }));
+  const candidates = [...new Set(desktopUrls.filter(Boolean))];
+  if (candidates.length === 1) return { baseUrl: candidates[0], source: 'desktop', candidates };
+  if (candidates.length > 1) {
+    if (candidates.includes(fallback)) return { baseUrl: fallback, source: 'configured', candidates };
+    return { baseUrl: fallback, source: 'ambiguous', candidates };
+  }
+  if (await isDshApi(fallback)) return { baseUrl: fallback, source: 'configured', candidates: [fallback] };
+  return { baseUrl: fallback, source: 'fallback', candidates: [] };
 }
 
 /** 新协议 RPC 的 args 包装：旧 payload -> { <参数名>: payload }。 */

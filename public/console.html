@@ -2225,7 +2225,7 @@ button:active:not(:disabled) {
 
 <script>
 (function () {
-  // 如果通过 ?token= 进入（控制台启用鉴权时根路径会重定向带 token），存到 localStorage
+  // 兼容旧的 ?token= 链接；新登录页使用 HttpOnly Cookie，不把令牌放进地址栏。
   const qs = new URLSearchParams(location.search);
   const token = qs.get('token');
   if (token) {
@@ -2234,23 +2234,15 @@ button:active:not(:disabled) {
   }
 })();
 
-async function api(path, method, body, _retried = 0) {
+async function api(path, method, body) {
   const headers = body ? {'content-type':'application/json'} : {};
   const token = localStorage.getItem('consoleToken');
   if (token) headers['x-console-token'] = token;
   const res = await fetch(path, { method: method || 'GET', headers, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401) {
-    if (_retried >= 2) {
-      localStorage.removeItem('consoleToken');
-      throw new Error('未授权');
-    }
-    const t = prompt('请输入控制台访问令牌：');
-    if (t) {
-      localStorage.setItem('consoleToken', t.trim());
-      return api(path, method, body, _retried + 1);
-    }
     localStorage.removeItem('consoleToken');
-    throw new Error('未授权');
+    location.replace('/?login=expired');
+    throw new Error('控制台登录已失效，正在返回登录页');
   }
   return res.json();
 }
@@ -3355,10 +3347,11 @@ document.querySelectorAll('input,select,textarea').forEach(input => {
     }
     input.setAttribute('aria-label', label.textContent.trim() + (siblings.length > 1 ? (siblings.indexOf(input) === 0 ? '（下限）' : '（上限）') : ''));
   } else {
-    input.setAttribute('aria-label', names[input.id] || input.placeholder || input.closest('section')?.querySelector('h2')?.textContent || '设置');
+    const sectionLabel = input.closest('section')?.querySelector('h2')?.textContent?.trim();
+    const controlLabel = input.placeholder || sectionLabel || input.id.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim();
+    input.setAttribute('aria-label', controlLabel || '设置');
   }
 });
-primaryActions.forEach(id => document.getElementById(id)?.classList.add('primary'));
 document.querySelectorAll('.meta[id$="Msg"], .meta[id$="Msg2"]').forEach(el => el.setAttribute('role','status'));
 document.getElementById('section-activity').querySelector('h2').dataset.note = '每 3 秒自动同步';
 

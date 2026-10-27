@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>登录 · QQ 桥接控制台</title>
+<style>
+:root { color-scheme: light dark; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body {
+  min-height: 100vh; margin: 0; padding: 24px; display: grid; place-items: center;
+  color: #202635; background: radial-gradient(ellipse at top left, #e7ecff 0, transparent 44%), #f5f7fb;
+}
+.login-card {
+  width: min(100%, 420px); padding: 36px; border: 1px solid #dfe4ed; border-radius: 20px;
+  background: rgba(255,255,255,.94); box-shadow: 0 24px 70px rgba(34,48,80,.12);
+}
+.brand { color: #4d6bfe; font-size: 12px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+h1 { margin: 12px 0 8px; font-size: 25px; letter-spacing: -.025em; }
+.intro { margin: 0 0 26px; color: #657087; font-size: 14px; line-height: 1.65; }
+label { display: block; margin-bottom: 8px; color: #47536b; font-size: 13px; font-weight: 650; }
+input {
+  width: 100%; height: 46px; padding: 0 13px; border: 1px solid #cfd7e5; border-radius: 10px;
+  outline: none; color: #202635; background: #fff; font: inherit; font-size: 15px;
+}
+input:focus { border-color: #7188ff; box-shadow: 0 0 0 4px rgba(77,107,254,.13); }
+button {
+  width: 100%; min-height: 46px; margin-top: 16px; border: 0; border-radius: 10px;
+  color: white; background: #4d6bfe; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+}
+button:hover { background: #405de5; }
+button:disabled { cursor: wait; opacity: .7; }
+.message { min-height: 22px; margin: 12px 0 0; color: #b33535; font-size: 13px; line-height: 1.5; }
+.foot { margin: 18px 0 0; color: #8993a5; font-size: 12px; text-align: center; }
+@media (prefers-color-scheme: dark) {
+  body { color: #edf1fb; background: radial-gradient(ellipse at top left, #202b50 0, transparent 46%), #101522; }
+  .login-card { border-color: #2d3850; background: rgba(25,32,47,.96); box-shadow: 0 24px 70px rgba(0,0,0,.3); }
+  .intro, label { color: #aab4c8; }
+  input { border-color: #3b4965; color: #edf1fb; background: #111827; }
+  .foot { color: #7f8ba2; }
+}
+</style>
+</head>
+<body>
+  <main class="login-card">
+    <div class="brand">QQ Bridge · Local Console</div>
+    <h1>登录控制台</h1>
+    <p class="intro">请输入本机控制台访问令牌。未在配置文件中指定时，令牌保存在项目的 <code>state/console-token</code> 文件中。</p>
+    <form id="loginForm">
+      <label for="token">访问令牌</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" required autofocus>
+      <button id="submitButton" type="submit">登录</button>
+      <p id="message" class="message" role="alert" aria-live="polite"></p>
+    </form>
+    <p class="foot">仅接受本机回环连接 · 登录状态保存在当前浏览器会话</p>
+  </main>
+<script>
+const message = document.getElementById('message');
+const reason = new URLSearchParams(location.search).get('login');
+if (reason === 'invalid') message.textContent = '访问令牌不正确，请检查后重试。';
+if (reason === 'expired') message.textContent = '登录状态已失效，请重新输入访问令牌。';
+document.getElementById('loginForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = document.getElementById('token');
+  const button = document.getElementById('submitButton');
+  button.disabled = true;
+  message.textContent = '';
+  try {
+    const response = await fetch('/api/console/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: input.value.trim() })
+    });
+    if (response.status === 204) {
+      location.replace('/');
+      return;
+    }
+    const result = await response.json().catch(() => ({}));
+    message.textContent = response.status === 401 ? '访问令牌不正确，请检查后重试。' : (result.error || '登录失败，请稍后重试。');
+    input.select();
+  } catch {
+    message.textContent = '无法连接本地控制台，请确认桥接仍在运行。';
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
