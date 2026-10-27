@@ -1,5 +1,5 @@
-// 仿真提示词改写（src/preset-prompt.js）的离线单测。
-// 这些检查保证「控制台改仿真提示词」不会破坏 YAML、不会丢别的条目、不会改变提示词语义。
+// 全局 desktop-agent 提示词改写（src/preset-prompt.js）的离线契约。
+// 这些检查保证控制台保存不会破坏 YAML、丢失其它条目或改变提示词语义。
 // 不连 DSH、不连 QQ、不写任何生产文件。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -16,11 +16,11 @@ import {
   renderPresetPromptYaml,
 } from '../src/preset-prompt.js';
 
-const PRESET_PATH = new URL('../dsh/agent-presets/qq-chat-v2/agent.cordis.yml', import.meta.url);
+const PRESET_PATH = new URL('../dsh/agent-presets/desktop-agent/agent.cordis.yml', import.meta.url);
 const source = fs.readFileSync(PRESET_PATH, 'utf8');
 const originalPrefix = extractPresetPrefix(source);
 
-// 运行时固定使用 qq-chat-v2，因此提示词校验只需维护这一套安全不变量。
+// 运行时固定使用 desktop-agent，因此提示词校验只需维护这一套安全不变量。
 test('固定会话预设满足安全不变量', () => {
   const prefix = extractPresetPrefix(source);
   assert.equal(typeof prefix, 'string', '应能抽出 persona.prefix');
@@ -152,9 +152,9 @@ test('只含空格/Tab 的行也能安全往返（不会被当成空行读丢）
 
 test('缺少安全基线段落时给出警告（但不阻断保存）', () => {
   assert.deepEqual(presetPromptWarnings(originalPrefix), [], '内置提示词不应有警告');
-  const stripped = originalPrefix.replace(/【QQ 自主会话安全规则[^\n]*\n/, '');
+  const stripped = originalPrefix.replace(PRESET_REQUIRED_MARKERS[0], '');
   const warnings = presetPromptWarnings(stripped);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /安全规则/);
+  assert.match(warnings[0], /会话与工具边界/);
   assert.ok(presetPromptWarnings('').some((w) => /内容为空/.test(w)));
 });

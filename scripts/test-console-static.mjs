@@ -7,6 +7,7 @@ import { hasVoiceTool, skipVoiceTool, voiceToolPath } from './voice-tool-locator
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = fs.readFileSync(path.join(ROOT, 'public', 'console.html'), 'utf8');
+const consoleJs = fs.readFileSync(path.join(ROOT, 'public', 'console.js'), 'utf8');
 
 let bad = 0;
 const ok = (cond, name, extra = '') => {
@@ -28,10 +29,17 @@ const tools = [...html.matchAll(/data-v2-tool="([A-Za-z]+)"/g)].map((m) => m[1])
 ok(new Set(tools).size === tools.length, '工具开关无重复');
 
 console.log('## JS 语法');
-const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-const big = scripts.sort((a, b) => b.length - a.length)[0];
-try { new Function(big); ok(true, '主 script 语法可解析', `${big.length} 字符`); }
-catch (e) { ok(false, '主 script 语法', e.message); }
+const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((s) => s.trim());
+try {
+  for (const source of [...scripts, consoleJs]) new Function(source);
+  ok(true, '内联引导与控制台脚本语法可解析', `${consoleJs.length} 字符`);
+} catch (e) { ok(false, '控制台脚本语法', e.message); }
+ok(/<link[^>]+href="\/console\.css"/.test(html), '页面从独立静态文件加载样式');
+ok(/<script[^>]+src="\/console\.js"[^>]+defer/.test(html), '页面延迟加载独立控制台脚本');
+const idSet = new Set(ids);
+const references = [...consoleJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
+const missing = [...new Set(references.filter((id) => !idSet.has(id)))];
+ok(missing.length === 0, '脚本引用的静态 DOM ID 都存在', missing.length ? missing.join(', ') : `${new Set(references).size} 个引用`);
 
 console.log('## 语音图形界面的音量控件');
 if (!hasVoiceTool()) {

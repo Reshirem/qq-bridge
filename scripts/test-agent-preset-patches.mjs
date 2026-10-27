@@ -5,7 +5,7 @@
 //      config 里带 id/name/description/order/plugins；
 //   3. 守卫行只能用「从 profile 目录可解析」的引用方式（裸说明符），
 //      不允许任何相对/绝对路径子行名 —— 那正是 0.1.7 下静默装不上的坑；
-//   4. 安全边界（qq-tool-restrict 的 fail-closed 白名单）一份实现、两个 preset 共用。
+//   4. 唯一 desktop-agent preset 使用插件包内的共享 fail-closed 工具守卫。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -87,28 +87,21 @@ console.log('## 4. bundle 声明与安全边界');
 
   const canonical = path.join(BUNDLE_DIR, 'qq-tool-restrict.mjs');
   const canonicalText = read(canonical);
-  for (const needle of ["const SAFE_PREFIXES", "'mcp__snowluma__'", "'mcp__web-search-safe__'", 'SAFE_EXACT', 'return `工具 "']) {
+  for (const needle of ["'mcp__wincu__'", "'mcp__snowluma__'", "'mcp__snowluma-host__'", 'SAFE_EXACT', 'return `工具 "']) {
     ok(canonicalText.includes(needle), `权威守卫包含 ${needle}`);
   }
-  // 一份实现：两个 preset 目录下的同名文件必须是 re-export 壳，且导出同名成员。
+  // 插件包中只保留一份工具守卫实现。
   const canonicalMod = await import(pathToFileURL(canonical).href);
-  for (const name of PRESETS) {
-    const shim = path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'qq-tool-restrict.mjs');
-    ok(/^export \* from '\.\.\/\.\.\/\.\.\/plugins\/qq-agent-presets\/qq-tool-restrict\.mjs'$/m.test(read(shim).trim()),
-      `${name}/qq-tool-restrict.mjs 是指向唯一实现的 re-export 壳`);
-    const shimMod = await import(pathToFileURL(shim).href);
-    assert.equal(shimMod.apply, canonicalMod.apply, `${name}: 壳与实现在同一模块实例上`);
-    assert.equal(shimMod.name, 'qq-tool-restrict');
-    assert.deepEqual(shimMod.inject, ['tools']);
-  }
-  ok(true, 're-export 壳与权威实现导出同一份 apply/inject');
+  assert.equal(canonicalMod.name, 'qq-tool-restrict');
+  assert.deepEqual(canonicalMod.inject, ['tools']);
+  ok(true, '唯一权威实现导出 apply/inject');
 
   // fail-closed 复检（独立于 test-audit-setup-guards.mjs 的那份假 ctx 测试）。
   let guardFn;
   const restricted = [];
   canonicalMod.apply({ tools: { restrict: ({ deny }) => restricted.push(...deny), guard: (fn) => { guardFn = fn; } } });
   ok(restricted.includes('pwsh') && restricted.includes('dev_install_package'), 'restrict 名单含本地执行面与开发注入器工具');
-  for (const name of ['ask_user_question', 'todo_write', 'mcp__snowluma__qq_send_message', 'mcp__web-search-safe__web_fetch']) {
+  for (const name of ['ask_user_question', 'todo_write', 'mcp__wincu__computer_use', 'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
     assert.equal(guardFn({ name }), undefined, `白名单应放行 ${name}`);
   }
   ok(true, '白名单放行 QQ MCP 与无害模型侧工具');

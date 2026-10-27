@@ -17,7 +17,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md) | 当前会话运行模型、代码结构评估与渐进式重构原则 |
-| [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | 将 `qq-chat-v2`、`desktop-agent` preset 和安全 MCP 工具安装到 DSH |
+| [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | 将唯一的 `desktop-agent` preset 和 MCP 工具安装到 DSH |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | 安全机制、残余风险与安全相关改动的工程基线 |
 | [guides/PRIVACY.md](guides/PRIVACY.md) | 发布前隐私扫描方法与历史扫描记录 |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台令牌与花费看板的数据来源和口径 |
@@ -27,7 +27,7 @@
 
 | 文档 | 范围 |
 | --- | --- |
-| [guides/DSH_021_ADAPTATION.md](guides/DSH_021_ADAPTATION.md) | 2026-10-22 对 DSH 0.2.1-rc.2 的适配快照；其中的双 preset 清单早于当前移除旧 `qq-chat` preset 的改动，不应当作当前安装状态 |
+| [guides/DSH_021_ADAPTATION.md](guides/DSH_021_ADAPTATION.md) | 2026-10-22 对 DSH 0.2.1-rc.2 的适配快照；其中的双 preset 清单是历史状态，不应当作当前安装说明 |
 | [guides/DSH_020_ADAPTATION.md](guides/DSH_020_ADAPTATION.md) | DSH 0.2.0-rc.2 适配历史；不作为当前运行手册 |
 | [../roles/README.md](../roles/README.md) | 角色卡格式及旧标记兼容说明 |
 

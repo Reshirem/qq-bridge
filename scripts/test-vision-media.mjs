@@ -1,7 +1,7 @@
 // 视觉/图片链路自检脚本：
 // 1. 校验配置默认模型为 DeepSeek-V4-Flash-Vision-Exp
 // 2. 校验 safe-fetch 的 SSRF 防护（本机地址应被拒绝）
-// 3. 若桥接运行中，校验 /api/images/message 端点可用（用二代 agent token）
+// 3. 若桥接运行中，校验 /api/images/message 端点可用（用唯一全局 desktop-agent token）
 // 运行：node scripts/test-vision-media.mjs
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,14 +50,16 @@ try {
 // 3. 桥接端点（可选）
 const consoleTokenFile = path.join(ROOT, 'state', 'console-token');
 const socialV2File = path.join(ROOT, 'state', 'social-v2.json');
-if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File)) {
+const desktopAgentFile = path.join(ROOT, 'state', 'desktop-agent.json');
+if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File) && fs.existsSync(desktopAgentFile)) {
   try {
     const consoleToken = fs.readFileSync(consoleTokenFile, 'utf8').trim();
     const social = JSON.parse(fs.readFileSync(socialV2File, 'utf8'));
+    const desktopAgent = JSON.parse(fs.readFileSync(desktopAgentFile, 'utf8'));
+    const agentToken = desktopAgent?.agentToken;
     const conv = social?.conversations ? Object.entries(social.conversations)[0] : null;
     if (conv) {
       const [key, st] = conv;
-      const agentToken = st?.agentToken;
       const messageId = st?.recentMessages?.find((m) => m && !m.isSelf)?.messageId || st?.recentMessages?.[0]?.messageId;
       if (agentToken && messageId) {
         const url = `http://127.0.0.1:${config.consolePort || 3100}/api/images/message?key=${encodeURIComponent(key)}&messageId=${encodeURIComponent(String(messageId))}`;
@@ -65,14 +67,14 @@ if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File)) {
         const body = await res.json().catch(() => ({}));
         check('桥接 /api/images/message 端点可访问', res.ok === true && body.ok === true, `HTTP ${res.status}`);
       } else {
-        console.log('⚠️ 跳过桥接端点检查：没有可用 agentToken/messageId');
+        console.log('⚠️ 跳过桥接端点检查：没有全局 agent token 或消息 ID');
       }
     }
   } catch (error) {
     console.log(`⚠️ 桥接端点检查跳过：${error?.message ?? error}`);
   }
 } else {
-  console.log('⚠️ 跳过桥接端点检查：缺少 state/console-token 或 state/social-v2.json');
+  console.log('⚠️ 跳过桥接端点检查：缺少 console token、全局助手状态或 QQ 消息缓存');
 }
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);

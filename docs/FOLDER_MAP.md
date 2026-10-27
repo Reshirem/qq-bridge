@@ -7,7 +7,7 @@
 | 路径 | 用途 |
 | --- | --- |
 | `src/` | 桥接运行时、DSH/OneBot 客户端、MCP 服务与独立辅助模块 |
-| `dsh/agent-presets/` | `qq-chat-v2` 与全局 `desktop-agent` 的 preset 权威源 |
+| `dsh/agent-presets/` | 唯一全局 `desktop-agent` preset 的权威源 |
 | `plugins/` | DSH preset bundle 与承载 `ownerQQ` 的兼容设置插件 |
 | `public/` | 桥接本地控制台页面 |
 | `roles/` | 可由管理员管理的人格卡；格式见 `roles/README.md` |
@@ -22,7 +22,7 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `bridge.js` | 运行时组合与协调中心；会话、唤醒、消息缓冲、控制台和发送门禁仍有较多共享状态，改动时优先小步拆分 |
+| `bridge.js` | 运行时组合与协调中心；全局会话生命周期、QQ 注意信号、消息缓冲、控制台和发送门禁仍有较多共享状态，改动时优先小步拆分 |
 | `autonomy-policy.js` | 不依赖运行时状态的消息唤醒分类规则 |
 | `dsh-client.js` | DSH API、鉴权和事件流客户端 |
 | `mcp-snowluma-safe.js` / `mcp-host-server.js` | 受限 QQ 工具与只读网关状态工具 |
@@ -40,14 +40,13 @@
 | 类别 | 用途 | 注意事项 |
 | --- | --- | --- |
 | `test-*.mjs` | 离线回归、契约和边界检查 | 是否纳入总审计清单以 `scripts/test-audit.mjs` 为准 |
-| `test-dsh-*.mjs` | DSH 连接、投影和会话生命周期检查 | 部分脚本需要正在运行的 DSH；执行前查看脚本说明 |
+| `test-dsh-*.mjs` | DSH 协议与全局会话队列投影检查 | 部分脚本需要正在运行的 DSH；执行前查看脚本说明 |
 | `setup-*.mjs` | 安装或更新 DSH profile 配置 | 可能写入用户 DSH profile，先核对目标 profile |
 | `verify-*.mjs` | 配置、preset 或 DSH 版本适配核验 | 在线核验可能访问真实 DSH |
 | `probe-*.mjs` | 查询 DSH 或 SnowLuma 的实际协议与能力 | 按需执行；读取配置或连入运行服务前检查脚本行为 |
 | `patch-*.mjs` | 构建或应用补丁 | `patch-snowluma-sdk.mjs` 是 `postinstall` 依赖，不要随意删除 |
-| `scripts/fixtures/` | 控制台回归使用的历史基线与静态夹具 | 夹具可能包含已移除功能的旧 UI；它不是当前运行时界面说明 |
 
-`scripts/` 下仍有 `voice-tool-locator.mjs`、`test-voice-*` 等旧语音工具兼容脚本。它们面向仓库外曾有的独立工具，不代表当前 QQ 会话运行时支持语音；后续清理或重写前不要把它们当作运行入口。
+`scripts/` 下仍有 `voice-tool-locator.mjs`、`test-voice-*` 等旧语音工具兼容脚本。它们面向仓库外曾有的独立工具，不代表当前全局 desktop-agent 支持语音；后续清理或重写前不要把它们当作运行入口。
 
 ## 运行数据与文档
 

@@ -92,14 +92,14 @@ try {
     assert.equal(fs.existsSync(path.join(f.home, '.agent-presets')), false);
   });
 
-  test('existing mode, DSH settings and non-link plugin directory remain untouched', () => {
+  test('existing unrelated state, DSH settings and non-link plugin directory remain untouched', () => {
     const f = fixture('preserve', '[]\n');
     fs.mkdirSync(path.join(f.repo, 'state'), { recursive: true });
-    const mode = '{"mode":"closed-agent","closedAgentPreset":"custom"}\n';
-    fs.writeFileSync(path.join(f.repo, 'state/mode.json'), mode);
+    const state = '{"sentinel":"leave-existing-state-alone"}\n';
+    fs.writeFileSync(path.join(f.repo, 'state/unrelated.json'), state);
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(fs.readFileSync(path.join(f.repo, 'state/mode.json'), 'utf8'), mode);
+    assert.equal(fs.readFileSync(path.join(f.repo, 'state/unrelated.json'), 'utf8'), state);
     const blocker = fixture('plugin-conflict', '[]\n');
     fs.mkdirSync(path.join(blocker.home, 'plugins/qq-mode-console'), { recursive: true });
     fs.writeFileSync(path.join(blocker.home, 'plugins/qq-mode-console/keep.txt'), 'keep');

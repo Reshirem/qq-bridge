@@ -1,12 +1,11 @@
-// QQ 桥接的 preset 工具策略：legacy qq-chat-v2 保持受限；全局 desktop-agent 可用
-// 完整 SnowLuma QQ 工具与明确授权的 Windows computer-use 工具。
+// 全局 desktop-agent 的工具策略：开放 SnowLuma QQ 工具与 Windows computer-use，
+// 同时拦截 DSH 的 shell、通用文件、子代理和管理工具。
 //
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-// 本文件是 qq-agent-presets bundle 里的**唯一权威实现**，由 qq-chat-v2
-// agent preset 的 qq-tool-restrict 行引用（dsh/agent-presets/<preset>/qq-tool-restrict.mjs
-// 只是个 re-export 壳，避免出现两份会漂移的实现）。
+// 本文件是 qq-agent-presets bundle 里的**唯一权威实现**，由 desktop-agent
+// preset 的 qq-tool-restrict 行引用。
 //
 // 为什么引用方式是「包名/子路径」而不是 `./qq-tool-restrict.mjs`（DSH 0.1.7 的机制变化）：
 //   0.1.5 的 preset 是 ~/.dsh/.agent-presets/<preset>/ 目录，相对名按 preset 目录解析；
@@ -20,17 +19,16 @@ import { fileURLToPath } from 'node:url'
 //   不写死任何绝对路径，仓库搬家后重建链接即可。
 // 作用：
 //  1) 用 tools.restrict 把 DSH shell、通用文件、子代理和管理工具从工具清单隐藏；
-//  2) 用 tools.guard 按 preset 区分工具面：desktop-agent 允许 Windows computer-use 与
-//     SnowLuma namespaces；legacy qq-chat-v2 仍使用旧的 QQ/web-search 工具范围。
+//  2) 用 tools.guard 固定允许 Windows computer-use、SnowLuma namespaces 与无害模型侧工具。
 //
-// DSH 自带 shell、通用文件访问、子代理与 Harness 管理能力仍不属于该 preset；
-// Windows computer-use 由 desktop-agent 单独显式授权，不会放开上述通用执行面。
+// DSH 自带 shell、通用文件访问、子代理与 Harness 管理能力仍由该 preset 隐藏；
+// Windows computer-use 通过专用 computer-use MCP 工具开放。
 export const name = 'qq-tool-restrict'
 
 export const inject = ['tools']
 
 /**
- * 本地执行 / 文件访问 / 进程控制类工具：仿真会话**不得**拥有。
+ * 本地执行 / 文件访问 / 进程控制类工具：desktop-agent **不得**拥有。
  *
  * 名字**逐个核对过** DSH 0.1.7-rc.2 实际注册的工具名（来源包见每条注释），
  * 不是凭印象列举。教训：本名单初版把 `pwsh_persistent`/`bash_persistent`/
@@ -69,10 +67,10 @@ export const inject = ['tools']
  *   dsh-mode-boost（已装插件，当前未进 bundles）→ dev_mode_set / _status / _subagent
  *                                        （dev_mode_subagent 会派生 agent）
  *
- * ⚠️ 硬证据：2026-08-29 的一次 **qq-chat-v2 仿真会话**记录下来的工具清单里，
+ * ⚠️ 历史证据：2026-08-29 的一份 **早期 QQ 会话**记录了以下工具清单，
  * 除了 MCP 工具就只有 `ask_user_question`、`todo_write`、`dev_mode_*`、
  * `dsh_rollback`、`dsh_snapshot`、`incident_resolved`。也就是说
- * **`dsh_snapshot`/`dsh_rollback` 真的进过仿真会话的 schema**——本名单初版漏了它们。
+ * **`dsh_snapshot`/`dsh_rollback` 曾进入该会话的 schema**——本名单初版漏了它们。
  *
  * 2026-09-29 针对 DSH 0.2.0-rc.2 重新对账（同样不是逐个打补丁，而是拿安装包重扫）。
  * 对账工具：`node scripts/scan-dsh-tool-names.mjs`（可重复运行；它从已安装的
@@ -80,10 +78,10 @@ export const inject = ['tools']
  * 该轮结论：**旧名字全部还在**（0 个假名，0.1.7 那次替换后没有再次改名），
  * 但 0.2.0 的包里多出 13 个「危险语义」名字是名单没覆盖的，逐条判定如下：
  *
- *   ① 真的会进仿真会话、必须隐藏的（它们在**全局层**，所有 preset 都继承）：
+ *   ① 会进入桌面助手 schema、必须隐藏的（它们在**全局层**，所有 preset 都继承）：
  *      · `list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`
  *        —— `dsh-base` 的 `mcp-resources` 行**默认启用**（cordis.patch.yml 里没有
- *        disabled），所以每个 QQ 会话都会继承这三个工具。`read_mcp_resource` 的
+ *        disabled），所以 desktop-agent 会继承这三个工具。`read_mcp_resource` 的
  *        `server` 参数可以指向**任意已配置的 MCP server**：用户一旦挂了
  *        filesystem 之类的能力型 MCP，QQ 群就通过它拿到了文件读取权。
  *        这正是 L7 要挡的那类越权路径，因此必须从 schema 里隐藏。
@@ -98,9 +96,9 @@ export const inject = ['tools']
  *
  * 2026-10-22 针对 DSH 0.2.1-rc.2 重新对账（`node scripts/scan-dsh-tool-names.mjs`）。
  * DSH 这轮把不少能力从「实验组合包」转正，工具面因此变了三处：
- *   ① **新增一个真的会进仿真会话的全局工具**：`dsh-base` 现在默认挂
+ *   ① **新增一个会进入桌面助手 schema 的全局工具**：`dsh-base` 现在默认挂
  *      `working-directory` + `tool-working-directory` 两行，于是 `working_directory`
- *      和 `list_mcp_resources` 一样属于**全局层继承**——QQ 会话一定拿得到，
+ *      和 `list_mcp_resources` 一样属于**全局层继承**——desktop-agent 会拿到，
  *      必须从 schema 隐藏（`state/tool-restrict.log` 的 known global tools 实测可见）。
  *   ② 新增终端能力 `dsh-tool-terminal`（`terminal_open|send|read|signal|close|list`）：
  *      终端 = 直接 shell，是本名单第一优先级要挡的东西；当前 composition 没启用，
@@ -140,7 +138,7 @@ const LOCAL_EXECUTION_TOOLS = [
   'job_list', 'job_output', 'job_kill', 'skill', 'present',
   'get_goal', 'create_goal', 'update_goal',
   // 0.2.0 新增对账（见上方长注释的 4 类判定）：
-  //   ① 全局层默认启用 ⇒ 真的会进仿真会话
+  //   ① 全局层默认启用 ⇒ 会进入桌面助手 schema
   'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource',
   //   ② 派生 agent / 执行外部代码
   'spawn_teammate', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
@@ -210,14 +208,6 @@ const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
 // 供 test-preset-local-tools.mjs 导入并与 DSH 真实工具名对账，避免两份名单漂移。
 export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TOOLS])
 
-// 执行期白名单：不在这些范围内的工具一律拒绝。
-// 前缀覆盖 DSH MCP client 暴露的命名空间工具。
-const SAFE_PREFIXES = [
-  'mcp__snowluma__',
-  'mcp__snowluma-host__',
-  'mcp__web-search-safe__',
-]
-
 // 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
 // todo_write 仅维护任务列表。若后续 preset 不再挂载这些工具，保留无害。
 const SAFE_EXACT = new Set([
@@ -261,13 +251,8 @@ function writeDiagnostics(lines) {
   } catch {}
 }
 
-export function apply(ctx, config = {}) {
-  // Computer use is granted to the global desktop-agent, which can be started by
-  // WebUI tasks or QQ attention signals. Legacy qq-chat-v2 omits this flag.
-  const allowComputerUse = config?.allowComputerUse === true;
-  const safePrefixes = allowComputerUse
-    ? ['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__']
-    : SAFE_PREFIXES;
+export function apply(ctx) {
+  // 群/私聊是消息来源；所有自主操作都使用这一份全局 desktop-agent。
   // 1) 把已知危险全局工具从 schema 隐藏（restrict 只影响继承的全局层，
   //    不会误删 preset 自己注册的 scoped 工具）。
   // 逐个 restrict：当前 DSH 版本不存在的工具名会单独抛错并跳过，
@@ -328,9 +313,7 @@ export function apply(ctx, config = {}) {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
-    if (safePrefixes.some((prefix) => name.startsWith(prefix))) return
-    return allowComputerUse
-      ? `工具 "${name}" 不在桌面 agent 工具范围内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具与无害模型侧工具）`
-      : `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
+    if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__'].some((prefix) => name.startsWith(prefix))) return
+    return `工具 "${name}" 不在桌面 agent 工具范围内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具与无害模型侧工具）`
   })
 }

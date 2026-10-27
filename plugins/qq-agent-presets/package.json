@@ -1,13 +1,12 @@
 {
   "name": "qq-agent-presets",
   "version": "0.2.1-r1",
-  "description": "qq-bridge 的 DSH agent preset bundle：提供受限 QQ 会话与全局桌面 agent preset，并携带工具守卫",
+  "description": "qq-bridge 的 DSH 全局桌面 agent preset bundle，并携带工具守卫",
   "type": "module",
   "license": "MIT",
   "dsh": {
     "bundle": {
       "patch": [
-        "./presets/qq-chat-v2.patch.yml",
         "./presets/desktop-agent.patch.yml"
       ]
     }

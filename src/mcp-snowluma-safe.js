@@ -81,7 +81,7 @@ async function onebot(action, params = {}) {
   return body.data;
 }
 
-// 桥接控制台/内部 Agent API 访问：自主 QQ 会话状态工具都通过这里读写桥接内存态。
+// 桥接控制台与全局 desktop-agent 的内部 API：QQ 来源状态在桥接内存态中读写。
 function agentApiBase() {
   const port = Number(getConfig().consolePort) || 3100;
   return `http://127.0.0.1:${port}`;
@@ -250,44 +250,11 @@ const server = new McpServer({ name: 'snowluma-safe', version: '0.2.1-r1' });
 // DSH profile 会共享这个 MCP provider，故无法按 agent preset 隐藏不同工具。
 // 全局 desktop-agent 的目标是完整使用这里提供的 SnowLuma QQ 工具集，注册时不按旧版
 // socialV2.tools 开关裁剪；桥接仍校验全局会话令牌、活动发送回合、限频和审计。
-const TOOL_CONFIG_FLAGS = {
-  qq_get_prompt: 'getPrompt',
-  qq_get_unread_messages: 'getUnread',
-  qq_get_recent_messages: 'getRecent',
-  qq_get_conversation_history: 'getHistory',
-  qq_social_state: 'socialState',
-  qq_mark_read: 'markRead',
-  qq_set_wake_config: 'setWakeConfig',
-  qq_send_burst: 'sendBurst',
-  qq_send_message: 'sendMessage',
-  qq_wait_for_messages: 'waitMessages',
-  qq_report_feedback: 'feedback',
-  qq_get_my_recent_messages: 'getMyRecent',
-  qq_get_message_detail: 'getMessageDetail',
-  qq_get_active_members: 'getActiveMembers',
-  qq_get_group_members: 'getGroupMembers',
-  // 下面这些曾经漏登记。漏一个不是"多注册一个工具"那么轻：桥接那边按 `v2ToolEnabled(flag)`
-  // 在**调用期**一律 403，而这里不登记就等于"控制台显示已关闭、模型每次请求仍收到它的完整
-  // 描述与参数 schema，然后调用它、再拿到 403"——既白烧 token（本文件开头 176 行起就是为省这份
-  // token 才改注册期过滤的），又诱导模型误调。`qq_set_sticker_remark` 默认就是 `false`
-  // （见 bridge.js 的 socialV2.tools 默认表），所以此前它一直是"默认关闭却仍然可见"。
-  qq_send_poke: 'sendPoke',
-  qq_get_message_images: 'getImages',
-  qq_get_forward_msg: 'getForwardMsg',
-  qq_list_stickers: 'listStickers',
-  qq_get_sticker_image: 'getStickerImage',
-  qq_send_sticker: 'sendSticker',
-  qq_collect_sticker: 'collectSticker',
-  qq_get_self_image: 'getSelfImage',
-  qq_set_sticker_remark: 'setStickerRemark',
-};
-// MCP provider 在 DSH profile 共享，不能按 agent preset 给不同会话注册不同 schema。
-// 桌面 agent 使用完整 SnowLuma 工具集，因此注册快照固定为全开；桥接端仍按会话 token
-// 区分全局桌面会话与旧的逐会话令牌。
+// MCP provider 在 DSH profile 共享，不能按 agent preset 为不同 agent 注册不同 schema。
+// 全局 desktop-agent 使用完整 SnowLuma 工具集，桥接端以唯一的全局助手令牌校验调用。
 cfg.socialV2 ??= {};
 cfg.socialV2.sticker = { ...(cfg.socialV2.sticker ?? {}), enabled: true };
-cfg.socialV2.tools = { ...(cfg.socialV2.tools ?? {}) };
-for (const flag of Object.values(TOOL_CONFIG_FLAGS)) cfg.socialV2.tools[flag] = true;
+delete cfg.socialV2.tools;
 server.tool(
   'qq_status',
   '查询 QQ 机器人登录状态与账号信息（只读）。',
@@ -328,13 +295,13 @@ server.tool(
   }
 );
 
-// 群成员列表通过全局桌面会话令牌或旧式逐会话令牌授权。
+// 群成员列表通过全局 desktop-agent 会话令牌授权。
 server.tool(
   'qq_get_group_members',
   '列出指定群的成员（只读）：QQ 号、昵称、群名片。等特定的人、要 @ 某个人、或需要确认谁在群里时用；QQ 号取返回里的 userId。',
   {
     key: z.string().describe('目标目标 QQ 会话 key，格式 group:群号'),
-    token: z.string().min(1).describe('全局桌面会话或旧式 QQ 会话令牌'),
+    token: z.string().min(1).describe('全局 desktop-agent 会话令牌'),
     limit: z.number().optional().describe('最多返回多少成员，默认 50，最大 100')
   },
   async ({ key, token, limit }) => {
@@ -423,21 +390,7 @@ server.tool(
   }
 );
 
-// ── 固定自主 QQ 会话工具 ───────────────────────────────────────────────────
-server.tool(
-  'qq_get_prompt',
-  '查看固定自主 QQ 会话的提示词、角色、推荐值、可用工具与唤醒配置（只读）。',
-  { key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'), token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）') },
-  async ({ key, token }) => {
-    try {
-      const data = await agentApi(`/api/socialV2/prompt?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `获取提示词失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
-);
-
+// ── 全局 desktop-agent 使用的 SnowLuma QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
   '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。',
@@ -504,7 +457,7 @@ server.tool(
 
 server.tool(
   'qq_social_state',
-  '查看指定自主 QQ 会话的唤醒配置、未读数、上次唤醒原因与上次发言时间等（只读）。',
+  '查看指定 QQ 来源的本地消息缓冲状态（只读），包括未读数量和最近消息时间。',
   { key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'), token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）') },
   async ({ key, token }) => {
     try {
@@ -535,25 +488,22 @@ server.tool(
 );
 
 server.tool(
-  'qq_set_wake_config',
-  '设置自主会话的唤醒配置。全局 desktop-agent 可设置或取消一个持久的一次性提醒；key 标记提醒关联的 QQ 来源，不会创建逐会话 DSH session。兼容旧式 QQ 会话时仍设置该会话的一次性睡眠/唤醒。没有周期性模型心跳；需要在当前回合主动等消息时调用 qq_wait_for_messages。',
+  'agent_rest',
+  '结束当前个人桌面助手回合并进入休息。每个自主运行回合都应在完成当前有意义的行动后调用此工具，并将它作为本轮最后一个工具调用；调用后桥接会取消当前 DSH turn。durationMs 省略表示无限期休息，只有 WebUI 中人工启动/提交任务才会恢复；提供 durationMs 时，休息截止后桥接会发起一轮恢复。休息期间不会因 QQ 提醒唤醒，提醒只会缓冲。',
   {
-    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
-    throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('可同时确认已读：使用已查看结果中的 readThroughSeq，省去额外 qq_mark_read；不传则只设置唤醒配置。若 markRead 工具被关闭，该水位会被忽略，本工具只设置唤醒配置'),
-    config: z.object({
-      infinite: z.boolean().optional().describe('true=无限期，只有固定触发条件命中才唤醒；false=有限时间'),
-      sleepMs: z.number().optional().describe('有限潜水毫秒数（从当前时间起算）'),
-      sleepUntil: z.string().optional().describe('有限潜水截止时间 ISO 字符串，优先级高于 sleepMs'),
-      batchWindowMs: z.number().int().min(1000).max(60000).optional().describe('本会话多条消息合并唤醒窗口（毫秒，1000~60000）')
-    }).describe('只能选择无限期等待或单次睡眠；唤醒触发条件固定，缺省字段保留原值')
+    token: z.string().min(1).describe('个人桌面助手会话令牌（由当前 DSH 任务上下文提供）'),
+    durationMs: z.number().int().min(1000).max(7 * 24 * 60 * 60_000).optional().describe('休息时长，单位毫秒；省略表示无限期休息，最长 7 天')
   },
-  async ({ key, token, config, throughSeq }) => {
+  async ({ token, durationMs }) => {
     try {
-      const data = await agentApi('/api/socialV2/wake-config', { method: 'POST', body: JSON.stringify({ key, config, throughSeq }), headers: { 'x-agent-token': token } });
+      const data = await agentApi('/api/desktop-agent/rest', {
+        method: 'POST',
+        headers: { 'x-agent-token': token },
+        body: JSON.stringify({ durationMs })
+      });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
-      return { content: [{ type: 'text', text: `设置唤醒配置失败：${error?.message ?? error}` }], isError: true };
+      return { content: [{ type: 'text', text: `休息失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );
@@ -958,7 +908,7 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerRemark !== false) {
   server.tool(
     'qq_set_sticker_remark',
-    '修改 QQ 账号里收藏表情的官方备注（desc）。这是写操作，会直接影响 QQ 账号的表情备注；仅在管理员明确允许（socialV2.tools.setStickerRemark=true）时可用。',
+    '修改 QQ 账号里收藏表情的官方备注（desc）。这是写操作，会直接影响 QQ 账号的表情备注；desktop-agent 可直接调用；桥接仍校验活动回合与操作参数。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),

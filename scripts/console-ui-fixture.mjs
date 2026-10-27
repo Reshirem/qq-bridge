@@ -11,13 +11,12 @@ import { manualDirCommand } from '../src/state-acl.mjs';
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
 
-// 预设状态：离线 UI 只模拟唯一的 reserved2 运行时预设。
+// 预设状态：离线 UI 只模拟唯一的全局 desktop-agent。
 function presetStatusFixture() {
-  const preset = 'qq-chat-v2';
   return {
-    preset,
-    label: '仿真会话（reserved2）',
-    sourceFile: `dsh/agent-presets/${preset}/agent.cordis.yml`,
+    preset: 'desktop-agent',
+    label: '全局桌面助手',
+    sourceFile: 'dsh/agent-presets/desktop-agent/agent.cordis.yml',
     installed: true,
     requiresRestart: true,
   };
@@ -286,51 +285,39 @@ function usageRecentFixture() {
 
 export function makeFixtureState() {
   return {
-    mode: 'reserved2', role: '小鲸鱼', roleMode: 'active', paused: false,
+    role: '小鲸鱼', roleMode: 'active', activityPaused: false, desktopAgentStopped: false,
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
     roleContents: {
       小鲸鱼: '# 小鲸鱼\n\n- 性格：好奇、爱接梗，遇到不懂的会直接问\n- 说话风格：简短，偶尔用 emoji',
       温柔助手: '# 温柔助手\n\n- 性格：温和、有耐心\n- 说话风格：先共情再回答',
       技术伙伴: '# 技术伙伴\n\n- 性格：直接、爱讲原理\n- 说话风格：先给结论再解释',
     },
-    simPrompts: {
-      'qq-chat-v2': '你是 QQ 会话中的仿真群友。\n\n【reserved2 安全规则】\n1. 只有通过可用工具的动作才会发送到 QQ。\n\n【工具协议】\n1. 普通群消息保持未读，按需显式查看。',
-    },
+    desktopPrompt: 'You are the user’s persistent desktop companion. One global session is shared by WebUI tasks and QQ attention signals. QQ conversations are message sources, never separate DSH sessions.',
     roleInjectMax: 8000,
     dshEffort: 'max',
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
-    sessions: [
-      { key: 'group:123456789', sessionId: 'demo-community-20260920', owner: false },
-      { key: 'group:100003', sessionId: 'demo-development-20260920', owner: false },
-      { key: 'private:100001', sessionId: 'demo-owner-20260920', owner: true },
-    ],
     v2: {
       enabled: true,
-      tools: {},
-      wake: { sleepMinMs: 60000, sleepMaxMs: 0, maxWakePerMinute: 1, maxWakePerHour: 12, batchWindowMs: 8000, noActionLimit: 3, maxWakeConfigReminders: 2 },
-      send: { burstEnabled: true, burstMaxMessages: 8, burstIntervalMinMs: 1000, burstIntervalMaxMs: 3000, longGapProbability: 0.2, longGapMinMs: 5000, longGapMaxMs: 10000, maxSendPerMinute: 8, maxSendPerHour: 60, maxMessageChars: 500, maxGapMs: 10000, gapBaseMs: 800, gapPerCharMs: 20 },
+      attentionKeywords: ['看看这个'],
+      send: { burstEnabled: true, burstMaxMessages: 8, burstIntervalMinMs: 1000, burstIntervalMaxMs: 3000, longGapProbability: 0.2, longGapMinMs: 5000, longGapMaxMs: 10000, maxSendPerMinute: 8, maxSendPerHour: 60, maxMessageChars: 500, maxGapMs: 10000, gapBaseMs: 800, gapPerCharMs: 20, recommendedHint: '单条消息保持完整，避免连续刷屏。' },
       wait: { defaultMs: 30000, minMs: 5000, maxMs: 600000, defaultQuietMs: 8000, minQuietAfterNewMs: 10000 },
-      sticker: { enabled: true, syncTtlMs: 60000, maxListCount: 100, includeInPrompt: true, promptMaxStickers: 8, collect: { enabled: true, maxPerMinute: 2, maxPerHour: 10 } },
+      sticker: { enabled: true, syncTtlMs: 60000, maxListCount: 100, collect: { enabled: true, maxPerMinute: 2, maxPerHour: 10 } },
       context: { recentLimit: 100, unreadLimit: 30, contextWindow: 20 },
       feedback: { maxLength: 500, notifyOwnerOnError: false },
     },
-    // 会话初始提示词（离线示例）：整段内容都是虚构的演示文本。
-    initPrompt: '离线示例：这是一个演示用的群聊环境说明，不会写进任何真实配置。',
     security: { interceptNotify: true },
-    // state/ 的 ACL 是否已收紧。离线演示默认给「未收紧」，这样告警条在预览里可见
-    // （真实场景：Windows 上未以管理员身份运行桥接时就是这个状态）。
     hardenStateDir: false,
     toolLog: [
-      { time: timestamp, key: 'group:123456789', tool: 'qq_get_recent_messages', type: 'call', args: JSON.stringify({ key: 'group:123456789', limit: 20 }) },
-      { time: timestamp, key: 'group:123456789', tool: 'qq_get_recent_messages', type: 'result', ok: true },
+      { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'call', args: JSON.stringify({ key: 'group:123456789', limit: 20 }) },
+      { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'result', ok: true },
     ],
     feedback: [{ time: timestamp, level: 'info', message: '这是离线演示反馈。' }],
   };
 }
 
 /** Bind only to loopback. Mutations affect this server's disposable in-memory state. */
-export async function startConsoleFixture({ port = 0, original = false, htmlPath, logWrites = false } = {}) {
-  const file = htmlPath || resolve(projectRoot, original ? 'scripts/fixtures/console.before.html' : 'public/console.html');
+export async function startConsoleFixture({ port = 0, htmlPath, logWrites = false } = {}) {
+  const file = htmlPath || resolve(projectRoot, 'public/console.html');
   await readFile(file); // Fail early rather than displaying a broken preview.
   const state = makeFixtureState();
   const requests = [];
@@ -350,6 +337,15 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
         res.end(await readFile(file));
         return;
       }
+      if (method === 'GET' && ['/console.css', '/console.js'].includes(path)) {
+        const asset = path.slice(1);
+        res.writeHead(200, {
+          'content-type': asset.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',
+          'cache-control': 'no-store'
+        });
+        res.end(await readFile(resolve(projectRoot, 'public', asset)));
+        return;
+      }
       if (path === '/favicon.ico') { res.writeHead(204); res.end(); return; }
       if (method === 'GET' && path === '/__fixture/requests') return json({ requests, unknownRequests });
       if (method === 'GET' && path === '/__fixture/info') return json({ offline: true, htmlPath: file });
@@ -365,8 +361,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       }
       if (method === 'GET') {
         switch (path) {
-          case '/api/status': return json({ ok: true, dshReady: true, mode: 'reserved2', role: state.role, roleMode: state.roleMode, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] group:123456789 · 已处理一条消息\n[08:30:20] reserved2 会话运行中\n以上均为离线模拟数据。' });
-          case '/api/presets': return json({ presets: [{ id: 'qq-chat-v2', trust: 'user' }] });
+          case '/api/status': return json({ ok: true, dshReady: true, role: state.role, roleMode: state.roleMode, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
           case '/api/roles': return json({
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {
@@ -408,21 +403,19 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
               sections: { v1: roleSectionReport(content, 'v1'), v2: roleSectionReport(content, 'v2') },
             });
           }
-          case '/api/preset/sim-prompt': {
-            const preset = 'qq-chat-v2';
+          case '/api/preset/desktop-agent-prompt': {
             return json({
               ok: true,
-              content: state.simPrompts[preset],
-              chars: state.simPrompts[preset].length,
-              bytes: Buffer.byteLength(state.simPrompts[preset], 'utf8'),
+              content: state.desktopPrompt,
+              chars: state.desktopPrompt.length,
+              bytes: Buffer.byteLength(state.desktopPrompt, 'utf8'),
               warnings: [],
               status: presetStatusFixture(),
               presets: [presetStatusFixture()],
             });
           }
-          case '/api/preset/sim-prompt/backups': {
-            const preset = 'qq-chat-v2';
-            return json({ ok: true, backups: [{ file: `${preset}.agent.cordis.yml.fixture`, mtime: Date.parse(timestamp) }] });
+          case '/api/preset/desktop-agent-prompt/backups': {
+            return json({ ok: true, backups: [{ file: 'desktop-agent.agent.cordis.yml.fixture', mtime: Date.parse(timestamp) }] });
           }
           case '/api/dsh/model': return json({
             provider: 'deepseek-official',
@@ -436,46 +429,18 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             globalSideEffect: true,
           });
           case '/api/whitelist': return json(state.whitelist);
-          case '/api/sessions': return json({ sessions: state.sessions });
           case '/api/console/desktop-agent': return json({
             ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
-            found: true, running: false, blank: false, agentAvailable: true
+            found: true, running: false, blank: false, agentAvailable: true, lifecycle: state.desktopAgentStopped ? 'stopped' : 'idle'
           });
-          case '/api/console/desktop-agent/ensure': return json({
-            ok: true, sessionId: 'mock-desktop-agent-session', created: true, turnStarted: false
-          });
-          case '/api/console/dsh-session-status': return json({
-            ok: true,
-            checkedAt: Date.now(),
-            sessions: state.sessions.map(item => ({
-              ...item, found: true, running: false, blank: false, agentAvailable: true,
-              updatedAt: Date.now(), bufferedCount: 2
-            }))
-          });
-          case '/api/pending': return json({ pending: [{ key: 'group:123456789', kind: 'approval', toolName: '演示工具', reason: '等待管理员确认（离线示例）' }] });
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
-          case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });
+          case '/api/socialV2/activity': return json({ ok: true, paused: state.activityPaused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
-          case '/api/socialV2/state': return json({ ok: true, key: url.searchParams.get('key'), wakeConfig: { infinite: false, sleepUntil: '2026-09-20T09:00:00.000Z', batchWindowMs: 8000, wakeCount: 4 }, wakeSafety: { guaranteed: true }, unreadCount: 2, lastWakeReason: 'atMention' });
-          case '/api/socialV2/states': return json({ ok: true, conversations: state.sessions.map(x => ({ key: x.key, unreadCount: 2 })) });
-          case '/api/socialV2/initial-prompt': {
-            const key = url.searchParams.get('key') || '';
-            if (!key) {
-              return json({
-                ok: true,
-                maxChars: 2000,
-                writable: true,
-                entries: state.initPrompt
-                  ? [{ key: 'group:123456789', chars: String(state.initPrompt).length, updatedAt: Date.now(), preview: String(state.initPrompt).slice(0, 80) }]
-                  : []
-              });
-            }
-            return json({
-              ok: true, key, exists: !!state.initPrompt, text: state.initPrompt || '',
-              createdAt: Date.now(), updatedAt: Date.now(), maxChars: 2000, writable: true
-            });
-          }
+          case '/api/socialV2/states': return json({ ok: true, conversations: [
+            { key: 'group:123456789', bufferedCount: 3 },
+            { key: 'private:100001', bufferedCount: 1 },
+          ] });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
           // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是
           // `icacls DIR /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /T /C` —— 正是那句
@@ -517,35 +482,23 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true, deleted: body.name, clearedCurrent: cleared });
           }
           case '/api/roles/limit': state.roleInjectMax = Number(body.maxInjectChars) || state.roleInjectMax; return json({ ok: true, maxInjectChars: state.roleInjectMax, limits: { injectMaxChars: state.roleInjectMax } });
-          case '/api/preset/sim-prompt': {
-            const preset = 'qq-chat-v2';
+          case '/api/preset/desktop-agent-prompt': {
             const content = String(body.content ?? '');
-            const unchanged = content === state.simPrompts[preset];
-            if (!unchanged) state.simPrompts[preset] = content;
+            const unchanged = content === state.desktopPrompt;
+            if (!unchanged) state.desktopPrompt = content;
             return json({ ok: true, unchanged, chars: content.length, warnings: [], synced: true, requiresRestart: !unchanged, status: presetStatusFixture() });
           }
-          case '/api/preset/sim-prompt/restore': {
-            const preset = 'qq-chat-v2';
-            return json({ ok: true, restoredFrom: `${preset}.agent.cordis.yml.fixture`, requiresRestart: true });
+          case '/api/preset/desktop-agent-prompt/restore': {
+            return json({ ok: true, restoredFrom: 'desktop-agent.agent.cordis.yml.fixture', requiresRestart: true });
           }
           case '/api/dsh/effort': state.dshEffort = body.reasoningEffort; return json({ ok: true, reasoningEffort: body.reasoningEffort });
           case '/api/role-mode': state.roleMode = body.mode; return json({ ok: true });
           case '/api/whitelist': state.whitelist = body; return json({ ok: true });
-          case '/api/social': state.social = body; return json({ ok: true });
-          case '/api/social/state': state.socialStates[body.key] = { phase: body.phase }; return json({ ok: true });
           case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
-          case '/api/socialV2/activity': state.paused = body.paused; return json({ ok: true });
+          case '/api/socialV2/activity': state.activityPaused = body.paused; return json({ ok: true });
           case '/api/socialV2/tool-log/clear': state.toolLog = []; return json({ ok: true });
           case '/api/socialV2/feedback-clear': state.feedback = []; return json({ ok: true });
           case '/api/socialV2/reset': return json({ ok: true });
-          case '/api/socialV2/initial-prompt': {
-            const text = body.delete === true ? '' : String(body.text ?? '');
-            state.initPrompt = text;
-            return json({
-              ok: true, key: body.key || '', deleted: !text, chars: text.length,
-              exists: !!text, updatedAt: Date.now(), maxChars: 2000
-            });
-          }
           case '/api/security':
             if (body.rehardenStateDir === true) {
               // 离线演示：把「重新检测」当成一次成功的收紧（真实实现要管理员权限）
@@ -556,12 +509,16 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true });
           case '/api/console/token': return json({ ok: true, token: body.token || 'offline-demo-token-123456', generated: !body.token });
           case '/api/test-send': return json({ ok: true, message_id: 'mock-message-001' });
-          case '/api/console/notify-ai': return json({ ok: true, sessionId: 'mock-dsh-session' });
+          case '/api/console/desktop-agent':
+            state.desktopAgentStopped = false;
+            return json({ ok: true, sessionId: 'mock-desktop-agent-session', turnStarted: true });
+          case '/api/console/desktop-agent/stop':
+            state.desktopAgentStopped = true;
+            return json({ ok: true, stopped: true });
+          case '/api/console/desktop-agent/reset':
+            state.desktopAgentStopped = false;
+            return json({ ok: true, sessionId: 'mock-desktop-agent-session', created: true });
           case '/api/restart': return json({ ok: true, message: '离线预览：已模拟重启，实际服务未改变。' });
-          case '/api/workspace/reset': state.sessions = []; return json({ ok: true, archivedCount: 3 });
-          case '/api/session/reset': state.sessions = state.sessions.filter(x => x.key !== body.key); return json({ ok: true });
-          case '/api/social/flush':
-          case '/api/socialV2/wake': return json({ ok: true });
           case '/api/tokens/reset': return json({ ok: true });
         }
       }
@@ -578,7 +535,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const value = name => args.find(x => x.startsWith(`${name}=`))?.slice(name.length + 1);
-  const fixture = await startConsoleFixture({ port: Number(value('--port') || 4173), original: args.includes('--original'), htmlPath: value('--html') ? resolve(value('--html')) : undefined, logWrites: true });
+  const fixture = await startConsoleFixture({ port: Number(value('--port') || 4173), htmlPath: value('--html') ? resolve(value('--html')) : undefined, logWrites: true });
   console.log(`Offline console preview: ${fixture.url}\nAll data is synthetic; writes stay in memory.\nRecorded requests: ${fixture.url}/__fixture/requests`);
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await fixture.close(); process.exit(0); });
 }

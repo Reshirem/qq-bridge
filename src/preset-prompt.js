@@ -1,8 +1,8 @@
-// 固定 QQ 会话预设提示词的读取与安全改写。
+// 固定全局桌面助手预设提示词的读取与安全改写。
 //
 // 边界说明：
-//   仿真提示词 = 预设内置（dsh/agent-presets/<preset>/agent.cordis.yml 的 persona.prefix），
-//                规定 AI 怎么调工具、怎么参与群聊（行为与协议）；改完需重启 DSH 生效。
+//   预设提示词 = 预设内置（dsh/agent-presets/desktop-agent/agent.cordis.yml 的 persona.prefix），
+//                规定 AI 如何使用工具与参与对话；改完需重启 DSH 生效。
 //   人格提示词 = roles/<名称>.md，规定 AI 是谁、什么性格（人设与语气）；
 //                由桥接每条消息注入，保存即生效。
 //
@@ -12,9 +12,8 @@ import yaml from 'js-yaml';
 export const PRESET_PERSONA_ID = 'persona';
 export const PRESET_PROMPT_MAX_BYTES = 128 * 1024;
 
-// 安全基线段落：缺失说明 AI 的权限边界可能被削弱，保存时警告（不阻断，管理员有最终决定权）。
-export const PRESET_REQUIRED_MARKERS = ['【QQ 自主会话安全规则', '【QQ 自主会话工具协议'];
-export const DESKTOP_PRESET_REQUIRED_MARKERS = [
+// 安全基线段落：缺失说明 AI 的使用边界可能被削弱，保存时警告。
+export const PRESET_REQUIRED_MARKERS = [
   'SnowLuma is the QQ message channel',
   'complete SnowLuma MCP toolset',
 ];
@@ -22,30 +21,25 @@ export const DESKTOP_PRESET_REQUIRED_MARKERS = [
 // 硬性不变量：这些串是本项目自己的测试与安全边界所依赖的（test-qq-preset-contract.mjs / verify-persona-config.mjs），
 // 一旦被删就会同时削弱 AI 的权限边界并让 `node scripts/test-audit.mjs`、`npm run verify:persona` 变红，因此保存时直接拒绝。
 export const PRESET_BLOCKING_SUBSTRINGS = [
-  '你没有本地工具',
-  '群友没有管理权限',
-  'API 令牌',
-  '角色由桥接注入',
-  '不会自动发送到 QQ',
+  'One global session',
+  ...PRESET_REQUIRED_MARKERS,
 ];
 export const PRESET_MIN_BODY_CHARS = 500;
 
-/** 固定 qq-chat-v2 预设使用的硬性不变量清单。 */
-export function presetBlockingSubstrings(preset = 'qq-chat-v2') {
-  return preset === 'desktop-agent'
-    ? ['One global session', ...DESKTOP_PRESET_REQUIRED_MARKERS]
-    : PRESET_BLOCKING_SUBSTRINGS;
+/** 当前唯一的 desktop-agent 预设使用的硬性不变量清单。 */
+export function presetBlockingSubstrings() {
+  return PRESET_BLOCKING_SUBSTRINGS;
 }
 
 /** 硬性校验：返回阻止保存的原因列表（空数组=可保存）。 */
-export function presetPromptBlockers(content, preset = 'qq-chat-v2') {
+export function presetPromptBlockers(content) {
   const text = String(content ?? '');
   const blockers = [];
   if (!text.trim()) {
-    blockers.push('仿真提示词不能为空');
+    blockers.push('助手提示词不能为空');
     return blockers;
   }
-  for (const needle of presetBlockingSubstrings(preset)) {
+  for (const needle of presetBlockingSubstrings()) {
     if (!text.includes(needle)) {
       blockers.push(`缺少安全不变量「${needle}」：删除它会让 AI 的权限边界失效，并使 npm run test:audit 失败`);
     }
@@ -99,13 +93,12 @@ export function extractPresetPrefix(text) {
 }
 
 /** 保存前的软校验：只提示，不阻断。 */
-export function presetPromptWarnings(content, preset = 'qq-chat-v2') {
+export function presetPromptWarnings(content) {
   const text = String(content ?? '');
   const warnings = [];
   if (!text.trim()) warnings.push('内容为空');
-  const markers = preset === 'desktop-agent' ? DESKTOP_PRESET_REQUIRED_MARKERS : PRESET_REQUIRED_MARKERS;
-  for (const marker of markers) {
-    if (!text.includes(marker)) warnings.push(`缺少「${marker}…】段落：AI 的权限与工具边界可能被削弱`);
+  for (const marker of PRESET_REQUIRED_MARKERS) {
+    if (!text.includes(marker)) warnings.push(`缺少「${marker}」段落：AI 的会话与工具边界可能被削弱`);
   }
   return warnings;
 }
@@ -119,15 +112,15 @@ export function presetPromptWarnings(content, preset = 'qq-chat-v2') {
  * @param {string} content 新的提示词正文
  * @returns {string} 新的 YAML 全文
  */
-export function renderPresetPromptYaml(text, content, preset = 'qq-chat-v2') {
+export function renderPresetPromptYaml(text, content) {
   const loc = locatePresetPromptBlock(text);
   if (!loc) throw new Error('无法定位预设里的 prefix 块（文件结构可能已变化）');
   const normalized = String(content ?? '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const bytes = Buffer.byteLength(normalized, 'utf8');
   if (bytes > PRESET_PROMPT_MAX_BYTES) {
-    throw new Error(`仿真提示词过长（${(bytes / 1024).toFixed(1)} KB，上限 ${PRESET_PROMPT_MAX_BYTES / 1024} KB）`);
+    throw new Error(`助手提示词过长（${(bytes / 1024).toFixed(1)} KB，上限 ${PRESET_PROMPT_MAX_BYTES / 1024} KB）`);
   }
-  const blockers = presetPromptBlockers(normalized, preset);
+  const blockers = presetPromptBlockers(normalized);
   if (blockers.length) throw new Error(blockers.join('；'));
   // 新增行沿用文件的主导行尾，避免把 CRLF 文件写成更混乱的混合行尾。
   const crlf = (text.match(/\r\n/g) ?? []).length;

@@ -6,7 +6,7 @@
 >
 > 维护规则：任何改动如果改变了下面任一条目，**必须在同一个 PR 里更新本文**。
 >
-> 新 QQ 事件进入一个全局 `desktop-agent`：桥接缓冲消息，并只把私聊、原生 @、验证回复/引用及配置关键词作为元数据提醒。全局主体可使用本项目当前完整 SnowLuma MCP 工具集及 `dsh-computer-use-win`；其 SnowLuma 令牌可读写任意合法 QQ 会话 key，不受逐会话白名单限制。桥接 API 发送仍要求活动回合、限频和审计；GUI 操作不经过这些 API 检查。旧逐会话逻辑暂留兼容。
+> 当前只有一个全局 `desktop-agent`。桥接缓存 QQ 消息，只把私聊、原生 @、验证回复/引用及配置关键词作为元数据提醒。WebUI 可启动、提交任务或持久停止。每个活动回合应以 `agent_rest` 收尾；休息期间 QQ 提醒只缓冲。未调用休息工具的回合按指数退避恢复，最高间隔 30 分钟；WebUI 停止态不自动恢复。全局主体可使用本项目当前完整 SnowLuma MCP 工具集及 `dsh-computer-use-win`，其令牌可访问任意合法 QQ 会话 key。桥接 API 发送仍要求活动回合、限频和审计；GUI 操作不经过这些 API 检查。逐 QQ DSH 映射、令牌与控制入口已移除。
 
 ---
 
@@ -18,8 +18,7 @@
 | **被注入的模型** | 会尝试调用任意工具名、传任意参数、尝试外发本机内容 | —— |
 | **本机其他用户** | 能登录同一台机器，能读文件系统 | 已取得管理员/root 的主体 |
 | **本机其他进程 / 浏览器页面** | 能访问 `127.0.0.1`，能构造任意 HTTP 请求 | 已能读写本项目 `state/` 的主体 |
-| **DSH 侧 agent（旧 QQ 映射）** | 拥有受限 MCP 工具面，但**没有**本地工具 | —— |
-| **DSH 侧 desktop-agent** | 由 WebUI 任务或 QQ 元数据提醒启动；可用 SnowLuma MCP 读写 QQ，亦可用 Windows computer-use 操作登录用户桌面 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计/限频 |
+| **DSH 侧 desktop-agent** | 由 WebUI 自主探索/任务动作或 QQ 元数据提醒启动；每轮以 `agent_rest` 收尾；休息期间不接收自动唤醒 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计/限频 |
 
 **不在此模型的范围内**：QQ 账号本身被盗、SnowLuma 网关被攻陷、DSH 本体漏洞、
 操作系统级攻击者。这些情况下本项目无法提供额外保护，README 中已声明。
@@ -32,21 +31,28 @@
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 兼容白名单 | `src/bridge.js` `allowed()` | 仍约束旧逐 QQ 会话和旧控制入口；不约束持有全局 desktop-agent 令牌的 SnowLuma MCP 请求 |
-| 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | 全局令牌只属于当前 desktop-agent DSH 映射；QQ key 仍须匹配 `^(group\|private):\d+$`，但不要求 allow/deny 命中 |
+| 管理端目标白名单 | `src/bridge.js` `allowed()` | 控制台直接操作 QQ 目标时使用 allow/deny 配置；全局 desktop-agent 的合法 QQ key 不受该列表限制 |
+| 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | 唯一全局令牌用于 desktop-agent；QQ key 仍须匹配 `^(group\|private):\d+$` |
 | 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通消息留在桥接缓冲；正文由全局 agent 主动读，无周期模型心跳 |
+| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 7 天）或无限休息；休息时 QQ 元数据只缓冲。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态。旧 `wakeAt` 迁移为休息截止时间，旧定时开关字段不再读取 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
-| 管理员识别 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')`；未配置 `ownerQQ` 时启动日志明确告警（管理员命令与审批通知不可用；不会授予任何 QQ 会话本地工具） |
+| 管理员识别 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')`；未配置 `ownerQQ` 时启动日志告警，桥接直接执行的管理员 QQ 命令不可用 |
 
 ### 2. 工具面（agent 能做什么）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | `qq-chat-v2` 仍限于 SnowLuma、host、web-search 与无害工具；`desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具与只读 `mcp__snowluma-host__snowluma_status`。两者都拒绝 shell、通用文件、子代理和 Harness 管理工具。 |
-| 预设 fail-closed | `ensureDesktopAgentSession()` / legacy `ensureSession()` | 全局 desktop-agent 不可用时拒绝新建全局会话；旧逐 QQ 会话缺少 `qq-chat-v2` 时也拒绝建会话，不回退到 DSH 默认 preset |
-| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | 必须来自当前有效 DSH 回合并携带有效 agent token；旧逐会话令牌还需 allow/deny 校验，全局 desktop-agent 令牌可操作任意合法 QQ key。所有 bridge API 发送仍受敏感内容审计、限频和工具调用审计 |
+| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具与只读 `mcp__snowluma-host__snowluma_status`；隐藏 shell、通用文件、子代理和 Harness 管理工具。 |
+| 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
+| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | 必须来自当前有效 DSH 回合并携带全局 agent token。所有 bridge API 发送仍受敏感内容审计、限频和工具调用审计 |
 | 动态 ACL | sticker / image media helpers | 贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
 | **只探测、不部署** | `mcp-host-server.js` | 该 MCP server **只提供 `snowluma_status`（只读探活 `get_login_info`）**。⚠️ **v0.1.5 起删除了 `start_snowluma` / `stop_snowluma` 与 `snowluma.allowProcessControl`**：SnowLuma EULA §5.4 规定「将其并入第三方安装包或 Docker 镜像、**通过自动化脚本部署**」须事先书面授权，原生组件属**专有组件**。⇒ 本程序不安装、不复制、不打包、不程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
+
+### 2.1 桌面应用范围（提示词边界）
+
+`desktop-agent` 的会话提示要求：使用 computer-use 操作电脑时，ChatGPT、DeepSeek Harness、qq-bridge 和 SnowLuma 的 GUI 在无关任务中属于受保护界面，不读取或改动其中内容、设置、会话或运行控制；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化。用户开始操作电脑时，agent 停止输入并等待明确交接。该界面规则不禁用 SnowLuma MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
+
+这是模型行为规则，不是 computer-use 服务端的应用级访问控制。当前工具守卫不按窗口标题或应用名拦截操作；用户明确提出涉及这些应用的任务时，仍由会话提示限定到所请求的范围。
 
 ### 3. 出站内容（模型能说什么、能发什么）
 
@@ -70,8 +76,10 @@
 | agent 令牌隔离 | 请求前缀白名单 | 带 `x-agent-token` 的请求默认拒绝，仅放行 `/api/status`、`/api/socialV2/*`、`/api/send/*`、`/api/images/*`、`/api/authorize/read`；管理端点（人格/提示词/思考强度/白名单/重启/令牌）一律 403 |
 | 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免"空 = 管理端"的绕过 |
 | 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步）一律 POST；GET 只读 |
-| WebUI 会话引导 | `/api/console/notify-ai` | 仅控制台令牌可调用；这是旧逐 QQ 映射兼容入口，目标仍通过白名单/拒绝名单；全局会话使用 `/api/console/desktop-agent` |
-| WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；任务与 QQ 注意信号复用单一 `desktop-agent` session。其 SnowLuma MCP 使用持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
+| WebUI 会话管理 | `/api/console/desktop-agent` | 仅控制台令牌可查看状态、启动或提交任务；同一全局会话也接收 QQ 元数据注意信号。 |
+| WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务会恢复停止/休息状态，并与 QQ 注意信号复用单一 `desktop-agent` session。其 SnowLuma MCP 使用持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
+| WebUI 持久停止 | `/api/console/desktop-agent/stop` | 仅控制台令牌可调用；先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作。DSH 暂不可用时停止态仍保存，恢复连接后不会自动唤醒。 |
+| 模型主动休息 | `/api/desktop-agent/rest` | 仅允许当前全局 agent token 且活动回合调用；保存有限或无限休息状态，并在返回工具结果后取消当前 DSH turn。休息到期只发起一次恢复回合。 |
 | 请求体限制 | `readBody()` | 声明长度或实际累计超过 1 MB → 413；30 秒读取超时 |
 | 安全响应头 | 全部响应 | `X-Frame-Options: DENY`、CSP、`nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` |
 
@@ -84,7 +92,7 @@
 | 令牌不回显 | 日志/活动/工具日志 | 控制台令牌只打前 6 位；活动日志与工具调用参数过 `redactSensitiveText` / `redactSensitive`（递归处理 JSON 字符串叶子） |
 | 令牌只发回环 | `dsh-client.ensureAuth()` | DSH launch token 换 Cookie 时必须放进 URL，因此**默认拒绝非回环 baseUrl**；远程部署需显式 `dsh.allowRemote: true` |
 | 路径校验（读点） | `roleRawContent()` 等 | 人格名在**读取点**也做 `sanitizeRoleName` + `path.resolve` 包含性校验（`state/current-role.json` 是用户可直接编辑的文件） |
-| 原型污染 | initial prompt key validation / audit-log redaction | 初始提示词只接受规范会话 key；日志脱敏跳过 `__proto__` / `constructor` / `prototype` 键，并使用无原型对象 |
+| 原型污染 | audit-log redaction | 日志脱敏跳过 `__proto__` / `constructor` / `prototype` 键，并使用无原型对象 |
 
 ### 6. 与 DSH 沙箱的 ACL 交互（DSH 0.2.0 起；**这是有意的取舍，不是缺陷**）
 
@@ -163,17 +171,16 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 
 安全专项必须覆盖（缺一不可）：
 
-- [x] 旧逐会话映射的白名单/黑名单/空白名单 fail-closed（含单复数与字符串/数字两种写法）
 - [x] 注意信号只包括私聊、原生 @、已验证回复和配置关键词；新事件携带元数据，未展示消息继续留在桥接缓冲
-- [x] 全局 `desktop-agent` 或旧 `qq-chat-v2` preset 不可用时拒绝创建对应会话（不回退到默认预设）
+- [x] 唯一 `desktop-agent` preset 不可用时拒绝创建全局会话（不回退到默认预设）
 - [x] agent token 无法访问任何管理端点；空 agent token 被拒
 - [x] 控制台伪造 `Host` 被拒；错令牌（含错长度、大小写、尾空格）被拒
 - [x] `/api/authorize/read` 空令牌被拒
-- [x] 全局 desktop-agent 令牌可读写任意合法 QQ key；旧逐会话令牌仍限制在自己的 key，跨 key 读返回 403
+- [x] 全局 desktop-agent 令牌可读写任意格式有效的 QQ key
 - [x] 出站文本命中敏感信息时整条拦截；含已知会话令牌时直接抛错
 - [x] SSRF：scheme、URL 凭据、私有 IP、重定向、超时、大小限制（11 项）
 - [x] 桥接 `200 + {ok:false}` 会被 MCP 当作失败上报（不产生静默假成功）
-- [x] bridge API 发送必须通过活动回合租约、会话令牌和审计；旧令牌另需白名单，全局令牌不受逐会话白名单限制
+- [x] bridge API 发送必须通过活动回合租约、全局会话令牌、限频和审计
 - [x] `state/` ACL 助手：非阻断、防递归、`start.bat` 纯 ASCII+CRLF 且先于桥接调用（**结构级断言**）
 - [ ] **`state/` ACL 的真实 icacls/UAC 行为**：需在普通终端手动复跑 `node scripts/harden-state-acl.mjs` 确认（沙箱/CI 里改 ACL 会被拒，无法自动化）
 

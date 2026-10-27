@@ -23,8 +23,6 @@
     "homeDir": ""
   },
   "ownerQQ": null,
-  "sessionCwd": "",
-  "workspaceTitle": "QQ 聊天",
   "allow": {
     "private": [],
     "groups": []
@@ -34,9 +32,7 @@
     "groups": []
   },
   "allowAllWhenEmpty": false,
-  "ackMessage": "",
   "sendDelayMs": 300,
-  "questionTimeoutMs": 300000,
   "consolePort": 3100,
   "consoleToken": "",
   "pricing": {
@@ -57,42 +53,6 @@
   "socialV2": {
     "enabled": true,
     "attentionKeywords": [],
-    "tools": {
-      "getPrompt": true,
-      "getUnread": true,
-      "getRecent": true,
-      "getHistory": true,
-      "socialState": true,
-      "sendGroup": true,
-      "sendPrivate": true,
-      "reply": true,
-      "sendBurst": true,
-      "sendMessage": true,
-      "waitMessages": true,
-      "feedback": true,
-      "getMyRecent": true,
-      "getMessageDetail": true,
-      "getActiveMembers": true,
-      "getGroupMembers": true,
-      "setWakeConfig": true,
-      "markRead": true,
-      "getImages": true,
-      "getForwardMsg": true,
-      "sendPoke": true,
-      "listStickers": true,
-      "getStickerImage": true,
-      "sendSticker": true,
-      "setStickerRemark": false,
-      "collectSticker": true,
-      "getSelfImage": true
-    },
-    "wake": {
-      "sleepMinMs": 60000,
-      "sleepMaxMs": 0,
-      "batchWindowMs": 8000,
-      "maxWakePerMinute": 1,
-      "maxWakePerHour": 12
-    },
     "send": {
       "burstEnabled": true,
       "burstMaxMessages": 8,
@@ -120,8 +80,6 @@
       "enabled": true,
       "syncTtlMs": 60000,
       "maxListCount": 100,
-      "includeInPrompt": true,
-      "promptMaxStickers": 8,
       "collect": {
         "enabled": true,
         "maxPerMinute": 2,
@@ -135,13 +93,8 @@
     "context": {
       "recentLimit": 100,
       "unreadLimit": 30,
-      "contextWindow": 20,
-      "inlineWakeMessages": true,
-      "wakeMessageLimit": 12,
-      "wakeRecentLimit": 4,
-      "wakeMaxChars": 6000
+      "contextWindow": 20
     },
-    "initialPromptMaxChars": 2000,
     "media": {
       "maxBytes": 8388608,
       "maxPixels": 64000000,

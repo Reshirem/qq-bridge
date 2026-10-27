@@ -24,12 +24,12 @@ import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, onebot = {} } = {}) {
+export async function bridgeHarness({ config = {}, files = {}, globals = {}, onebot = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
   const fixturePatchFileFor = (name) => path.join(temp, 'plugins', 'qq-agent-presets', 'presets', `${name}.patch.yml`);
-  for (const name of ['qq-chat-v2', 'desktop-agent']) {
+  for (const name of ['desktop-agent']) {
     fs.mkdirSync(path.dirname(fixturePatchFileFor(name)), { recursive: true });
     fs.writeFileSync(fixturePatchFileFor(name), '# audit fixture generated patch\n');
   }
@@ -38,7 +38,6 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
     consoleToken: 'fixture-console-token', ...config,
   }));
-  if (savedState) fs.writeFileSync(path.join(temp, 'state/sessions.json'), JSON.stringify(savedState));
   // 额外状态文件（用于测试"启动时读到损坏/旧版文件"这类路径）。
   for (const [rel, content] of Object.entries(files)) {
     const target = path.join(temp, rel);
@@ -72,12 +71,12 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const success = (value) => ({ result: { ok: true, value } });
   const api = {
     events: { follow: (id) => calls.follows.push(id) },
-    // Settings fixture supports ownerQQ hot refresh; runtime mode is fixed in bridge code.
+    // Settings fixture supports ownerQQ hot refresh.
     settings: {
       describe: async () => success({ namespaces: [] }),
       update: async () => success({ updated: true })
     },
-    agentPresets: { list: async () => success({ presets: [{ id: 'qq-chat-v2' }, { id: 'desktop-agent' }] }) },
+    agentPresets: { list: async () => success({ presets: [{ id: 'desktop-agent' }] }) },
     workspace: {
       create: async () => success({ created: false, workspace: { workspaceId: 'fixture-workspace' } }),
       archiveSession: async ({ sessionId }) => { calls.archived.push(sessionId); return success({}); },
@@ -141,35 +140,12 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    ensureSession, resolvePresetName, deliverPrompt, drainPromptQueue,
-    sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
-    getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
-    buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
+    sendStickerV2, startConsoleServer, api,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
-    refreshBridgeSettings, sessionAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
-    collectors, setupSleepTimerV2,
     ensureDesktopAgentSession, recreateDesktopAgentSession,
-    getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
-    initialPrompts, initialPromptMaxChars,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
-    emojiCdnCandidates, getImageDimensions, acceptImageBuffer, MAX_MEDIA_BYTES, bot,
-    isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
-    settingFromDshNamespace, selfIdentityTextV2,
-    buildWakeReminderPromptV2: typeof buildWakeReminderPromptV2 === 'function'
-      ? buildWakeReminderPromptV2
-      : (key) => [selfIdentityTextV2(), '会话 ' + key + ' 的收尾提醒。'].filter(Boolean).join(String.fromCharCode(10)),
-    getMode() { return 'autonomous'; },
-    setSelfIdentity(display, id) {
-      selfDisplayName = String(display ?? '');
-      selfUserId = String(id ?? '');
-      selfNickname = selfDisplayName.toLowerCase() || 'deepseek';
-    },
-    flushQueue, retireSession,
-    setMode(_value) {},
     setReady(value) { dshReady = value; },
-    setPresets(value) { dshPresetIds = value; },
     setDesktopAgentTurnActive(value) { desktopAgentTurnActive = !!value; },
-    resetEpoch() { sessionEpoch++; },
   };
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
@@ -190,7 +166,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // The offline harness has no DSH process, so deterministically retain configured baseUrl.
     discoverDshBaseUrl: async (configuredBaseUrl) => ({ source: 'fallback', baseUrl: configuredBaseUrl }),
     patchFileFor: fixturePatchFileFor,
-    buildPatches: () => ['qq-chat-v2', 'desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
+    buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...safeFetch, ...forward, ...sticker,
     ...modelPrices, ...tokenLedger, ...roleCard, ...stateAcl, ...presetPrompt,
@@ -210,7 +186,6 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData, describeAge }; })());`, context);
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
-  bridge.setPresets(['standard', 'qq-chat-v2', 'desktop-agent']);
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
     for (const timer of timers) clearTimeout(timer);

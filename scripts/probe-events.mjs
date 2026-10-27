@@ -8,7 +8,7 @@ import { probeCookie, probeRpc, probeMuxSocket, probeWorkspaceDir } from './prob
 const cookie = probeCookie();
 const rpc = probeRpc(cookie);
 
-const PRESET = process.argv[2] || 'qq-chat-v2';
+const PRESET = process.argv[2] || 'desktop-agent';
 const PROMPT = process.argv[3] || '只回复两个字：收到';
 
 const dir = probeWorkspaceDir('events');

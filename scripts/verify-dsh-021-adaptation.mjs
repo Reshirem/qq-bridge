@@ -21,7 +21,7 @@
 //        · 鉴权：本机签名密钥离线铸造 Cookie
 //        · settings/describe 可用，`qq-mode` 命名空间在列且可写
 //          （0.2.0 删除了 ctx.settings.register()，命名空间改由 entry id + Config 推导）
-//        · agentPresets/list 含固定 preset qq-chat-v2
+//        · agentPresets/list 含固定 preset desktop-agent
 //        · session/create 挂 preset + selectModel(deepseek-flash)
 //        · session/projections 一元 RPC 可用（读队列的主路径）
 //        · session/control 开场 baseline 是 value.projections[<id>].values.inbox
@@ -39,6 +39,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { dshModulesDir } from './dsh-modules.mjs';
+import { PRESETS } from './build-agent-preset-patches.mjs';
 import { discoverDshSessionCookie, NodeApiClient, unwrap } from '../src/dsh-client.js';
 
 const ROOT = process.cwd();
@@ -71,7 +72,7 @@ check('dsh-persona 仍拒绝旧字段 text（故障前提成立）', oldRejected
 /** DSH 0.2.1 的 agent loop 只注册这两个提示词变量（0.2.0 还有 `cwd`）。 */
 const DSH_PROMPT_VARIABLES = new Set(['provider', 'model']);
 
-for (const p of ['qq-chat-v2']) {
+for (const p of ['desktop-agent']) {
   const f = path.join(ROOT, 'dsh/agent-presets', p, 'agent.cordis.yml');
   const row = yaml.load(fs.readFileSync(f, 'utf8')).find((r) => r.id === 'persona');
   let schemaOk = false;
@@ -99,7 +100,7 @@ const presetPatches = await import(pathToFileURL(path.join(ROOT, 'scripts/build-
 for (const { file, changed } of presetPatches.buildPatches({ check: true, log: () => {} })) {
   check(`${path.relative(ROOT, file)} 与仓库源一致（未漂移）`, !changed);
 }
-for (const p of ['qq-chat-v2']) {
+for (const p of ['desktop-agent']) {
   const doc = yaml.load(fs.readFileSync(presetPatches.patchFileFor(p), 'utf8'));
   const row = doc?.[0]?.insert?.[0];
   check(`patch ${p}: 是 @deepseek-ai/dsh-agent-preset 行`, row?.name === '@deepseek-ai/dsh-agent-preset');
@@ -129,7 +130,7 @@ check('守卫：拒绝 0.1.7 已删除的 cordis 旧工具名（避免静默失�
 
 // 0.2.0 工具面重新对账的结果（扫描器与守卫必须一致）。
 // 三类必须覆盖，来源见 plugins/qq-agent-presets/qq-tool-restrict.mjs 的长注释：
-//   ① 全局层默认启用、仿真会话真的会继承的 MCP 资源工具
+//   ① 全局层默认启用、desktop-agent 会继承的 MCP 资源工具
 //   ② 派生 agent / 执行外部代码
 //   ③ 插件装载权（= 任意代码执行）与无人值守的自我调度
 const GUARD_020_NAMES = [
@@ -191,6 +192,7 @@ check('qq-mode-console 已 link 进 node_modules', fs.existsSync(path.join(DSH_H
 // ── 3. 仓库配置：模型 ───────────────────────────────────────────────────────
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
 check('config.json dsh.model = deepseek-flash', cfg.dsh?.model === 'deepseek-flash', `当前 ${cfg.dsh?.model}`);
+check('preset bundle 只构建 desktop-agent', PRESETS.length === 1 && PRESETS[0] === 'desktop-agent', PRESETS.join(', '));
 const bridgeSrc = fs.readFileSync(path.join(ROOT, 'src/bridge.js'), 'utf8');
 // 只看可执行代码，忽略注释（注释里会提到旧名做历史说明）。
 // 注意必须按 /\r?\n/ 切行：JS 的 `.` 不匹配 \r，CRLF 文件直接 split('\n') 会让行尾留 \r，
@@ -202,18 +204,14 @@ check('bridge.js 可执行代码无 router-standard 残留', !bridgeCode.include
 // setup-dsh.mjs 曾被漏改：0.1.5 适配只清了 bridge.js，脚本里仍在写死已下线的 preset 名。
 const setupCode = stripComments(fs.readFileSync(path.join(ROOT, 'scripts/setup-dsh.mjs'), 'utf8'));
 check('setup-dsh.mjs 可执行代码无 router-standard 残留', !setupCode.includes('router-standard'));
-check('setup-dsh.mjs 新装默认 closedAgentPreset 留空（交给 DSH 默认 preset）', /closedAgentPreset:\s*''/.test(setupCode));
+check('setup-dsh.mjs 安装 desktop-agent preset bundle', setupCode.includes('buildPatches') && setupCode.includes('PRESETS'));
 check('bridge.js 默认模型为 deepseek-flash', /model:\s*'deepseek-flash'/.test(bridgeCode));
 check('bridge.js 不再有「无参创建会话」兜底', !/sessions\.create\(\{\}\)/.test(bridgeCode));
-check('bridge.js 含 preset 清单/默认 preset 解析', bridgeSrc.includes('resolvePresetName') && bridgeSrc.includes('refreshPresetList'));
+check('bridge.js 会刷新 DSH preset 清单', bridgeCode.includes('refreshPresetList'));
 
-// 安全不变量回归防线：群聊/仿真会话在 preset 缺失时必须 fail-closed。
-// 旧实现会在 preset 不在 DSH 清单里时静默回退到 DSH 默认 preset（standard，含 bash/
-// 文件读写），把本地工具暴露给 QQ 群 —— 与 RULES.md「无本地工具」的承诺直接矛盾。
-check('preset 解析带 strict 开关', /resolvePresetName\(name, \{ strict = false \} = \{\}\)/.test(bridgeCode));
-check('非 closed-agent 模式以 strict 解析 preset', /resolvePresetName\(wanted, \{ strict: true \}\)/.test(bridgeCode));
-check('群聊模式缺少 preset 时拒绝建会话（fail-closed）', /strictPreset && !preset/.test(bridgeCode));
-check('群聊模式不再重试「无 preset」建会话', /strictPreset \? \[true\] : \[true, false\]/.test(bridgeCode));
+// 全局会话只允许 desktop-agent；缺少时直接拒绝，不能回退到 DSH 默认 preset。
+check('全局会话创建要求 desktop-agent preset', /dshPresetIds\.includes\('desktop-agent'\)/.test(bridgeCode));
+check('bridge.js 不回退到 standard preset', !/agentPreset:\s*['"]standard['"]/.test(bridgeCode));
 
 // ── 3b. 版本身份一致性 ──────────────────────────────────────────────────────
 // v0.1.5 曾带着自称 0.1.2-alpha.1 的 package-lock.json 发布出去（package.json 却是
@@ -265,14 +263,13 @@ const dm = st.value?.namespaces?.find((n) => n.ns === 'agent-default-model');
 check('DSH 全局默认模型 = deepseek-flash', dm?.value?.model === 'deepseek-flash', `当前 ${dm?.value?.model}`);
 const ap = await rpc('agentPresets/list', {});
 const presetIds = ap.value?.presets?.map((p) => p.id) ?? [];
-check('agentPresets/list 含固定 preset qq-chat-v2', presetIds.includes('qq-chat-v2'), presetIds.join(', '));
+check('agentPresets/list 含固定 preset desktop-agent', presetIds.includes('desktop-agent'), presetIds.join(', '));
 // 0.1.7 把设置命名空间从 `agent-presets` 改名为 `agent-preset-registry`，而且「用户默认」
-// 是易失字段 selectedDefault，不会出现在 describe 的 value 里。部署默认由 registry 行的
-// config.default 决定（dsh-web-app 的 patch 写的是 standard）。桥接在 closedAgentPreset
-// 留空时依赖的正是它，所以这里断言「注册表已装载」+「standard 预设存在」这两件可观测的事。
+// 是易失字段 selectedDefault，不会出现在 describe 的 value 里。桥接固定要求 desktop-agent，
+// 不读取 DSH 默认 preset；这里断言注册表已装载并且 desktop-agent 已注册。
 const registryNs = st.value?.namespaces?.find((n) => n.ns === 'agent-preset-registry');
 check('preset 注册表命名空间已装载', registryNs !== undefined, st.value?.namespaces?.map((n) => n.ns).filter((n) => n.includes('preset')).join(', '));
-check('closed-agent 兜底所需的 standard 预设可用', presetIds.includes('standard'), presetIds.join(', '));
+check('DSH 提供唯一 desktop-agent preset', presetIds.includes('desktop-agent'), presetIds.join(', '));
 
 // ── 5a. qq-mode 兼容命名空间（仅提供 ownerQQ）───────────────────────────────
 // 0.2.0 里命名空间由 profile entry + 插件导出的 Config 推导，不再调用
@@ -295,9 +292,9 @@ await api.ensureAuth();
 
 let probeSessionId = null;
 try {
-  const created = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'qq-chat-v2' }), 'session.create');
+  const created = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'desktop-agent' }), 'session.create');
   probeSessionId = created.sessionId;
-  check('session/create 挂 qq-chat-v2 preset 成功', typeof probeSessionId === 'string' && probeSessionId.length > 0, probeSessionId);
+  check('session/create 挂 desktop-agent preset 成功', typeof probeSessionId === 'string' && probeSessionId.length > 0, probeSessionId);
   unwrap(await api.sessions.selectModel({
     sessionId: probeSessionId, provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max'
   }), 'session.selectModel');
@@ -380,7 +377,7 @@ try {
   // 只有真跑一回合才能证明它**可解析**。
   let turnSessionId = null;
   try {
-    const turnSession = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'qq-chat-v2' }), 'session.create(turn)');
+    const turnSession = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'desktop-agent' }), 'session.create(turn)');
     turnSessionId = turnSession.sessionId;
     await api.sessions.selectModel({ sessionId: turnSessionId, provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' });
     const turn = await new Promise((resolve) => {

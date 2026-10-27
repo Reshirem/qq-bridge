@@ -32,7 +32,7 @@ const created = report('session/create {cwd}', await rpc('session/create', { req
 const sessionId = created.ok ? created.value.sessionId : null;
 
 console.log('\n=== 2. session/create 带 agentPreset（preset 是否存在 + 是否接受该字段） ===');
-const createdPreset = report('session/create {cwd, agentPreset:"qq-chat-v2"}', await rpc('session/create', { request: { cwd, agentPreset: 'qq-chat-v2' } }));
+const createdPreset = report('session/create {cwd, agentPreset:"desktop-agent"}', await rpc('session/create', { request: { cwd, agentPreset: 'desktop-agent' } }));
 const presetSessionId = createdPreset.ok ? createdPreset.value.sessionId : null;
 
 console.log('\n=== 3. session/selectModel（桥接用 {sessionId, provider, model, reasoningEffort}） ===');

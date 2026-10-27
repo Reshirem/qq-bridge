@@ -1,4 +1,4 @@
-// 人格卡按仿真模式取用（src/role-card.js）的离线单测。
+// 人格卡按全局 desktop-agent 取用（src/role-card.js）的离线契约。
 // 保证：模式标记能被正确识别与剥离、未标记的老卡片行为不变、真实人格卡可用。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

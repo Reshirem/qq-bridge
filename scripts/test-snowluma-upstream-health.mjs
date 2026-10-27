@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
 const consoleHtml = fs.readFileSync(path.join(ROOT, 'public', 'console.html'), 'utf8');
+const consoleJs = fs.readFileSync(path.join(ROOT, 'public', 'console.js'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const example = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
 
@@ -165,7 +166,7 @@ test('/api/status 暴露 snowluma 健康快照，且只给操作者', () => {
 
 test('控制台有对应的告警条与卡片', () => {
   assert.match(consoleHtml, /id="snowlumaWarn"/, '控制台应有 SnowLuma 告警条');
-  assert.match(consoleHtml, /renderSnowlumaHealth\(/, '告警条必须被接线到 /api/status 的渲染路径');
+  assert.match(consoleJs, /renderSnowlumaHealth\(/, '告警条必须被接线到 /api/status 的渲染路径');
   assert.match(consoleHtml, /\[Hook\]/, '告警文案必须把排查方向指向 SnowLuma 的 [Hook] 日志');
 });
 

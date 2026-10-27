@@ -34,7 +34,7 @@ const ok = (name, cond, extra = '') => {
 // 1. 页面
 const page = await fetch(BASE + '/', { headers: authHeaders });
 const html = await page.text();
-ok('页面加载', page.status === 200 && html.includes('白名单 / 管理员') && html.includes('人格与角色') && html.includes('仿真提示词') && html.includes('测试发送'), `长度 ${html.length}`);
+ok('页面加载', page.status === 200 && html.includes('白名单 / 管理员') && html.includes('人格与角色') && html.includes('全局桌面助手') && html.includes('测试发送'), `长度 ${html.length}`);
 
 // 2. 角色列表
 let r = await api('/api/roles');
@@ -58,15 +58,7 @@ if (origRole) {
   ok('恢复原角色', r.body.ok === true && r.body.role === origRole);
 }
 
-// 5. 会话映射
-r = await api('/api/sessions');
-ok('会话映射', Array.isArray(r.body.sessions), `共 ${r.body.sessions.length} 个`);
-
-// 6. 挂起列表
-r = await api('/api/pending');
-ok('挂起列表', Array.isArray(r.body.pending), `共 ${r.body.pending.length} 个`);
-
-// 7. 白名单：读原值 → 加测试群 → 恢复
+// 5. 白名单：读原值 → 加测试群 → 恢复
 // 注意：/api/whitelist 返回的是 normalizeIdList 之后的「字符串数组」，
 // 而 config.json 里可能是数字，直接 JSON.stringify 比较会因类型不同而误判失败。
 const sameIds = (a, b) => JSON.stringify((a || []).map(String).sort()) === JSON.stringify((b || []).map(String).sort());
@@ -79,7 +71,7 @@ ok('白名单写入（含测试群）', r.body.ok === true && (r.body.allow.grou
 r = await api('/api/whitelist', 'POST', { allow: origAllow, deny: { private: [], groups: [] } });
 ok('白名单恢复原值', r.body.ok === true && sameIds(r.body.allow.groups, origAllow.groups) && sameIds(r.body.allow.private, origAllow.private), JSON.stringify(r.body.allow));
 
-// 8. 测试发送到机器人测试群（真实发送）
+// 6. 测试发送到机器人测试群（真实发送）
 // 先把测试群临时加入白名单：这样既能验证白名单放行，也能验证 /api/test-send 真的走到网关。
 // 若 SnowLuma 未启动，发送会失败——这属于环境问题（不是控制台回归），按「已过白名单校验」计为通过。
 const withTestGroup = [...new Set([...(origAllow.groups || []).map(String), '123456789'])];

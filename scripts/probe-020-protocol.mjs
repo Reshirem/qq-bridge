@@ -106,7 +106,7 @@ console.log(`\n[setup] workspace=${wsId ?? '(失败)'}`);
 
 let sessionId = null;
 if (wsId) {
-  const sc = await rpc('session/create', { request: { workspaceId: wsId, agentPreset: 'qq-chat-v2' } });
+  const sc = await rpc('session/create', { request: { workspaceId: wsId, agentPreset: 'desktop-agent' } });
   if (!ok(sc)) console.log(`[setup] session/create 失败: ${sc?.error?.code}: ${sc?.error?.message}`);
   else {
     sessionId = sc.value.sessionId;

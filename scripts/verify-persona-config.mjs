@@ -49,7 +49,7 @@ const DSH_PROMPT_VARIABLES = new Set(['provider', 'model']);
 const YAML = await import(pathToFileURL(path.join(DSH_MODULES, 'js-yaml/index.js')).href);
 const yaml = YAML.default ?? YAML;
 
-for (const preset of ['qq-chat-v2']) {
+for (const preset of ['desktop-agent']) {
   const file = path.resolve(process.cwd(), 'dsh/agent-presets', preset, 'agent.cordis.yml');
   console.log(`\n${preset} (${path.relative(process.cwd(), file)}):`);
   const doc = yaml.load(fs.readFileSync(file, 'utf8'));

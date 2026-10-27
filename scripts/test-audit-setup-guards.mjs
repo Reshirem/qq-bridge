@@ -5,8 +5,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let failures = 0;
-for (const preset of ['qq-chat-v2']) {
-  const { apply } = await import(pathToFileURL(path.join(root, 'dsh/agent-presets', preset, 'qq-tool-restrict.mjs')).href);
+for (const preset of ['desktop-agent']) {
+  const { apply } = await import(pathToFileURL(path.join(root, 'plugins/qq-agent-presets/qq-tool-restrict.mjs')).href);
   let guard;
   const restricted = [];
   apply({ tools: {
@@ -15,8 +15,8 @@ for (const preset of ['qq-chat-v2']) {
   } });
   assert.equal(typeof guard, 'function');
   assert.ok(restricted.includes('dev_install_package'));
-  for (const name of ['ask_user_question', 'todo_write', 'mcp__snowluma__qq_send_message',
-    'mcp__snowluma-host__snowluma_status', 'mcp__web-search-safe__web_fetch']) {
+  for (const name of ['ask_user_question', 'todo_write', 'mcp__wincu__computer_use',
+    'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
     assert.equal(guard({ name }), undefined, `${preset}: expected allowed ${name}`);
   }
   for (const name of ['web_fetch', 'web_search', 'bash', 'read_file', 'dev_future_tool',

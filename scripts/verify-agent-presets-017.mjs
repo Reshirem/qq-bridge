@@ -14,7 +14,7 @@
 import { discoverDshSessionCookie } from '../src/dsh-client.js';
 
 const BASE = process.argv[2] || process.env.DSH_BASE_URL || 'http://127.0.0.1:3080';
-const WANTED = ['qq-chat-v2'];
+const WANTED = ['desktop-agent'];
 
 let failed = 0;
 function check(label, ok, detail = '') {

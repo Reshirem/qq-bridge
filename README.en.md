@@ -1,6 +1,6 @@
 # QQ ↔ DeepSeek Harness Bridge (qq-bridge)
 
-> The project uses one persistent global DSH desktop agent. The WebUI is its main control surface, and QQ is a message channel the agent can choose to use. SnowLuma events enter the bridge buffer; private messages, native @ mentions, verified replies/quotes, and configured keywords send metadata-only attention signals to the global session. The agent may choose whether to read or write QQ through the complete current SnowLuma MCP tool set, or use `dsh-computer-use-win` to operate the desktop. Legacy per-conversation session mappings remain for compatibility but no longer receive new events automatically.
+> The project uses one persistent global DSH desktop agent. The WebUI is its main control surface, and QQ is a message channel the agent can choose to use. SnowLuma events enter the bridge buffer; private messages, native @ mentions, verified replies/quotes, and configured keywords send metadata-only attention signals to the global session. The agent may choose whether to read or write QQ through the complete current SnowLuma MCP tool set, or use `dsh-computer-use-win` to operate the desktop. Per-conversation DSH session mappings and their control surface have been removed from the current code and preset bundle.
 
 > ⚠️ **Current release `v0.2.1-r1`, targets DSH 0.2.1-rc.2** (also compatible with 0.2.0-rc.2; verified item by item on both — run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Reshirem/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Reshirem/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Reshirem/qq-bridge/releases/tag/v0.1.7).
 >
@@ -25,18 +25,18 @@ QQ messages ──► SnowLuma (OneBot v11 WS) ──► bridge buffer ──met
 - **DSH side**: adapted for DSH 0.1.2+ and **re-verified on 0.2.1-rc.2** — session Cookie minted from the persistent local signing key, `/api/<namespace>/<method>` slash RPC, and `/api/remote.mux` + `session/follow` event stream (the pending queue is read from `value.projections[<id>].values.inbox`, with the unary `session/projections` RPC as the primary path). The per-session model is pinned by the bridge via `session.selectModel` from `config.json`'s `dsh.model` (default `deepseek-flash` = DeepSeek-V41-Flash, multimodal).
 - **Agent tools**: the global desktop agent gets the complete current SnowLuma message/media MCP tool set and can target any valid QQ group or private-conversation key. Sends require an active DSH turn and remain rate-limited and audited. This does not include OneBot group-administration APIs that the project has not registered as MCP tools.
   ⚠️ **`start_snowluma` / `stop_snowluma` (and `snowluma.allowProcessControl`) were removed in v0.1.5**: SnowLuma EULA §5.4 requires prior written permission to deploy its proprietary native components through automated scripts. This program only probes, never deploys — installing, starting and scanning SnowLuma is always up to you. See [LICENSE](LICENSE) and [RULES.md](RULES.md).
-- **Console**: a local web console at `http://127.0.0.1:3100`, organised into task-based pages for overview, the global desktop agent, legacy QQ mappings, persona, usage, access and operations. The Sessions page starts or checks the global agent and can archive/recreate it to load an updated preset; the prompt editor maintains `desktop-agent` and regenerates its bundle patch. Legacy per-conversation controls remain available for compatibility. The console also manages attention keywords, administrator and legacy whitelist settings, logs, and DSH reasoning effort.
-  - **WebUI session control**: the Sessions page can create the persistent global `desktop-agent` session without starting a model turn, or submit a task to start one. Private messages, native @ mentions, verified replies/quotes and configured attention keywords can also send metadata-only signals to this session; it chooses whether to read or reply. After updating the preset, restart DSH, then recreate the global session from the console; the old session is archived with its history retained.
+- **Console**: a local web console at `http://127.0.0.1:3100`, organised into task-based pages for overview, session control, assistant prompts, QQ messaging, usage, access and operations. The Session Control page starts or resumes autonomous exploration, accepts explicit tasks, and persistently stops the global agent; the prompt editor maintains `desktop-agent` and regenerates its bundle patch. The console also manages attention keywords, administrator settings, logs, and DSH reasoning effort.
+  - **WebUI session control**: the Session Control page starts or resumes autonomous exploration, submits tasks, or stops and cancels current/queued DSH work. Every active turn should finish by calling `agent_rest` as its final tool call. A finite rest of 1 second to 7 days triggers one turn at expiry; omitting a duration rests indefinitely. QQ attention signals only buffer during rest. If a turn ends without the tool, the bridge retries with exponential delays capped at 30 minutes. A WebUI stop suppresses all automatic retries until a user manually starts or submits a task. After updating the preset, restart DSH, then recreate the global session from the console; the old session is archived with its history retained.
 
 ## Features
 
 - One persistent global DSH desktop agent for WebUI tasks and QQ signals; QQ conversations do not get separate agent contexts.
 - `dsh-computer-use-win` and the complete current SnowLuma MCP message/media tool set. The agent may read or write any valid QQ group or private-conversation key.
-- Private messages, native @ mentions, verified replies/quotes and configured keywords are optional metadata-only attention signals. Ordinary group messages stay in the bridge buffer for on-demand reads; no message body is automatically inserted into the agent prompt. No periodic model heartbeat runs.
+- Private messages, native @ mentions, verified replies/quotes and configured keywords are optional metadata-only attention signals. Ordinary group messages stay in the bridge buffer for on-demand reads; no message body is automatically inserted into the agent prompt. No periodic model heartbeat or long wait used only for keeping the session online runs.
+- Each active turn ends with `agent_rest`; finite rest triggers one future turn, indefinite rest waits for a manual WebUI task, and a missing rest call triggers exponential recovery. The persistent WebUI stop state disables automatic recovery.
 - SnowLuma MCP sends require a session token and active turn, and remain rate-limited and audited. A send through the desktop UI is a computer-use action outside those bridge API checks.
-- Legacy per-conversation QQ mappings keep their whitelist/blacklist controls; those controls do not restrict the global desktop agent.
 - Sensitive text audit prevents paths/credentials from being sent to QQ.
-- MCP tools for on-demand message/history reads, member lookups, quote replies and stickers; direct wake snapshots include only the triggering message.
+- MCP tools for on-demand message/history reads, member lookups, quote replies and stickers; attention signals contain metadata, not message text.
 - Sticker library integration with AI-friendly sticker usage.
 - Voice send, receive and transcription are not supported by the current bridge runtime.
 
@@ -71,7 +71,7 @@ Key settings:
 | `snowluma.httpUrl` | OneBot **HTTP API** URL (e.g. `http://127.0.0.1:3000`); do not point this at the WebSocket port or you will get HTTP 426 |
 | `ownerQQ` | Optional administrator QQ for compatible QQ admin commands; it can also come from the DSH `qq-mode.ownerQQ` setting |
 | `socialV2.attentionKeywords` | Optional keyword list for group-chat attention signals; matching sends metadata only, not message text |
-| `allow.private` / `allow.groups` | Whitelist for legacy per-conversation mappings and compatibility endpoints; the global agent's SnowLuma tools can target any valid QQ key |
+| `allow.private` / `allow.groups` | Whitelist used by console direct test-send actions; the global agent's SnowLuma tools can target any valid QQ key |
 | `consolePort` / `consoleToken` | Fixed local console port (default `3100`) and access token. The bridge exits if the port is occupied; a blank token is generated and saved to `state/console-token`. After login, the browser session uses an HttpOnly cookie |
 
 Start:
@@ -85,7 +85,7 @@ Start DSH before the bridge on Windows so Desktop API port discovery can find it
 
 ## DSH Setup on Another Device
 
-The bridge and console can run without extra DSH setup, but the `desktop-agent` preset and MCP tools must be installed into DSH once per machine. The global agent also requires `dsh-computer-use-win` to be enabled in that DSH profile. Install `qq-chat-v2` only when retaining legacy mapped sessions:
+The bridge and console can run without extra DSH setup, but the `desktop-agent` preset and MCP tools must be installed into DSH once per machine. The global agent also requires `dsh-computer-use-win` to be enabled in that DSH profile:
 
 ```bash
 node scripts/setup-dsh.mjs
@@ -93,17 +93,17 @@ node scripts/setup-dsh.mjs
 
 This installs:
 
-- the `qq-agent-presets` bundle, which generates the `desktop-agent` row, compatibility `qq-chat-v2` row, and shared `qq-tool-restrict` guard
+- the `qq-agent-presets` bundle, which generates the single `desktop-agent` row and shared `qq-tool-restrict` guard
 - MCP entries in `~/.dsh/profiles/web/cordis.patch.yml`
 - `qq-mode-console` and `qq-agent-presets` in the profile `package.json` (`bundles` + `link:` dependencies)
-- New activity uses the persistent global `desktop-agent`; old mapped sessions retain `qq-chat-v2` for compatibility. Setup does not configure DSH runtime modes or create `state/mode.json`. The historical `qq-mode` namespace remains for the DSH `ownerQQ` administrator setting; its legacy `mode` field does not affect runtime behavior.
+- All autonomous activity uses the persistent global `desktop-agent`. Setup does not configure DSH runtime modes or create `state/mode.json`. The historical `qq-mode` namespace remains for the DSH `ownerQQ` administrator setting; its legacy `mode` field does not affect runtime behavior.
 
 Then restart DSH. See [docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md) for details.
 
 ## Security Notes
 
 - `config.json` and `state/` are **never committed**; the repository only ships `config.example.json`. Both are ACL-hardened to the owner / SYSTEM / Administrators (`npm run harden-acl`).
-- Global SnowLuma MCP tools can read and write any valid QQ group/private key. Sends require the global session token and an active DSH turn; the bridge still applies rate limits and audit. Legacy mapped sessions retain their whitelist checks.
+- Global SnowLuma MCP tools can read and write any valid QQ group/private key. Sends require the global session token and an active DSH turn; the bridge still applies rate limits and audit.
 - Local paths, credentials, tokens and other sensitive patterns are filtered by the audit layer.
 - The global `desktop-agent` gets `mcp__wincu__*`, the complete current `mcp__snowluma__*` QQ namespace, and the read-only `mcp__snowluma-host__snowluma_status` tool. It may list the account's groups and friends, then read or write any valid conversation key. Shell, generic filesystem, subagent and Harness-management tools remain hidden and guarded.
 - QQ actions made through the desktop UI do not pass through the bridge's API send token, rate limit or audit checks.
@@ -119,8 +119,8 @@ qq-bridge/
     README.md           # index of documents present in this repository
     FOLDER_MAP.md       # folder layout and scripts/ naming conventions
     guides/             # architecture, setup, security, privacy, console and compatibility guides
-  dsh/agent-presets/    # desktop-agent and compatibility qq-chat-v2 preset sources
-  plugins/qq-agent-presets  # DSH bundle: both preset rows + shared tool guard
+  dsh/agent-presets/    # the desktop-agent preset source
+  plugins/qq-agent-presets  # DSH bundle: desktop-agent row + shared tool guard
   plugins/qq-mode-console  # DSH compatibility settings namespace for ownerQQ; no runtime mode selector
   src/                  # bridge core and MCP servers
   public/
@@ -135,7 +135,7 @@ qq-bridge/
 
 `node scripts/test-audit.mjs` runs isolated regression checks without production credentials, DSH, or QQ messages. See [docs/guides/SECURITY_BASELINE.md](docs/guides/SECURITY_BASELINE.md) for the current security contract and [docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md) for the runtime model.
 
-After upgrading, new QQ attention signals use the global `desktop-agent`. Existing per-conversation mappings remain available for compatibility and administration, but new QQ events do not wake them.
+After upgrading, QQ attention signals use the global `desktop-agent`. The bridge no longer creates or administers per-conversation DSH session mappings; historical session records remain under DSH's own management.
 
 ```bash
 npm run self-test       # DSH-side link test, no QQ/SnowLuma required
