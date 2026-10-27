@@ -165,7 +165,7 @@ test('只含空格/Tab 的行也能安全往返（不会被当成空行读丢）
 
 test('缺少安全基线段落时给出警告（但不阻断保存）', () => {
   assert.deepEqual(presetPromptWarnings(originalPrefix), [], '内置提示词不应有警告');
-  const stripped = originalPrefix.replace(/【二代仿真模式 —— 安全规则[^\n]*\n/, '');
+  const stripped = originalPrefix.replace(/【QQ 自主会话安全规则[^\n]*\n/, '');
   const warnings = presetPromptWarnings(stripped);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /安全规则/);

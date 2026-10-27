@@ -26,16 +26,16 @@ QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH
 - **DSH side**: adapted for DSH 0.1.2+ and **re-verified on 0.2.1-rc.2** — session Cookie minted from the persistent local signing key, `/api/<namespace>/<method>` slash RPC, and `/api/remote.mux` + `session/follow` event stream (the pending queue is read from `value.projections[<id>].values.inbox`, with the unary `session/projections` RPC as the primary path). The per-session model is pinned by the bridge via `session.selectModel` from `config.json`'s `dsh.model` (default `deepseek-flash` = DeepSeek-V41-Flash, multimodal).
 - **Agent tools**: three bundled MCP servers expose a restricted QQ toolset (`qq_status`, `qq_list_groups`, `qq_get_group_history`, `qq_send_group_message`, `qq_reply`, etc.), a read-only host probe (`snowluma_status` only), and a read-only `web_search` / `web_fetch` pair with SSRF protection.
   ⚠️ **`start_snowluma` / `stop_snowluma` (and `snowluma.allowProcessControl`) were removed in v0.1.5**: SnowLuma EULA §5.4 requires prior written permission to deploy its proprietary native components through automated scripts. This program only probes, never deploys — installing, starting and scanning SnowLuma is always up to you. See [LICENSE](LICENSE) and [RULES.md](RULES.md).
-- **Console**: a local web console at `http://127.0.0.1:3100`, organised into ten task-based pages (Overview, Sessions & Approvals, Persona, Social v2, Social v1, Slang, Usage & Cost, Access & Security, Operations, Tool Reference) with cross-page feature search and a **light / dark theme** (one-click toggle in the header; follows the OS preference until you choose), for mode switching, role management, whitelist/admin settings, slang management, memory, stickers and more. The Persona page manages roles (view/edit/rename/duplicate/delete the prompt of each persona), shows and edits both prompt layers separately — the **simulation prompt** built into the preset (tool/behaviour protocol; synced to DSH, restart required) and the **persona prompt** (`roles/*.md`; applied immediately) — and sets the **DSH reasoning effort** (`max` by default, `high`/`low` selectable). The **Usage & Cost** page shows real-time token consumption and its price in CNY, broken down per group/friend and per conversation turn (see [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)).
+- **Console**: a local web console at `http://127.0.0.1:3100`, organised into nine task-based pages (Overview, Sessions & Approvals, Persona, QQ Session Runtime, Slang, Usage & Cost, Access & Security, Operations, Tool Reference) with cross-page feature search and a **light / dark theme** (one-click toggle in the header; follows the OS preference until you choose), for the fixed autonomous-session runtime, role management, whitelist/admin settings, slang management, memory, stickers and more (there is no runtime mode switch). The Persona page manages roles (view/edit/rename/duplicate/delete the prompt of each persona), shows and edits both prompt layers separately — the **QQ session protocol** built into `qq-chat-v2` (tool/behaviour rules; synced to DSH, restart required) and the **persona prompt** (`roles/*.md`; applied immediately) — and sets the **DSH reasoning effort** (`max` by default, `high`/`low` selectable). The **Usage & Cost** page shows real-time token consumption and its price in CNY, broken down per group/friend and per conversation turn (see [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)).
 
 ## Features
 
 - Bridges QQ group/private messages to DSH agent sessions.
-- Social simulation mode ("simulated group friend") with idle/active/probing/exiting states.
-- Space-based message splitting for more natural multi-message replies.
+- One persistent autonomous QQ-session runtime: groups wake only on a native @ to the bot or a verified reply/quote to the bot; private messages wake. Other group messages are buffered for agent-directed reads; there is no periodic model heartbeat.
+- Text output is not forwarded automatically. QQ sends are tool-driven during an active turn and remain subject to session-token, allowlist, rate-limit and audit checks.
 - Whitelist/blacklist access control, fail-closed by default.
 - Sensitive text audit prevents paths/credentials from being sent to QQ.
-- MCP tools for reading group history/members, sending messages, replying with quotes, and (in `reserved2`) full simulated-group-friend tooling.
+- MCP tools for on-demand message/history reads, member lookups, quote replies and stickers; direct wake snapshots include only the triggering message.
 - Slang/network-expression learning with human confirmation.
 - Lightweight memory system for active topics, pending thoughts and member impressions.
 - Sticker library integration with AI-friendly sticker usage.
@@ -82,7 +82,7 @@ Or double-click `start.bat` on Windows (guard mode with auto-restart).
 
 ## DSH Setup on Another Device
 
-The bridge and console can run without extra DSH setup, but the two DSH chat presets (`qq-chat` and `qq-chat-v2`) and the MCP servers must be installed into DSH once per machine:
+The bridge and console can run without extra DSH setup, but the `qq-chat-v2` session preset, isolated `qq-chat` slang-learner preset and safe MCP tools must be installed into DSH once per machine:
 
 ```bash
 node scripts/setup-dsh.mjs
@@ -93,7 +93,7 @@ This installs:
 - the `qq-agent-presets` bundle, which generates the two `@deepseek-ai/dsh-agent-preset` rows (`qq-chat`, `qq-chat-v2`) plus the shared `qq-tool-restrict` safety guard
 - MCP entries in `~/.dsh/profiles/web/cordis.patch.yml`
 - `qq-mode-console` and `qq-agent-presets` in the profile `package.json` (`bundles` + `link:` dependencies)
-- Default DSH mode set to `reserved2` (second-generation simulation), with a local `state/mode.json` fallback
+- The single QQ-session runtime uses `qq-chat-v2`; setup does not configure DSH runtime modes or create `state/mode.json`. The historical `qq-mode` namespace remains for the DSH `ownerQQ` administrator setting; its legacy `mode` field does not affect runtime behavior.
 
 Then restart DSH. See [docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md) for details.
 
@@ -102,7 +102,7 @@ Then restart DSH. See [docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md) for d
 - `config.json` and `state/` are **never committed**; the repository only ships `config.example.json`. Both are ACL-hardened to the owner / SYSTEM / Administrators (`npm run harden-acl`).
 - MCP send tools enforce whitelist checks and reject CQ-code injection.
 - Local paths, credentials, tokens and other sensitive patterns are filtered by the audit layer.
-- Simulation sessions get **no local execution tools at all**: the preset's `qq-tool-restrict` row hides them from the tool schema at registration time and a runtime allowlist rejects anything outside the QQ MCP namespaces (`npm run scan:tool-names` re-checks that list against the installed DSH).
+- QQ sessions get **no local execution tools at all**: the preset's `qq-tool-restrict` row hides them from the tool schema at registration time and a runtime allowlist rejects anything outside the QQ MCP namespaces (`npm run scan:tool-names` re-checks that list against the installed DSH).
 - The console uses a generated token when none is configured.
 
 ## Repository Layout
@@ -120,7 +120,7 @@ qq-bridge/
     legacy/             # archived docs that were superseded
   dsh/agent-presets/    # qq-chat / qq-chat-v2 DSH agent preset templates
   plugins/qq-agent-presets  # DSH bundle: generates the qq-chat / qq-chat-v2 preset patch rows + the shared tool guard
-  plugins/qq-mode-console  # DSH plugin: exposes the qq-mode settings namespace (host half only; no UI card yet)
+  plugins/qq-mode-console  # DSH compatibility settings namespace for ownerQQ; no runtime mode selector
   src/                  # bridge core and MCP servers
   public/
     console.html        # local web console
@@ -138,7 +138,7 @@ lives in the sibling folder **`../voice-tool/`** — it only needs SnowLuma, and
 
 `npm run test:audit` runs isolated regression tests without production credentials, DSH, or QQ messages. The detailed audit is in [docs/audits/AUDIT_REPORT_2026-09-20.md](docs/audits/AUDIT_REPORT_2026-09-20.md) (Chinese); the 2026-09-18 one it superseded is archived in [docs/legacy/](docs/legacy/).
 
-After upgrading, legacy QQ session mappings without permission metadata are recreated once. Mode or preset changes also retire the old mapping and recreate the session on the next message; DSH history is retained.
+After upgrading, legacy QQ session mappings without permission metadata are recreated once. If a persisted mapping does not match the preset binding required by the current runtime, the bridge recreates the session on the next message to avoid retaining old permissions; DSH history is retained.
 
 ```bash
 npm run self-test       # DSH-side link test, no QQ/SnowLuma required

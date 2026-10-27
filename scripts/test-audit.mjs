@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
-  'test-audit-bridge.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
+  'test-autonomy-policy.mjs', 'test-audit-bridge.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
   // DSH 会话队列（inbox 投影）解析：0.2.0 把队列从 control baseline 的
@@ -15,12 +15,13 @@ const tests = [
   // scripts/test-dsh-session-retire.mjs）。
   'test-dsh-inbox-projection.mjs',
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
-  'test-token-economy.mjs', 'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
+  'test-token-economy.mjs', 'test-wait-backlog.mjs', 'test-conversation-history.mjs',
+  'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
   'test-reply-wait.mjs', 'test-preset-prompt.mjs', 'test-role-card.mjs',
   // 体检修复回归：无令牌智能体调用面、send-burst 失败回滚、唤醒限频重试、
   // 定时器类暂存唤醒补发、collector 生命周期、ownerQQ 覆盖语义、预设名校验、
-  // wake triggers 白名单、memory-update 边界、wait 租约归一化、md/黑话/表情/账本；
-  // 本轮新增：/api/send/* 失败路径的作用域错误（R15）、reserved2 落库丢表情识别字段（R16）。
+  // 旧唤醒 mode/triggers 迁移、memory-update 边界、wait 租约归一化、md/黑话/表情/账本；
+  // 本轮新增：/api/send/* 失败路径的作用域错误（R15）、自主会话落库丢表情识别字段（R16）。
   'test-audit-regressions.mjs',
   // 图片/表情链路（动图/表情包字段、CDN 优先与 emoji_id 兜底）+ 联网搜索
   // （DSH 同一路 DeepSeek 搜索、Bing RSS 兜底、凭据优先级与端点安全；
@@ -51,7 +52,7 @@ const tests = [
   'test-encoding.mjs',
   // 控制台乱码机制（UTF-8 字节被按 GBK 解码）+ chcp 修复
   'test-console-encoding.mjs',
-  // 🔴 铁律 L7（仿真会话不得拥有本地执行能力）：注册期断言——
+  // 🔴 铁律 L7（QQ 会话不得拥有本地执行能力）：注册期断言——
   //    preset 挂了守卫、守卫的 restrict 名单覆盖全部已知本地工具、且执行期一律拒绝。
   //    这是唯一挡住"绕过桥接直连 OneBot HTTP"的东西（见 QSH_PLAN.md §0.1/§5.2），
   //    所以必须在每次回归里跑，而不是一次性验收。

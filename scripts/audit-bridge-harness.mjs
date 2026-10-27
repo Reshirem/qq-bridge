@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
 import * as wait from '../src/v2-wait.js';
+import * as autonomyPolicy from '../src/autonomy-policy.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as mediaNormalize from '../src/media-normalize.js';
 import * as forward from '../src/forward.js';
@@ -20,11 +21,12 @@ import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as presetPrompt from '../src/preset-prompt.js';
+import * as roleCard from '../src/role-card.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {} } = {}) {
+export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, onebot = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
@@ -40,13 +42,18 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, typeof content === 'string' ? content : JSON.stringify(content));
   }
-  const calls = { created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [], images: [], faces: [], http: [] };
+  const calls = { created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [], images: [], faces: [], http: [], onebot: [] };
   // 语音发送在桥接里是**直接 fetch 网关**（与文本/表情共用 sendChain，但要自己带 record 段），
   // 所以这里给 VM 注入一个记录型 fetch：既不让测试真的发 QQ 消息，又能断言发出的段内容。
   const fakeFetch = async (url, init = {}) => {
     const body = (() => { try { return JSON.parse(init.body ?? '{}'); } catch { return init.body; } })();
     calls.http.push({ url: String(url), body });
     const action = String(url).split('/').pop();
+    // Optional test-only OneBot HTTP response hook; returning undefined keeps the existing fake behavior.
+    if (typeof onebot.httpAction === 'function') {
+      const override = await onebot.httpAction(action, body, String(url), init);
+      if (override !== undefined) return override;
+    }
     // fetch_custom_face_detail：同步收藏表情的 HTTP 兜底路径要拿到**数组**（WS 失败时用）。
     if (action === 'fetch_custom_face_detail') {
       return {
@@ -79,8 +86,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const success = (value) => ({ result: { ok: true, value } });
   const api = {
     events: { follow: (id) => calls.follows.push(id) },
-    // settings.describe 的默认桩：没有 qq-mode 命名空间 ⇒ refreshMode() 回退到本地 mode.json。
-    // 测试可覆盖它来验证「DSH 设置里的空 ownerQQ 不得覆盖 config.json」等契约。
+    // Settings fixture supports ownerQQ hot refresh; runtime mode is fixed in bridge code.
     settings: {
       describe: async () => success({ namespaces: [] }),
       update: async () => success({ updated: true })
@@ -108,6 +114,11 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     }
     async fetchFaceEntity(id) { calls.faces.push(id); return null; }
     async request(action, params = {}) {
+      calls.onebot.push({ action, params: JSON.parse(JSON.stringify(params ?? {})) });
+      if (typeof onebot.request === 'function') {
+        const override = await onebot.request(action, params);
+        if (override !== undefined) return override;
+      }
       // 群成员列表：v2 读工具 qq_get_group_members 会用到（含 WS 不可用时的 HTTP 兜底路径）。
       if (action === 'get_group_member_list') {
         return {
@@ -148,15 +159,18 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     getSocialV2State, appendSocialV2Message, recordSentMessagesV2,
     buildWakePromptV2, buildWakeSnapshotV2, sendWakePromptV2, socialV2,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
-    refreshMode, modeAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
+    refreshBridgeSettings, sessionAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     collectors, setupSleepTimerV2,
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
     initialPrompts, initialPromptMaxChars,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
     emojiCdnCandidates, getImageDimensions, acceptImageBuffer, MAX_MEDIA_BYTES, bot,
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
-    settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
-    getMode() { return currentMode; },
+    settingFromDshNamespace, selfIdentityTextV2,
+    buildWakeReminderPromptV2: typeof buildWakeReminderPromptV2 === 'function'
+      ? buildWakeReminderPromptV2
+      : (key) => [selfIdentityTextV2(), '会话 ' + key + ' 的收尾提醒。'].filter(Boolean).join(String.fromCharCode(10)),
+    getMode() { return 'autonomous'; },
     setSelfIdentity(display, id) {
       selfDisplayName = String(display ?? '');
       selfUserId = String(id ?? '');
@@ -165,9 +179,9 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     flushQueue, retireSession,
     voiceCfg, voiceLibrary, resolveVoicePathForV2, resolveVoicePathForOperator,
     voiceBudgetCheck, sendVoiceV2, sendVoiceForV2, assertOutboundAuditOk,
-    setMode(value) { currentMode = value; },
+    setMode(_value) {},
     setReady(value) { dshReady = value; },
-    setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
+    setPresets(value) { dshPresetIds = value; },
     resetEpoch() { sessionEpoch++; },
   };
   bot.onPrivateMessage(async (event) => {`);
@@ -186,8 +200,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
-    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
-    ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt,
+    ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...safeFetch, ...forward, ...slang, ...sticker,
+    ...modelPrices, ...tokenLedger, ...voiceLib, ...roleCard, ...stateAcl, ...presetPrompt,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     sniffImage: mediaNormalize.sniffImage,

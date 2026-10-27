@@ -5,17 +5,17 @@ import http from 'node:http';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const KEY = 'group:456';
-const ACTIVE = { mode: 'active' };
-const DIVING = { mode: 'diving', infinite: true, triggers: { atMention: true, anyMessage: false } };
+const LEGACY_MODE_ONLY = { mode: 'active' };
+const INFINITE = { infinite: true };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const seqs = (messages) => Array.from(messages, (message) => message.seq);
 let failures = 0;
 let tests = 0;
 
-async function test(name, run, { observe = false } = {}) {
+async function test(name, run) {
   tests++;
   const h = await bridgeHarness({ config: { socialV2: {
-    wake: { preSleepWaitEnabled: observe, preSleepWaitMs: 1000 },
+    wake: { batchWindowMs: 1000 },
     wait: { minMs: 100, maxMs: 2000, minQuietAfterNewMs: 0 },
     proactive: { enabled: false },
     sticker: { enabled: false },
@@ -70,24 +70,24 @@ await test('wake-config atomically acknowledges its displayed watermark while pr
   append('first displayed message');
   const read = await request('unread');
   append('unseen new arrival');
-  const result = await request('wake-config', { body: { config: ACTIVE, throughSeq: read.data.readThroughSeq } });
+  const result = await request('wake-config', { body: { config: LEGACY_MODE_ONLY, throughSeq: read.data.readThroughSeq } });
   assert.equal(result.status, 200);
   assert.equal(result.data.markedCount, 1);
   assert.equal(st.wakeConfig.confirmedBy, 'set_wake_config');
-  assert.equal(st.wakeConfig.mode, 'active');
+  assert.equal('mode' in st.wakeConfig, false);
+  assert.equal('triggers' in st.wakeConfig, false);
   assert.deepEqual(seqs(st.unread), [2]);
 });
 
-await test('invalid watermarks cannot change unread, wake config, action or observation state', async ({ st, request, append }) => {
+await test('invalid watermarks cannot change unread, wake config or acknowledged cursor', async ({ st, request, append }) => {
   append('protected unread');
   await request('unread');
-  st.preSleepWaitObservedAt = Date.now();
-  const snapshot = () => plain({ unread: st.unread, wakeConfig: st.wakeConfig, lastActionAt: st.lastActionAt,
-    observedAt: st.preSleepWaitObservedAt, satisfiedAt: st.preSleepWaitSatisfiedAt, lastReadThroughSeq: st.lastReadThroughSeq });
+  const snapshot = () => plain({ unread: st.unread, wakeConfig: st.wakeConfig,
+    lastReadThroughSeq: st.lastReadThroughSeq });
   for (const route of ['mark-read', 'wake-config']) {
     for (const throughSeq of [null, '1', true, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, {}, []]) {
       const before = snapshot();
-      const result = await request(route, { body: { throughSeq, config: ACTIVE } });
+      const result = await request(route, { body: { throughSeq, config: LEGACY_MODE_ONLY } });
       assert.equal(result.status, 400, `${route} should reject ${JSON.stringify(throughSeq)}`);
       assert.deepEqual(snapshot(), before, `${route} invalid request must be atomic`);
     }
@@ -116,7 +116,7 @@ await test('console browsing does not authorize the agent to acknowledge unseen 
   append('console-only read');
   const read = await request('unread', { admin: true });
   assert.equal(read.status, 200);
-  const denied = await request('wake-config', { body: { throughSeq: 1, config: ACTIVE } });
+  const denied = await request('wake-config', { body: { throughSeq: 1, config: LEGACY_MODE_ONLY } });
   assert.equal(denied.status, 400);
   assert.deepEqual(seqs(st.unread), [1]);
 });
@@ -134,71 +134,71 @@ await test('my-recent returns an existing safe cursor without authorizing unrela
   assert.deepEqual(seqs(st.unread), [1]);
 });
 
-await test('combined close cannot bypass the pre-sleep observation guard', async ({ st, request, append }) => {
+await test('mark-read and wake-config close an observed cursor without a legacy sleep gate', async ({ st, request, append }) => {
   append('still discussing a normal topic');
   const read = await request('unread');
-  const before = plain(st.wakeConfig);
-  for (const route of ['mark-read', 'wake-config']) {
-    const result = await request(route, { body: { throughSeq: read.data.readThroughSeq, config: DIVING } });
-    assert.equal(result.status, 400);
-    assert.ok(result.data.preSleepWaitRemainingMs > 0);
-    assert.deepEqual(seqs(st.unread), [1]);
-    assert.deepEqual(plain(st.wakeConfig), before);
-  }
-}, { observe: true });
+  const marked = await request('mark-read', { body: { throughSeq: read.data.readThroughSeq } });
+  assert.equal(marked.status, 200);
+  assert.equal(marked.data.markedCount, 1);
+  const close = await request('wake-config', { body: { throughSeq: read.data.readThroughSeq, config: INFINITE } });
+  assert.equal(close.status, 200);
+  assert.equal(close.data.markedCount, 0);
+  assert.equal('mode' in st.wakeConfig, false);
+  assert.equal('triggers' in st.wakeConfig, false);
+  assert.deepEqual(seqs(st.unread), []);
+});
 
-await test('a full quiet observation allows a single combined close', async ({ h, st, request, append }) => {
-  h.cfg.socialV2.wake.preSleepWaitMs = 100;
+await test('a quiet wait returns normal wait data without the removed sleep gate', async ({ h, st, request, append }) => {
   append('ordinary topic');
   const read = await request('unread');
   const waited = await request('wait', { body: { timeoutMs: 100, quietMs: 0 } });
   assert.equal(waited.status, 200);
-  assert.equal(waited.data.preSleepWaitSatisfied, true);
-  assert.equal(waited.data.readThroughSeq, read.data.readThroughSeq);
-  const close = await request('wake-config', { body: { config: DIVING, throughSeq: waited.data.readThroughSeq } });
+  assert.equal('preSleepWaitSatisfied' in waited.data, false);
+  const close = await request('wake-config', { body: { config: INFINITE, throughSeq: read.data.readThroughSeq } });
   assert.equal(close.status, 200);
   assert.equal(close.data.markedCount, 1);
   assert.deepEqual(seqs(st.unread), []);
-}, { observe: true });
+});
 
 await test('wait exposes new messages and grants only their actually observed cursor', async ({ st, request, append }) => {
   append('message before wait');
   await request('unread');
   const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 } });
-  const timer = setTimeout(() => append('message during observation'), 60);
+  const timer = setTimeout(() => append('message during wait'), 60);
   let waited;
   try { waited = await waiting; } finally { clearTimeout(timer); }
   assert.equal(waited.status, 200);
   assert.equal(waited.data.arrived, true);
-  assert.equal(waited.data.preSleepWaitObserved, true);
   assert.deepEqual(seqs(waited.data.newMessages), [2]);
   assert.equal(waited.data.readThroughSeq, 2);
-  const close = await request('wake-config', { body: { config: DIVING, throughSeq: waited.data.readThroughSeq } });
+  const close = await request('wake-config', { body: { config: INFINITE, throughSeq: waited.data.readThroughSeq } });
   assert.equal(close.status, 200);
   assert.equal(close.data.markedCount, 2);
   assert.deepEqual(seqs(st.unread), []);
-}, { observe: true });
+});
 
-await test('another conversation token, pause, mode and allowlist guards still reject combined close', async ({ h, st, request, append }) => {
+await test('other token, pause and allowlist guards remain while the fixed runtime ignores legacy mode setters', async ({ h, st, request, append }) => {
   append('protected conversation');
   await request('unread');
   const otherToken = h.getSocialV2State('private:123').agentToken;
-  const body = { config: ACTIVE, throughSeq: 1 };
+  const body = { config: LEGACY_MODE_ONLY, throughSeq: 1 };
   assert.equal((await request('wake-config', { body, token: otherToken })).status, 403);
   h.socialV2.paused = true;
   assert.equal((await request('wake-config', { body })).status, 403);
   h.socialV2.paused = false;
-  h.setMode('chat');
-  assert.equal((await request('wake-config', { body })).status, 403);
-  h.setMode('reserved2');
   h.cfg.allow.groups = [];
   assert.equal((await request('wake-config', { body })).status, 403);
   assert.deepEqual(seqs(st.unread), [1]);
+  h.cfg.allow.groups = ['456'];
+  h.setMode('chat');
+  assert.equal(h.getMode(), 'autonomous');
+  assert.equal((await request('wake-config', { body })).status, 200);
+  assert.deepEqual(seqs(st.unread), []);
 });
 
 await test('legacy mark-read still clears all unread and legacy wake-config preserves unread', async ({ st, request, append }) => {
   append('legacy message');
-  const config = await request('wake-config', { body: { config: ACTIVE } });
+  const config = await request('wake-config', { body: { config: LEGACY_MODE_ONLY } });
   assert.equal(config.status, 200);
   assert.deepEqual(seqs(st.unread), [1]);
   append('legacy second message');
@@ -208,17 +208,20 @@ await test('legacy mark-read still clears all unread and legacy wake-config pres
   assert.deepEqual(seqs(st.unread), []);
 });
 
-await test('an invalid wake configuration cannot acknowledge an otherwise valid cursor', async ({ st, request, append }) => {
-  append('must remain unread');
+await test('wake configuration stays fixed and can acknowledge an otherwise valid cursor', async ({ st, request, append }) => {
+  append('must be acknowledged');
   await request('unread');
-  const before = plain(st.wakeConfig);
   const result = await request('wake-config', { body: { throughSeq: 1, config: {
-    mode: 'diving', infinite: true, triggers: { atMention: false, nameMention: false, question: false,
-      poke: false, anyMessage: false, probability: 0, keywords: [], speakerIds: [] },
+    mode: 'active', infinite: true, triggers: { atMention: false, nameMention: true, question: true,
+      poke: true, anyMessage: true, probability: 1, keywords: ['wake'], speakerIds: ['789'] },
   } } });
-  assert.equal(result.status, 400);
-  assert.deepEqual(seqs(st.unread), [1]);
-  assert.deepEqual(plain(st.wakeConfig), before);
+  assert.equal(result.status, 200);
+  assert.equal(result.data.markedCount, 1);
+  assert.equal('mode' in result.data.wakeConfig, false);
+  assert.equal('triggers' in result.data.wakeConfig, false);
+  assert.deepEqual(seqs(st.unread), []);
+  assert.equal('mode' in st.wakeConfig, false);
+  assert.equal('triggers' in st.wakeConfig, false);
 });
 
 await test('zero and repeated watermarks never acknowledge a later unseen arrival', async ({ st, request, append }) => {
@@ -239,15 +242,15 @@ await test('combined close respects the separate mark-read and wake-config tool 
   h.cfg.socialV2.tools.markRead = false;
   // Closing is one action: with markRead off the watermark is ignored, not fatal, so
   // the wake config still lands and the unread messages stay pending.
-  const ignoredCursor = await request('wake-config', { body: { throughSeq: 1, config: ACTIVE } });
+  const ignoredCursor = await request('wake-config', { body: { throughSeq: 1, config: LEGACY_MODE_ONLY } });
   assert.equal(ignoredCursor.status, 200, 'a disabled markRead must not fail the closing call');
   assert.equal(ignoredCursor.data.markedCount, 0);
   assert.equal((await request('mark-read', { body: { throughSeq: 1 } })).status, 403);
   assert.deepEqual(seqs(st.unread), [1], 'no unread may be cleared while markRead is off');
-  assert.equal((await request('wake-config', { body: { config: ACTIVE } })).status, 200);
+  assert.equal((await request('wake-config', { body: { config: LEGACY_MODE_ONLY } })).status, 200);
   h.cfg.socialV2.tools.markRead = true;
   h.cfg.socialV2.tools.setWakeConfig = false;
-  assert.equal((await request('wake-config', { body: { throughSeq: 1, config: ACTIVE } })).status, 403);
+  assert.equal((await request('wake-config', { body: { throughSeq: 1, config: LEGACY_MODE_ONLY } })).status, 403);
   assert.deepEqual(seqs(st.unread), [1]);
 });
 
@@ -261,9 +264,8 @@ await test('an in-flight wait cannot authorize new messages after its session to
   try { result = await waiting; } finally { clearTimeout(timer); }
   assert.equal(result.status, 403);
   assert.notEqual(st.agentToken, oldToken);
-  assert.equal(st.preSleepWaitObservedAt, 0);
   assert.equal((await request('mark-read', { body: { throughSeq: 2 }, token: st.agentToken })).status, 400);
-}, { observe: true });
+});
 
 await test('an in-flight wait cannot write observation into a replaced conversation state', async ({ h, st, request, append }) => {
   append('old state');
@@ -275,32 +277,29 @@ await test('an in-flight wait cannot write observation into a replaced conversat
   let result;
   try { result = await waiting; } finally { clearTimeout(timer); }
   assert.equal(result.status, 403);
-  assert.equal(st.preSleepWaitSatisfiedAt, 0);
   const replacement = h.getSocialV2State(KEY);
-  assert.equal(replacement.preSleepWaitSatisfiedAt, 0);
   assert.equal((await request('mark-read', { body: { throughSeq: 1 }, token: replacement.agentToken })).status, 400);
-}, { observe: true });
-
-await test('an in-flight wait rechecks mode permission before exposing a new arrival', async ({ h, request, append }) => {
-  append('before mode change');
-  const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 } });
-  const timer = setTimeout(() => { h.setMode('chat'); append('after mode change'); }, 60);
-  let result;
-  try { result = await waiting; } finally { clearTimeout(timer); }
-  assert.equal(result.status, 403);
-  assert.equal(result.data.newMessages, undefined);
 });
 
-await test('building a budgeted snapshot preserves whole oldest messages without granting a receipt', async ({ h, st, request, append }) => {
-  h.cfg.socialV2.context.wakeMessageLimit = 2;
-  h.cfg.socialV2.context.wakeRecentLimit = 0;
+await test('an in-flight wait remains valid when the legacy mode setter is called', async ({ h, request, append }) => {
+  append('before compatibility setter');
+  const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 } });
+  const timer = setTimeout(() => { h.setMode('chat'); append('after compatibility setter'); }, 60);
+  let result;
+  try { result = await waiting; } finally { clearTimeout(timer); }
+  assert.equal(result.status, 200);
+  assert.equal(h.getMode(), 'autonomous');
+  assert.deepEqual(seqs(result.data.newMessages), [1, 2]);
+});
+
+await test('a direct wake snapshot shows only its trigger and does not grant a receipt for unrelated unread', async ({ h, st, request, append }) => {
   append('first'); append('second'); append('third');
-  const snapshot = h.buildWakeSnapshotV2(KEY);
-  assert.deepEqual(seqs(snapshot.messages), [1, 2]);
-  assert.equal(snapshot.includedUnreadCount, 2);
+  const snapshot = h.buildWakeSnapshotV2(KEY, 'atMention@seq2');
+  assert.deepEqual(seqs(snapshot.messages), [2]);
+  assert.equal(snapshot.includedUnreadCount, 1);
   assert.equal(snapshot.unreadCount, 3);
   assert.equal(snapshot.partial, true);
-  assert.equal(snapshot.readThroughSeq, 2);
+  assert.equal(snapshot.readThroughSeq, 0);
   assert.ok(JSON.stringify(snapshot).length <= h.cfg.socialV2.context.wakeMaxChars);
   assert.equal((await request('mark-read', { body: { throughSeq: 2 } })).status, 400);
   assert.deepEqual(seqs(st.unread), [1, 2, 3]);
@@ -314,8 +313,8 @@ await test('an in-flight wait rechecks paused, feature, tool and allowlist permi
     ['tool disable', () => { h.cfg.socialV2.tools.waitMessages = false; }, () => { h.cfg.socialV2.tools.waitMessages = true; }],
     ['allowlist removal', () => { h.cfg.allow.groups = []; }, () => { h.cfg.allow.groups = ['456']; }],
   ];
-  const before = () => plain({ unread: st.unread, wakeConfig: st.wakeConfig, lastReadThroughSeq: st.lastReadThroughSeq,
-    observedAt: st.preSleepWaitObservedAt, satisfiedAt: st.preSleepWaitSatisfiedAt });
+  const before = () => plain({ unread: st.unread, wakeConfig: st.wakeConfig, lastReadThroughSeq: st.lastReadThroughSeq });
+
   for (const [label, revoke, restore] of cases) {
     const snapshot = before();
     const waiting = request('wait', { body: { timeoutMs: 100, quietMs: 0 } });
@@ -326,55 +325,42 @@ await test('an in-flight wait rechecks paused, feature, tool and allowlist permi
     assert.equal(result.data.newMessages, undefined, label);
     assert.deepEqual(before(), snapshot, `${label} cannot modify observation, unread or wake config`);
   }
-}, { observe: true });
+});
 
-await test('oversized first stored unread remains intact and cannot be skipped by the snapshot', async ({ h, st, request, append }) => {
+await test('a non-direct wake does not expose buffered unread through the automatic snapshot', async ({ h, st, request, append }) => {
   h.cfg.socialV2.context.wakeMaxChars = 500;
-  // Existing bridge storage keeps head/tail excerpts. Distinct long excerpts
-  // exceed this snapshot budget and must not be truncated a second time.
   const long = '消息前半部分'.repeat(100) + '消息后半部分'.repeat(100);
   append(long); append('small but newer');
   const storedBefore = plain(st.unread[0]);
-  const snapshot = h.buildWakeSnapshotV2(KEY);
-  assert.equal(snapshot.messages.length, 0);
-  assert.equal(snapshot.partial, true);
-  assert.equal(snapshot.readThroughSeq, 0);
-  assert.ok(JSON.stringify(snapshot).length <= 500);
+  assert.equal(h.buildWakeSnapshotV2(KEY, 'bootstrap'), null);
   assert.deepEqual(plain(st.unread[0]), storedBefore);
   const unread = await request('unread');
   assert.deepEqual(unread.data.messages[0], storedBefore);
 });
 
-await test('snapshot recent history stays chronological and does not duplicate unread', async ({ h, request, append }) => {
+await test('direct wake snapshots do not inline unrelated recent history or duplicate unread', async ({ h, request, append }) => {
   append('history 1'); append('history 2'); append('history 3');
   await request('mark-read', { body: {} });
   append('current unread');
-  h.cfg.socialV2.context.wakeRecentLimit = 2;
-  const snapshot = h.buildWakeSnapshotV2(KEY);
+  const snapshot = h.buildWakeSnapshotV2(KEY, 'atMention@seq4');
   assert.deepEqual(seqs(snapshot.messages), [4]);
-  assert.deepEqual(seqs(snapshot.recent), [2, 3]);
+  assert.deepEqual(seqs(snapshot.recent), []);
   assert.equal(snapshot.partial, false);
   assert.equal(snapshot.readThroughSeq, 4);
 });
 
-await test('snapshot feature and tool flags cannot be bypassed through inline recent history', async ({ h, request, append }) => {
+await test('direct snapshots cannot bypass the unread tool switch or broaden into history', async ({ h, request, append }) => {
   append('authorized old history');
   await request('mark-read', { body: {} });
   append('unread requiring getUnread');
   h.cfg.socialV2.tools.getUnread = false;
-  let snapshot = h.buildWakeSnapshotV2(KEY);
-  assert.equal(snapshot.messages.length, 0);
-  assert.deepEqual(seqs(snapshot.recent), [1]);
-  assert.equal(snapshot.partial, true);
-  assert.equal(snapshot.readThroughSeq, 1);
-  h.cfg.socialV2.tools.getRecent = false;
-  assert.equal(h.buildWakeSnapshotV2(KEY), null);
+  assert.equal(h.buildWakeSnapshotV2(KEY, 'atMention@seq2'), null);
   h.cfg.socialV2.tools.getUnread = true;
-  snapshot = h.buildWakeSnapshotV2(KEY);
+  const snapshot = h.buildWakeSnapshotV2(KEY, 'atMention@seq2');
   assert.deepEqual(seqs(snapshot.messages), [2]);
-  assert.equal(snapshot.recent.length, 0);
+  assert.deepEqual(seqs(snapshot.recent), []);
   h.cfg.socialV2.context.inlineWakeMessages = false;
-  assert.equal(h.buildWakeSnapshotV2(KEY), null);
+  assert.deepEqual(seqs(h.buildWakeSnapshotV2(KEY, 'atMention@seq2').messages), [2]);
 });
 
 await test('a compact image handle still resolves after unread outlives the recent buffer', async ({ h, st, request, append }) => {
@@ -383,7 +369,7 @@ await test('a compact image handle still resolves after unread outlives the rece
   append('newer text');
   assert.deepEqual(seqs(st.recentMessages), [2]);
   assert.deepEqual(seqs(st.unread), [1, 2]);
-  const snapshot = h.buildWakeSnapshotV2(KEY);
+  const snapshot = h.buildWakeSnapshotV2(KEY, 'atMention@seq1');
   assert.equal(snapshot.messages[0].media[0].index, 1);
   assert.equal(snapshot.messages[0].media[0].file, undefined);
   for (const messageId of ['1', '900719925474099312345']) {
@@ -396,19 +382,16 @@ await test('a compact image handle still resolves after unread outlives the rece
   assert.deepEqual(h.calls.images, ['fixture-kept-image', 'fixture-kept-image']);
 });
 
-await test('busy and rate-limited wake attempts preserve the current observation state', async ({ h, st, append }) => {
+await test('busy and rate-limited wake attempts preserve pending autonomous wake state', async ({ h, st, append }) => {
   append('already observed');
-  const setObservation = () => { st.preSleepWaitObservedAt = 123; st.preSleepWaitSatisfiedAt = 456; st.preSleepWaitAccumMs = 789; };
-  const checkObservation = () => assert.deepEqual([st.preSleepWaitObservedAt, st.preSleepWaitSatisfiedAt, st.preSleepWaitAccumMs], [123, 456, 789]);
-  setObservation();
   h.promptQueues.set(KEY, { running: true, queue: [] });
-  await h.sendWakePromptV2(KEY, 'question');
-  checkObservation();
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
+  assert.equal(h.calls.prompts.length, 0);
+  assert.ok(st.pendingWakeReasons.length >= 1);
   h.promptQueues.delete(KEY);
   h.cfg.socialV2.wake.maxWakePerMinute = 1;
   st.wakeTimes = [Date.now()];
-  await h.sendWakePromptV2(KEY, 'question');
-  checkObservation();
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   assert.equal(h.calls.prompts.length, 0);
 });
 
@@ -418,7 +401,7 @@ await test('a rejected prompt does not authorize the undelivered snapshot', asyn
     h.calls.prompts.push(params);
     return { result: { ok: false, error: { code: 'FIXTURE_REJECT', message: 'fixture rejection' } } };
   };
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   assert.equal(h.calls.prompts.length, 1);
   assert.equal((await request('mark-read', { body: { throughSeq: 1 } })).status, 400);
   assert.deepEqual(seqs(st.unread), [1]);
@@ -431,9 +414,9 @@ await test('a new arrival during prompt acceptance is not implicitly part of the
     append('arrived after snapshot construction');
     return { result: { ok: true, value: {} } };
   };
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   assert.equal((await request('mark-read', { body: { throughSeq: 2 } })).status, 400);
-  assert.equal((await request('wake-config', { body: { throughSeq: 1, config: ACTIVE } })).status, 200);
+  assert.equal((await request('wake-config', { body: { throughSeq: 1, config: LEGACY_MODE_ONLY } })).status, 200);
   assert.deepEqual(seqs(st.unread), [2]);
 });
 
@@ -444,7 +427,7 @@ await test('a retired prompt session cannot grant a receipt when its old accepta
     h.retireSession(KEY);
     return { result: { ok: true, value: {} } };
   };
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   assert.equal((await request('mark-read', { body: { throughSeq: 1 }, token: st.agentToken })).status, 400);
   assert.deepEqual(seqs(st.unread), [1]);
 });
@@ -454,7 +437,7 @@ await test('offline wake replay builds a fresh snapshot with the current session
   const originalToken = st.agentToken;
   append('queued initial message');
   h.setReady(false);
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   assert.equal(h.calls.prompts.length, 0);
   assert.equal((await request('mark-read', { body: { throughSeq: 1 } })).status, 400);
   h.retireSession(KEY);
@@ -464,20 +447,21 @@ await test('offline wake replay builds a fresh snapshot with the current session
   assert.equal(h.calls.prompts.length, 1);
   const content = h.calls.prompts[0].content.map((part) => part.text || '').join('\n');
   assert.ok(content.includes('queued initial message'));
-  assert.ok(content.includes('queued later message'));
+  assert.ok(!content.includes('queued later message'));
   assert.ok(content.includes(st.agentToken));
   assert.ok(!content.includes(originalToken));
-  assert.equal((await request('mark-read', { body: { throughSeq: 2 }, token: st.agentToken })).status, 200);
+  assert.equal((await request('mark-read', { body: { throughSeq: 1 }, token: st.agentToken })).status, 200);
 });
 
-await test('offline reserved2 wake replay cannot leak into an ordinary chat session', async ({ h, append }) => {
-  append('reserved2 queue message');
+await test('offline queued autonomous wake replay remains available after the legacy mode setter is called', async ({ h, append }) => {
+  append('autonomous queue message');
   h.setReady(false);
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   h.setMode('chat');
   h.setReady(true);
   await h.flushQueue();
-  assert.equal(h.calls.prompts.length, 0);
+  assert.equal(h.getMode(), 'autonomous');
+  assert.equal(h.calls.prompts.length, 1);
 });
 
 await test('real wake delivery inlines compact messages with exact quote and media handles', async ({ h, st, request, append }) => {
@@ -485,7 +469,7 @@ await test('real wake delivery inlines compact messages with exact quote and med
     media: [{ kind: 'image', file: 'fixture-local-image', url: 'https://images.invalid/fixture-secret' }],
     forwards: ['fixture-forward-123'],
   });
-  await h.sendWakePromptV2(KEY, 'question');
+  await h.sendWakePromptV2(KEY, 'atMention@seq1');
   assert.equal(h.calls.prompts.length, 1);
   const text = h.calls.prompts[0].content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
   assert.ok(text.includes('fixture-inline-content'));
@@ -493,7 +477,7 @@ await test('real wake delivery inlines compact messages with exact quote and med
   assert.ok(text.includes('fixture-forward-123'), 'forward handle must remain fetchable');
   assert.ok(text.includes('readThroughSeq'));
   assert.ok(!text.includes('fixture-secret'), 'media URL is unnecessary when the local seq can resolve it');
-  const close = await request('wake-config', { body: { config: ACTIVE, throughSeq: 1 } });
+  const close = await request('wake-config', { body: { config: LEGACY_MODE_ONLY, throughSeq: 1 } });
   assert.equal(close.status, 200, 'delivered inline content should authorize its cursor');
   assert.deepEqual(seqs(st.unread), []);
 });
@@ -513,7 +497,7 @@ await test('oldest-first unread paging can drain a backlog beyond both recent an
   assert.equal(next.data.messages[0].seq, 31);
   assert.equal(next.data.readThroughSeq, 150, 'previous tail receipt now joins the complete prefix');
   append('arrived after complete read');
-  assert.equal((await request('wake-config', { body: { config: ACTIVE, throughSeq: next.data.readThroughSeq } })).status, 200);
+  assert.equal((await request('wake-config', { body: { config: LEGACY_MODE_ONLY, throughSeq: next.data.readThroughSeq } })).status, 200);
   assert.deepEqual(seqs(st.unread), [151]);
   for (const value of ['', '-1', '1.2', 'text', '9007199254740992']) {
     assert.equal((await request('unread', { query: `&afterSeq=${value}` })).status, 400);
@@ -524,7 +508,7 @@ await test('offline queued wakes respect pause and disable at dispatch without e
   append('queued while active');
   for (const policy of ['paused', 'disabled']) {
     h.setReady(false);
-    await h.sendWakePromptV2(KEY, 'question');
+    await h.sendWakePromptV2(KEY, 'atMention@seq1');
     if (policy === 'paused') h.socialV2.paused = true;
     else h.cfg.socialV2.enabled = false;
     h.setReady(true);
@@ -563,7 +547,6 @@ await test('an evicted unread window cannot drag the acknowledged watermark back
 await test('a plain query cannot lower the persisted watermark below what was already acknowledged', async ({ h, st, request, append }) => {
   h.cfg.socialV2.context.unreadLimit = 3;
   h.cfg.socialV2.context.inlineWakeMessages = false;
-  h.cfg.socialV2.wake.preSleepWaitEnabled = false; // isolate the cursor from the sleep gate
   for (let i = 1; i <= 3; i++) append(`seen ${i}`);
   const first = await request('unread', { query: '&limit=3&afterSeq=0' });
   assert.equal(first.data.readThroughSeq, 3);
@@ -576,7 +559,7 @@ await test('a plain query cannot lower the persisted watermark below what was al
   const state = h.getSocialV2State(KEY);
   const cached = await request('my-recent');
   assert.equal(cached.data.readThroughSeq, 3, `my-recent reported ${cached.data.readThroughSeq}, expected the floor 3`);
-  const wake = await request('wake-config', { body: { config: ACTIVE } });
+  const wake = await request('wake-config', { body: { config: LEGACY_MODE_ONLY } });
   assert.equal(wake.status, 200);
   assert.equal(wake.data.readThroughSeq, 3, `wake-config reported ${wake.data.readThroughSeq}, expected the floor 3`);
   assert.deepEqual(seqs(state.unread), [4, 5, 6], 'skip-free state: unread is untouched without a cursor');

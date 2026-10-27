@@ -30,17 +30,18 @@
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 白名单 | `src/bridge.js` `allowed()` | `deny` 优先于 `allow`；两侧统一 `String()` 比较（兼容 OneBot int64 的数字/字符串差异）；allow 为空时返回 `allowAllWhenEmpty`（**默认 false**） |
-| 模式门 | `modeAllowed()` / `isSessionAllowedInCurrentMode()` | 会话 key 必须严格匹配 `^(group\|private):\d+$`；`closed-agent` 只放行 `private:<ownerQQ>` |
+| 固定会话准入 | `isSessionAllowed()` / `allowed()` | 会话 key 必须严格匹配 `^(group\|private):\d+$`；所有 QQ 会话都应用同一套 allow/deny 检查，不存在绕过白名单的高权限会话模式 |
+| 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊来信可唤醒；群聊仅原生 @ 机器人或已验证回复/引用机器人消息唤醒。普通群消息只缓存在桥接，直接唤醒快照只附带触发消息；其余内容按需读取，无周期模型心跳 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
-| 管理员识别 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')`；未配置 `ownerQQ` 时启动日志明确告警（审批/管理命令/封闭 agent 全部不可用） |
+| 管理员识别 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')`；未配置 `ownerQQ` 时启动日志明确告警（管理员命令与审批通知不可用；不会授予任何 QQ 会话本地工具） |
 
 ### 2. 工具面（agent 能做什么）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现，`dsh/agent-presets/*/qq-tool-restrict.mjs` 只是 re-export 壳） | 两道闸门：① 注册期 `tools.restrict({deny})` 把本地执行/宿主运行期工具**从模型 schema 里隐藏**（67 个名字，2026-09-29 按 DSH 0.2.0-rc.2 真实工具清单重新对账）；② 执行期 `tools.guard` 精确白名单：仅 `mcp__snowluma__*` / `mcp__snowluma-host__*` / `mcp__web-search-safe__*` + `ask_user_question` / `todo_write`；空/未知名字一律拒绝；内置 `tool-web` 的 search/fetch 关闭。对账工具：`npm run scan:tool-names`（**每次升级 DSH 后应跑一次**：`tools.restrict` 对不存在的名字会抛错并被逐个 try/catch 吞掉 ⇒ 假名 = 静默失效；新版本新增的能力若不补进名单 = 漏隐藏） |
-| 预设 fail-closed | `resolvePresetName()` + `ensureSession()` | 群聊/仿真会话拿不到受限预设时**拒绝建会话**，绝不回退到含本地工具的 DSH 默认预设；只有 `closed-agent`（管理员私聊）允许回退 |
-| 发送强制白名单 | 所有 `/api/send/*`、`/api/socialV2/send-*` | 目标必须命中 `allow.groups` / `allow.private`（每次都重新校验，不做缓存） |
+| 预设 fail-closed | `resolvePresetName()` + `ensureSession()` | 任一 QQ 会话拿不到固定的 `qq-chat-v2` 受限预设时**拒绝建会话**，绝不回退到可能含本地工具的 DSH 默认预设 |
+| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | 必须来自当前有效 DSH 回合、携带该会话 agent token，且目标通过 `allow.groups` / `allow.private` 与 `deny.*` 校验（每次都重新校验） |
 | 动态 ACL | `resolveVoicePathForV2()` / `voicePathInsideLibrary()` | 语音只能取语音库目录内的文件；贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
 | **只探测、不部署**（L6 设计不变量） | `mcp-host-server.js` | 该 MCP server **只提供 `snowluma_status`（只读探活 `get_login_info`）**。⚠️ **v0.1.5 起删除了 `start_snowluma` / `stop_snowluma` 与 `snowluma.allowProcessControl`**：SnowLuma EULA §5.4 规定「将其并入第三方安装包或 Docker 镜像、**通过自动化脚本部署**」须事先书面授权，原生组件属**专有组件**。⇒ 本程序不安装、不复制、不打包、不程序化启停 SnowLuma；用户自行安装与启动。详见 `LICENSE` 与 `QSH-plan/QSH_PLAN.md` §6.0 |
 
@@ -137,7 +138,7 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 | R4 | **远程停止不是原子的** | `session/control` + `updateQueue` + `cancel` 是尽力而为，已执行的工具副作用无法回滚 | DSH 协议没有事务语义 |
 | R5 | **离线队列不保证送达** | 每会话最多 50 条，进程退出即丢 | 一致性代价过高；README 已写明 |
 | R6 | **预设不变量检查是子串存在性** | 防误删，不防恶意 | 能改这个文件的人本来就是管理员，真正的硬边界在工具守卫与白名单 |
-| R7 | **`self-test.js` 只证明链路通** | 不做断言 | 它是连通性探针，不是回归套件（回归在 `npm run test:audit`） |
+| R7 | **`self-test.js` 只证明链路通** | 不做断言 | 它是连通性探针，不是回归套件（离线回归由 `node scripts/test-audit.mjs` 运行） |
 | R8 | **单人维护、无外部安全审计** | 有离线回归 + 本文档 | 计划在 QSH v1.0 发布前做一次外部/对抗式复审 |
 | R9 | **`state/` 的 ACL 收紧可能失败**（未提权且目录属主权限被策略收走时） | `scripts/harden-state-acl.mjs` 会自动提权重试一次；仍失败则明确告警 + 给出可复制命令 + 控制台告警条 | 改 ACL 属于需要特权的操作；**降级为"明确告警"而不是"阻断启动"**是刻意的取舍（否则用户会为了能启动而关掉整条安全链路）。QSH M2 会用口令派生 + HttpOnly Cookie 把最敏感的控制台凭据从明文落盘里拿掉 |
 | R10 | **收紧 `state/` 后，DSH 沙箱会话写不进 `state/`**（见 §2.6） | 有意取舍，非缺陷；诊断见 `npm run diagnose:acl` | 两者不可兼得：能力 SID 只能靠继承下发，而切断继承正是防"本机其他用户读令牌"的唯一手段。**代价已被接受并写进文档**，项目自己的测试夹具/探针据此改用系统临时目录 |
@@ -148,7 +149,7 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 ## 四、发布前必须跑的检查（回归清单）
 
 ```bash
-npm run test:audit          # 30 个离线回归脚本（含安全专项），必须全绿
+node scripts/test-audit.mjs # 纯 mock/fixture 离线回归，必须全绿
 npm run verify:adaptation   # DSH 适配一致性（preset/工具守卫/MCP 挂载/活 DSH 实测）
 npm run verify:persona      # 人格配置一致性
 npm run diagnose:acl        # ACL 收紧路径盘点（只读；需在**无沙箱**终端跑，见 §2.6）
@@ -159,8 +160,8 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 安全专项必须覆盖（缺一不可）：
 
 - [x] 白名单/黑名单/空白名单 fail-closed（含单复数与字符串/数字两种写法）
-- [x] `closed-agent` 只对 `private:<ownerQQ>` 放行；模式切换会退役旧会话
-- [x] 预设清单不可用时**拒绝**建群聊会话（不回退到默认预设）
+- [x] 固定唤醒策略：群消息只有原生 @ / 已验证回复可唤醒；未展示未读继续留在桥接缓冲
+- [x] 固定 preset 不可用时**拒绝**创建任一 QQ 会话（不回退到默认预设）
 - [x] agent token 无法访问任何管理端点；空 agent token 被拒
 - [x] 控制台伪造 `Host` 被拒；错令牌（含错长度、大小写、尾空格）被拒
 - [x] `/api/authorize/read` 空令牌被拒
@@ -169,7 +170,7 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 - [x] 出站文本命中敏感信息时整条拦截；含已知会话令牌时直接抛错
 - [x] SSRF：scheme、URL 凭据、私有 IP、重定向、超时、大小限制（11 项）
 - [x] 桥接 `200 + {ok:false}` 会被 MCP 当作失败上报（不产生静默假成功）
-- [x] 旧只读工具在非 `closed-agent` 模式下 fail-closed
+- [x] 发送必须同时通过活动回合租约、会话令牌、白名单与审计
 - [x] `state/` ACL 助手：非阻断、防递归、`start.bat` 纯 ASCII+CRLF 且先于桥接调用（**结构级断言**）
 - [ ] **`state/` ACL 的真实 icacls/UAC 行为**：需在普通终端手动复跑 `node scripts/harden-state-acl.mjs` 确认（沙箱/CI 里改 ACL 会被拒，无法自动化）
 

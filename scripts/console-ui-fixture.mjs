@@ -11,11 +11,12 @@ import { manualDirCommand } from '../src/state-acl.mjs';
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
 
-// 预设状态：mock 直接复用真实字段口径，避免与 bridge.js 漂移。
-function presetStatusFixture(preset) {
+// 预设状态：离线 UI 只模拟唯一的 reserved2 运行时预设。
+function presetStatusFixture() {
+  const preset = 'qq-chat-v2';
   return {
     preset,
-    label: preset === 'qq-chat' ? '一代仿真（reserved）' : '二代仿真（reserved2）',
+    label: '仿真会话（reserved2）',
     sourceFile: `dsh/agent-presets/${preset}/agent.cordis.yml`,
     installed: true,
     requiresRestart: true,
@@ -286,7 +287,7 @@ function usageRecentFixture() {
 
 export function makeFixtureState() {
   return {
-    mode: 'reserved2', role: '小鲸鱼', roleMode: 'active', closedAgentPreset: '', paused: false,
+    mode: 'reserved2', role: '小鲸鱼', roleMode: 'active', paused: false,
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
     roleContents: {
       小鲸鱼: '# 小鲸鱼\n\n- 性格：好奇、爱接梗，遇到不懂的会直接问\n- 说话风格：简短，偶尔用 emoji',
@@ -294,8 +295,7 @@ export function makeFixtureState() {
       技术伙伴: '# 技术伙伴\n\n- 性格：直接、爱讲原理\n- 说话风格：先给结论再解释',
     },
     simPrompts: {
-      'qq-chat-v2': '你是 QQ 群里的仿真群友。\n\n【二代仿真模式 —— 安全规则（最高优先级，不可违反）】\n1. 你没有本地工具。\n\n【二代仿真模式 —— 工具协议（最高优先级）】\n1. 文本输出不会自动发送到 QQ。',
-      'qq-chat': '你是 QQ 群里的仿真群友（一代）。\n\n【一代仿真模式 —— 安全规则】\n1. 你没有本地工具。\n\n【一代仿真模式 —— 工具协议】\n1. 回复会自动转发到 QQ。',
+      'qq-chat-v2': '你是 QQ 会话中的仿真群友。\n\n【reserved2 安全规则】\n1. 只有通过可用工具的动作才会发送到 QQ。\n\n【工具协议】\n1. 普通群消息保持未读，按需显式查看。',
     },
     roleInjectMax: 8000,
     dshEffort: 'max',
@@ -305,20 +305,16 @@ export function makeFixtureState() {
       { key: 'group:100003', sessionId: 'demo-development-20260920', owner: false },
       { key: 'private:100001', sessionId: 'demo-owner-20260920', owner: true },
     ],
-    social: {
-      triggerProbability: 0.2, activeCheckMinMs: 10000, activeCheckMaxMs: 30000,
-      activeReplyDelayMinMs: 1000, activeReplyDelayMaxMs: 3000, activeDurationEnabled: true,
-      activeDurationMinMs: 180000, activeDurationMaxMs: 600000, idleWindowMs: 300000,
-      idleRetryProbability: 0.4, idleRetryWaitMs: 120000, skipProbability: 0.15,
-      surrenderProbability: 0.08, contextWindow: 20, maxReplyChars: 500,
-      burstEnabled: true, burstIntervalMinMs: 1000, burstIntervalMaxMs: 3000,
-      longGapProbability: 0.1, longGapMinMs: 2500, longGapMaxMs: 5000,
-      mustReplyKeywords: ['小鲸鱼', 'DeepSeek'], proactiveEnabled: true,
-      proactiveIdleThresholdMs: 1800000, proactiveCheckMinMs: 300000,
-      proactiveCheckMaxMs: 900000, proactiveProbability: 0.2,
+    v2: {
+      enabled: true,
+      tools: {},
+      wake: { sleepMinMs: 60000, sleepMaxMs: 0, maxWakePerMinute: 1, maxWakePerHour: 12, batchWindowMs: 8000, noActionLimit: 3, maxWakeConfigReminders: 2 },
+      send: { burstEnabled: true, burstMaxMessages: 8, burstIntervalMinMs: 1000, burstIntervalMaxMs: 3000, longGapProbability: 0.2, longGapMinMs: 5000, longGapMaxMs: 10000, maxSendPerMinute: 8, maxSendPerHour: 60, maxMessageChars: 500, maxGapMs: 10000, gapBaseMs: 800, gapPerCharMs: 20 },
+      wait: { defaultMs: 30000, minMs: 5000, maxMs: 600000, defaultQuietMs: 8000, minQuietAfterNewMs: 10000 },
+      sticker: { enabled: true, syncTtlMs: 60000, maxListCount: 100, includeInPrompt: true, promptMaxStickers: 8, collect: { enabled: true, maxPerMinute: 2, maxPerHour: 10, maxRemarkChars: 20 } },
+      context: { recentLimit: 100, unreadLimit: 30, contextWindow: 20 },
+      feedback: { maxLength: 500, notifyOwnerOnError: false },
     },
-    socialStates: { 'group:123456789': { phase: 'active' }, 'group:100003': { phase: 'idle' } },
-    v2: { enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {} },
     // 会话初始提示词（离线示例）：整段内容都是虚构的演示文本。
     initPrompt: '离线示例：这是一个演示用的群聊环境说明，不会写进任何真实配置。',
     slangConfig: { enabled: true, extractMinMessages: 10, extractCooldownMs: 300000, inferenceThresholds: [2, 4, 8], injectMax: 8, learnerPreset: 'qq-chat', workspaceTitle: 'QQ 黑话学习', autoResearch: true },
@@ -376,8 +372,8 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       }
       if (method === 'GET') {
         switch (path) {
-          case '/api/status': return json({ ok: true, dshReady: true, mode: state.mode, role: state.role, roleMode: state.roleMode, closedAgentPreset: state.closedAgentPreset, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] group:123456789 · 已处理一条消息\n[08:30:20] 二代社交助手正在运行\n以上均为离线模拟数据。' });
-          case '/api/presets': return json({ presets: [{ id: 'qq-chat-v2', trust: 'user' }, { id: 'qq-chat', trust: 'user' }] });
+          case '/api/status': return json({ ok: true, dshReady: true, mode: 'reserved2', role: state.role, roleMode: state.roleMode, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] group:123456789 · 已处理一条消息\n[08:30:20] reserved2 会话运行中\n以上均为离线模拟数据。' });
+          case '/api/presets': return json({ presets: [{ id: 'qq-chat-v2', trust: 'user' }] });
           case '/api/roles': return json({
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {
@@ -420,19 +416,19 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             });
           }
           case '/api/preset/sim-prompt': {
-            const preset = url.searchParams.get('preset') === 'qq-chat' ? 'qq-chat' : 'qq-chat-v2';
+            const preset = 'qq-chat-v2';
             return json({
               ok: true,
               content: state.simPrompts[preset],
               chars: state.simPrompts[preset].length,
               bytes: Buffer.byteLength(state.simPrompts[preset], 'utf8'),
               warnings: [],
-              status: presetStatusFixture(preset),
-              presets: [presetStatusFixture('qq-chat'), presetStatusFixture('qq-chat-v2')],
+              status: presetStatusFixture(),
+              presets: [presetStatusFixture()],
             });
           }
           case '/api/preset/sim-prompt/backups': {
-            const preset = url.searchParams.get('preset') === 'qq-chat' ? 'qq-chat' : 'qq-chat-v2';
+            const preset = 'qq-chat-v2';
             return json({ ok: true, backups: [{ file: `${preset}.agent.cordis.yml.fixture`, mtime: Date.parse(timestamp) }] });
           }
           case '/api/dsh/model': return json({
@@ -449,14 +445,13 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/whitelist': return json(state.whitelist);
           case '/api/sessions': return json({ sessions: state.sessions });
           case '/api/pending': return json({ pending: [{ key: 'group:123456789', kind: 'approval', toolName: '演示工具', reason: '等待管理员确认（离线示例）' }] });
-          case '/api/social': return json({ config: state.social, states: state.socialStates, pendingSummaries: { 'group:123456789': 2 } });
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
           case '/api/socialV2/memory': return json({ ok: true, raw: { activeTopics: [{ text: '周末的阅读计划', pendingQuestion: '有没有推荐的书？' }], pendingThoughts: [{ text: '分享一张风景照片', motivation: '轻松交流' }], memberImpressions: { 演示群友: { traits: ['友善', '喜欢技术'], interactionCount: 6 } } } });
-          case '/api/socialV2/state': return json({ ok: true, key: url.searchParams.get('key'), wakeConfig: { mode: 'diving', infinite: false, sleepUntil: '2026-09-20T09:00:00.000Z', triggers: { atMention: true, keywords: ['小鲸鱼'] }, wakeCount: 4 }, wakeSafety: { guaranteed: true }, unreadCount: 2, lastWakeReason: 'atMention' });
-          case '/api/socialV2/states': return json({ ok: true, conversations: state.sessions.map(x => ({ key: x.key, phase: 'diving', unreadCount: 2 })) });
+          case '/api/socialV2/state': return json({ ok: true, key: url.searchParams.get('key'), wakeConfig: { infinite: false, sleepUntil: '2026-09-20T09:00:00.000Z', batchWindowMs: 8000, wakeCount: 4 }, wakeSafety: { guaranteed: true }, unreadCount: 2, lastWakeReason: 'atMention' });
+          case '/api/socialV2/states': return json({ ok: true, conversations: state.sessions.map(x => ({ key: x.key, unreadCount: 2 })) });
           case '/api/socialV2/initial-prompt': {
             const key = url.searchParams.get('key') || '';
             if (!key) {
@@ -509,7 +504,6 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       }
       if (method === 'POST') {
         switch (path) {
-          case '/api/mode': state.mode = body.mode; state.closedAgentPreset = body.closedAgentPreset; return json({ ok: true, dshSynced: true });
           case '/api/role': state.role = body.role; return json({ ok: true });
           case '/api/roles/create': state.roles.push(body.name); state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, warnings: [] });
           case '/api/roles/update': state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, chars: String(body.content ?? '').length, warnings: [] });
@@ -531,14 +525,14 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           }
           case '/api/roles/limit': state.roleInjectMax = Number(body.maxInjectChars) || state.roleInjectMax; return json({ ok: true, maxInjectChars: state.roleInjectMax, limits: { injectMaxChars: state.roleInjectMax } });
           case '/api/preset/sim-prompt': {
-            const preset = body.preset === 'qq-chat' ? 'qq-chat' : 'qq-chat-v2';
+            const preset = 'qq-chat-v2';
             const content = String(body.content ?? '');
             const unchanged = content === state.simPrompts[preset];
             if (!unchanged) state.simPrompts[preset] = content;
-            return json({ ok: true, unchanged, chars: content.length, warnings: [], synced: true, requiresRestart: !unchanged, status: presetStatusFixture(preset) });
+            return json({ ok: true, unchanged, chars: content.length, warnings: [], synced: true, requiresRestart: !unchanged, status: presetStatusFixture() });
           }
           case '/api/preset/sim-prompt/restore': {
-            const preset = body.preset === 'qq-chat' ? 'qq-chat' : 'qq-chat-v2';
+            const preset = 'qq-chat-v2';
             return json({ ok: true, restoredFrom: `${preset}.agent.cordis.yml.fixture`, requiresRestart: true });
           }
           case '/api/dsh/effort': state.dshEffort = body.reasoningEffort; return json({ ok: true, reasoningEffort: body.reasoningEffort });

@@ -19,8 +19,6 @@ let tests = 0;
 async function withBridge(run, config = {}) {
   const h = await bridgeHarness({ config: { socialV2: {
     wait: { minMs: 100, maxMs: 2000, minQuietAfterNewMs: 0 },
-    // 沉睡前观察是另一条闸门（qq_mark_read 会因此 400）；这里要测的是水位，先关掉。
-    wake: { preSleepWaitEnabled: false },
     proactive: { enabled: false },
     sticker: { enabled: false },
     ...config
@@ -116,9 +114,9 @@ await test('反复出现「思考期间到达」也不会把水位钉死', async
   });
 });
 
-// ── 3. reply 用途同样不该漏 ─────────────────────────────────────────────────
-await test('reply 用途也把未进水位的消息带上（只是不算沉睡前观察）', async () => {
-  await withBridge(async ({ request, append }) => {
+// ── 3. reply 用途同样补回水位之后的积压 ───────────────────────────────────
+await test('reply 用途也把未进水位的消息带上，不提供睡眠观察状态', async () => {
+  await withBridge(async ({ st, request, append }) => {
     append('第一条');
     await request('unread'); // 水位 1
     append('漏网之鱼'); // seq 2 未进水位
@@ -126,7 +124,8 @@ await test('reply 用途也把未进水位的消息带上（只是不算沉睡�
     assert.equal(result.status, 200);
     assert.deepEqual(seqs(result.data.newMessages), [2]);
     assert.equal(result.data.purpose, 'reply');
-    assert.equal(result.data.preSleepWaitSatisfied, false, 'reply 用途绝不授予沉睡前观察');
+    assert.equal('canSleepNow' in result.data, false, 'reply wait does not expose legacy sleep-gate state');
+    assert.deepEqual(seqs(st.unread), [1, 2], 'wait does not consume unread state');
   });
 });
 
@@ -160,33 +159,37 @@ await test('积压超过上限时从最老开始给，并标记 partial', async 
   });
 });
 
-// ── 5. 收尾闸门的状态直接告诉模型（别让它靠猜，更别用短等待去凑）─────────────
-await test('短等待不算沉睡前观察：canSleepNow=false 且 hint 给出正确的 timeoutMs', async () => {
+// ── 5. 等待由 agent 主动发起，不附带收尾/睡眠闸门状态 ────────────────────────
+await test('messages wait has no legacy sleep-gate fields and respects its requested timeout', async () => {
   await withBridge(async ({ request }) => {
-    // 沉睡前观察默认要 180s；这里故意用 300ms 的短等待去"凑"，闸门不该认
     const result = await request('wait', { body: { purpose: 'messages', timeoutMs: 300, quietMs: 0, minNewMessages: 1 } });
     assert.equal(result.status, 200);
-    assert.equal(result.data.canSleepNow, false, '刚发过消息不可能立刻放行');
-    assert.equal(result.data.countsAsObservation, false, 'timeoutMs < 观察窗口 ⇒ 不算观察');
-    assert.match(result.data.hint, /qq_wait_for_messages\(timeoutMs=180000\)/, '必须给出该发的准确参数');
-    assert.match(result.data.hint, /不达标/, '要点明本次不达标');
-    assert.match(result.data.hint, /还需约 \d+ 秒/, '要给出还差多少秒');
-  }, { wake: { preSleepWaitEnabled: true, preSleepWaitMs: 180000 } });
+    assert.equal(result.data.timeout, true);
+    assert.ok(result.data.waitedMs >= 300);
+    assert.equal(result.data.canSleepNow, undefined);
+    assert.equal(result.data.countsAsObservation, undefined);
+    assert.equal(result.data.hint, undefined);
+    assert.equal(result.data.preSleepWaitRemainingMs, undefined);
+  });
 });
 
-await test('闸门放行时明确说「可以直接收尾」', async () => {
-  await withBridge(async ({ request, append, sleep }) => {
-    append('一句话');
-    await sleep(260); // 观察窗口配成 200ms，安静够了
-    const result = await request('wait', { body: { purpose: 'messages', timeoutMs: 200, quietMs: 0, minNewMessages: 1 } });
+await test('messages wait exposes an arrival and cursor without sleep-gate guidance', async () => {
+  await withBridge(async ({ request, append }) => {
+    const waiting = request('wait', { body: { purpose: 'messages', timeoutMs: 1000, quietMs: 0, minNewMessages: 1 } });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    append('等待期间到达');
+    const result = await waiting;
     assert.equal(result.status, 200);
-    assert.equal(result.data.canSleepNow, true, `安静满窗口后应放行：${JSON.stringify(result.data.hint)}`);
-    assert.match(result.data.hint, /可以直接收尾/);
-    assert.doesNotMatch(result.data.hint, /还不能收尾/);
-  }, { wake: { preSleepWaitEnabled: true, preSleepWaitMs: 200 } });
+    assert.equal(result.data.arrived, true);
+    assert.deepEqual(seqs(result.data.newMessages), [1]);
+    assert.equal(result.data.readThroughSeq, 1);
+    assert.equal(result.data.canSleepNow, undefined);
+    assert.equal(result.data.countsAsObservation, undefined);
+    assert.equal(result.data.hint, undefined);
+  });
 });
 
-await test('purpose=reply 不带收尾闸门字段（免得误导首答前就去睡）', async () => {
+await test('purpose=reply does not include legacy sleep-gate fields', async () => {
   await withBridge(async ({ request, append }) => {
     append('在吗');
     const result = await request('wait', { body: { purpose: 'reply', timeoutMs: 200, quietMs: 0 } });
@@ -195,7 +198,7 @@ await test('purpose=reply 不带收尾闸门字段（免得误导首答前就去
     assert.equal(result.data.countsAsObservation, undefined);
     assert.equal(result.data.hint, undefined);
     assert.equal(result.data.preSleepWaitRemainingMs, undefined);
-  }, { wake: { preSleepWaitEnabled: true, preSleepWaitMs: 180000 } });
+  });
 });
 
 console.log(`\n${failures ? 'FAILED' : 'ALL PASS'}  tests=${tests} failures=${failures}`);

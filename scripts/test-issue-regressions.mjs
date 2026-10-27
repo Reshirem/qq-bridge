@@ -18,51 +18,40 @@ async function test(name, run) {
 const KEY = 'group:1001';
 const SID = 'session-1';
 
-await test('#22 settingFromDshNamespace：user 层优先、value 回退', async () => {
+await test('settingFromDshNamespace prefers user values and falls back to DSH defaults', async () => {
   const h = await bridgeHarness();
   try {
     const f = h.settingFromDshNamespace;
-    assert.equal(f({ value: { mode: 'reserved2' }, user: { mode: 'chat' } }, 'mode'), 'chat', 'user 层必须优先');
-    assert.equal(f({ value: { mode: 'reserved2' }, user: {} }, 'mode'), 'reserved2', 'user 为空时回退 value');
-    assert.equal(f({ value: { mode: 'reserved2' } }, 'mode'), 'reserved2', '没有 user 键时回退 value');
-    assert.equal(f({ user: { ownerQQ: '' }, value: { ownerQQ: '123' } }, 'ownerQQ'), '', '空串也是显式值');
-    assert.equal(f(undefined, 'mode'), undefined);
-    assert.equal(f({ value: null }, 'mode'), undefined);
+    assert.equal(f({ value: { ownerQQ: '10001' }, user: { ownerQQ: '20002' } }, 'ownerQQ'), '20002');
+    assert.equal(f({ value: { ownerQQ: '10001' }, user: {} }, 'ownerQQ'), '10001');
+    assert.equal(f({ value: { ownerQQ: '10001' } }, 'ownerQQ'), '10001');
+    assert.equal(f({ user: { ownerQQ: '' }, value: { ownerQQ: '123' } }, 'ownerQQ'), '', 'empty string is an explicit value');
+    assert.equal(f(undefined, 'ownerQQ'), undefined);
+    assert.equal(f({ value: null }, 'ownerQQ'), undefined);
   } finally { await h.close(); }
 });
 
-await test('#22 refreshMode 采纳控制台刚写入的 user 层（否则 5 秒后被改回去）', async () => {
+await test('bridge runtime is fixed while ownerQQ remains hot-refreshable', async () => {
   const h = await bridgeHarness();
   try {
-    h.api.settings.describe = async () => ({
-      result: { ok: true, value: {
-        namespaces: [
-          { ns: 'qq-mode', value: { mode: 'reserved2', ownerQQ: '10001' }, user: { mode: 'chat' } }
-        ]
-      } }
-    });
-    await h.refreshMode();
-    assert.equal(h.getMode(), 'chat', '必须读 user 层，而不是未热更新的 value');
+    h.setMode('chat');
+    assert.equal(h.getMode(), 'autonomous', 'legacy mode setters must not alter the runtime');
 
-    // 老行为兜底：从没在控制台写过（user 为空）时仍读 value。
-    h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved' }, user: {} }] } }
-    });
-    await h.refreshMode();
-    assert.equal(h.getMode(), 'reserved');
-
-    // ownerQQ：user 层空串表示「不覆盖 config.json」。
     h.cfg.ownerQQ = 20002;
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'chat', ownerQQ: 30003 }, user: { ownerQQ: '' } }] } }
+      result: { ok: true, value: {
+        namespaces: [{ ns: 'qq-mode', value: { ownerQQ: '30003' }, user: { ownerQQ: '' } }]
+      } }
     });
-    await h.refreshMode();
+    await h.refreshBridgeSettings();
     assert.equal(h.cfg.ownerQQ, 20002, 'user 层空串不得把 config.json 的 ownerQQ 抹掉');
 
     h.api.settings.describe = async () => ({
-      result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'chat' }, user: { ownerQQ: '40004' } }] } }
+      result: { ok: true, value: {
+        namespaces: [{ ns: 'qq-mode', value: { ownerQQ: '30003' }, user: { ownerQQ: '40004' } }]
+      } }
     });
-    await h.refreshMode();
+    await h.refreshBridgeSettings();
     assert.equal(h.cfg.ownerQQ, 40004, 'user 层显式 ownerQQ 必须生效');
   } finally { await h.close(); }
 });

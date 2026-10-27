@@ -218,11 +218,13 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     assert.deepEqual(requests.at(-1).body, { key: common.key, throughSeq: 21 });
     assert.equal(requests.at(-1).token, common.token);
 
-    await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: { mode: 'diving' }, throughSeq: 0 } });
+    await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: {
+      infinite: true, batchWindowMs: 3500, mode: 'active', triggers: { anyMessage: true }
+    }, throughSeq: 0 } });
     assert.equal(requests.at(-1).url, '/api/socialV2/wake-config');
-    assert.deepEqual(requests.at(-1).body, { key: common.key, config: { mode: 'diving' }, throughSeq: 0 });
-    await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: { mode: 'active' } } });
-    assert.deepEqual(requests.at(-1).body, { key: common.key, config: { mode: 'active' } });
+    assert.deepEqual(requests.at(-1).body, { key: common.key, config: { infinite: true, batchWindowMs: 3500 }, throughSeq: 0 });
+    await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: { infinite: false, sleepMs: 60000 } } });
+    assert.deepEqual(requests.at(-1).body, { key: common.key, config: { infinite: false, sleepMs: 60000 } });
 
     for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '21']) {
       const before = requests.length;

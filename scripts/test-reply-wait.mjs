@@ -6,12 +6,10 @@ import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 async function fixture(run, cfg = {}) {
   const h = await bridgeHarness({ config: { socialV2: {
-    wake: { preSleepWaitEnabled: true, preSleepWaitMs: 300000 },
     wait: { minMs: 100, maxMs: 600000, minQuietAfterNewMs: 100 },
     proactive: { enabled: false }, sticker: { enabled: false },
     ...cfg,
   } } });
-  h.setMode('reserved2');
   const key = 'group:456';
   const st = h.getSocialV2State(key);
   const server = h.startConsoleServer();
@@ -53,7 +51,7 @@ async function fixture(run, cfg = {}) {
 test('first reply does not wait out timeout when the snapshot message is already quiet', () => fixture(async ({ h, key, st, request, append }) => {
   append('a complete first message');
   st.lastIncomingAt = Date.now() - 10000; // batching and model reading already consumed the quiet window
-  await h.sendWakePromptV2(key, 'question');
+  await h.sendWakePromptV2(key, 'atMention@seq1');
   const started = Date.now();
   const result = await request('wait', { purpose: 'reply', timeoutMs: 1200, quietMs: 100 });
   assert.equal(result.status, 200);
@@ -61,14 +59,13 @@ test('first reply does not wait out timeout when the snapshot message is already
   assert.equal(result.data.quiet, true);
   assert.equal(result.data.timeout, false);
   assert.equal(result.data.arrived, false);
-  assert.equal(result.data.preSleepWaitObserved, false);
-  assert.equal(result.data.preSleepWaitSatisfied, false);
-  assert.equal('preSleepWaitRemainingMs' in result.data, false, 'first reply must not be presented as an unfinished sleep countdown');
+  assert.deepEqual(result.data.newMessages, [], 'the already-delivered trigger must not be duplicated');
+  assert.equal(result.data.readThroughSeq, 1);
 }));
 
 test('reply waits only for the remaining quiet time after model reading', () => fixture(async ({ h, key, st, request, append }) => {
   append('complete message');
-  await h.sendWakePromptV2(key, 'question');
+  await h.sendWakePromptV2(key, 'atMention@seq1');
   st.lastIncomingAt = Date.now() - 600;
   const result = await request('wait', { purpose: 'reply', timeoutMs: 1500, quietMs: 800 });
   assert.equal(result.data.quiet, true);
@@ -77,7 +74,7 @@ test('reply waits only for the remaining quiet time after model reading', () => 
 
 test('a message between snapshot and wait is returned without duplicate snapshot content', () => fixture(async ({ h, key, st, request, append }) => {
   append('in snapshot');
-  await h.sendWakePromptV2(key, 'question');
+  await h.sendWakePromptV2(key, 'atMention@seq1');
   append('arrived while model was thinking');
   st.lastIncomingAt = Date.now() - 1000;
   const result = await request('wait', { purpose: 'reply', timeoutMs: 1200, quietMs: 100, minNewMessages: 20 });
@@ -102,8 +99,7 @@ test('each supplement restarts quiet from its actual arrival, and appears exactl
   } finally { timers.forEach(clearTimeout); }
 }));
 
-test('reply timeout is a hard budget and cannot grant sleep observation, even with a long requested budget', () => fixture(async ({ h, st, request, append }) => {
-  h.cfg.socialV2.wake.preSleepWaitMs = 200;
+test('reply timeout is a hard budget and cannot be stretched by the quiet window', () => fixture(async ({ h, st, request, append }) => {
   append('first');
   await request('unread');
   const timer = setTimeout(() => append('supplement near deadline'), 220);
@@ -113,10 +109,7 @@ test('reply timeout is a hard budget and cannot grant sleep observation, even wi
     assert.equal(result.data.quiet, false);
     assert.equal(result.data.speakerLikelyDone, false);
     assert.ok(result.data.waitedMs >= 300 && result.data.waitedMs < 900);
-    assert.equal(result.data.preSleepWaitObserved, false);
-    assert.equal(result.data.preSleepWaitSatisfied, false);
-    assert.equal(st.preSleepWaitObservedAt, 0);
-    assert.equal(st.preSleepWaitSatisfiedAt, 0);
+    assert.equal('preSleepWaitSatisfied' in result.data, false);
   } finally { clearTimeout(timer); }
 }));
 
@@ -133,14 +126,14 @@ test('ordinary and omitted purpose keep waiting for future messages', () => fixt
   }
 }));
 
-test('reply mode rejects a session permission change during its remaining quiet window', () => fixture(async ({ h, st, request, append }) => {
+test('reply wait rejects a tool permission change during its quiet window', () => fixture(async ({ h, st, request, append }) => {
   append('still fresh');
-  const timer = setTimeout(() => h.setMode('chat'), 100);
+  const timer = setTimeout(() => { h.cfg.socialV2.tools.waitMessages = false; }, 100);
   try {
     const result = await request('wait', { purpose: 'reply', timeoutMs: 1000, quietMs: 300 });
     assert.equal(result.status, 403);
     assert.equal(st.modelSeenSeqs.size, 0);
-    assert.equal(st.preSleepWaitObservedAt, 0);
+    assert.equal(st.unread.length, 1);
   } finally { clearTimeout(timer); }
 }));
 
@@ -162,7 +155,6 @@ test('invalid purpose is rejected without authorizing history or observation', (
     assert.equal(result.status, 400);
   }
   assert.equal(st.modelSeenSeqs.size, 0);
-  assert.equal(st.preSleepWaitObservedAt, 0);
   assert.equal(st.unread.length, 1);
 }));
 

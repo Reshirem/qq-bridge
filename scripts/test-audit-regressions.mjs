@@ -9,7 +9,7 @@
 //   R5  turn/end 没有对应 turn/start 时不得留下永久 collector（会话永久繁忙）
 //   R6  DSH 设置里的空 ownerQQ 不得覆盖 config.json
 //   R7  预设名必须先校验再拼路径（DSH 未连接时 resolvePresetName 会原样放行）
-//   R8  wake-config 的 triggers 只允许已知字段（防状态文件/提示词被垃圾键撑大）
+//   R8  wake-config 迁移旧 mode/triggers 字段，并在 API 和落盘边界只保留受支持字段
 //   R9  memory-update 不得凭空建条目、不得写穿原型链
 //   R10 wait 的租约按归一化 key 记账（group:0456 与 group:456 是同一个会话）
 //   R11 mdToPlain：`*` 列表/乘法不被当成斜体；超长畸形输入不再 O(n²)
@@ -66,34 +66,24 @@ async function withServer(h, run) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ── R1. 无令牌智能体调用（closed-agent 的发送面） ────────────────────────────
-await test('R1 无令牌智能体调用：closed-agent 可发送/探测，v2 面仍拒绝', async () => {
+// ── R1. 智能体调用统一使用会话令牌 ────────────────────────────────────────────
+await test('R1 单一自主运行时拒绝无令牌智能体调用', async () => {
   const h = await bridgeHarness();
   try {
-    h.setMode('closed-agent');
     await withServer(h, async (port) => {
-      // 状态探测（legacyReadToolAllowed 走这条），必须回最小对象且不含管理字段
       const status = await call(port, '/api/status', { headers: { 'x-agent-call': '1' } });
-      assert.equal(status.status, 200, '不带会话令牌的状态探测必须放行');
+      assert.equal(status.status, 200, '脱敏状态探测仍可放行');
       assert.equal(status.json.ownerQQ, undefined, '智能体视图不得暴露 ownerQQ');
       assert.equal(status.json.allowGroups, undefined, '智能体视图不得暴露白名单');
-      assert.equal(status.json.mode, 'closed-agent');
+      assert.equal(status.json.runtime, 'autonomous');
+      assert.equal(status.json.mode, undefined, 'status does not expose a switchable legacy mode');
 
-      // closed-agent 的私聊发送（管理员私聊）必须可用
-      const sent = await call(port, '/api/send/private', {
+      const send = await call(port, '/api/send/private', {
         method: 'POST', headers: { 'x-agent-call': '1' }, body: { userId: '123', message: '你好' }
       });
-      assert.equal(sent.status, 200, `closed-agent 无令牌发送应放行，实际 ${sent.status} ${sent.body}`);
-      assert.equal(sent.json?.sent, 1, '应当真的发出一条');
-      assert.ok(h.calls.http.some((c) => String(c.url).endsWith('/send_private_msg')), '发送应走 OneBot send_private_msg');
-
-      // v2 会话面绝不能因为「无令牌」退化成管理端
-      const v2 = await call(port, '/api/socialV2/prompt?key=group%3A456', { headers: { 'x-agent-call': '1' } });
-      assert.equal(v2.status, 403, '无令牌智能体调用不得进入 /api/socialV2/*');
-      const v2send = await call(port, '/api/socialV2/send-message', {
-        method: 'POST', headers: { 'x-agent-call': '1' }, body: { key: 'group:456', messages: ['hi'] }
-      });
-      assert.equal(v2send.status, 403, '无令牌智能体调用不得走 v2 发送');
+      assert.equal(send.status, 403, '无令牌智能体发送必须拒绝');
+      const prompt = await call(port, '/api/socialV2/prompt?key=group%3A456', { headers: { 'x-agent-call': '1' } });
+      assert.equal(prompt.status, 403, '无令牌智能体读取必须拒绝');
     });
   } finally { await h.close(); }
 });
@@ -108,6 +98,9 @@ await test('R2 send-burst 失败路径不再抛 ReferenceError，并回滚发送
   try {
     h.setMode('reserved2');
     const st = h.getSocialV2State('group:456');
+    const sessionId = await h.ensureSession('group:456');
+    h.collectors.set(sessionId, { push() { return null; }, size() { return 1; } });
+    h.v2TurnStartAt.set(sessionId, Date.now());
     const before = st.sendTimes.length;
     await withServer(h, async (port) => {
       const res = await call(port, '/api/socialV2/send-burst', {
@@ -156,7 +149,7 @@ await test('R4 timeout/replyCheck 类暂存唤醒按定时器语义补发', asyn
     for (let i = 0; i < 40 && !h.calls.prompts.length; i += 1) await sleep(25);
     assert.equal(h.calls.prompts.length, 1, '到期的有限潜水必须补发一次 timeout 唤醒');
     const text = h.calls.prompts[0].content.map((c) => String(c?.text ?? '')).join('\n');
-    assert.match(text, /有限潜水时间已到|睡眠时间已到/);
+    assert.match(text, /一次性定时唤醒|有限潜水时间已到|睡眠时间已到/);
 
     // 第二条 @ 与未读无关但对应消息已被处理 → 仍然按消息语义跳过
     const second = h.replayPendingWakeReasonsV2('group:456');
@@ -197,13 +190,13 @@ await test('R6 DSH 设置 ownerQQ 留空时保留 config.json 的值', async () 
     h.api.settings.describe = async () => ({
       result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved2', ownerQQ: '' } }] } }
     });
-    await h.refreshMode();
+    await h.refreshBridgeSettings();
     assert.equal(h.cfg.ownerQQ, 123, '空串表示「不覆盖」，不能把 ownerQQ 抹成 null');
 
     h.api.settings.describe = async () => ({
       result: { ok: true, value: { namespaces: [{ ns: 'qq-mode', value: { mode: 'reserved2', ownerQQ: 456 } }] } }
     });
-    await h.refreshMode();
+    await h.refreshBridgeSettings();
     assert.equal(h.cfg.ownerQQ, 456, '非空值仍然要能覆盖');
   } finally { await h.close(); }
 });
@@ -229,28 +222,53 @@ await test('R7 未知 preset 名直接被拒（含路径穿越形态）', async 
   } finally { await h.close(); }
 });
 
-// ── R8. wake-config 只接受已知 triggers 字段 ────────────────────────────────
-await test('R8 wake-config 丢弃未知 triggers 键（不落盘、不回传模型）', async () => {
-  const h = await bridgeHarness();
+// ── R8. wake-config 移除历史 mode/triggers ───────────────────────────────────
+await test('R8 wake-config 迁移旧字段并在状态、提示词和落盘中省略旧 mode/triggers', async () => {
+  const legacyWakeConfig = {
+    mode: 'diving', infinite: true, sleepUntil: null,
+    triggers: { atMention: false, anyMessage: true, junkKey: 'x'.repeat(100) },
+    batchWindowMs: 17000, lastWakeAt: 111, wakeCount: 4, noActionCount: 2,
+    confirmedAt: 222, confirmedBy: 'set_wake_config',
+  };
+  const h = await bridgeHarness({ files: { 'state/social-v2.json': {
+    paused: false,
+    conversations: {
+      'group:456': {
+        wakeConfig: legacyWakeConfig,
+        recentMessages: [], unread: [], agentToken: 'a'.repeat(32),
+        lastUnreadSeq: 0, lastReadThroughSeq: 0,
+      },
+    },
+  } } });
   try {
-    h.setMode('reserved2');
     const st = h.getSocialV2State('group:456');
-    // 让沉睡前观察放行：10 分钟前来过消息
-    st.lastIncomingAt = Date.now() - 10 * 60 * 1000;
+    const expectedKeys = ['batchWindowMs', 'confirmedAt', 'confirmedBy', 'infinite', 'lastWakeAt', 'noActionCount', 'sleepUntil', 'wakeCount'].sort();
+    assert.deepEqual(Object.keys(st.wakeConfig).sort(), expectedKeys, '加载后内存态只保留受支持字段');
+    assert.equal(st.wakeConfig.batchWindowMs, 17000);
+    assert.equal(st.wakeConfig.wakeCount, 4);
+    assert.equal(st.wakeConfig.noActionCount, 2);
     await withServer(h, async (port) => {
+      const state = await call(port, '/api/socialV2/state?key=group:456', { token: st.agentToken });
+      assert.equal(state.status, 200, state.body);
+      assert.deepEqual(Object.keys(state.json.wakeConfig).sort(), expectedKeys, 'state API 不暴露历史字段');
+
+      const prompt = await call(port, '/api/socialV2/prompt?key=group:456', { token: st.agentToken });
+      assert.equal(prompt.status, 200, prompt.body);
+      assert.deepEqual(Object.keys(prompt.json.currentWakeConfig).sort(), expectedKeys, 'prompt API 不暴露历史字段');
+
       const res = await call(port, '/api/socialV2/wake-config', {
         method: 'POST', token: st.agentToken, body: {
           key: 'group:456',
-          config: { mode: 'diving', infinite: true, triggers: { atMention: true, junkKey: 'x'.repeat(100), another: { nested: true } } }
+          config: { mode: 'active', infinite: true, triggers: { atMention: false, anyMessage: true, junkKey: 'x'.repeat(100) }, batchWindowMs: 23000 }
         }
       });
       assert.equal(res.status, 200, res.body);
-      assert.equal('junkKey' in res.json.wakeConfig.triggers, false, '响应里不得回传垃圾键');
-      assert.equal('another' in res.json.wakeConfig.triggers, false);
-      assert.equal(st.wakeConfig.triggers.junkKey, undefined, '内存态不得被污染');
-      assert.equal(st.wakeConfig.triggers.atMention, true, '已知字段仍需生效');
+      assert.deepEqual(Object.keys(res.json.wakeConfig).sort(), expectedKeys, 'wake-config 响应只含受支持字段');
+      assert.equal(res.json.wakeConfig.batchWindowMs, 23000);
+      assert.equal('mode' in st.wakeConfig, false, '内存态不得保留旧模式字段');
+      assert.equal('triggers' in st.wakeConfig, false, '内存态不得保留旧触发矩阵');
       const file = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'social-v2.json'), 'utf8'));
-      assert.equal(file.conversations['group:456'].wakeConfig.triggers.junkKey, undefined, '落盘文件不得含垃圾键');
+      assert.deepEqual(Object.keys(file.conversations['group:456'].wakeConfig).sort(), expectedKeys, '落盘文件不得含旧字段');
     });
   } finally { await h.close(); }
 });
@@ -380,13 +398,15 @@ await test('R15 /api/send/* 失败路径不抛作用域错误，并回滚发送�
     }
   });
   try {
-    // closed-agent = 管理员私聊通道：这条路径不需要会话令牌（正是旧工具的使用方式）。
     h.setMode('closed-agent');
     const st = h.getSocialV2State('private:123');
+    const sessionId = await h.ensureSession('private:123');
+    h.collectors.set(sessionId, { push() { return null; }, size() { return 1; } });
+    h.v2TurnStartAt.set(sessionId, Date.now());
     const before = st.sendTimes.length;
     await withServer(h, async (port) => {
       const res = await call(port, '/api/send/private', {
-        method: 'POST', headers: { 'x-agent-call': '1' }, body: { userId: '123', message: '你好' }
+        method: 'POST', token: st.agentToken, headers: { 'x-agent-call': '1' }, body: { userId: '123', message: '你好', token: st.agentToken }
       });
       assert.equal(res.status, 500, `发送失败应回 500，实际 ${res.status} ${res.body}`);
       const err = String(res.json?.error ?? '');

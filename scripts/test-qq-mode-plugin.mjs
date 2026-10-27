@@ -1,6 +1,6 @@
 // qq-mode-console 插件的登记期静态检验。
 //
-// 钉住的东西（这些是 `qq-mode` 命名空间**可读写**的全部前提，缺一即失败）：
+// 钉住的东西（这些是 `qq-mode` 兼容命名空间提供 ownerQQ 设置的前提，缺一即失败）：
 //   ① entry id 恰好等于命名空间名（在 cordis.patch.yml 里，不是插件模块里）；
 //   ② 插件模块导出 `Config`，且它是可用的 schemastery schema；
 //   ③ `Config` 至少有一个带 `volatile` 标记的字段（否则 settings 写入会抛
@@ -12,8 +12,8 @@
 // 旧代码在 0.2.0 下会被早退挡住而不报错，**看起来一切正常**——所以只有静态断言
 // 能防止有人照着旧注释把那条死路加回来（一旦加回，日志就会开始说谎）。
 //
-// 不接触真实 DSH 进程；真实契约（describe 能列出 qq-mode、update 能写成功）
-// 由 scripts/verify-dsh-021-adaptation.mjs 在活 DSH 上实测。
+// 不接触真实 DSH 进程；活 DSH 上由 scripts/verify-dsh-021-adaptation.mjs 检查命名空间
+// 是否列出 ownerQQ，并由 scripts/probe-020-settings.mjs 验证其写入路径。运行模式不属于该命名空间。
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -43,33 +43,20 @@ test('cordis.patch.yml 的 entry id 恰好等于命名空间名', () => {
   assert.ok(!ids.includes('qq-mode-console'), 'entry id 不应是插件包名');
 });
 
-test('Config 是可用的 schemastery schema，且带 volatile 字段', () => {
-  const resolved = mod.Config({});
-  assert.equal(resolved.mode, 'reserved2', 'Config 默认 mode 应为 reserved2');
+test('Config is a usable schemastery schema with only volatile ownerQQ', () => {
+  const resolved = mod.Config({ ownerQQ: '12345' });
+  assert.equal(resolved.ownerQQ, '12345');
 
-  // ③ volatile 标记。注意 schemastery 的 toJSON() 是**引用表**形状：
-  //    顶层可能是 { uid, refs: { '<uid>': <node> } }，真正的 dict/字段在 refs 里，
-  //    而不是顶层直接挂 dict。所以要先把顶层 uid 解析回节点。
   const json = mod.Config.toJSON();
   const refs = json.refs ?? {};
   const root = refs[String(json.uid)] ?? json;
+  const fields = Object.keys(root.dict ?? {});
+  assert.deepEqual(fields, ['ownerQQ'], 'the settings schema must not expose a runtime mode selector');
   const volatileFields = [];
   for (const [key, node] of Object.entries(root.dict ?? {})) {
     if (refs[String(node)]?.meta?.volatile === true) volatileFields.push(key);
   }
-  assert.ok(
-    volatileFields.length > 0,
-    'Config 至少一个字段必须带 .extra(\'volatile\', true)，否则 settings 写入会抛 "has no volatile fields"；'
-    + `实际 volatile 字段：${volatileFields.join(', ') || '(无)'}`,
-  );
-  assert.ok(volatileFields.includes('mode'), `mode 字段应带 volatile，实际：${volatileFields.join(', ')}`);
-});
-
-test('schema 接受全部规范/历史 mode 拼写，拒绝非法值', () => {
-  for (const mode of ['chat', 'closed-agent', 'reserved', 'reserved2', 'simulation']) {
-    assert.equal(mod.Config({ mode }).mode, mode, `${mode} 应被接受`);
-  }
-  assert.throws(() => mod.Config({ mode: 'bogus' }), '非法 mode 必须被拒绝');
+  assert.deepEqual(volatileFields, ['ownerQQ']);
 });
 
 test('不再调用 0.2.0 已删除的 ctx.settings.register', () => {

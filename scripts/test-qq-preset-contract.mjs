@@ -1,4 +1,4 @@
-// reserved2 提示词与插件边界的静态契约；不调用模型，不向 QQ 发送消息。
+// 固定自主 QQ 会话提示词与插件边界的静态契约；不调用模型，不向 QQ 发送消息。
 // 这些检查只能防止关键协议/能力被误删，不能证明聊天质量无损。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +11,7 @@ const preset = yaml.load(fs.readFileSync(
 const persona = preset.find((row) => row.id === 'persona');
 const prefix = persona?.config?.prefix ?? '';
 
-test('reserved2 YAML resolves to the expected persona and template variables', () => {
+test('qq-chat-v2 YAML resolves to the fixed session persona and template variables', () => {
   assert.equal(persona?.name, '@deepseek-ai/dsh-persona');
   assert.match(prefix, /\{\{model\}\}/);
   // DSH 0.2.1 起 agent loop 只注册 provider / model 两个提示词变量（0.2.0 还有 cwd），
@@ -38,35 +38,29 @@ test('local/admin tool restrictions and existing compaction budgets stay intact'
   }
 });
 
-test('snapshots are optional, partial snapshots require reading, and watermarks are not message IDs', () => {
-  assert.match(prefix, /可能附带【本次消息快照】/);
-  assert.match(prefix, /partial=true[^。]*继续读取/);
+test('wake snapshots contain only a direct trigger and partial unread pages remain explicit', () => {
+  assert.match(prefix, /快照才会自动附带那一条直接触发消息，不包含其它未读或最近历史/);
+  assert.match(prefix, /普通群消息只缓存在桥接，不会自动唤醒/);
+  assert.match(prefix, /partial=true 时按后续页返回的 readThroughSeq 继续/);
   assert.match(prefix, /readThroughSeq 是桥接本地的 seq，不是 QQ messageId/);
-  assert.match(prefix, /没有水位[^。]*省略 throughSeq/);
   assert.match(prefix, /首次进入会话、角色变化[^。]*qq_get_prompt/);
 });
 
-test('one closing action can acknowledge the read watermark after the full observation', () => {
-  assert.match(prefix, /qq_mark_read\(throughSeq=/);
-  assert.match(prefix, /qq_set_wake_config\(config=[^)]*throughSeq=/);
-  assert.match(prefix, /不需先 mark_read/);
-  assert.match(prefix, /qq_wait_for_messages\(timeoutMs=300000\)/);
-  assert.match(prefix, /短等待不能代替/);
-  assert.match(prefix, /preSleepWaitRemainingMs[^。]*继续等待/);
-  assert.match(prefix, /若你参与回复[^。]*重新观察/);
+test('read acknowledgements use only an observed watermark without a pre-sleep gate', () => {
+  assert.match(prefix, /qq_mark_read\(throughSeq=已读水位\)/);
+  assert.match(prefix, /qq_set_wake_config\(config=新配置, throughSeq=已读水位\)/);
+  assert.match(prefix, /没有水位时省略 throughSeq/);
+  assert.doesNotMatch(prefix, /preSleepWait|沉睡前观察|5 分钟观察/);
 });
 
-test('pre-reply quiet checks, waiting for replies and pre-sleep observation have distinct instructions', () => {
-  assert.match(prefix, /先理解并处理当前消息/);
+test('reply quiet checks and active message waits are separate agent-directed choices', () => {
   assert.match(prefix, /【首答前】[^\n]*qq_wait_for_messages\(purpose="reply", quietMs=10000\)/);
   assert.match(prefix, /读取和思考花掉的时间也算，已安静足够就立即返回/);
   assert.match(prefix, /不要再重开一次普通长等待/);
-  assert.match(prefix, /预算到但 quiet=false 不等于对方说完/);
   assert.match(prefix, /【等下文】[^\n]*purpose="messages", timeoutMs=60000~120000/);
   assert.match(prefix, /【回复后】[^\n]*qq_wait_for_messages\(purpose="messages"\)/);
-  assert.match(prefix, /短静默不算沉睡前观察/);
-  assert.match(prefix, /5 分钟观察不是回复的前置条件/);
-  assert.match(prefix, /只有准备收尾时[^。]*preSleepWaitRemainingMs/);
+  assert.match(prefix, /没有新的行动就不要启动周期性模型回合/);
+  assert.doesNotMatch(prefix, /preSleepWaitRemainingMs|短静默不算沉睡前观察/);
 });
 
 test('social autonomy and visual, forwarding, sticker and web capabilities remain described', () => {
@@ -83,24 +77,23 @@ test('social autonomy and visual, forwarding, sticker and web capabilities remai
   ]) assert.ok(prefix.includes(text), `missing capability or voice rule: ${text}`);
 });
 
-test('autonomy limits and the observation escape hatch stay described', () => {
-  // These rules were previously unguarded: deleting any of them left every test green.
+test('autonomy limits, fixed wake reasons and on-demand sleep remain described', () => {
   for (const text of [
-    // 沉睡前观察唯一的逃生口：明确结束语可以跳过 5 分钟等待。
-    '除非对方明确“不聊了/晚安/下了/拜拜”等结束语',
-    // [SILENT] 是桥接的退出标记，误用会静默吞掉回复。
+    '群聊仅真实 @ 本人或经过验证的回复你会自动开启回合',
+    '私聊消息会开启回合',
+    '没有周期性模型心跳',
+    '设置一次性睡眠',
     '不要用 [SILENT]',
     // 记忆面
     '【记忆卫生】', 'qq_memory_append', 'qq_memory_query', 'qq_memory_remove', 'qq_memory_clear',
     // 黑话面
     'qq_slang_query', 'qq_slang_submit', '不重复提交',
     // 频率上限
-    '普通闲聊约 3~5 轮一张', '别刷屏', '每条只能一张，不能附带文字', '不要频繁拍',
+    '普通闲聊约 3~5 轮一张', '别刷屏', '每条只能一张，不能附带文字', '当前回合确有理由时使用',
     // 会话令牌是硬前置，漏传会被拒绝。
     '作为 token 参数传入',
-    // 指定成员唤醒
-    'triggers.speakerIds', '不凭记忆乱填',
   ]) assert.ok(prefix.includes(text), `missing rule: ${text}`);
+  assert.doesNotMatch(prefix, /triggers\.speakerIds|preSleepWait/);
 });
 
-console.log(`reserved2 persona prefix: ${prefix.length} characters (not a model-token estimate)`);
+console.log(`qq-chat-v2 persona prefix: ${prefix.length} characters (not a model-token estimate)`);

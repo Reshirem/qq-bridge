@@ -14,10 +14,22 @@ const args = process.argv.slice(2);
 const original = args.includes('--original');
 const record = args.includes('--record-baseline');
 const artifacts = args.find(x => x.startsWith('--artifacts='))?.slice('--artifacts='.length);
-const views = ['overview', 'sessions', 'persona', 'social-v2', 'social-v1', 'slang', 'usage', 'access', 'operations', 'reference'];
-const legacyIds = JSON.parse((await readFile(join(here, 'console-ui-legacy-ids.json'), 'utf8')).replace(/^\uFEFF/, ''));
+const views = ['overview', 'sessions', 'persona', 'social-v2', 'slang', 'usage', 'access', 'operations', 'reference'];
+const retiredUiIds = JSON.parse((await readFile(join(here, 'console-ui-legacy-ids.json'), 'utf8')).replace(/^\uFEFF/, ''));
+const requiredRuntimeIds = [
+  'statusText', 'sessionList', 'pendingList', 'activity',
+  'wlGroups', 'wlPrivate', 'dnGroups', 'dnPrivate', 'ownerQQ', 'wlSave',
+  'secSave', 'stateDirWarn', 'stateDirCmd', 'stateDirReharden',
+  'v2SleepMinMs', 'v2SleepMaxMs', 'v2MaxWakeMin', 'v2MaxWakeHour', 'v2BatchWindowMs',
+  'v2MaxSendMin', 'v2MaxSendHour', 'v2ToolLogLoad', 'v2ToolLogClear', 'v2ToolLogOutput',
+  'v2SessionSelect', 'v2SessionRefresh',
+  'voiceRefreshBtn', 'voiceList', 'voiceSendTarget', 'voiceSendDryRun', 'voiceSendBtn',
+  'v2StickerEnabled', 'v2StickerSyncTtlSec', 'v2StickerMaxList', 'v2StickerPromptMax',
+  'v2StickerIncludePrompt', 'v2StickerCollectEnabled',
+  'restartBtn', 'clearWsBtn', 'tsSend', 'aiNotifySend', 'consoleTokenSave',
+];
 const baselinePath = join(here, 'console-ui-contracts.json');
-if (record && !original) throw new Error('--record-baseline requires --original; only the pre-redesign console can define the baseline.');
+if (record) throw new Error('--record-baseline is retired; update the reserved2 runtime contracts explicitly.');
 
 async function loadPlaywright() {
   const require = createRequire(import.meta.url);
@@ -59,7 +71,7 @@ try {
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('dialog', dialog => dialog.accept());
   await page.goto(fixture.url);
-  await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'qq-chat-v2' && document.getElementById('wlGroups')?.value.includes('123456789'));
+  await page.waitForFunction(() => document.getElementById('wlGroups')?.value.includes('123456789'));
 
   async function navigate(view) {
     if (original) return;
@@ -92,38 +104,63 @@ try {
     assert.equal((await response.json()).ok, true);
     return fixture.requests.at(-1)?.body;
   }
+  function assertBodySubset(actual, expected, label = 'body') {
+    if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+      assert.ok(actual && typeof actual === 'object' && !Array.isArray(actual), `${label} must be an object`);
+      for (const [key, value] of Object.entries(expected)) {
+        assert.ok(Object.hasOwn(actual, key), `${label}.${key} is missing`);
+        assertBodySubset(actual[key], value, `${label}.${key}`);
+      }
+      return;
+    }
+    assert.deepEqual(actual, expected, `${label} does not match its contract`);
+  }
+  function valueAtPath(object, path) {
+    return path.split('.').reduce((value, key) => value == null ? undefined : value[key], object);
+  }
 
-  await test('All 225 legacy IDs remain present and every DOM ID is unique', async () => {
+  await test('Retired controls stay absent and stable runtime IDs remain unique', async () => {
     const ids = await page.locator('[id]').evaluateAll(nodes => nodes.map(x => x.id));
-    assert.equal(legacyIds.length, 225);
-    assert.deepEqual(legacyIds.filter(x => !ids.includes(x)), []);
     assert.equal(new Set(ids).size, ids.length, 'Duplicate DOM IDs detected');
+    if (original) return;
+    assert.deepEqual(retiredUiIds.filter(id => ids.includes(id)), [], 'Retired legacy controls must not return');
+    assert.deepEqual(requiredRuntimeIds.filter(id => !ids.includes(id)), [], 'Required runtime controls must remain present');
+    assert.ok(await page.locator('[data-v2-tool]').count() > 0, 'The runtime tool switches must remain available');
+    assert.ok(await page.locator('#v2ConfigSave, #v2ConfigSaveTop').count() > 0, 'The reserved2 runtime config must remain saveable');
+    assert.equal(await page.locator('[data-mode]').count(), 0, 'The console must not expose mode-switch controls');
+    assert.equal(await page.locator('#closedPreset').count(), 0, 'The closed-agent preset selector must be removed');
+    assert.equal(await page.locator('[data-view="social-v1"], [data-page="social-v1"], #section-social-v1').count(), 0, 'The v1 page/panel must be removed');
+    assert.equal(await page.locator('#simPromptPreset option[value="qq-chat"]').count(), 0, 'The prompt editor must not offer the v1 qq-chat preset');
   });
 
-  if (!original) await test('All ten navigation destinations work and preserve unsaved form values across polling', async () => {
+  if (!original) await test('All nine navigation destinations work and preserve unsaved form values across polling', async () => {
     for (const view of views) {
       await navigate(view);
       const visiblePages = await page.locator('[data-page]').evaluateAll(nodes => nodes.filter(x => x.getClientRects().length && getComputedStyle(x).visibility !== 'hidden').map(x => x.dataset.page));
       assert(visiblePages.length > 0, `${view} has no visible content`);
       assert(visiblePages.every(x => x === view), `${view} exposes another page: ${visiblePages.join(', ')}`);
     }
-    const drafts = { wlGroups: '100001, 100002', roleInput: '未保存的角色', v2AgentPreset: 'draft-preset', sKeywords: '未保存关键词', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
+    const drafts = { wlGroups: '100001, 100002', roleInput: '未保存的角色', v2SleepMinMs: '42', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
     for (const [id, value] of Object.entries(drafts)) await fill(id, value);
     await navigate('overview');
     await page.waitForTimeout(3300); // Exercise the real 3-second status polling interval.
     for (const [id, value] of Object.entries(drafts)) assert.equal(await (await reveal(`#${id}`)).inputValue(), value, `${id} lost its draft`);
-    // Restore fixture defaults so the independent payload baseline remains deterministic.
+    // Restore fixture defaults so the independent payload contract remains deterministic.
     await page.reload();
-    await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'qq-chat-v2');
+    await page.waitForFunction(() => document.getElementById('wlGroups')?.value.includes('123456789'));
   });
 
-  await test('Mode and preset contracts', async () => {
-    for (const mode of ['chat', 'reserved', 'reserved2', 'closed-agent']) {
-      assert.deepEqual(await clickWrite(`#modeRow [data-mode="${mode}"]`, '/api/mode'), { mode, closedAgentPreset: '' });
+  if (!original) await test('Fixed wake policy is visible and the only wake policy exposed', async () => {
+    const policy = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
+    assert.match(policy, /群聊[\s\S]{0,180}(?:仅|只)[\s\S]{0,180}(?:原生|真实|官方)[\s\S]{0,80}(?:@|艾特)/, 'Group wake policy must be limited to native QQ @');
+    assert.match(policy, /(?:回复|引用)[\s\S]{0,80}(?:机器人|本账号|本人|自己|Bot)/i, 'Reply wake policy must identify the bot as its target');
+    assert.match(policy, /普通[\s\S]{0,80}(?:消息|发言)[\s\S]{0,80}(?:缓冲|未读|保留)/, 'Ordinary group messages must remain buffered');
+    assert.match(policy, /私聊[\s\S]{0,80}唤醒/, 'Private messages must still wake the session');
+    const selector = page.locator('#simPromptPreset');
+    if (await selector.count()) {
+      const options = await selector.locator('option').evaluateAll(nodes => nodes.map(node => node.value));
+      assert.deepEqual(options, ['qq-chat-v2'], 'The prompt editor may expose only the reserved2 preset');
     }
-    const select = await reveal('#closedPreset');
-    await Promise.all([page.waitForResponse(r => r.url().endsWith('/api/mode') && r.request().method() === 'POST'), select.selectOption('qq-chat-v2')]);
-    assert.deepEqual(fixture.requests.at(-1).body, { mode: 'closed-agent', closedAgentPreset: 'qq-chat-v2' });
   });
 
   await test('Role creation, selection, clearing and silent-mode contracts', async () => {
@@ -167,49 +204,31 @@ try {
     await page.waitForFunction(() => document.getElementById('stateDirWarn')?.style.display === 'none');
   });
 
-  await test('Second-generation complete save payload, units, zero values and tool switches', async () => {
-    await fill('v2AgentPreset', 'contract-v2');
-    await fill('v2RecSleepMin', 7);
+  await test('Reserved2 config saves one-shot sleep bounds, rate limits and tool switches', async () => {
     await fill('v2SleepMinMs', 42);
-    await fill('v2PreSleepWaitMin', 0);
-    await fill('v2RecProb', 0);
-    await fill('v2RecKeywords', '鲸鱼，DeepSeek, 测试');
-    await fill('v2AutoReplyCheckSec', 17);
+    await fill('v2SleepMaxMs', 180);
+    await fill('v2MaxWakeMin', 3);
+    await fill('v2MaxWakeHour', 24);
+    await fill('v2BatchWindowMs', 12500);
     await fill('v2WaitDefaultQuietMs', 0);
     await fill('v2MaxSendMin', 0);
-    await check('v2ProvideRecommendations', false);
-    const firstTool = page.locator('[data-v2-tool]').first();
-    await reveal('[data-v2-tool]');
-    await firstTool.setChecked(false);
-    const body = await clickWrite('#v2ConfigSaveTop', '/api/socialV2/config');
-    assert.equal(body.wake.recommendedSleepMinMs, 420000);
-    assert.equal(body.wake.sleepMinMs, 42000);
-    assert.equal(body.wake.preSleepWaitMs, 0);
-    assert.equal(body.wake.recommendedProbability, 0);
-    assert.deepEqual(body.wake.recommendedKeywords, ['鲸鱼', 'DeepSeek', '测试']);
-    assert.equal(body.autoReplyCheckMs, 17000);
-    assert.equal(body.wait.defaultQuietMs, 0);
-    assert.equal(body.send.maxSendPerMinute, 0);
-    assert.equal(body.provideRecommendations, false);
-    assert.equal(body.tools[await firstTool.getAttribute('data-v2-tool')], false);
-    // The lower save button must submit the same complete configuration.
-    await page.waitForFunction(() => document.getElementById('v2AgentPreset').value === 'contract-v2');
-    assert.deepEqual(await clickWrite('#v2ConfigSave', '/api/socialV2/config'), body);
+    await fill('v2MaxSendHour', 36);
+    const unreadTool = page.locator('[data-v2-tool="getUnread"]');
+    await reveal('[data-v2-tool="getUnread"]');
+    await unreadTool.setChecked(false);
+    const body = await clickWrite('#v2ConfigSave, #v2ConfigSaveTop', '/api/socialV2/config');
+    assert.equal(body.wake.sleepMinMs, 42000, 'One-shot sleep minimum is saved in milliseconds');
+    assert.equal(body.wake.sleepMaxMs, 180000, 'One-shot sleep maximum is saved in milliseconds');
+    assert.equal(body.wake.maxWakePerMinute, 3);
+    assert.equal(body.wake.maxWakePerHour, 24);
+    assert.equal(body.wake.batchWindowMs, 12500);
+    assert.equal(body.wait.defaultQuietMs, 0, 'A configured zero quiet window must be preserved');
+    assert.equal(body.send.maxSendPerMinute, 0, 'A configured zero send rate must be preserved');
+    assert.equal(body.send.maxSendPerHour, 36);
+    assert.equal(body.tools.getUnread, false, 'Tool availability must be saved');
+    assert.equal('proactive' in body, false, 'Autonomous proactive settings are not part of the runtime config');
     assert.deepEqual(await clickWrite('#v2PauseBtn', '/api/socialV2/activity'), { paused: true });
     assert.deepEqual(await clickWrite('#v2ResumeBtn', '/api/socialV2/activity'), { paused: false });
-  });
-
-  await test('First-generation social parameter and phase contracts', async () => {
-    await fill('sTrigger', 0.35);
-    await fill('sCheckMin', 12);
-    await fill('sKeywords', '鲸鱼，测试');
-    const body = await clickWrite('#socialSave', '/api/social');
-    assert.equal(body.triggerProbability, 0.35);
-    assert.equal(body.activeCheckMinMs, 12000);
-    assert.deepEqual(body.mustReplyKeywords, ['鲸鱼', '测试']);
-    await (await reveal('#sStateKey')).selectOption('group:123456789');
-    assert.deepEqual(await clickWrite('#sStateIdle', '/api/social/state'), { key: 'group:123456789', phase: 'idle' });
-    assert.deepEqual(await clickWrite('#socialFlush', '/api/social/flush'), {});
   });
 
   await test('Slang add, search, confirm modal, tab switching and parameter contracts', async () => {
@@ -244,13 +263,56 @@ try {
     assert.deepEqual(await clickWrite('#aiNotifySend', '/api/console/notify-ai'), { key: 'private:100001', message: '离线提醒，不会发往 DSH。' });
   });
 
-  if (record) {
-    assert(results.every(x => x.ok), 'Cannot record a baseline from a failed suite');
-    await writeFile(baselinePath, JSON.stringify(fixture.requests, null, 2) + '\n');
-    console.log(`Recorded original API contracts: ${baselinePath}`);
-  } else await test('All submitted payloads exactly match the pre-redesign console baseline', async () => {
-    const expected = JSON.parse(await readFile(baselinePath, 'utf8'));
-    assert.deepEqual(fixture.requests, expected);
+  if (!original) await test('Submitted writes match the single-runtime API contracts', async () => {
+    const contracts = JSON.parse(await readFile(baselinePath, 'utf8'));
+    assert.equal(fixture.requests.length, contracts.length, 'Unexpected number of console writes');
+    for (const [index, contract] of contracts.entries()) {
+      const actual = fixture.requests[index];
+      assert.equal(actual.method, contract.method, `requests[${index}].method`);
+      assert.equal(actual.path, contract.path, `requests[${index}].path`);
+      assertBodySubset(actual.body, contract.body, `requests[${index}].body`);
+      for (const path of contract.absent || []) {
+        assert.equal(valueAtPath(actual.body, path), undefined, `requests[${index}].body.${path} must be absent`);
+      }
+    }
+  });
+
+  if (!original) await test('Sessions, logs, voice/stickers, access and operations remain available', async () => {
+    await navigate('sessions');
+    await page.waitForFunction(() => document.getElementById('sessionList')?.textContent.includes('group:123456789'));
+    assert.match(await page.locator('#sessionList').textContent(), /private:100001/);
+    assert.match(await page.locator('#pendingList').textContent(), /group:123456789/);
+
+    await navigate('social-v2');
+    const [logResponse] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === '/api/socialV2/tool-log' && response.request().method() === 'GET'),
+      (await reveal('#v2ToolLogLoad')).click(),
+    ]);
+    assert.equal(logResponse.status(), 200);
+    assert.match(await page.locator('#v2ToolLogOutput').textContent(), /qq_get_recent_messages/);
+    const [clearResponse] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === '/api/socialV2/tool-log/clear' && response.request().method() === 'POST'),
+      (await reveal('#v2ToolLogClear')).click(),
+    ]);
+    assert.equal(clearResponse.status(), 200);
+    await page.waitForFunction(() => document.getElementById('v2ToolLogOutput')?.textContent.includes('空'));
+
+    const [voiceResponse] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === '/api/voice/list' && response.request().method() === 'GET'),
+      (await reveal('#voiceRefreshBtn')).click(),
+    ]);
+    assert.equal(voiceResponse.status(), 200);
+    assert.match(await page.locator('#voiceList').textContent(), /演示-问候\.mp3/);
+    await fill('voiceSendTarget', 'group:123456789');
+    await check('voiceSendDryRun', true);
+    const voiceSend = await clickWrite('#voiceSendBtn', '/api/voice/send');
+    assert.deepEqual(voiceSend, { target: 'group:123456789', file: '演示-问候.mp3', dryRun: true });
+
+    await navigate('access');
+    assert.ok(await page.locator('#wlSave').isVisible());
+    await navigate('operations');
+    for (const id of ['restartBtn', 'clearWsBtn', 'tsSend', 'aiNotifySend']) assert.ok(await page.locator(`#${id}`).isVisible(), `${id} must remain available`);
+    for (const id of ['v2StickerEnabled', 'v2StickerSyncTtlSec', 'v2StickerMaxList', 'v2StickerCollectEnabled']) assert.equal(await page.locator(`#${id}`).count(), 1, `${id} sticker setting must remain available`);
   });
 
   if (!original) await test('Token usage panel renders totals, per-conversation and per-turn cost', async () => {
@@ -496,22 +558,21 @@ try {
     assert.equal(await page.locator('#simPromptText').getAttribute('readonly'), '', '保存后应回到只读');
   });
 
-  if (!original) await test('仿真提示词可切换到一代/二代，两代内容相互独立', async () => {
+  if (!original) await test('仿真提示词固定使用 reserved2 预设', async () => {
     await navigate('persona');
-    await page.waitForFunction(() => document.getElementById('simPromptText').value.length > 0);
-    const v2 = await page.locator('#simPromptText').inputValue();
+    await page.waitForFunction(() => document.getElementById('simPromptText')?.value.length > 0);
     assert.match(await page.locator('#simPromptStatus').textContent(), /二代仿真|qq-chat-v2/);
-    await page.locator('#simPromptPreset').selectOption('qq-chat');
-    await page.waitForFunction((prev) => document.getElementById('simPromptText').value !== prev, v2);
-    const v1 = await page.locator('#simPromptText').inputValue();
-    assert.notEqual(v1, v2, '两代预设的提示词应各自独立');
-    assert.match(await page.locator('#simPromptStatus').textContent(), /一代仿真|qq-chat/);
-    // 切回二代，避免影响后续断言
-    await page.locator('#simPromptPreset').selectOption('qq-chat-v2');
-    await page.waitForFunction((prev) => document.getElementById('simPromptText').value === prev, v2);
+    const selector = page.locator('#simPromptPreset');
+    if (await selector.count()) {
+      const options = await selector.locator('option').evaluateAll(nodes => nodes.map(node => node.value));
+      assert.deepEqual(options, ['qq-chat-v2']);
+      assert.equal(await selector.inputValue(), 'qq-chat-v2');
+    }
+    const promptWrite = fixture.requests.findLast(request => request.path === '/api/preset/sim-prompt');
+    if (promptWrite && Object.hasOwn(promptWrite.body, 'preset')) assert.equal(promptWrite.body.preset, 'qq-chat-v2');
   });
 
-  if (!original) await test('人格注入上限可调，且随模式筛选后统计', async () => {
+  if (!original) await test('人格注入上限可调并可恢复默认值', async () => {
     await navigate('persona');
     await page.waitForFunction(() => document.querySelectorAll('#roleList .persona-item').length > 0);
     const before = await page.locator('#roleInjectMax').inputValue();

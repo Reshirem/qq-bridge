@@ -274,27 +274,16 @@ const registryNs = st.value?.namespaces?.find((n) => n.ns === 'agent-preset-regi
 check('preset 注册表命名空间已装载', registryNs !== undefined, st.value?.namespaces?.map((n) => n.ns).filter((n) => n.includes('preset')).join(', '));
 check('closed-agent 兜底所需的 standard 预设可用', presetIds.includes('standard'), presetIds.join(', '));
 
-// ── 5a. qq-mode 命名空间（0.2.0 删除了 ctx.settings.register()）──────────────
-// 0.2.0 里命名空间**不再需要注册**：它由 profile 里 id 恰好等于命名空间名的 loader
-// entry + 该插件导出的 Config（含 volatile 字段）推导出来。这条断言把「模式能写穿
-// DSH 设置」的可观测结果钉住 —— 它一旦坏掉，控制台改模式只在本地生效，下一次
-// DSH 轮询就回滚，而且不会有任何提示。
+// ── 5a. qq-mode 兼容命名空间（仅提供 ownerQQ）───────────────────────────────
+// 0.2.0 里命名空间由 profile entry + 插件导出的 Config 推导，不再调用
+// ctx.settings.register()。运行时不再使用 DSH 模式字段；桥接仍从该兼容命名空间
+// 读取管理员 ownerQQ，因此这里只验证设置可见，不写入或切换运行模式。
 const qqMode = st.value?.namespaces?.find((n) => n.ns === 'qq-mode');
 check('settings/describe 列出 qq-mode 命名空间', qqMode !== undefined, st.value?.namespaces?.map((n) => n.ns).length + ' 个命名空间');
 if (qqMode) {
-  check('qq-mode 带 mode 字段', typeof qqMode.value?.mode === 'string', JSON.stringify(qqMode.value));
-  check('qq-mode 带 revision（写入所需）', Number.isInteger(qqMode.revision), String(qqMode.revision));
-  // settings/update 是**多参数** RPC：args 是 { ns, patch, expectedRevision } 平铺，
-  // 不是 { request: {...} }（传 request 会被网关拒为
-  // `gateway/arguments-invalid: missing "ns", "patch"; unexpected "request"`）。
-  const writeBack = await rpc('settings/update', {
-    ns: 'qq-mode', patch: { mode: qqMode.value.mode }, expectedRevision: qqMode.revision,
-  });
-  check(
-    'settings/update 可写 qq-mode（参数为平铺多参数，非 request 包装）',
-    writeBack.ok === true,
-    writeBack.ok ? `mode=${writeBack.value?.value?.mode}` : `${writeBack.error?.code}: ${writeBack.error?.message}`,
-  );
+  const ownerQQ = qqMode.value?.ownerQQ;
+  check('qq-mode ownerQQ 配置为空或为字符串', ownerQQ === undefined || typeof ownerQQ === 'string', JSON.stringify(qqMode.value));
+  check('qq-mode 带 revision', Number.isInteger(qqMode.revision), String(qqMode.revision));
 }
 
 // ── 5b. session/projections：读会话队列的主路径 ──────────────────────────────
