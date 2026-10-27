@@ -25,7 +25,7 @@ const requiredRuntimeIds = [
   'v2SessionSelect', 'v2SessionRefresh',
   'v2StickerEnabled', 'v2StickerSyncTtlSec', 'v2StickerMaxList', 'v2StickerPromptMax',
   'v2StickerIncludePrompt', 'v2StickerCollectEnabled',
-  'restartBtn', 'clearWsBtn', 'tsSend', 'aiNotifySend', 'consoleTokenSave',
+  'restartBtn', 'clearWsBtn', 'tsSend', 'dshSessionRefresh', 'aiNotifyTarget', 'aiNotifyTargetsRefresh', 'aiNotifySend', 'consoleTokenSave',
 ];
 const baselinePath = join(here, 'console-ui-contracts.json');
 if (record) throw new Error('--record-baseline is retired; update the reserved2 runtime contracts explicitly.');
@@ -235,8 +235,13 @@ try {
     await fill('tsId', '123456789');
     await fill('tsMsg', '离线测试，不会发往 QQ。');
     assert.deepEqual(await clickWrite('#tsSend', '/api/test-send'), { kind: 'group', id: '123456789', message: '离线测试，不会发往 QQ。' });
-    await (await reveal('#aiNotifyKind')).selectOption('private');
-    await fill('aiNotifyId', '100001');
+    if (original) {
+      await (await reveal('#aiNotifyKind')).selectOption('private');
+      await fill('aiNotifyId', '100001');
+    } else {
+      await page.waitForFunction(() => [...(document.getElementById('aiNotifyTarget')?.options || [])].some(option => option.value === 'private:100001'));
+      await (await reveal('#aiNotifyTarget')).selectOption('private:100001');
+    }
     await fill('aiNotifyMessage', '离线提醒，不会发往 DSH。');
     assert.deepEqual(await clickWrite('#aiNotifySend', '/api/console/notify-ai'), { key: 'private:100001', message: '离线提醒，不会发往 DSH。' });
   });
@@ -258,7 +263,9 @@ try {
   if (!original) await test('Sessions, logs, stickers, access and operations remain available', async () => {
     await navigate('sessions');
     await page.waitForFunction(() => document.getElementById('sessionList')?.textContent.includes('group:123456789'));
+    assert.match(await page.locator('#sessionList').textContent(), /已运行 · 空闲/);
     assert.match(await page.locator('#sessionList').textContent(), /private:100001/);
+    assert.ok(await page.locator('#aiNotifySend').isVisible(), 'The DSH session control must be available from the sessions page');
     assert.match(await page.locator('#pendingList').textContent(), /group:123456789/);
 
     await navigate('social-v2');
@@ -278,7 +285,7 @@ try {
     await navigate('access');
     assert.ok(await page.locator('#wlSave').isVisible());
     await navigate('operations');
-    for (const id of ['restartBtn', 'clearWsBtn', 'tsSend', 'aiNotifySend']) assert.ok(await page.locator(`#${id}`).isVisible(), `${id} must remain available`);
+    for (const id of ['restartBtn', 'clearWsBtn', 'tsSend']) assert.ok(await page.locator(`#${id}`).isVisible(), `${id} must remain available`);
     for (const id of ['v2StickerEnabled', 'v2StickerSyncTtlSec', 'v2StickerMaxList', 'v2StickerCollectEnabled']) assert.equal(await page.locator(`#${id}`).count(), 1, `${id} sticker setting must remain available`);
   });
 

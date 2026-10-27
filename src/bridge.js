@@ -2766,6 +2766,36 @@ async function main() {
           sendJson({ sessions: list });
           return;
         }
+        if (req.method === 'GET' && url.pathname === '/api/console/dsh-session-status') {
+          if (!dshReady) {
+            sendJson({ ok: false, error: 'DSH 当前不可用', sessions: [] }, 503);
+            return;
+          }
+          try {
+            const result = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+            const liveById = new Map((Array.isArray(result.items) ? result.items : [])
+              .filter((item) => item?.sessionId)
+              .map((item) => [String(item.sessionId), item]));
+            const sessions = Object.entries(state.sessions).map(([key, sessionId]) => {
+              const live = liveById.get(String(sessionId));
+              const conversation = socialV2.conversations.get(key);
+              return {
+                key,
+                sessionId,
+                found: !!live,
+                running: live?.running === true,
+                blank: live?.blank === true,
+                agentAvailable: live ? live.agentAvailable === true : false,
+                updatedAt: Number(live?.updatedAt) || null,
+                bufferedCount: Array.isArray(conversation?.unread) ? conversation.unread.length : 0
+              };
+            });
+            sendJson({ ok: true, checkedAt: Date.now(), sessions });
+          } catch (error) {
+            sendJson({ ok: false, error: `读取 DSH 会话状态失败：${error?.message ?? error}`, sessions: [] }, 502);
+          }
+          return;
+        }
         // ── 挂起审批 / 提问 ───────────────────────────────────────────────────
         if (req.method === 'GET' && url.pathname === '/api/pending') {
           const list = [];

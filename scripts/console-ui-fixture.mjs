@@ -437,6 +437,14 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           });
           case '/api/whitelist': return json(state.whitelist);
           case '/api/sessions': return json({ sessions: state.sessions });
+          case '/api/console/dsh-session-status': return json({
+            ok: true,
+            checkedAt: Date.now(),
+            sessions: state.sessions.map(item => ({
+              ...item, found: true, running: false, blank: false, agentAvailable: true,
+              updatedAt: Date.now(), bufferedCount: 2
+            }))
+          });
           case '/api/pending': return json({ pending: [{ key: 'group:123456789', kind: 'approval', toolName: '演示工具', reason: '等待管理员确认（离线示例）' }] });
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });

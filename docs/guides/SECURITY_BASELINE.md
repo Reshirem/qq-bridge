@@ -60,13 +60,14 @@
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 只监听回环 | `server.listen(port, '127.0.0.1')` | 永不绑 `0.0.0.0` |
-| 令牌门 | 请求最前面 | **所有**路由（读+写）都要 `x-console-token` 或 `?token=`；未配置时启动自动生成 192 bit 随机值 |
+| 令牌门 | 请求最前面 | **所有**路由（读+写）都要 `x-console-token`、兼容查询参数 `?token=` 或登录页设置的 HttpOnly `qq_bridge_console` Cookie；未配置时启动自动生成 192 bit 随机值 |
 | 定长比较 | `crypto.timingSafeEqual` | 比较前先比长度，避免 `!==` 短路带来的时延侧信道 |
 | Host 校验 | 请求最前面 | Host 必须是 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`，否则 403（DNS rebinding 硬化） |
 | CSRF | 非 GET 请求 | 必须 `content-type: application/json`；若带 `Origin`，其 host 必须等于本机 |
 | agent 令牌隔离 | 请求前缀白名单 | 带 `x-agent-token` 的请求默认拒绝，仅放行 `/api/status`、`/api/socialV2/*`、`/api/send/*`、`/api/images/*`、`/api/authorize/read`；管理端点（人格/提示词/思考强度/白名单/重启/令牌）一律 403 |
 | 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免"空 = 管理端"的绕过 |
 | 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步）一律 POST；GET 只读 |
+| WebUI 会话引导 | `/api/console/notify-ai` | 仅控制台令牌可调用；目标必须通过 QQ 白名单/拒绝名单；明确提交后才创建或复用映射并投递 DSH 回合，文本不自动转发到 QQ，显式 QQ 工具发送仍过活动回合与统一发送守卫 |
 | 请求体限制 | `readBody()` | 声明长度或实际累计超过 1 MB → 413；30 秒读取超时 |
 | 安全响应头 | 全部响应 | `X-Frame-Options: DENY`、CSP、`nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` |
 

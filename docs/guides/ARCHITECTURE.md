@@ -12,6 +12,7 @@ Reconsider a larger redesign only when a concrete requirement cannot be implemen
 - Private messages wake their conversation. Group conversations wake only on a native @ directed to the bot or a verified reply/quote to the bot.
 - Ordinary group messages are buffered by the bridge and are not automatically added to model context. During an active turn, the agent can choose to read recent or unread messages through the QQ tools. A direct wake may include its triggering message, not the rest of the buffer.
 - The agent can choose to wait for messages or schedule a one-time wake. A persistent DSH session retains its session/context mapping; it does not mean a model is continuously running between turns.
+- An authenticated operator can also explicitly start a turn from the WebUI for an allowlisted QQ-mapped session. This is a manual control action, not a QQ wake or periodic model heartbeat; the turn runs in DSH and its text is not forwarded to QQ automatically.
 - QQ sends happen through guarded tools during an active DSH turn. Session tokens, allow/deny lists, rate limits, and audit checks are runtime invariants.
 - SnowLuma supplies the inbound OneBot event stream needed to detect direct events and maintain the bridge's message buffer. Content reads are agent-directed. Infrastructure health polling and event heartbeats are separate from model wakeups; they do not run model turns.
 - There is no periodic model heartbeat or timer-driven model polling.

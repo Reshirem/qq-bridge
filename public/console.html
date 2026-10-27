@@ -1753,8 +1753,29 @@ button:active:not(:disabled) {
       </div>
       <div class="grid">
 <section id="section-sessions" data-page="sessions" class="card span-all">
-      <h2>会话映射</h2>
+      <h2>DSH 会话</h2>
+      <div class="row" style="margin:0 0 10px">
+        <button id="dshSessionRefresh" class="small">刷新 DSH 状态</button>
+        <span class="meta" id="dshSessionStatusHint" role="status">等待检查</span>
+      </div>
       <div id="sessionList">加载中…</div>
+    </section>
+<section id="section-notify" data-page="sessions" class="card span-all">
+      <h2>WebUI 控制 DSH 会话</h2>
+      <div class="meta">选择白名单 QQ 会话，从控制台直接向对应的持久 DSH session 启动或继续一轮，不必等待 QQ 来信。模型文本保留在 DSH 会话中，不会自动转发到 QQ；若模型主动调用 QQ 发送工具，仍受活动回合、令牌、白名单、限频和审计限制。</div>
+      <div class="row" style="margin-top:10px">
+        <label for="aiNotifyTarget" style="margin:0">目标会话</label>
+        <select id="aiNotifyTarget" style="min-width:260px;max-width:100%">
+          <option value="">正在读取白名单…</option>
+        </select>
+        <button id="aiNotifyTargetsRefresh" class="small">刷新列表</button>
+      </div>
+      <label for="aiNotifyMessage">发送给 DSH agent 的引导</label>
+      <textarea id="aiNotifyMessage" placeholder="例如：启动本轮，先检查当前状态并等待后续指令。"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="aiNotifySend">发送引导并启动一轮</button>
+        <span class="meta" id="aiNotifyMsg" role="status"></span>
+      </div>
     </section>
 <section id="section-pending" data-page="sessions" class="card span-all">
       <h2>挂起审批 / 提问</h2>
@@ -2146,23 +2167,6 @@ button:active:not(:disabled) {
       </div>
       <div class="meta">由守护窗口启动时，重启后 5 秒自动恢复；清空工作区会归档全部 QQ 会话并清空活动日志。</div>
     </section>
-<section id="section-notify" data-page="operations" class="card span-all">
-      <h2>后台控制端引导</h2>
-      <div class="meta">向指定会话的持久 DSH agent 投递后台提醒；它不是群友消息，文本输出不会自动发送到 QQ。若要发言，agent 必须在活动回合内调用发送工具。</div>
-      <div class="row" style="margin-top:10px">
-        <select id="aiNotifyKind" style="width:110px">
-          <option value="group">群</option>
-          <option value="private">私聊</option>
-        </select>
-        <input type="text" id="aiNotifyId" placeholder="群号 / QQ 号" style="width:180px">
-      </div>
-      <label>提醒内容（发给 DSH agent 的引导/提醒）</label>
-      <textarea id="aiNotifyMessage" placeholder="例如：先查看最近上下文，再决定是否需要回复。"></textarea>
-      <div class="row" style="margin-top:8px">
-        <button id="aiNotifySend">发送到 DSH</button>
-        <span class="meta" id="aiNotifyMsg"></span>
-      </div>
-    </section>
 <section id="section-usage" data-page="usage" class="card span-all">
       <h2 data-note="每 3 秒自动同步">令牌与花费</h2>
       <div class="meta">数据来源是 DSH 会话事件里的 provider usage。<b>累计总量</b>取 <code>tokenUsage</code> 投影（整条会话日志的权威累计，含桥接启动前的历史）；<b>逐轮明细</b>由 <code>assistant/message</code> 的 usage 折叠而来，能追溯到多深取决于会话开场快照带回的历史条数。金额按 DeepSeek 官方价目表折算，区分高峰 / 空闲时段（高峰单价为空闲的 2 倍）。</div>
@@ -2520,25 +2524,121 @@ async function refreshWhitelist() {
   } catch {}
 }
 
-async function refreshSessions() {
+let dshSessionStatusByKey = new Map();
+let dshSessionStatusAt = 0;
+let dshSessionStatusError = '';
+let dshSessionStatusRequest = null;
+let aiNotifyTargetsAt = 0;
+let aiNotifyTargetKeys = '';
+let aiNotifyTargetsRequest = null;
+
+async function refreshDshSessionStatus(force = false) {
+  if (!force && Date.now() - dshSessionStatusAt < 15000) return;
+  if (dshSessionStatusRequest) return dshSessionStatusRequest;
+  const hint = document.getElementById('dshSessionStatusHint');
+  hint.textContent = '正在读取 DSH 会话状态…';
+  const request = (async () => {
+    try {
+      const result = await api('/api/console/dsh-session-status');
+      if (!result.ok) throw new Error(result.error || '读取失败');
+      dshSessionStatusByKey = new Map((result.sessions || []).map(item => [item.key, item]));
+      dshSessionStatusError = '';
+      hint.textContent = `DSH 状态已检查 · ${new Date(result.checkedAt || Date.now()).toLocaleTimeString('zh-CN')}`;
+    } catch (error) {
+      dshSessionStatusByKey = new Map();
+      dshSessionStatusError = error?.message || 'DSH 状态读取失败';
+      hint.textContent = dshSessionStatusError;
+    }
+    dshSessionStatusAt = Date.now();
+  })();
+  dshSessionStatusRequest = request;
+  try { await request; } finally { if (dshSessionStatusRequest === request) dshSessionStatusRequest = null; }
+}
+
+async function loadAiNotifyTargets(force = false, mappedSessions = null) {
+  const select = document.getElementById('aiNotifyTarget');
+  const mapped = Array.isArray(mappedSessions) ? mappedSessions : [];
+  const mappedKeys = mapped.map(item => item.key).sort().join('|');
+  if (!force && Date.now() - aiNotifyTargetsAt < 30000 && mappedKeys === aiNotifyTargetKeys && select.options.length > 1) return;
+  if (aiNotifyTargetsRequest) return aiNotifyTargetsRequest;
+  const request = (async () => {
+    const previous = select.value;
+    try {
+      const [whitelist, sessionResult] = await Promise.all([
+        api('/api/whitelist'),
+        Array.isArray(mappedSessions) ? Promise.resolve({ sessions: mappedSessions }) : api('/api/sessions')
+      ]);
+      const sessions = Array.isArray(sessionResult.sessions) ? sessionResult.sessions : [];
+      const sessionKeys = new Set(sessions.map(item => item.key));
+      const options = [{ value: '', label: '选择白名单会话…' }];
+      const deniedGroups = new Set((whitelist.deny?.groups || []).map(String));
+      const deniedPrivate = new Set((whitelist.deny?.private || []).map(String));
+      for (const id of (whitelist.allow?.groups || []).filter(value => !deniedGroups.has(String(value)))) {
+        const key = 'group:' + id;
+        options.push({ value: key, label: `群 ${id} · ${sessionKeys.has(key) ? '已有 DSH session' : '首次启动时创建'}` });
+      }
+      for (const id of (whitelist.allow?.private || []).filter(value => !deniedPrivate.has(String(value)))) {
+        const key = 'private:' + id;
+        options.push({ value: key, label: `私聊 ${id} · ${sessionKeys.has(key) ? '已有 DSH session' : '首次启动时创建'}` });
+      }
+      if (options.length === 1) options.push({ value: '', label: '当前没有白名单会话' });
+      select.innerHTML = options.map(option => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join('');
+      if (previous && options.some(option => option.value === previous)) select.value = previous;
+      else {
+        const existing = options.find(option => option.value && sessionKeys.has(option.value));
+        if (existing) select.value = existing.value;
+      }
+      aiNotifyTargetKeys = mappedKeys;
+      aiNotifyTargetsAt = Date.now();
+    } catch (error) {
+      select.innerHTML = `<option value="">${esc(error?.message || '无法读取白名单')}</option>`;
+      aiNotifyTargetsAt = Date.now();
+    }
+  })();
+  aiNotifyTargetsRequest = request;
+  try { await request; } finally { if (aiNotifyTargetsRequest === request) aiNotifyTargetsRequest = null; }
+}
+
+async function refreshSessions(forceDshStatus = false) {
   try {
     const s = await api('/api/sessions');
+    await Promise.all([refreshDshSessionStatus(forceDshStatus), loadAiNotifyTargets(false, s.sessions)]);
     const box = document.getElementById('sessionList');
     document.getElementById('metricSessions').textContent = s.sessions.length;
-    if (!s.sessions.length) { box.innerHTML = '<div class="empty-state"><strong>还没有会话</strong><p>白名单中的群或好友发来消息后，会话会显示在这里。</p></div>'; return; }
-    let html = '<table><tr><th>QQ 会话</th><th>DSH 会话 ID</th><th>类型</th><th></th></tr>';
+    if (!s.sessions.length) {
+      box.innerHTML = '<div class="empty-state"><strong>还没有 DSH session</strong><p>可在下方选择白名单会话并从 WebUI 启动第一轮；QQ 私聊与原生 @ 唤醒仍按原规则工作。</p></div>';
+      return;
+    }
+    let html = '<table><tr><th>QQ 映射</th><th>DSH 状态</th><th>未读缓冲</th><th>DSH 会话 ID</th><th>操作</th></tr>';
     for (const x of s.sessions) {
       const isP = x.key.startsWith('private:');
-      const type = isP ? '<span class="pill b">私聊</span>' : '<span class="pill g">群</span>';
       const ownerTag = x.owner ? ' <span class="pill r">管理员</span>' : '';
-      html += `<tr><td>${esc(x.key)}${ownerTag}</td><td><code>${esc(x.sessionId)}</code></td><td>${type}</td><td><button class="small" data-reset-key="${esc(x.key)}">清除上下文</button></td></tr>`;
+      const live = dshSessionStatusByKey.get(x.key);
+      let statusText = '等待检查';
+      let statusClass = 'b';
+      if (dshSessionStatusError) { statusText = '状态读取失败'; statusClass = 'r'; }
+      else if (live?.found === false) { statusText = 'DSH 中未找到'; statusClass = 'r'; }
+      else if (live?.running) { statusText = '运行中'; statusClass = 'g'; }
+      else if (live?.blank) { statusText = '空白 · 未启动'; statusClass = 'b'; }
+      else if (live?.found) { statusText = live.agentAvailable ? '已运行 · 空闲' : 'Agent 不可用'; statusClass = live.agentAvailable ? 'g' : 'r'; }
+      const buffer = live ? `${live.bufferedCount} 条` : '—';
+      const type = isP ? '<span class="pill b">私聊</span>' : '<span class="pill g">群</span>';
+      html += `<tr><td>${type} ${esc(x.key)}${ownerTag}</td><td><span class="pill ${statusClass}">${esc(statusText)}</span></td><td>${esc(buffer)}</td><td><code>${esc(x.sessionId)}</code></td><td><button class="small" data-guide-key="${esc(x.key)}">WebUI 引导</button> <button class="small" data-reset-key="${esc(x.key)}">清除上下文</button></td></tr>`;
     }
     box.innerHTML = html + '</table>';
+    box.querySelectorAll('[data-guide-key]').forEach(btn => btn.addEventListener('click', async () => {
+      await loadAiNotifyTargets();
+      const select = document.getElementById('aiNotifyTarget');
+      if ([...select.options].some(option => option.value === btn.dataset.guideKey)) select.value = btn.dataset.guideKey;
+      document.getElementById('section-notify').scrollIntoView({ block: 'start', behavior: 'smooth' });
+      document.getElementById('aiNotifyMessage').focus({ preventScroll: true });
+    }));
     box.querySelectorAll('[data-reset-key]').forEach(btn => btn.addEventListener('click', async () => {
       if (!confirm('确定清除该会话的上下文？下次消息将开新会话。')) return;
       const r = await api('/api/session/reset', 'POST', { key: btn.dataset.resetKey });
       alert(r.ok ? '✅ 已清除上下文' : ('❌ ' + (r.error || '失败')));
-      refreshSessions();
+      await refreshSessions(true);
+      await loadAiNotifyTargets(true);
     }));
   } catch {}
 }
@@ -2705,15 +2805,34 @@ document.getElementById('clearWsBtn').addEventListener('click', async () => {
   document.getElementById('clearWsMsg').className = r.ok ? 'meta ok' : 'meta err';
   refreshSessions(); refresh();
 });
+document.getElementById('dshSessionRefresh').addEventListener('click', async () => {
+  const button = document.getElementById('dshSessionRefresh');
+  button.disabled = true;
+  try { await refreshSessions(true); } finally { button.disabled = false; }
+});
+document.getElementById('aiNotifyTargetsRefresh').addEventListener('click', async () => {
+  await loadAiNotifyTargets(true);
+});
 document.getElementById('aiNotifySend').addEventListener('click', async () => {
-  const kind = document.getElementById('aiNotifyKind').value;
-  const id = document.getElementById('aiNotifyId').value.trim();
+  const key = document.getElementById('aiNotifyTarget').value;
   const message = document.getElementById('aiNotifyMessage').value.trim();
-  if (!id || !message) { alert('请填写群号/QQ 号和提醒内容'); return; }
-  const r = await api('/api/console/notify-ai', 'POST', { key: kind + ':' + id, message });
+  const button = document.getElementById('aiNotifySend');
   const msg = document.getElementById('aiNotifyMsg');
-  msg.textContent = r.ok ? ('✅ 已投递到 DSH：' + r.sessionId) : ('❌ ' + (r.error || '失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
+  if (!key || !message) { msg.textContent = '请选择白名单会话并填写引导内容。'; msg.className = 'meta err'; return; }
+  button.disabled = true;
+  msg.textContent = '正在向 DSH 提交并启动回合…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/console/notify-ai', 'POST', { key, message });
+    msg.textContent = r.ok ? ('✅ 已向 DSH 启动一轮：' + r.sessionId) : ('❌ ' + (r.error || '失败'));
+    msg.className = r.ok ? 'meta ok' : 'meta err';
+    if (r.ok) await refreshSessions(true);
+  } catch (error) {
+    msg.textContent = '❌ ' + (error?.message || '投递失败');
+    msg.className = 'meta err';
+  } finally {
+    button.disabled = false;
+  }
 });
 
 // ── QQ 会话运行时配置 ──────────────────────────────────────────────────────
