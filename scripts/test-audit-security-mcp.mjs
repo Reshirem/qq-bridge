@@ -86,10 +86,14 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
     constructor() { this.tool = (name, description, schema, callback) => tools.set(name, { schema, callback }); }
     connect() {}
   }
-  const fixtureFs = fixtureConfig === null ? fs : {
+  const fixtureFs = {
     ...fs,
     readFileSync(file, ...args) {
-      if (path.basename(String(file)) === 'config.json' && String(file).includes('fixture')) {
+      const name = path.basename(String(file));
+      if (name === 'desktop-agent.json' && String(file).includes('fixture')) {
+        return JSON.stringify({ sessionId: 'fixture-session', agentToken: 'a'.repeat(64) });
+      }
+      if (name === 'config.json' && String(file).includes('fixture') && fixtureConfig !== null) {
         return JSON.stringify(fixtureConfig);
       }
       return fs.readFileSync(file, ...args);
@@ -121,6 +125,7 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
   };
   /** 该模式下某工具是否真的注册进了 schema（注册期收敛的断言入口）。 */
   callTool.has = (name) => tools.has(name);
+  callTool.schema = (name) => tools.get(name)?.schema;
   return callTool;
 }
 
@@ -154,7 +159,7 @@ test('qq_wait_for_messages uses the node:http long-poll channel, not fetch', asy
     null,
     fakeHttp
   );
-  const result = await callTool('qq_wait_for_messages', { key: 'group:1', token: 'fixture-token', timeoutMs: 300000, quietMs: 10000 });
+  const result = await callTool('qq_wait_for_messages', { key: 'group:1', timeoutMs: 300000, quietMs: 10000 });
   assert.notEqual(result.isError, true, result.content?.[0]?.text);
   assert.ok(requested, '必须真的发起 http.request');
   assert.equal(requested.path, '/api/socialV2/wait');
@@ -173,7 +178,7 @@ test('object-shaped bridge errors are rendered readably, not as [object Object]'
     { ok: false, error: { code: 'send/rejected', message: '消息含敏感信息，已阻止发送' } },
     { status: 200 },
   ));
-  const result = await callTool('qq_send_group_message', { groupId: '456', message: 'fixture', token: 'fixture-token' });
+  const result = await callTool('qq_send_group_message', { groupId: '456', message: 'fixture' });
   assert.equal(result.isError, true);
   const text = String(result.content[0].text);
   assert.ok(!/\[object Object\]/.test(text), `错误文本不得是不可读的对象：${text}`);
@@ -188,18 +193,19 @@ test('a bridge 200 with ok:false is reported to the model as a failure', async (
     { ok: false, error: '消息含敏感信息，已阻止发送' },
     { status: 200 },
   ));
-  const result = await callTool('qq_send_group_message', { groupId: '456', message: 'fixture', token: 'fixture-token' });
+  const result = await callTool('qq_send_group_message', { groupId: '456', message: 'fixture' });
   assert.equal(result.isError, true, 'ok:false 必须作为工具错误返回');
   assert.match(result.content[0].text, /阻止发送/);
 });
 
-test('single-runtime MCP tools require tokens and expose only bounded session reads', async () => {
+test('single-runtime MCP tools hide internal credentials and expose bounded session reads', async () => {
   const callTool = loadSnowlumaTools(async () => Response.json({ ok: false, error: '目标不在当前模式允许范围内' }, { status: 403 }));
   assert.equal(callTool.has('qq_list_groups'), false, 'legacy global group listing must stay removed');
   assert.equal(callTool.has('qq_get_group_history'), false, 'legacy direct history tool must stay removed');
-  assert.equal(callTool.has('qq_get_group_members'), true, 'bounded token-bound group members must be registered');
+  assert.equal(callTool.has('qq_get_group_members'), true, 'bounded group members must be registered');
   assert.equal(callTool.has('qq_get_conversation_history'), true, 'bounded conversation history must be registered');
-  const denied = await callTool('qq_get_group_members', { key: 'group:999999', token: 'fixture-agent-token' });
+  assert.equal(Object.hasOwn(callTool.schema('qq_get_group_members'), 'token'), false, 'bridge token must stay out of the model-facing schema');
+  const denied = await callTool('qq_get_group_members', { key: 'group:999999' });
   assert.equal(denied.isError, true);
 });
 
@@ -213,7 +219,7 @@ test('denied group reads never reveal the group allowlist', async () => {
     }
     assert.fail('denied group read must not call OneBot');
   }, fixtureConfig);
-  const result = await callTool('qq_get_group_members', { key: 'group:999999', token: 'fixture-agent-token' });
+  const result = await callTool('qq_get_group_members', { key: 'group:999999' });
   assert.equal(result.isError, true);
   assert.doesNotMatch(result.content[0].text, /111111|222222/);
   assert.ok(calls.length >= 1, '应当只经过桥接的鉴权/拒绝路径');

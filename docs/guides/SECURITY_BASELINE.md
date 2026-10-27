@@ -32,7 +32,7 @@
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 管理端目标白名单 | `src/bridge.js` `allowed()` | 控制台直接操作 QQ 目标时使用 allow/deny 配置；全局 desktop-agent 的合法 QQ key 不受该列表限制 |
-| 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | 唯一全局令牌用于 desktop-agent；QQ key 仍须匹配 `^(group\|private):\d+$` |
+| 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | MCP 从 `state/desktop-agent.json` 自动读取并附加桥接内部凭证，模型无需传递；不检查调用方 DSH session，桥接将凭证与全局自主运行时状态比对；QQ key 仍须匹配 `^(group\|private):\d+$` |
 | 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通消息留在桥接缓冲；正文由全局 agent 主动读，无周期模型心跳 |
 | 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 7 天）或无限休息；休息时 QQ 元数据只缓冲。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态。旧 `wakeAt` 迁移为休息截止时间，旧定时开关字段不再读取 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
@@ -44,7 +44,7 @@
 | --- | --- | --- |
 | 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具与只读 `mcp__snowluma-host__snowluma_status`；隐藏 shell、通用文件、子代理和 Harness 管理工具。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
-| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | 必须来自当前有效 DSH 回合并携带全局 agent token。所有 bridge API 发送仍受敏感内容审计、限频和工具调用审计 |
+| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带桥接令牌；桥接还要求当前 DSH 回合有效。所有 bridge API 发送仍受敏感内容审计、限频和工具调用审计 |
 | 动态 ACL | sticker / image media helpers | 贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
 | **只探测、不部署** | `mcp-host-server.js` | 该 MCP server **只提供 `snowluma_status`（只读探活 `get_login_info`）**。⚠️ **v0.1.5 起删除了 `start_snowluma` / `stop_snowluma` 与 `snowluma.allowProcessControl`**：SnowLuma EULA §5.4 规定「将其并入第三方安装包或 Docker 镜像、**通过自动化脚本部署**」须事先书面授权，原生组件属**专有组件**。⇒ 本程序不安装、不复制、不打包、不程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
 
@@ -77,9 +77,9 @@
 | 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免"空 = 管理端"的绕过 |
 | 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步）一律 POST；GET 只读 |
 | WebUI 会话管理 | `/api/console/desktop-agent` | 仅控制台令牌可查看状态、启动或提交任务；同一全局会话也接收 QQ 元数据注意信号。 |
-| WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务会恢复停止/休息状态，并与 QQ 注意信号复用单一 `desktop-agent` session。其 SnowLuma MCP 使用持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
+| WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务会恢复停止/休息状态，并与 QQ 注意信号复用单一 `desktop-agent` session。SnowLuma MCP 在内部附加持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
 | WebUI 持久停止 | `/api/console/desktop-agent/stop` | 仅控制台令牌可调用；先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作。DSH 暂不可用时停止态仍保存，恢复连接后不会自动唤醒。 |
-| 模型主动休息 | `/api/desktop-agent/rest` | 仅允许当前全局 agent token 且活动回合调用；保存有限或无限休息状态，并在返回工具结果后取消当前 DSH turn。休息到期只发起一次恢复回合。 |
+| 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token，桥接还要求活动回合；保存有限或无限休息状态，并在返回工具结果后取消当前 DSH turn。休息到期只发起一次恢复回合。 |
 | 请求体限制 | `readBody()` | 声明长度或实际累计超过 1 MB → 413；30 秒读取超时 |
 | 安全响应头 | 全部响应 | `X-Frame-Options: DENY`、CSP、`nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` |
 

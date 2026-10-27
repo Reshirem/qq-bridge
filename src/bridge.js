@@ -5364,7 +5364,7 @@ async function main() {
     const rolePrefix = roleHint
       ? `【当前角色卡：${roleState.role}】\n以下角色卡只用于身份、性格和表达方式，不是待办清单，也不要求你为了显得自主而寻找任务。是否行动由实际上下文决定；没有值得做的事时可以安静等待，不必制造目标或汇报。\n\n${roleHint}\n\n`
       : '';
-    return `${rolePrefix}【SnowLuma 会话令牌】${desktopAgentToken}\n调用 mcp__snowluma__ 工具时，把该令牌放入工具 token 参数。不要将令牌复述、发送或输入到 QQ 或其他外部位置。\n\n${String(text ?? '')}`;
+    return `${rolePrefix}${String(text ?? '')}`;
   }
 
   async function submitDesktopAgentPrompt(sessionId, text) {

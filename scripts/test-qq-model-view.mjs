@@ -153,9 +153,13 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     // live config or user runtime state are copied into this test fixture.
     fixture = await fs.mkdtemp(path.join(ROOT, '.tmp-model-view-test-'));
     await fs.mkdir(path.join(fixture, 'src'));
+    await fs.mkdir(path.join(fixture, 'state'));
     await Promise.all(['mcp-snowluma-safe.js', 'qq-model-view.js', 'sensitive.js'].map((name) =>
       fs.copyFile(path.join(ROOT, 'src', name), path.join(fixture, 'src', name))));
     await fs.writeFile(path.join(fixture, 'config.json'), JSON.stringify({ consolePort: api.address().port }));
+    await fs.writeFile(path.join(fixture, 'state', 'desktop-agent.json'), JSON.stringify({
+      sessionId: 'fixture-session', agentToken: 'f'.repeat(64)
+    }));
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [path.join(fixture, 'src', 'mcp-snowluma-safe.js')], cwd: fixture, stderr: 'pipe'
@@ -173,7 +177,8 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     const waitSchema = listed.tools.find((tool) => tool.name === 'qq_wait_for_messages').inputSchema;
     assert.deepEqual(waitSchema.properties.purpose.enum, ['messages', 'reply']);
     assert.equal(waitSchema.required.includes('purpose'), false);
-    const common = { key: 'group:123', token: 'fixture-token' };
+    assert.equal(Object.hasOwn(waitSchema.properties, 'token'), false, 'internal bridge token must not appear in tool schema');
+    const common = { key: 'group:123' };
     const read = await client.callTool({ name: 'qq_get_unread_messages', arguments: common });
     const readText = read.content.find((part) => part.type === 'text').text;
     const data = JSON.parse(readText);
@@ -197,7 +202,7 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     await client.callTool({ name: 'qq_wait_for_messages', arguments: common });
     assert.equal(requests.at(-1).url, '/api/socialV2/wait');
     assert.deepEqual(requests.at(-1).body, { key: common.key });
-    assert.equal(requests.at(-1).token, common.token);
+    assert.equal(requests.at(-1).token, 'f'.repeat(64), 'MCP must attach the bridge-owned token internally');
     for (const purpose of ['messages', 'reply']) {
       await client.callTool({ name: 'qq_wait_for_messages', arguments: {
         ...common, purpose, timeoutMs: 30000, quietMs: 10000, minNewMessages: 1
@@ -216,7 +221,7 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     await client.callTool({ name: 'qq_mark_read', arguments: { ...common, throughSeq: 21 } });
     assert.equal(requests.at(-1).url, '/api/socialV2/mark-read');
     assert.deepEqual(requests.at(-1).body, { key: common.key, throughSeq: 21 });
-    assert.equal(requests.at(-1).token, common.token);
+    assert.equal(requests.at(-1).token, 'f'.repeat(64));
 
     await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: {
       infinite: true, batchWindowMs: 3500, mode: 'active', triggers: { anyMessage: true }
