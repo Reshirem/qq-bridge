@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 const original = args.includes('--original');
 const record = args.includes('--record-baseline');
 const artifacts = args.find(x => x.startsWith('--artifacts='))?.slice('--artifacts='.length);
-const views = ['overview', 'sessions', 'persona', 'social-v2', 'usage', 'access', 'operations', 'reference'];
+const views = ['overview', 'sessions', 'persona', 'social-v2', 'usage', 'access', 'operations'];
 const retiredUiIds = JSON.parse((await readFile(join(here, 'console-ui-legacy-ids.json'), 'utf8')).replace(/^\uFEFF/, ''));
 const requiredRuntimeIds = [
   'statusText', 'sessionList', 'pendingList', 'activity',
@@ -125,14 +125,14 @@ try {
     assert.deepEqual(retiredUiIds.filter(id => ids.includes(id)), [], 'Retired legacy controls must not return');
     assert.deepEqual(requiredRuntimeIds.filter(id => !ids.includes(id)), [], 'Required runtime controls must remain present');
     assert.ok(await page.locator('[data-v2-tool]').count() > 0, 'The runtime tool switches must remain available');
-    assert.ok(await page.locator('#v2ConfigSave, #v2ConfigSaveTop').count() > 0, 'The reserved2 runtime config must remain saveable');
+    assert.equal(await page.locator('#v2ConfigSave').count(), 1, 'Runtime config must have one save button');
     assert.equal(await page.locator('[data-mode]').count(), 0, 'The console must not expose mode-switch controls');
     assert.equal(await page.locator('#closedPreset').count(), 0, 'The closed-agent preset selector must be removed');
     assert.equal(await page.locator('[data-view="social-v1"], [data-page="social-v1"], #section-social-v1').count(), 0, 'The v1 page/panel must be removed');
     assert.equal(await page.locator('#simPromptPreset option[value="qq-chat"]').count(), 0, 'The prompt editor must not offer the v1 qq-chat preset');
   });
 
-  if (!original) await test('All eight navigation destinations work and preserve unsaved form values across polling', async () => {
+  if (!original) await test('All seven navigation destinations work and preserve unsaved form values across polling', async () => {
     for (const view of views) {
       await navigate(view);
       const visiblePages = await page.locator('[data-page]').evaluateAll(nodes => nodes.filter(x => x.getClientRects().length && getComputedStyle(x).visibility !== 'hidden').map(x => x.dataset.page));
@@ -203,7 +203,7 @@ try {
     await page.waitForFunction(() => document.getElementById('stateDirWarn')?.style.display === 'none');
   });
 
-  await test('Reserved2 config saves one-shot sleep bounds, rate limits and tool switches', async () => {
+  await test('QQ runtime config saves one-shot sleep bounds, rate limits and tool switches', async () => {
     await fill('v2SleepMinMs', 42);
     await fill('v2SleepMaxMs', 180);
     await fill('v2MaxWakeMin', 3);
@@ -215,7 +215,7 @@ try {
     const unreadTool = page.locator('[data-v2-tool="getUnread"]');
     await reveal('[data-v2-tool="getUnread"]');
     await unreadTool.setChecked(false);
-    const body = await clickWrite('#v2ConfigSave, #v2ConfigSaveTop', '/api/socialV2/config');
+    const body = await clickWrite('#v2ConfigSave', '/api/socialV2/config');
     assert.equal(body.wake.sleepMinMs, 42000, 'One-shot sleep minimum is saved in milliseconds');
     assert.equal(body.wake.sleepMaxMs, 180000, 'One-shot sleep maximum is saved in milliseconds');
     assert.equal(body.wake.maxWakePerMinute, 3);
