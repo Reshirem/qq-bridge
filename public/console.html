@@ -333,7 +333,29 @@
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
       <div class="meta">模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
       <div class="row" style="margin-top:10px">
-        <label style="flex:0 0 auto">思考强度</label>
+        <label for="dshModelSelect">DSH 可用模型</label>
+        <select id="dshModelSelect" style="flex:1 1 320px"></select>
+        <button id="dshModelRefresh" class="small">刷新目录</button>
+        <button id="dshModelSave">保存模型</button>
+        <span class="meta" id="dshModelMsg" role="status"></span>
+      </div>
+      <div class="meta" id="dshModelNote"></div>
+      <details class="settings-group" style="margin-top:8px">
+        <summary>手动填写 Provider / Model ID</summary>
+        <div class="settings-content">
+          <p class="meta">目录不可用或没有列出所需模型时，可填写 DSH 中的 ID。保存后由 DSH 在下一条消息应用并验证。</p>
+          <div class="row">
+            <label for="dshProviderInput">Provider ID</label><input type="text" id="dshProviderInput" maxlength="160" autocomplete="off" spellcheck="false">
+            <label for="dshModelInput">Model ID</label><input type="text" id="dshModelInput" maxlength="160" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label for="dshEffortInput">思考强度 ID（可选）</label><input type="text" id="dshEffortInput" maxlength="64" autocomplete="off" spellcheck="false" placeholder="留空时使用下方所选档位">
+            <button id="dshModelManualSave" class="small">保存手填设置</button>
+          </div>
+        </div>
+      </details>
+      <div class="row" style="margin-top:10px">
+        <label for="dshEffortSelect" style="flex:0 0 auto">思考强度</label>
         <select id="dshEffortSelect" style="flex:0 1 220px"></select>
         <button id="dshEffortSave">保存</button>
         <span class="meta" id="dshEffortMsg"></span>

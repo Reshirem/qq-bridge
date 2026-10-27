@@ -388,7 +388,7 @@ server.tool(
 // ── 全局 desktop-agent 使用的 SnowLuma QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
-  '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。',
+  '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。若刚回复了这个来源，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查，查看对方是否紧接着发来新消息。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),
@@ -480,7 +480,7 @@ server.tool(
 
 server.tool(
   'agent_rest',
-  '结束当前个人桌面助手回合并进入休息。每个自主运行回合都应在完成当前有意义的行动后调用此工具，并将它作为本轮最后一个工具调用；调用后桥接会取消当前 DSH 回合。durationMs 可设为 1 秒至 12 小时；省略表示无限期休息。有效 QQ 提醒可以提前结束休息并唤醒一轮；有限休息到期也会唤醒一轮。休息期间不会运行异常回合的指数恢复重试；QQ 提醒仍只提供来源元数据，不要求读取、回复或采取行动。',
+  '结束当前个人桌面助手回合并进入休息。每个自主运行回合都应在完成当前有意义的行动后调用此工具，并将它作为本轮最后一个工具调用；调用后桥接会取消当前 DSH 回合。若本轮刚向某个 QQ 来源发送过回复，调用本工具前先对同一 key 使用最近一次 readThroughSeq 调用 qq_get_unread_messages 检查一次；有新消息时先按上下文处理，最后一次回复后再检查。只检查刚处理的来源，不扫描其他会话或反复轮询。durationMs 可设为 1 秒至 12 小时；省略表示无限期休息。有效 QQ 提醒可以提前结束休息并唤醒一轮；有限休息到期也会唤醒一轮。休息期间不会运行异常回合的指数恢复重试；QQ 提醒仍只提供来源元数据，不要求读取、回复或采取行动。',
   {
     durationMs: z.number().int().min(1000).max(12 * 60 * 60_000).optional().describe('休息时长，单位毫秒；省略表示无限期休息，最长 12 小时')
   },

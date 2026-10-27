@@ -434,14 +434,21 @@ let modelCatalogInFlight = null;
 // 控制台改强度后递增它，让已在运行的会话在下一条消息重新 selectModel；
 // 放在模块级是为了不依赖 main() 内部声明的执行顺序（避免 TDZ）。
 let modelSelectionEpoch = 0;
-// DeepSeek provider 明确支持的取值（见 dsh-llm-deepseek：其它值会抛 UNSUPPORTED_REASONING_EFFORT）。
-// 'off' 虽然合法（关闭思考），但 QQ 聊天助手依赖思考，控制台不提供该档。
+// DSH 模型目录负责提供实际可用的思考档位；模型目录不可用时用此清单作为手动配置回退。
 const REASONING_EFFORT_OPTIONS = ['low', 'high', 'max'];
 const REASONING_EFFORT_DEFAULT = 'max';
 function normalizeReasoningEffort(value) {
-  const v = String(value ?? '').trim().toLowerCase();
-  if (!REASONING_EFFORT_OPTIONS.includes(v)) {
-    throw new Error(`思考强度只能是 ${REASONING_EFFORT_OPTIONS.join(' / ')}`);
+  const v = String(value ?? '').trim();
+  if (!/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(v)) {
+    throw new Error('思考强度必须是 DSH 提供的档位 ID');
+  }
+  return v;
+}
+
+function normalizeDshModelValue(value, label) {
+  const v = String(value ?? '').trim();
+  if (!v || v.length > 160 || /[\u0000-\u001f\u007f]/.test(v)) {
+    throw new Error(`${label}不能为空，且不能超过 160 个字符或包含控制字符`);
   }
   return v;
 }
@@ -1325,6 +1332,13 @@ async function main() {
       if (!/not.?found|unknown|unsupported|404|invalid server-response/i.test(message)) throw error;
       return api.callUnary('session.models', {});
     }
+  }
+  async function readModelCatalog() {
+    if (!modelCatalogInFlight) {
+      modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
+        .finally(() => { modelCatalogInFlight = null; });
+    }
+    return unwrap(await modelCatalogInFlight, 'session.modelCatalog');
   }
   const toolCallNames = new Map(); // sessionId -> Map<callId, toolName>：用于结果日志关联工具名
   // key -> 开始等待的时间戳（带租约）：正在执行 qq_wait_for_messages 长轮询的会话，防止同一会话并发挂起。
@@ -2604,48 +2618,103 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/dsh/model') {
           const provider = String(cfg.dsh?.provider || 'deepseek-official');
           const model = String(cfg.dsh?.model || 'deepseek-flash');
-          // 档位优先取 DSH 实际公布的能力（DSH 换档位词汇或换 provider 时自动跟随），失败退回内置白名单。
+          // 模型与对应思考档位优先取 DSH 实际目录，目录不可用时允许 UI 手动输入。
           let options = REASONING_EFFORT_OPTIONS.slice();
           let labels = {};
           let providerDefault = null;
           let catalogSource = 'fallback';
+          let modelCatalogSource = 'fallback';
+          let catalogError = null;
+          let modelOptions = [];
           try {
-            if (!modelCatalogInFlight) {
-              modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
-                .finally(() => { modelCatalogInFlight = null; });
-            }
-            const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            const catalog = await readModelCatalog();
+            modelOptions = (Array.isArray(catalog?.groups) ? catalog.groups : []).flatMap((group) => {
+              const providerId = String(group?.id ?? '').trim();
+              if (!providerId) return [];
+              return (Array.isArray(group?.models) ? group.models : []).flatMap((entry) => {
+                const modelId = String(entry?.id ?? '').trim();
+                if (!modelId) return [];
+                const efforts = (entry?.reasoning?.efforts ?? [])
+                  .map((effort) => String(effort?.id ?? '').trim())
+                  .filter((id) => /^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(id));
+                const effortLabels = Object.fromEntries((entry?.reasoning?.efforts ?? [])
+                  .filter((effort) => efforts.includes(String(effort?.id ?? '').trim()))
+                  .map((effort) => [String(effort.id).trim(), { name: effort.name ?? '', description: effort.description ?? '' }]));
+                return [{
+                  provider: providerId,
+                  providerName: String(group?.name ?? providerId),
+                  model: modelId,
+                  modelName: String(entry?.name ?? modelId),
+                  description: String(entry?.description ?? ''),
+                  reasoningEfforts: efforts,
+                  reasoningLabels: effortLabels,
+                  effortSource: efforts.length > 0 ? 'dsh' : 'fallback',
+                  defaultEffort: String(entry?.reasoning?.defaultEffort ?? '')
+                }];
+              });
+            });
+            modelCatalogSource = modelOptions.length > 0 ? 'dsh' : 'empty';
             const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
             const entry = (group?.models ?? []).find((m) => m?.id === model);
             const efforts = entry?.reasoning?.efforts ?? [];
-            const advertised = efforts.map((e) => String(e?.id ?? '')).filter((id) => REASONING_EFFORT_OPTIONS.includes(id));
+            const advertised = efforts.map((e) => String(e?.id ?? '').trim()).filter((id) => /^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(id));
             if (advertised.length) {
-              options = advertised;
-              labels = Object.fromEntries(efforts.map((e) => [String(e.id), { name: e.name ?? '', description: e.description ?? '' }]));
+              options = [...new Set(advertised)];
+              labels = Object.fromEntries(efforts
+                .filter((effort) => options.includes(String(effort?.id ?? '').trim()))
+                .map((effort) => [String(effort.id).trim(), { name: effort.name ?? '', description: effort.description ?? '' }]));
               providerDefault = entry.reasoning.defaultEffort ?? null;
               catalogSource = 'dsh';
             }
           } catch (error) {
+            catalogError = String(error?.message ?? error);
             // 同一条失败原因只记一次：控制台每次刷新都会打这条接口，否则日志会被刷爆。
-            const reason = String(error?.message ?? error);
+            const reason = catalogError;
             if (!modelCatalogErrorLogged.has(reason)) {
               modelCatalogErrorLogged.add(reason);
               log(`读取 DSH 模型能力失败，思考强度暂用内置清单：${reason}`);
             }
           }
+          const configuredEffort = normalizeReasoningEffort(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+          if (!options.includes(configuredEffort)) options.push(configuredEffort);
           sendJson({
             provider,
             model,
-            reasoningEffort: String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT),
+            reasoningEffort: configuredEffort,
             options,
             labels,
+            modelOptions,
+            modelCatalogSource,
+            catalogError,
             default: REASONING_EFFORT_DEFAULT,
             providerDefault,
             catalogSource,
-            // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
-            // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
+            // selectModel 会同时写会话级与 DSH 全局默认，控制台需明确说明副作用。
             globalSideEffect: true,
           });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/dsh/model') {
+          const body = await readBody();
+          let provider;
+          let model;
+          let effort;
+          try {
+            provider = normalizeDshModelValue(body.provider, 'Provider ID');
+            model = normalizeDshModelValue(body.model, 'Model ID');
+            effort = normalizeReasoningEffort(body.reasoningEffort ?? cfg.dsh?.reasoningEffort ?? REASONING_EFFORT_DEFAULT);
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? '模型设置无效' }, 400);
+            return;
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
+          atomicWriteJson(configFile, file);
+          cfg.dsh = { ...(cfg.dsh ?? {}), provider, model, reasoningEffort: effort };
+          modelSelectionEpoch += 1;
+          log(`控制台：DSH 模型已设为 ${provider}/${model}（${effort}，下一条消息生效）`);
+          sendJson({ ok: true, provider, model, reasoningEffort: effort });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/dsh/effort') {
@@ -2949,7 +3018,9 @@ async function main() {
           // larger than one response be read completely, even outside recent.
           const messages = afterSeq === null ? st.unread.slice(-limit)
             : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
-          const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
+          const isAgentRead = !!req.headers['x-agent-token'];
+          const readThroughSeq = isAgentRead ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
+          if (isAgentRead) acknowledgeDesktopAttentionThrough(key, readThroughSeq);
           sendJson({ ok: true, key, unreadCount: st.unread.length, messages, readThroughSeq });
           return;
         }
@@ -2964,7 +3035,9 @@ async function main() {
           const start = Math.max(0, st.recentMessages.length - offset - limit);
           const end = Math.max(0, st.recentMessages.length - offset);
           const messages = st.recentMessages.slice(start, end);
-          const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
+          const isAgentRead = !!req.headers['x-agent-token'];
+          const readThroughSeq = isAgentRead ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
+          if (isAgentRead) acknowledgeDesktopAttentionThrough(key, readThroughSeq);
           sendJson({ ok: true, key, messages, readThroughSeq });
           return;
         }
@@ -3901,7 +3974,9 @@ async function main() {
           // `arrived` is recomputed against what this request may actually hand over,
           // so a suppressed buffer cannot report an arrival it is not allowed to show.
           const newMessages = replyWait ? pending : (arrived ? pending : []);
-          const readThroughSeq = req.headers['x-agent-token'] ? noteModelMessagesV2(st, newMessages) : readThroughSeqV2(st);
+          const isAgentRead = !!req.headers['x-agent-token'];
+          const readThroughSeq = isAgentRead ? noteModelMessagesV2(st, newMessages) : readThroughSeqV2(st);
+          if (isAgentRead) acknowledgeDesktopAttentionThrough(key, readThroughSeq);
           const lastNew = newMessages.length ? newMessages[newMessages.length - 1]
             : replyWait ? [...st.recentMessages].reverse().find((m) => m && !m.isSelf) : null;
           const lastMessageUnfinished = lastNew ? looksLikeUnfinished(String(lastNew.tail || lastNew.plain || lastNew.text || '')) : false;
@@ -5351,9 +5426,7 @@ async function main() {
   }
 
   // 会话模型应用去重：每个 DSH 会话在本进程内只 selectModel 一次；
-  // 控制台热切换思考强度时递增 modelSelectionEpoch，使旧记录失效并在下一条消息重新应用。
-  // 四种 QQ 模式共用 DSH 会话，统一强制使用多模态模型 DeepSeek-V41-Flash（id: deepseek-flash）；
-  // 它同时支持 text/image 输入，取代已下线的 deepseek-v4-flash-vision-exp。
+  // 控制台切换模型或思考强度时递增 modelSelectionEpoch，使旧记录失效并在下一条消息重新应用。
   const modelAppliedSessions = new Map(); // sessionId -> 已应用的 modelSelectionEpoch
   // 返回 'applied' | 'not-found' | 'failed'。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
@@ -5809,7 +5882,7 @@ async function main() {
     desktopAttentionFlushTimer.unref?.();
   }
 
-  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId }) {
+  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq }) {
     const now = Date.now();
     const existing = desktopAttentionQueue.get(key);
     if (existing) {
@@ -5818,6 +5891,7 @@ async function main() {
       existing.sender = sender;
       existing.senderId = senderId;
       existing.messageId = messageId;
+      if (Number.isSafeInteger(seq) && seq > 0) existing.seq = seq;
       existing.lastAt = now;
     } else {
       if (desktopAttentionQueue.size >= DESKTOP_ATTENTION_MAX_SOURCES) {
@@ -5825,7 +5899,11 @@ async function main() {
         if (oldestKey) desktopAttentionQueue.delete(oldestKey);
         log(`[autonomy] 全局 QQ 提醒队列达到上限 ${DESKTOP_ATTENTION_MAX_SOURCES}，丢弃最早来源`);
       }
-      desktopAttentionQueue.set(key, { key, kind, id, reason, sender, senderId, messageId, count: 1, firstAt: now, lastAt: now });
+      desktopAttentionQueue.set(key, {
+        key, kind, id, reason, sender, senderId, messageId,
+        seq: Number.isSafeInteger(seq) && seq > 0 ? seq : null,
+        count: 1, firstAt: now, lastAt: now
+      });
     }
     if (desktopAgentLifecycle === 'idle') {
       desktopAgentLifecycle = 'active';
@@ -5838,10 +5916,25 @@ async function main() {
     scheduleDesktopAttentionFlush();
   }
 
+  function acknowledgeDesktopAttentionThrough(key, throughSeq) {
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) return false;
+    const pending = desktopAttentionQueue.get(key);
+    if (!pending || !Number.isSafeInteger(pending.seq) || pending.seq > throughSeq) return false;
+    desktopAttentionQueue.delete(key);
+    if (desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
+      desktopAgentPendingWakeReason = '';
+      saveDesktopAgentState();
+    }
+    return true;
+  }
+
   function requeueDesktopAttentionBatch(batch) {
     for (const [key, item] of batch) {
       const newer = desktopAttentionQueue.get(key);
-      if (newer) newer.count += item.count;
+      if (newer) {
+        newer.count += item.count;
+        if (Number.isSafeInteger(item.seq) && item.seq > (newer.seq || 0)) newer.seq = item.seq;
+      }
       else desktopAttentionQueue.set(key, item);
     }
   }
@@ -6494,6 +6587,7 @@ async function main() {
     st.unread.push(msg);
     if (st.unread.length > unreadLimit) st.unread.splice(0, st.unread.length - unreadLimit);
     saveSocialV2State();
+    return msg;
   }
 
   // 二代拍一拍事件写入最近/未读消息流，让 AI 能看到“谁拍了拍谁/拍了拍我”。
@@ -6803,7 +6897,7 @@ async function main() {
     // Buffer every readable message locally. Only direct attention signals reach
     // the global DSH session, and the prompt contains metadata rather than body.
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
-      appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
+      const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
       // The old pause switch still suppresses QQ-derived activity. Ordinary group
       // messages remain buffered without creating a DSH session or model turn.
       if (socialV2.paused || cfg.socialV2?.enabled === false || suppressGroupAttention) {
@@ -6821,7 +6915,8 @@ async function main() {
           reason: wakeTrigger,
           sender: senderName,
           senderId: event.user_id != null ? String(event.user_id) : '',
-          messageId: event.message_id ?? event.msg_id ?? null
+          messageId: event.message_id ?? event.msg_id ?? null,
+          seq: bufferedMessage?.seq
         });
       }
       appendActivity(`${key} 消息已缓冲${wakeTrigger ? '；仅元数据提醒全局桌面助手' : ''}：${textContent.slice(0, 80)}`);
