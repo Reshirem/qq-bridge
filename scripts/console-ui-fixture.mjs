@@ -441,6 +441,9 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
             found: true, running: false, blank: false, agentAvailable: true
           });
+          case '/api/console/desktop-agent/ensure': return json({
+            ok: true, sessionId: 'mock-desktop-agent-session', created: true, turnStarted: false
+          });
           case '/api/console/dsh-session-status': return json({
             ok: true,
             checkedAt: Date.now(),

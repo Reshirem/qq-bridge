@@ -258,6 +258,30 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
 }
 
+// ── The console can create the persistent global session without starting a model turn. ──
+{
+  const h = await bridgeHarness();
+  const server = h.startConsoleServer();
+  try {
+    h.setReady(true);
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/console/desktop-agent/ensure`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token' },
+      body: '{}'
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(result.ok, true);
+    assert.equal(result.created, true);
+    assert.equal(result.turnStarted, false);
+    assert.equal(h.calls.created.at(-1)?.agentPreset, 'desktop-agent');
+    assert.equal(h.calls.prompts.length, 0, 'creating the persistent session must not start a model turn');
+    console.log('PASS console creates the persistent desktop-agent session without starting a turn');
+  } catch (error) { failures++; console.error('FAIL console desktop-agent ensure:', error.message); }
+  finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
+}
+
 // ── Global desktop-agent preset refresh keeps history and refuses to interrupt a live turn. ──
 {
   const h = await bridgeHarness();

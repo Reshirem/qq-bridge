@@ -73,7 +73,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
     抓取由桥接自己做 SSRF 校验并限制正文大小。搜索只在 agent 明确调用时发生，不会自动从群聊提取词条或建立词库。
     数据出机清单见 [LICENSE](LICENSE) 的「数据出机清单」。
 - **会话模型**：所有新自主活动共用一个持久的 `desktop-agent` DSH 会话。QQ 群和私聊 ID 只作为消息来源/目标，不拆分 agent 上下文；全局助手可通过 `qq_list_conversations` 发现账号中的群和好友，再按需读写。旧 `qq-chat-v2` 会话映射持久化在 `state/sessions.json`，暂留兼容和管理。
-- **个人桌面助手**：WebUI 可显式提交任务；QQ 私聊、原生 @、已验证回复/引用或 `socialV2.attentionKeywords` 命中也会向同一个全局会话发送元数据提醒。普通群消息留在桥接缓冲，agent 选择是否通过 SnowLuma MCP 或 QQ 桌面界面查看和操作。
+- **个人桌面助手**：WebUI 可单独创建持久全局会话（不启动模型回合）或提交任务；QQ 私聊、原生 @、已验证回复/引用或 `socialV2.attentionKeywords` 命中也会向同一个全局会话发送元数据提醒。普通群消息留在桥接缓冲，agent 选择是否通过 SnowLuma MCP 或 QQ 桌面界面查看和操作。
 - **提示词维护**：全局助手固定使用 `desktop-agent` preset；人格提示词源位于 `dsh/agent-presets/desktop-agent/agent.cordis.yml`，WebUI 可编辑并生成 `plugins/qq-agent-presets/` bundle patch。DSH 0.1.7 起 preset 由 `@deepseek-ai/dsh-agent-preset` 行加载，保存后需重启 DSH，并重建全局会话才能获得新版提示词。旧 `qq-chat-v2` 仍用于兼容会话。
 - **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——按操作任务提供运行总览、会话与审批、人格与角色、自主会话、令牌与花费、访问与安全、调试与运维七个页面，右上角搜索框可跨页定位功能项；Sessions 页面启动/检查全局桌面助手，提示词页维护 `desktop-agent`，旧逐会话设置留在兼容区域；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；可查看活动日志、维护关键词提醒、配置管理员/旧白名单/控制台令牌（`consoleToken` 未配置时自动生成并打印在启动日志；可在控制台内修改或重新生成）
 -  - **WebUI 操作 DSH 会话**：Sessions 页面启动或继续全局 `desktop-agent`；新 QQ 注意信号也会唤醒同一个 DSH session。旧逐 QQ 映射 session 仍可查看和管理。

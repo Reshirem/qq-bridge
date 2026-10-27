@@ -297,6 +297,9 @@ await test('控制台有初始提示词面板，且事件/接口都已接线', a
   assert.match(html, /getElementById\('v2InitPromptSave'\)\.addEventListener/, '保存按钮已绑定事件');
   assert.match(html, /api\('\/api\/socialV2\/initial-prompt'/, '面板调用 /api/socialV2/initial-prompt');
   assert.match(html, /仅在首次唤醒|只在.*首次唤醒/, '面板要说明"仅首次唤醒生效"这一关键行为');
+  assert.match(html, /id="desktopAgentEnsure"/, '全局会话面板提供不启动模型回合的建会话按钮');
+  assert.match(html, /api\('\/api\/console\/desktop-agent\/ensure', 'POST'/, '建会话按钮调用全局 ensure 接口');
+  assert.match(html, /id="desktopAgentRebuild"/, '全局会话面板提供更新 preset 后的重建操作');
   // 面板不得在页面加载时自动请求接口（否则离线 fixture 与请求基线都会变）
   assert.ok(!/window\.addEventListener\('load'[\s\S]{0,400}initial-prompt/.test(html), '面板不应在页面加载时自动拉取');
 });

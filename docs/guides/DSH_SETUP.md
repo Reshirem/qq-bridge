@@ -55,7 +55,7 @@ node scripts/build-agent-preset-patches.mjs
 
 安装完成后，重启 DSH（或重新加载 profile），使 preset 和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`；历史 `qq-mode` 兼容命名空间仍承载 `ownerQQ` 管理员配置，旧 `mode` 字段不参与运行。
 
-个人桌面助手要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status` 及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。未由本桥接注册的 SnowLuma 群管理 API不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建。
+个人桌面助手要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status` 及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。未由本桥接注册的 SnowLuma 群管理 API不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
 更新 `desktop-agent` preset 并重启 DSH 后，已存在的全局 DSH session 仍保留创建时的 preset。打开桥接 WebUI 的“全局桌面助手”面板，选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
 

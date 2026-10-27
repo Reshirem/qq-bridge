@@ -1757,6 +1757,7 @@ button:active:not(:disabled) {
       <div class="meta">WebUI 任务和 QQ 注意信号共用同一个持久 DSH 会话。SnowLuma 是 QQ 消息通道；助手拥有本项目当前完整的 QQ 消息读写工具，也可使用 <code>dsh-computer-use-win</code> 操作本机。它可按需列出群/好友并读取或发送消息；@、私聊、已验证回复/引用和关键词只提供提醒，不要求它读取或回复。打开本页只检查状态，不会启动模型回合。</div>
       <div class="row" style="margin-top:10px">
         <button id="desktopAgentRefresh" class="small">刷新助手状态</button>
+        <button id="desktopAgentEnsure" class="small">创建全局会话</button>
         <button id="desktopAgentRebuild" class="small danger">重建会话以加载新提示词</button>
         <span class="meta" id="desktopAgentStatus" role="status">等待检查</span>
       </div>
@@ -2567,13 +2568,19 @@ async function refreshDesktopAgentStatus(force = false) {
       if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; }
       else if (!info.presetAvailable) { label = '桌面助手 preset 未加载；安装 preset bundle 后重启 DSH'; tone = 'meta err'; }
       else if (info.error) { label = '读取会话状态失败：' + info.error; tone = 'meta err'; }
-      else if (!info.sessionId) { label = '尚未创建；提交第一项任务时会在 DSH 创建'; tone = 'meta'; }
+      else if (!info.sessionId) { label = '尚未创建；可先建会话，或提交任务时自动创建'; tone = 'meta'; }
       else if (!info.found) { label = 'DSH 中已找不到旧会话；提交任务时会重新创建'; tone = 'meta err'; }
       else if (!info.agentAvailable) { label = '会话存在，但 agent 当前不可用'; tone = 'meta err'; }
       else if (info.running) { label = '运行中'; tone = 'meta ok'; }
       else if (info.blank) { label = '已创建 · 尚未启动过回合'; tone = 'meta'; }
       status.textContent = label + (info.sessionId ? ` · ${info.sessionId}` : '');
       status.className = tone;
+      const ensureButton = document.getElementById('desktopAgentEnsure');
+      const rebuildButton = document.getElementById('desktopAgentRebuild');
+      ensureButton.hidden = !!info.sessionId && !!info.found;
+      ensureButton.disabled = !info.dshReady || !info.presetAvailable;
+      rebuildButton.hidden = !info.sessionId || !info.found;
+      rebuildButton.disabled = !info.dshReady || !info.presetAvailable || !!info.running;
     } catch (error) {
       status.textContent = '状态读取失败：' + (error?.message || '请求失败');
       status.className = 'meta err';
@@ -2871,6 +2878,27 @@ document.getElementById('desktopAgentRefresh').addEventListener('click', async (
   const button = document.getElementById('desktopAgentRefresh');
   button.disabled = true;
   try { await refreshDesktopAgentStatus(true); } finally { button.disabled = false; }
+});
+document.getElementById('desktopAgentEnsure').addEventListener('click', async () => {
+  const button = document.getElementById('desktopAgentEnsure');
+  const status = document.getElementById('desktopAgentMessageStatus');
+  button.disabled = true;
+  status.textContent = '正在创建持久全局会话…';
+  status.className = 'meta';
+  try {
+    const result = await api('/api/console/desktop-agent/ensure', 'POST', {});
+    status.textContent = result.ok
+      ? `✅ 全局 DSH 会话已建立（尚未启动模型回合）：${result.sessionId}`
+      : ('❌ ' + (result.error || '创建失败'));
+    status.className = result.ok ? 'meta ok' : 'meta err';
+    desktopAgentStatusAt = 0;
+    await refreshDesktopAgentStatus(true);
+  } catch (error) {
+    status.textContent = '❌ ' + (error?.message || '创建失败');
+    status.className = 'meta err';
+  } finally {
+    button.disabled = false;
+  }
 });
 document.getElementById('desktopAgentRebuild').addEventListener('click', async () => {
   if (!confirm('将归档当前全局 DSH 会话并创建一个新会话，以加载 DSH 刚载入的 desktop-agent 提示词。旧会话历史保留在 DSH 中。继续吗？')) return;

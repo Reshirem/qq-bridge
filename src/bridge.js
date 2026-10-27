@@ -2868,6 +2868,18 @@ async function main() {
           });
           return;
         }
+        if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent/ensure') {
+          try {
+            const previousSessionId = desktopAgentSessionId;
+            const sessionId = await ensureDesktopAgentSession();
+            sendJson({ ok: true, sessionId, created: sessionId !== previousSessionId, turnStarted: false });
+          } catch (error) {
+            const message = String(error?.message ?? error);
+            const status = /不可用|请稍后/.test(message) ? 503 : 502;
+            sendJson({ ok: false, error: message }, status);
+          }
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent/reset') {
           try {
             const result = await recreateDesktopAgentSession();
