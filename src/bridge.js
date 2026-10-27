@@ -46,7 +46,7 @@ const STATE_DIR = path.join(ROOT, 'state');
 const DESKTOP_AGENT_FILE = path.join(STATE_DIR, 'desktop-agent.json');
 const DESKTOP_AGENT_RECOVERY_BASE_MS = 60_000;
 const DESKTOP_AGENT_RECOVERY_MAX_MS = 30 * 60_000;
-const DESKTOP_AGENT_REST_MAX_MS = 7 * 24 * 60 * 60_000;
+const DESKTOP_AGENT_REST_MAX_MS = 12 * 60 * 60_000;
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
@@ -275,9 +275,6 @@ function roleWarnings(content, sectionView = 'v2') {
   if (GEN1_ROLE_LINE_RE.test(untagged)) {
     warnings.push('未标记的小节里含历史 QQ persona 指令（[SILENT] / 空格分句 / 自动转发…），当前 desktop-agent 会兜底过滤这些行；可将其移到 〔v1〕 历史小节');
   }
-  if (/回复示例/.test(untagged) && /[\u4e00-\u9fff]\s+[\u4e00-\u9fff]/.test(untagged)) {
-    warnings.push('“回复示例”节里的中文空格会被自动改写成逗号；当前固定 runtime 用发送工具分条，建议直接写逗号');
-  }
   return warnings;
 }
 
@@ -320,8 +317,8 @@ function validateRoleName(raw) {
 }
 
 function validateRoleContent(raw) {
-  const content = String(raw ?? '').replace(/\r\n/g, '\n').trim();
-  if (!content) throw new Error('人格内容不能为空');
+  const content = String(raw ?? '').replace(/\r\n/g, '\n');
+  if (!content.trim()) throw new Error('人格内容不能为空');
   const bytes = Buffer.byteLength(content, 'utf8');
   if (bytes > ROLE_CONTENT_MAX_BYTES) {
     throw new Error(`人格内容过长（${(bytes / 1024).toFixed(1)} KB，上限 ${ROLE_CONTENT_MAX_BYTES / 1024} KB）`);
@@ -335,7 +332,7 @@ function readRoleContent(name) {
 
 function writeRoleContent(name, content) {
   fs.mkdirSync(ROLES_DIR, { recursive: true });
-  atomicWriteText(roleFilePath(name), content + (content.endsWith('\n') ? '' : '\n'));
+  atomicWriteText(roleFilePath(name), content);
 }
 
 // ── 全局桌面助手 preset 提示词 ───────────────────────────────────────────────
@@ -1422,6 +1419,9 @@ async function main() {
         ? 'resting'
         : desktopAgentSessionId ? 'active' : 'idle';
   let desktopAgentRestUntil = desktopAgentLifecycle === 'resting' ? legacyWakeAt : 0;
+  const desktopAgentRestNeedsClamp = desktopAgentLifecycle === 'resting'
+    && desktopAgentRestUntil > Date.now() + DESKTOP_AGENT_REST_MAX_MS;
+  if (desktopAgentRestNeedsClamp) desktopAgentRestUntil = Date.now() + DESKTOP_AGENT_REST_MAX_MS;
   let desktopAgentRecoveryAttempt = Math.max(0, Math.floor(Number(desktopAgentSavedState.recoveryAttempt) || 0));
   let desktopAgentRecoveryAt = Number(desktopAgentSavedState.recoveryAt) || 0;
   let desktopAgentPendingWakeReason = String(desktopAgentSavedState.pendingWakeReason ?? '');
@@ -2321,6 +2321,134 @@ async function main() {
             pendingManualTasks: desktopAgentManualPromptPending,
             error: sessionStatusError || null
           });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/console/desktop-agent/history') {
+          if (!dshReady) { sendJson({ ok: false, error: 'DSH 当前未连接' }, 503); return; }
+          if (!desktopAgentSessionId) { sendJson({ ok: false, error: '全局 desktop-agent 会话尚未创建' }, 404); return; }
+
+          const expectedSessionId = url.searchParams.get('sessionId');
+          if (expectedSessionId && expectedSessionId !== desktopAgentSessionId) {
+            sendJson({ ok: false, error: '当前全局会话已变化，请刷新记录后再加载更早内容' }, 409);
+            return;
+          }
+          const rawLimit = url.searchParams.get('limit');
+          const limit = rawLimit === null ? 8 : Number(rawLimit);
+          const parseSequence = (name, minimum) => {
+            const raw = url.searchParams.get(name);
+            if (raw === null) return { value: null, error: '' };
+            if (!/^-?\d+$/.test(raw)) return { value: null, error: `${name} 必须是整数` };
+            const value = Number(raw);
+            if (!Number.isSafeInteger(value) || value < minimum) return { value: null, error: `${name} 超出有效范围` };
+            return { value, error: '' };
+          };
+          const requestedThrough = parseSequence('throughSeq', -1);
+          const before = parseSequence('beforeSeq', 0);
+          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+            sendJson({ ok: false, error: '每页消息数必须是 1 到 20 之间的整数' }, 400);
+            return;
+          }
+          if (requestedThrough.error || before.error) {
+            sendJson({ ok: false, error: requestedThrough.error || before.error }, 400);
+            return;
+          }
+
+          try {
+            const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+            const live = (Array.isArray(list.items) ? list.items : [])
+              .find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId) ?? null;
+            if (!live) { sendJson({ ok: false, error: 'DSH 中已找不到当前全局会话；请先启动或重建会话' }, 409); return; }
+
+            const asOfSeq = Number(live.projections?.asOfSeq);
+            if (!Number.isSafeInteger(asOfSeq) || asOfSeq < -1) {
+              sendJson({ ok: false, error: '当前 DSH 未提供可用的会话历史游标' }, 503);
+              return;
+            }
+            const throughSeq = requestedThrough.value ?? asOfSeq;
+            if (throughSeq > asOfSeq) {
+              sendJson({ ok: false, error: '会话历史游标已失效，请刷新记录' }, 409);
+              return;
+            }
+
+            const request = {
+              address: { kind: 'session', sessionId: desktopAgentSessionId },
+              throughSeq,
+              maxMessages: limit,
+              ...(before.value === null ? {} : { beforeSeq: before.value })
+            };
+            const page = unwrap(
+              await withTimeout(api.callUnary('session/page', request), DSH_CONTROL_TIMEOUT_MS, 'session.page'),
+              'session.page'
+            );
+            let hiddenInternalItems = 0;
+            const hiddenKeys = new Set(['stream', 'reasoning', 'thought', 'thinking', 'analysis', 'chainofthought', 'scratchpad', 'internalreasoning']);
+            const sensitiveKeys = new Set(['token', 'authorization', 'password', 'passwd', 'secret', 'credential', 'credentials', 'bearer', 'apikey', 'api_key', 'accesskey', 'access_key', 'accesstoken', 'access_token', 'cookie', 'session', 'privatekey', 'private_key', 'clientsecret', 'client_secret', 'refreshtoken', 'refresh_token', 'x-agent-token', 'x_agent_token']
+              .map((key) => key.toLowerCase().replace(/[-_]/g, '')));
+            const sanitize = (value) => {
+              if (Array.isArray(value)) {
+                const out = [];
+                for (const item of value) {
+                  if (item && typeof item === 'object'
+                    && ['reasoning', 'thought', 'thinking', 'analysis'].includes(String(item.type ?? '').toLowerCase())) {
+                    hiddenInternalItems++;
+                    continue;
+                  }
+                  out.push(sanitize(item));
+                }
+                return out;
+              }
+              if (value && typeof value === 'object') {
+                const out = Object.create(null);
+                for (const [key, child] of Object.entries(value)) {
+                  const normalized = key.toLowerCase().replace(/[-_]/g, '');
+                  if (hiddenKeys.has(normalized)) { hiddenInternalItems++; continue; }
+                  if (sensitiveKeys.has(normalized)) { out[key] = '***'; continue; }
+                  out[key] = sanitize(child);
+                }
+                return out;
+              }
+              return typeof value === 'string' ? redactSensitiveText(value) : value;
+            };
+            const records = (Array.isArray(page.records) ? page.records : []).flatMap((record) => {
+              if (!record || typeof record !== 'object') return [];
+              const hiddenBeforeRecord = hiddenInternalItems;
+              const sourceEvent = record.event && typeof record.event === 'object' ? record.event : record;
+              const event = sanitize(sourceEvent);
+              if (!event || typeof event !== 'object') return [];
+              const type = String(event.type ?? '').toLowerCase();
+              let internalDetailsOmitted = false;
+              if (/^assistant\/(?:attempt|reasoning|thinking|thought|analysis|chunk|delta)$/.test(type)) {
+                const metadata = Object.create(null);
+                for (const key of ['turn', 'step']) {
+                  if (event.data?.[key] !== undefined) metadata[key] = event.data[key];
+                }
+                metadata.internalDetailsOmitted = true;
+                event.data = metadata;
+                internalDetailsOmitted = true;
+                hiddenInternalItems++;
+              }
+              const seqValue = Number(record.seq ?? event.seq);
+              return [{
+                seq: Number.isSafeInteger(seqValue) ? seqValue : null,
+                event,
+                hiddenInternalItems: hiddenInternalItems - hiddenBeforeRecord,
+                internalDetailsOmitted
+              }];
+            });
+            const hasMore = page.hasMore === true;
+            const firstSeq = records.find((record) => Number.isSafeInteger(record.seq))?.seq ?? null;
+            sendJson({
+              ok: true,
+              sessionId: desktopAgentSessionId,
+              throughSeq,
+              beforeSeq: before.value,
+              nextBeforeSeq: hasMore ? firstSeq : null,
+              hasMore,
+              records
+            });
+          } catch (error) {
+            sendJson({ ok: false, error: `读取 DSH 会话记录失败：${error?.message ?? error}` }, 502);
+          }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent/ensure') {
@@ -5466,12 +5594,12 @@ async function main() {
     desktopAgentRestUntil = durationMs == null ? 0 : Date.now() + Math.min(Math.max(1, Number(durationMs) || 1), DESKTOP_AGENT_REST_MAX_MS);
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
-    desktopAgentPendingWakeReason = '';
+    desktopAgentPendingWakeReason = desktopAttentionQueue.size > 0 ? 'qq-attention' : '';
     saveDesktopAgentState();
     armDesktopAgentRestTimer();
     log(desktopAgentRestUntil
       ? `个人桌面助手进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
-      : '个人桌面助手进入无限期休息；仅人工 WebUI 任务可恢复');
+      : '个人桌面助手进入无限期休息；有效 QQ 提醒或人工 WebUI 任务可恢复');
     appendActivity(desktopAgentRestUntil ? '个人桌面助手进入定时休息' : '个人桌面助手进入无限期休息');
 
     // Let the MCP result reach DSH before cancelling this turn. The lifecycle epoch
@@ -5480,6 +5608,7 @@ async function main() {
     const sessionId = desktopAgentSessionId;
     const epoch = desktopAgentLifecycleEpoch;
     if (sessionId && dshReady) scheduleDesktopAgentRestCancellation(sessionId, epoch);
+    if (desktopAgentPendingWakeReason === 'qq-attention') resumeDesktopAgentRestForAttention();
   }
 
   function armDesktopAgentRestTimer() {
@@ -5493,6 +5622,25 @@ async function main() {
       void finishDesktopAgentRest();
     }, Math.max(0, dueAt - Date.now()));
     desktopAgentRestTimer.unref?.();
+  }
+
+  function resumeDesktopAgentRestForAttention() {
+    if (desktopAgentLifecycle !== 'resting' || desktopAgentPendingWakeReason !== 'qq-attention') return false;
+    // agent_rest cancels the ending DSH turn asynchronously. Keep the rest state
+    // until that turn is over, then launch the queued QQ attention prompt.
+    if (desktopAgentTurnActive) return false;
+    desktopAgentLifecycleEpoch += 1;
+    clearDesktopAgentRestTimer();
+    clearDesktopAgentRecoveryTimer();
+    desktopAgentLifecycle = 'active';
+    desktopAgentRestUntil = 0;
+    desktopAgentRecoveryAt = 0;
+    desktopAgentRecoveryAttempt = 0;
+    saveDesktopAgentState();
+    log('有效 QQ 提醒提前结束个人桌面助手休息');
+    appendActivity('有效 QQ 提醒提前结束个人桌面助手休息');
+    scheduleDesktopAttentionFlush(0);
+    return true;
   }
 
   async function finishDesktopAgentRest() {
@@ -5577,7 +5725,9 @@ async function main() {
     armDesktopAgentRecoveryTimer();
     if (!dshReady || desktopAgentLifecycle === 'idle') return;
     if (!desktopAgentSessionId) {
-      if (desktopAgentLifecycle === 'recovering' && desktopAgentPendingWakeReason === 'rest-expired') {
+      if (desktopAgentLifecycle === 'resting' && desktopAgentPendingWakeReason === 'qq-attention') {
+        resumeDesktopAgentRestForAttention();
+      } else if (desktopAgentLifecycle === 'recovering' && desktopAgentPendingWakeReason === 'rest-expired') {
         clearDesktopAgentRecoveryTimer();
         desktopAgentLifecycle = 'active';
         desktopAgentRecoveryAt = 0;
@@ -5603,6 +5753,9 @@ async function main() {
         if (live?.running === true) {
           desktopAgentTurnActive = true;
           scheduleDesktopAgentRestCancellation(desktopAgentSessionId, desktopAgentLifecycleEpoch, 0);
+        } else if (desktopAgentPendingWakeReason === 'qq-attention') {
+          desktopAgentTurnActive = false;
+          resumeDesktopAgentRestForAttention();
         }
         if (desktopAgentRestUntil > 0 && desktopAgentRestUntil <= Date.now()) await finishDesktopAgentRest();
         return;
@@ -5671,6 +5824,10 @@ async function main() {
     if (desktopAgentLifecycle === 'idle') {
       desktopAgentLifecycle = 'active';
       saveDesktopAgentState();
+    } else if (desktopAgentLifecycle === 'resting') {
+      desktopAgentPendingWakeReason = 'qq-attention';
+      saveDesktopAgentState();
+      resumeDesktopAgentRestForAttention();
     }
     scheduleDesktopAttentionFlush();
   }
@@ -5714,6 +5871,8 @@ async function main() {
         });
         const wakeInstruction = wakeReason === 'rest-expired'
           ? '【休息结束】你设定的休息时间已结束。请结合当前上下文决定是否继续行动；没有值得做的事时可以再次休息。'
+          : wakeReason === 'qq-attention'
+            ? '【QQ 提醒打断休息】有效 QQ 注意信号提前结束了休息。信号只提供消息来源信息，不要求你必须读取、回复或采取行动。'
           : wakeReason === 'recovery'
             ? '【回合恢复检查】上一个回合没有调用 agent_rest，可能是中断、网络错误或其他异常。请先检查会话和已有行动，避免重复已完成的操作；恢复正常后再选择休息。'
             : '';
@@ -5968,8 +6127,6 @@ async function main() {
     return selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected;
   }
   // 自主会话角色提示：去掉历史一代角色卡中的 [SILENT] / 空格分句指令，避免与工具协议冲突。
-  // 为了不削减原角色卡内容，示例节不整体删除，而是把“用空格分条”的示范改写成“用逗号表示停顿”，
-  // 保留原有人格示例，同时避免模型照抄单条消息里的中文空格。
   function isCjkLikeChar(ch) {
     if (!ch) return false;
     const code = ch.codePointAt(0);
@@ -5979,32 +6136,6 @@ async function main() {
       (code >= 0xF900 && code <= 0xFAFF) ||
       (code >= 0x3000 && code <= 0x303F)
     );
-  }
-
-  // 仅用于自主会话角色卡“回复示例”节：把示例里的中文空格改写成中文逗号。
-  // 空格两侧只要有一侧是中文/中文标点，且另一侧不是 / \ ( ) [ ] { } " ' < > | 等符号，就转成逗号。
-  // 这样能保留示例内容，同时避免把英文/URL/斜杠周围的空间改坏。
-  function convertExampleSpacesToComma(line) {
-    const chars = Array.from(String(line ?? ''));
-    const NO_REPLACE = new Set(['/', '\\', '(', ')', '[', ']', '{', '}', '"', "'", '<', '>', '|', '&', '=', ':', ';', ',', '.', '。', '，', '、']);
-    let out = '';
-    for (let i = 0; i < chars.length; i++) {
-      const ch = chars[i];
-      if (ch === ' ' || ch === '\t') {
-        const prev = chars[i - 1];
-        const next = chars[i + 1];
-        const prevCjk = !!prev && isCjkLikeChar(prev);
-        const nextCjk = !!next && isCjkLikeChar(next);
-        const prevBlocked = !!prev && NO_REPLACE.has(prev);
-        const nextBlocked = !!next && NO_REPLACE.has(next);
-        if ((prevCjk || nextCjk) && !prevBlocked && !nextBlocked) {
-          out += '，';
-          continue;
-        }
-      }
-      out += ch;
-    }
-    return out;
   }
 
   // 检测自主会话发送内容里“中文之间用空格”的不自然写法，用于给 AI 返回软提醒。
@@ -6068,15 +6199,14 @@ async function main() {
     for (const line of lines) {
       if (/^##\s*.*回复示例/.test(line)) {
         inExampleSection = true;
-        // 保留标题，但把“空格代表分条”的历史语义改写成自主会话语义
-        kept.push(line.replace(/（空格代表前后分两条消息回答）/, '（示例中已用逗号表示停顿；想分多条请用数组）'));
+        kept.push(line);
         continue;
       }
       if (inExampleSection && /^##\s/.test(line)) {
         inExampleSection = false;
       }
       if (inExampleSection) {
-        kept.push(convertExampleSpacesToComma(line));
+        kept.push(line);
       } else if (!GEN1_ROLE_LINE_RE.test(line)) {
         kept.push(line);
       }
@@ -6830,8 +6960,12 @@ async function main() {
             if (event?.type === 'turn/end') {
               desktopAgentTurnActive = false;
               toolCallNames.delete(frame.sessionId);
-              if (desktopAgentLifecycle === 'active' && desktopAgentManualPromptPending === 0) {
-                if (desktopAgentPendingWakeReason === 'rest-expired') scheduleDesktopAttentionFlush(0);
+              if (desktopAgentLifecycle === 'resting' && desktopAgentPendingWakeReason === 'qq-attention') {
+                resumeDesktopAgentRestForAttention();
+              } else if (desktopAgentLifecycle === 'active' && desktopAgentManualPromptPending === 0) {
+                if (desktopAgentPendingWakeReason === 'rest-expired'
+                  || desktopAgentPendingWakeReason === 'qq-attention'
+                  || desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(0);
                 else scheduleDesktopAgentRecovery('turn ended without agent_rest');
               }
             }
@@ -7077,6 +7211,10 @@ async function main() {
   // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。
   if (cfg.socialV2?.sticker?.enabled !== false) {
     syncStickerLibrary(true).catch((error) => log('启动预热表情库失败:', error?.message ?? error));
+  }
+  if (desktopAgentRestNeedsClamp) {
+    saveDesktopAgentState();
+    log('旧的有限休息时间超过 12 小时上限，已将截止时间缩短并保存');
   }
   armDesktopAgentRestTimer();
   armDesktopAgentRecoveryTimer();

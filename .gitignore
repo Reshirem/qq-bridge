@@ -66,3 +66,9 @@ docs/guides/VOICE.md
 # 语音库（用户个人音频素材，config.json 的 socialV2.voice.dir 指向此处）
 audio/
 
+# 用户在 WebUI 新建的人设卡默认只保存在本机；仓库只维护两张预设卡。
+/roles/*.md
+!/roles/README.md
+!/roles/傲娇助手.md
+!/roles/小鲸鱼.md
+

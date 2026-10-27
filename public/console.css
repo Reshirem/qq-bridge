@@ -1557,6 +1557,47 @@ tr:last-child td {
   color:var(--text-input);
   border-color:var(--accent-border-focus)
 }
+.context-history-controls { align-items:center }
+.context-history {
+  display:grid;
+  gap:8px;
+  margin-top:10px;
+  max-height:72vh;
+  overflow:auto;
+  overscroll-behavior:contain
+}
+.context-history .empty-state { margin:0 }
+.context-record {
+  min-width:0;
+  border:1px solid var(--border-subtle);
+  border-radius:9px;
+  background:var(--surface-sunken)
+}
+.context-record summary {
+  display:flex;
+  align-items:baseline;
+  flex-wrap:wrap;
+  gap:6px 12px;
+  padding:9px 12px;
+  cursor:pointer;
+  color:var(--text-strong);
+  font-size:12px
+}
+.context-record summary .context-record-seq { color:var(--muted); font-variant-numeric:tabular-nums }
+.context-record summary .context-record-type { font-weight:600 }
+.context-record summary .context-record-meta { color:var(--muted); overflow-wrap:anywhere }
+.context-record-body {
+  margin:0;
+  max-height:420px;
+  overflow:auto;
+  padding:10px 12px 12px;
+  border-top:1px solid var(--border-subtle);
+  color:var(--pre-fg);
+  font:12px/1.65 Consolas,"Microsoft YaHei",monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere
+}
+.context-record-note { display:block; padding:0 12px 9px; color:var(--muted); font-size:11px }
 #section-silent {
   grid-column:1/-1
 }

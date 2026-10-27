@@ -14,14 +14,14 @@ export const PRESET_PROMPT_MAX_BYTES = 128 * 1024;
 
 // 安全基线段落：缺失说明 AI 的使用边界可能被削弱，保存时警告。
 export const PRESET_REQUIRED_MARKERS = [
-  'SnowLuma is the QQ message channel',
-  'complete SnowLuma MCP toolset',
+  'SnowLuma 是 QQ 消息通道',
+  '完整的 SnowLuma MCP 工具集',
 ];
 
 // 硬性不变量：这些串是本项目自己的测试与安全边界所依赖的（test-qq-preset-contract.mjs / verify-persona-config.mjs），
 // 一旦被删就会同时削弱 AI 的权限边界并让 `node scripts/test-audit.mjs`、`npm run verify:persona` 变红，因此保存时直接拒绝。
 export const PRESET_BLOCKING_SUBSTRINGS = [
-  'One global session',
+  '共用一个全局会话',
   ...PRESET_REQUIRED_MARKERS,
 ];
 export const PRESET_MIN_BODY_CHARS = 500;

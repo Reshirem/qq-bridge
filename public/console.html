@@ -65,7 +65,7 @@
           <button id="desktopAgentRefresh" class="small">刷新状态</button>
           <span class="meta" id="desktopAgentMessageStatus" role="status"></span>
         </div>
-        <p class="meta desktop-agent-note">每个回合结束前，助手应调用 agent_rest 并自行选择休息时长；休息期间不因 QQ 提醒唤醒，提醒只会缓冲。未正常休息的回合会按指数间隔尝试恢复，最长间隔 30 分钟。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。不会发送周期性模型心跳。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。QQ 私聊、原生 @、已验证回复/引用和关键词只是提醒，是否读取或回复由助手自己决定。</p>
+        <p class="meta desktop-agent-note">每个回合结束前，助手应调用 agent_rest 并自行选择休息时长；有效 QQ 提醒可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未正常休息的回合会按指数间隔尝试恢复，最长间隔 30 分钟。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。不会发送周期性模型心跳。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。QQ 私聊、原生 @、已验证回复/引用和关键词只是提醒，是否读取或回复由助手自己决定。</p>
         <details class="settings-group desktop-agent-management">
           <summary>会话管理</summary>
           <div class="settings-content">
@@ -95,12 +95,13 @@
       <div class="meta">当前人格：<span id="roleText">-</span> ｜ 状态：<span id="roleModeText">-</span></div>
 
       <div class="layer-note">
-        <strong>两层提示词的分工</strong>
+        <strong>全局会话上下文</strong>
         <ol>
-          <li><b>全局助手内置提示词</b>（固定预设 <code>desktop-agent</code>）：SnowLuma 是 QQ 消息通道，决定助手怎样使用桌面和 QQ 工具。</li>
-          <li><b>人格提示词</b>（本页编辑）：由全局 desktop-agent 注入，用于身份、性格和表达方式。</li>
+          <li><b>DSH 固定前缀</b>：整个全局会话共用的一段规则，下面可直接编辑。</li>
+          <li><b>人格提示词</b>：在全局会话第一次收到任务或提醒时注入一次，用于身份、性格和表达方式。</li>
+          <li><b>会话事件记录</b>：可按页查看 DSH 持久化的消息、工具调用和回合事件。</li>
         </ol>
-        <p>全局助手从 <code>desktop-agent</code> preset 读取内置提示词；保存会更新 preset bundle，重启 DSH 并重建全局会话后加载新版。角色卡只在全局会话首次收到提示时注入一次。</p>
+        <p>保存后会更新桌面助手预设；重启 DSH 并重建全局会话后生效。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；DSH 会根据运行状态整理或压缩上下文，推理过程不会在此展示。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -143,18 +144,29 @@
         </div>
       </details>
 
-      <h3 class="layer-heading">全局助手内置提示词 <span class="meta" id="desktopPromptStatus">加载中…</span></h3>
-      <div class="meta" style="margin-bottom:8px">固定预设：<code>desktop-agent</code>。这里维护“SnowLuma 是 QQ 消息通道”的全局运行概念及桌面工具规则。</div>
+      <h3 class="layer-heading">DSH 固定前缀 <span class="meta" id="desktopPromptStatus">加载中…</span></h3>
+      <div class="meta" style="margin-bottom:8px">桌面助手在全局会话中始终使用这段提示词。它是一整段文本；保存后需重启 DSH 并重建全局会话才会生效。</div>
       <div class="meta" id="desktopPromptWarnings"></div>
       <textarea id="desktopPromptText" class="code-area" spellcheck="false" readonly></textarea>
       <div class="row" style="margin-top:8px">
         <button id="desktopPromptEdit">编辑</button>
-        <button id="desktopPromptSave" disabled>保存并同步到 DSH</button>
+        <button id="desktopPromptSave" disabled>保存固定前缀</button>
         <button id="desktopPromptRestore">还原上次备份</button>
         <button id="desktopPromptCancel" disabled>取消编辑</button>
         <span class="meta" id="desktopPromptMsg"></span>
       </div>
       <div class="meta" id="desktopPromptRestart"></div>
+
+      <h3 class="layer-heading">当前桌面助手会话记录 <span class="meta" id="desktopAgentHistoryStatus">尚未加载</span></h3>
+      <div class="meta">读取当前桌面助手会话的持久事件，包括已保存的消息、工具和回合记录；不会读取其它会话。推理过程、内部尝试详情和流式片段会隐藏。</div>
+      <div class="meta">此记录可用于核对会话实际保存了什么，但不等同于最终模型请求：运行环境可能整理或压缩上下文。上方可查看当前配置的固定提示词。</div>
+      <div class="row context-history-controls" style="margin-top:10px">
+        <button id="desktopAgentHistoryRefresh" class="small">刷新记录</button>
+        <button id="desktopAgentHistoryOlder" class="small" hidden disabled>加载更早记录</button>
+      </div>
+      <div id="desktopAgentHistory" class="context-history" aria-live="polite">
+        <div class="empty-state"><strong>尚未读取会话记录</strong><p>点击“刷新记录”查看当前桌面助手会话。</p></div>
+      </div>
     </section>
 <section id="section-social-v2" data-page="social-v2" class="card span-all">
       <h2>QQ 提醒与消息通道</h2>
@@ -164,7 +176,7 @@
         <ul>
           <li>私聊、发给机器人的原生 @、已验证回复/引用和配置关键词会向全局会话发送不带正文的提醒；是否读取或回复由 agent 自己决定。</li>
           <li>其它群消息只在桥接侧缓冲，不自动送进提示词；全局会话可按需用 SnowLuma 工具读取任何合法群/私聊。</li>
-          <li>没有周期性模型心跳；每个活动回合结束前必须最后调用 agent_rest。休息期间 QQ 提醒只缓冲，不会唤醒会话。</li>
+          <li>没有周期性模型心跳；每个活动回合结束前必须最后调用 agent_rest。有效 QQ 提醒可提前结束休息并唤醒一轮；休息期间异常回合的指数恢复重试暂停。</li>
         </ul>
       </div>
 

@@ -239,13 +239,12 @@ async function refreshSimPrompt() {
     area.value = r.content;
     setSimEditing(false);
     setSimMsg('');
-    const status = r.status || {};
     document.getElementById('desktopPromptStatus').textContent =
-      `${status.label || desktopPromptPreset} · ${r.chars} 字符${status.patchCurrent ? ' · bundle 已同步' : ' · bundle patch 待生成'}`;
+      `桌面助手 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}`;
     document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length
       ? '⚠️ ' + r.warnings.join('；') : '';
     document.getElementById('desktopPromptRestart').textContent =
-      '更改会写入 desktop-agent 源文件并重新生成 bundle patch；重启 DSH 并重建全局会话后加载新版。';
+      '更改会写入桌面助手预设；重启 DSH 并重建全局会话后加载新版。';
   } catch (error) {
     setSimMsg('读取失败：' + (error?.message ?? error), false);
   }
@@ -324,7 +323,7 @@ async function refreshDesktopAgentStatus(force = false) {
       else if (info.lifecycle === 'resting') {
         const until = info.restUntil ? `，至 ${new Date(info.restUntil).toLocaleString()}` : '，无限期';
         const queued = info.pendingManualTasks > 0 ? `，${info.pendingManualTasks} 个手动任务排队` : '';
-        label = '休息中' + until + queued; tone = 'meta'; summaryLabel = '休息中'; hint = info.pendingManualTasks > 0 ? '手动任务已排队；QQ 提醒仍只缓冲' : '休息期间 QQ 提醒只缓冲，不唤醒会话';
+        label = '休息中' + until + queued; tone = 'meta'; summaryLabel = '休息中'; hint = info.pendingManualTasks > 0 ? '手动任务已排队；有效 QQ 提醒也会提前唤醒' : '有效 QQ 提醒可提前结束休息并唤醒会话';
       }
       else if (info.lifecycle === 'recovering') {
         const retryAt = info.recoveryAt ? new Date(info.recoveryAt).toLocaleString() : '即将';
@@ -367,6 +366,139 @@ async function refreshDesktopAgentStatus(force = false) {
   try { await request; } finally { if (desktopAgentStatusRequest === request) desktopAgentStatusRequest = null; }
 }
 
+// DSH 持久会话事件预览使用稳定的 throughSeq 分页，刷新时重新从最新游标读取。
+const desktopAgentHistoryState = {
+  sessionId: '',
+  throughSeq: null,
+  beforeSeq: null,
+  hasMore: false,
+  loadedCount: 0,
+  loading: false
+};
+
+function setDesktopAgentHistoryStatus(text, isError = false) {
+  const status = document.getElementById('desktopAgentHistoryStatus');
+  status.textContent = text;
+  status.className = isError ? 'meta err' : 'meta';
+}
+
+function renderDesktopAgentHistory(records, prepend = false) {
+  const box = document.getElementById('desktopAgentHistory');
+  if (!prepend) box.replaceChildren();
+  if (!records.length && !prepend && !box.childElementCount) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    const title = document.createElement('strong');
+    title.textContent = '当前会话还没有持久事件';
+    const detail = document.createElement('p');
+    detail.textContent = '会话开始后，消息和回合事件会显示在这里。';
+    empty.append(title, detail);
+    box.appendChild(empty);
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const record of records) {
+    const event = record?.event && typeof record.event === 'object' ? record.event : {};
+    const details = document.createElement('details');
+    details.className = 'context-record';
+    if (event.type === 'user/message' || event.type === 'assistant/message') details.open = true;
+
+    const summary = document.createElement('summary');
+    const sequence = document.createElement('span');
+    sequence.className = 'context-record-seq';
+    sequence.textContent = Number.isSafeInteger(record.seq) ? `#${record.seq}` : '#?';
+    const type = document.createElement('span');
+    type.className = 'context-record-type';
+    type.textContent = String(event.type ?? '未知事件');
+    summary.append(sequence, type);
+    const eventData = event.data && typeof event.data === 'object' ? event.data : {};
+    const metaParts = [];
+    if (eventData.turn !== undefined) metaParts.push(`turn ${eventData.turn}`);
+    if (eventData.step !== undefined) metaParts.push(`step ${eventData.step}`);
+    if (metaParts.length) {
+      const meta = document.createElement('span');
+      meta.className = 'context-record-meta';
+      meta.textContent = metaParts.join(' · ');
+      summary.appendChild(meta);
+    }
+    details.appendChild(summary);
+
+    const body = document.createElement('pre');
+    body.className = 'context-record-body';
+    body.textContent = JSON.stringify(event, null, 2);
+    details.appendChild(body);
+    if (record.hiddenInternalItems > 0 || record.internalDetailsOmitted) {
+      const note = document.createElement('span');
+      note.className = 'context-record-note';
+      note.textContent = record.internalDetailsOmitted
+        ? '该内部助手事件的详细内容未展示。'
+        : `已隐藏 ${record.hiddenInternalItems} 项推理内容或流式数据。`;
+      details.appendChild(note);
+    }
+    fragment.appendChild(details);
+  }
+  if (prepend) box.insertBefore(fragment, box.firstChild);
+  else box.appendChild(fragment);
+}
+
+async function loadDesktopAgentHistory(loadOlder = false) {
+  const refreshButton = document.getElementById('desktopAgentHistoryRefresh');
+  const olderButton = document.getElementById('desktopAgentHistoryOlder');
+  if (desktopAgentHistoryState.loading) return;
+  if (loadOlder && (!desktopAgentHistoryState.sessionId || desktopAgentHistoryState.throughSeq === null
+    || desktopAgentHistoryState.beforeSeq === null || !desktopAgentHistoryState.hasMore)) return;
+
+  desktopAgentHistoryState.loading = true;
+  refreshButton.disabled = true;
+  olderButton.disabled = true;
+  setDesktopAgentHistoryStatus(loadOlder ? '正在读取更早记录…' : '正在读取当前会话…');
+  try {
+    const historyBox = document.getElementById('desktopAgentHistory');
+    const previousScrollTop = historyBox.scrollTop;
+    const previousScrollHeight = historyBox.scrollHeight;
+    const query = new URLSearchParams({ limit: '8' });
+    if (loadOlder) {
+      query.set('sessionId', desktopAgentHistoryState.sessionId);
+      query.set('throughSeq', String(desktopAgentHistoryState.throughSeq));
+      query.set('beforeSeq', String(desktopAgentHistoryState.beforeSeq));
+    }
+    const result = await api('/api/console/desktop-agent/history?' + query.toString());
+    if (!result.ok) {
+      setDesktopAgentHistoryStatus(result.error || '读取会话记录失败', true);
+      return;
+    }
+    const records = Array.isArray(result.records) ? result.records : [];
+    if (loadOlder && (result.sessionId !== desktopAgentHistoryState.sessionId
+      || result.throughSeq !== desktopAgentHistoryState.throughSeq)) {
+      setDesktopAgentHistoryStatus('当前会话或历史游标已变化，请刷新记录', true);
+      return;
+    }
+    if (!loadOlder) {
+      desktopAgentHistoryState.sessionId = String(result.sessionId ?? '');
+      desktopAgentHistoryState.throughSeq = Number.isSafeInteger(result.throughSeq) ? result.throughSeq : null;
+      desktopAgentHistoryState.loadedCount = 0;
+      renderDesktopAgentHistory(records, false);
+    } else {
+      renderDesktopAgentHistory(records, true);
+    }
+    desktopAgentHistoryState.loadedCount += records.length;
+    desktopAgentHistoryState.beforeSeq = Number.isSafeInteger(result.nextBeforeSeq) ? result.nextBeforeSeq : null;
+    desktopAgentHistoryState.hasMore = result.hasMore === true && desktopAgentHistoryState.beforeSeq !== null;
+    historyBox.scrollTop = loadOlder
+      ? previousScrollTop + (historyBox.scrollHeight - previousScrollHeight)
+      : historyBox.scrollHeight;
+    olderButton.hidden = !desktopAgentHistoryState.hasMore;
+    const cursor = desktopAgentHistoryState.throughSeq === null ? '未知' : `seq ${desktopAgentHistoryState.throughSeq}`;
+    setDesktopAgentHistoryStatus(`已加载 ${desktopAgentHistoryState.loadedCount} 条事件 · 最新游标 ${cursor}${desktopAgentHistoryState.hasMore ? ' · 还有更早记录' : ''}`);
+  } catch (error) {
+    setDesktopAgentHistoryStatus('读取失败：' + (error?.message || '请求失败'), true);
+  } finally {
+    desktopAgentHistoryState.loading = false;
+    refreshButton.disabled = false;
+    olderButton.disabled = !desktopAgentHistoryState.hasMore;
+  }
+}
+
 document.getElementById('roleSet').addEventListener('click', async () => {
   const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim() });
   if (r.ok) {
@@ -384,7 +516,7 @@ document.getElementById('roleClear').addEventListener('click', async () => {
 });
 document.getElementById('roleCreate').addEventListener('click', async () => {
   const name = document.getElementById('newRoleName').value.trim();
-  const content = document.getElementById('newRoleContent').value.trim();
+  const content = document.getElementById('newRoleContent').value;
   if (!name) { setRoleMsg('请先填人格名', false); return; }
   const editing = roleEditorState.mode === 'edit';
   const exists = roleCache.some((role) => role.name === name);
@@ -404,7 +536,7 @@ document.getElementById('roleCreate').addEventListener('click', async () => {
 });
 document.getElementById('roleDuplicate').addEventListener('click', async () => {
   const source = document.getElementById('newRoleName').value.trim();
-  const content = document.getElementById('newRoleContent').value.trim();
+  const content = document.getElementById('newRoleContent').value;
   const target = (prompt('把当前内容另存为新的人格，名称：', source ? source + '-副本' : '') || '').trim();
   if (!target) return;
   const r = await api('/api/roles/create', 'POST', { name: target, content });
@@ -432,7 +564,7 @@ document.getElementById('newRoleContent').addEventListener('input', updateRoleEd
 // ── 全局桌面助手提示词 ──────────────────────────────────────────────────────
 document.getElementById('desktopPromptEdit').addEventListener('click', () => {
   setSimEditing(true);
-  setSimMsg('编辑中：改完点「保存并同步到 DSH」。保存会先备份，并做 YAML 与安全不变量校验。');
+  setSimMsg('编辑中：改完点「保存固定前缀」。保存前会备份，并校验文件格式与必要的运行规则。');
 });
 document.getElementById('desktopPromptCancel').addEventListener('click', () => {
   document.getElementById('desktopPromptText').value = desktopPromptOriginal;
@@ -441,7 +573,7 @@ document.getElementById('desktopPromptCancel').addEventListener('click', () => {
 });
 document.getElementById('desktopPromptSave').addEventListener('click', async () => {
   const content = document.getElementById('desktopPromptText').value;
-  if (!confirm('保存会改写 desktop-agent 源文件并重新生成 bundle patch。重启 DSH 并重建全局会话后加载新版。确定继续？')) return;
+  if (!confirm('保存会更新桌面助手的全局固定提示词。重启 DSH 并重建全局会话后加载新版。确定继续？')) return;
   setSimMsg('保存中…');
   const r = await api('/api/preset/desktop-agent-prompt', 'POST', { preset: desktopPromptPreset, content });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '保存失败'), false); return; }
@@ -453,17 +585,19 @@ document.getElementById('desktopPromptSave').addEventListener('click', async () 
   }
   desktopPromptOriginal = content;
   setSimEditing(false);
-  setSimMsg(`✅ 已保存${r.synced ? '并生成 bundle patch' : ''}；重启 DSH 并重建全局会话后加载新版`, true);
+  setSimMsg(`✅ 已保存${r.synced ? '并更新 DSH 配置包' : ''}；重启 DSH 并重建全局会话后加载新版`, true);
   document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
-  document.getElementById('desktopPromptStatus').textContent = `${r.status?.label || desktopPromptPreset} · ${content.length} 字符 · 已保存`;
+  document.getElementById('desktopPromptStatus').textContent = `桌面助手 · ${content.length} 字符 · 已保存`;
 });
 document.getElementById('desktopPromptRestore').addEventListener('click', async () => {
-  if (!confirm('还原 desktop-agent 上次保存前的提示词备份？当前改动会丢失（原文件会先自动备份）。')) return;
+  if (!confirm('还原桌面助手上次保存前的提示词备份？当前改动会丢失（现有文件会先自动备份）。')) return;
   const r = await api('/api/preset/desktop-agent-prompt/restore', 'POST', { preset: desktopPromptPreset });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '还原失败'), false); return; }
-  setSimMsg(`✅ 已还原（${r.restoredFrom}）；重启 DSH 并重建全局会话后加载新版`, true);
+  setSimMsg('✅ 已还原上次保存的提示词备份；重启 DSH 并重建全局会话后加载新版', true);
   refreshSimPrompt();
 });
+document.getElementById('desktopAgentHistoryRefresh').addEventListener('click', () => loadDesktopAgentHistory(false));
+document.getElementById('desktopAgentHistoryOlder').addEventListener('click', () => loadDesktopAgentHistory(true));
 
 // ── 人格注入上限 ────────────────────────────────────────────────────────────
 document.getElementById('roleInjectMaxSave').addEventListener('click', async () => {
@@ -928,7 +1062,7 @@ document.getElementById('consoleTokenRandom').addEventListener('click', () => ch
 const consolePages = {
   overview: ['桌面助手', '个人桌面助手运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。'],
   sessions: ['会话控制', '控制个人桌面助手', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。'],
-  persona: ['助手提示词', '维护助手使用的提示词', '全局桌面助手使用 DSH 中的 desktop-agent preset 和当前角色卡。'],
+  persona: ['助手提示词', '维护助手使用的提示词', '这里可以编辑桌面助手的固定提示词和当前人格卡。'],
   'social-v2': ['提醒与消息', 'QQ 作为助手的消息通道', '查看 QQ 提醒策略、消息工具和发送安全设置。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],

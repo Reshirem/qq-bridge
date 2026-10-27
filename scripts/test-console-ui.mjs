@@ -55,9 +55,9 @@ try {
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent' && request.body.message === '离线 UI 契约检查'));
 
   await page.locator('[data-view="persona"]').click();
-  await page.waitForFunction(() => document.getElementById('desktopPromptText')?.value.includes('One global session'));
+  await page.waitForFunction(() => document.getElementById('desktopPromptText')?.value.includes('共用一个全局会话'));
   assert.equal(await page.locator('#desktopPromptPreset').count(), 0, 'there is no obsolete multi-preset selector');
-  assert.match(await page.locator('#desktopPromptStatus').textContent(), /desktop-agent|全局桌面助手/);
+  assert.match(await page.locator('#desktopPromptStatus').textContent(), /桌面助手/);
 
   await page.locator('[data-view="social-v2"]').click();
   await page.locator('#v2StatesList').click();

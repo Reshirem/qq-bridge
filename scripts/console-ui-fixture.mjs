@@ -292,7 +292,7 @@ export function makeFixtureState() {
       温柔助手: '# 温柔助手\n\n- 性格：温和、有耐心\n- 说话风格：先共情再回答',
       技术伙伴: '# 技术伙伴\n\n- 性格：直接、爱讲原理\n- 说话风格：先给结论再解释',
     },
-    desktopPrompt: 'You are the user’s persistent desktop companion. One global session is shared by WebUI tasks and QQ attention signals. QQ conversations are message sources, never separate DSH sessions.',
+    desktopPrompt: '你是用户长期使用的桌面伙伴。网页控制台任务和 QQ 提醒共用一个全局会话。QQ 对话只是消息来源，不会为每个 QQ 对话单独建立 DSH 会话。',
     roleInjectMax: 8000,
     dshEffort: 'max',
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
@@ -433,6 +433,25 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
             found: true, running: false, blank: false, agentAvailable: true, lifecycle: state.desktopAgentStopped ? 'stopped' : 'idle'
           });
+          case '/api/console/desktop-agent/history': {
+            const older = url.searchParams.has('beforeSeq');
+            const records = older ? [
+              { seq: 9, event: { type: 'request/header', data: { turn: 1, step: 1 } }, hiddenInternalItems: 0 },
+              { seq: 17, event: { type: 'user/message', data: { turn: 1, message: { content: [{ type: 'text', text: '请按当前角色在这个长期会话里自然活动。' }] } } }, hiddenInternalItems: 0 },
+            ] : [
+              { seq: 52, event: { type: 'tool/call', data: { turn: 1, step: 3, tool: 'computer-use' } }, hiddenInternalItems: 0 },
+              { seq: 57, event: { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '我先看看桌面状态。' }] } } }, hiddenInternalItems: 1 },
+            ];
+            return json({
+              ok: true,
+              sessionId: 'mock-desktop-agent-session',
+              throughSeq: Number(url.searchParams.get('throughSeq')) || 57,
+              beforeSeq: older ? Number(url.searchParams.get('beforeSeq')) : null,
+              nextBeforeSeq: older ? null : 52,
+              hasMore: !older,
+              records,
+            });
+          }
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/activity': return json({ ok: true, paused: state.activityPaused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
