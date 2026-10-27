@@ -258,4 +258,27 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
 }
 
+// ── Global desktop-agent preset refresh keeps history and refuses to interrupt a live turn. ──
+{
+  const h = await bridgeHarness();
+  try {
+    h.setReady(true);
+    const oldSessionId = await h.ensureDesktopAgentSession();
+    h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId: oldSessionId, running: false }] } } });
+
+    h.setDesktopAgentTurnActive(true);
+    await assert.rejects(h.recreateDesktopAgentSession(), /当前正在运行/);
+    assert.deepEqual(h.calls.archived, [], '运行中的全局会话不得归档');
+
+    h.setDesktopAgentTurnActive(false);
+    const rebuilt = await h.recreateDesktopAgentSession();
+    assert.equal(rebuilt.archivedSessionId, oldSessionId);
+    assert.notEqual(rebuilt.sessionId, oldSessionId, '新 preset 应加载到新会话');
+    assert.deepEqual(h.calls.archived, [oldSessionId], '旧会话应归档以保留 DSH 历史');
+    assert.equal(h.calls.created.at(-1)?.agentPreset, 'desktop-agent');
+    console.log('PASS global desktop-agent refresh archives history and refuses to interrupt a live turn');
+  } catch (error) { failures++; console.error('FAIL global desktop-agent refresh:', error.message); }
+  finally { await h.close(); }
+}
+
 if (failures) process.exitCode = 1;

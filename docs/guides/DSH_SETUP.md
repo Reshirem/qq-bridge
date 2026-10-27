@@ -1,6 +1,6 @@
 # DSH 端安装说明
 
-本文说明如何把 `qq-bridge` 的固定 QQ 会话 preset 与安全 MCP 工具安装到目标 DSH profile。每个允许的 QQ 会话使用独立、持久的 DSH session，并固定采用 `qq-chat-v2`。这里不配置或切换 DSH 运行模式。
+本文说明如何把兼容用的 `qq-chat-v2`、全局 `desktop-agent` preset 与 MCP 工具安装到目标 DSH profile。新的 QQ 注意信号及 WebUI 任务都进入同一个全局桌面助手。这里不配置或切换 DSH 运行模式。
 
 ## 安装
 
@@ -12,7 +12,7 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl`、需要的 `snowluma.accessToken`，以及明确的 `allow.groups` / `allow.private`。`ownerQQ` 是可选项；若配置文件和 DSH 的 `qq-mode.ownerQQ` 设置都没有管理员 QQ，普通白名单会话仍可运行，但管理员命令和审批不可用。示例配置默认 fail-closed：空白名单且 `allowAllWhenEmpty: false` 时不会处理 QQ 会话。
+Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 不要求填写 `allow.groups` / `allow.private`；它可读取账号的群/好友目录并面向任意合法会话 key 使用完整的当前 SnowLuma MCP 工具集。`ownerQQ` 只供兼容中的 QQ 管理命令使用。
 
 Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接会在**每次启动时**识别由 DeepSeek Harness 进程持有并经 API 确认的本机监听端口，因此应先启动 DSH，再启动桥接。发现的 URL 只用于当前桥接进程，不写回 `config.json`。未发现桌面 API 时使用 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`）作为回退；非 Windows 或固定端口部署可设置 `dsh.autoDetectPort: false`。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会拒绝猜测；将 `dsh.baseUrl` 指向目标实例即可明确选择。DSH Desktop 重启后若换了端口，重启桥接以重新发现。
 
@@ -38,7 +38,7 @@ DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
 
 脚本会：
 
-1. 从 `dsh/agent-presets/` 的权威源生成固定 `qq-chat-v2` 的 bundle patch，并注册 `qq-agent-presets`。
+1. 从 `dsh/agent-presets/` 的权威源生成 `qq-chat-v2` 和 `desktop-agent` 的 bundle patch，并注册 `qq-agent-presets`。
 2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe` 三个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`。
 3. 注册 `qq-agent-presets` 和 host 配置插件 bundle。host 插件的既有包名 `qq-mode-console` 为兼容性名称，当前仅承载管理配置，不提供运行模式切换。
 4. 尝试执行 `dsh plugin --profile <profile> install` 安装 bundle 依赖；如 DSH CLI 不可用，会提示手动执行命令。
@@ -55,6 +55,10 @@ node scripts/build-agent-preset-patches.mjs
 
 安装完成后，重启 DSH（或重新加载 profile），使 preset 和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`；历史 `qq-mode` 兼容命名空间仍承载 `ownerQQ` 管理员配置，旧 `mode` 字段不参与运行。
 
+个人桌面助手要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status` 及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。未由本桥接注册的 SnowLuma 群管理 API不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建。
+
+更新 `desktop-agent` preset 并重启 DSH 后，已存在的全局 DSH session 仍保留创建时的 preset。打开桥接 WebUI 的“全局桌面助手”面板，选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
+
 ## 验证
 
 可以先运行不依赖在线 DSH 的回归：
@@ -67,13 +71,14 @@ node scripts/test-preset-local-tools.mjs
 node scripts/test-audit-setup-guards.mjs
 ```
 
-确认 DSH `agentPresets/list` 能列出 `qq-chat-v2`，并在新建的测试 session 中检查工具面：应看到 `mcp__snowluma__*`、`mcp__snowluma-host__*` 和 `mcp__web-search-safe__*`，不应出现 shell、文件写入或 Harness 管理工具。桥接会严格要求 `qq-chat-v2` 存在；缺失时拒绝为 QQ 创建 session，不会回退到 DSH 默认 preset。
+确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局桌面助手应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读 `mcp__snowluma-host__snowluma_status`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。旧 `qq-chat-v2` 仅供已经存在的逐 QQ 映射会话兼容使用。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
 如要验证当前 DSH 版本的协议兼容性，可运行 `npm run verify:adaptation`；其中部分检查需要正在运行且可访问的 DSH。不要把该在线探测与上述离线测试混为一谈。
 
 ## 常见问题
 
-- **QQ 收不到回复，但 SnowLuma 在线**：先查看桥接日志中的 `qq-chat-v2` 缺失/会话创建错误，再确认 DSH 侧已重启并且 `agentPresets/list` 包含该 preset。它缺失时桥接会 fail closed，不会使用包含本地工具的默认 preset。
+- **QQ 信号没有启动全局会话**：确认 SnowLuma 事件进入桥接，且私聊或群聊原生 @ / 验证回复 / 配置关键词符合注意信号规则；普通群消息只缓冲。再检查 DSH preset 清单是否包含 `desktop-agent`。
+- **桌面助手不可用**：确认 `desktop-agent` 已出现在 DSH preset 清单，且 DSH profile 中的 `dsh-computer-use-win` 已启用；更新 bundle 后重启 DSH，再从 WebUI 提交任务或触发一条 QQ 注意信号。
 - **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 有 `qq-agent-presets` 和 host 配置 bundle 依赖，然后重启 DSH。
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否有三个 `mcp-*` 条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
 - **preset 未出现**：检查 `qq-agent-presets` bundle 是否注册并安装，再运行 `node scripts/build-agent-preset-patches.mjs --check`；修改源文件后需重新生成 patch 并重启 DSH。
@@ -83,9 +88,9 @@ node scripts/test-audit-setup-guards.mjs
 
 ## 唤醒与消息读取模型
 
-- 私聊来信在对应会话允许时唤醒；群聊仅真正发给机器人的原生 @ 或已验证回复/引用机器人消息唤醒。
-- 普通群消息保存在桥接侧，不会被周期性送入模型。直接唤醒快照只包含触发消息；agent 需要更多上下文时，按需调用未读、最近消息或会话历史读取工具。
+- 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局桌面助手发不含消息正文的提醒；是否处理由 agent 自行判断。
+- 普通群消息正文保存在桥接侧，不会自动注入模型。全局 agent 可先用 `qq_list_conversations` 发现群/好友，再按需调用消息、历史或成员读取工具。
 - 没有模型心跳或定时轮询。工具等待、读取和发送都由当前 agent 回合主动决定；回合文本不会自动转发到 QQ。
-- 任何 QQ 发送仍需活动回合令牌、目标白名单通过，并接受速率限制和审计。
+- 全局桌面助手通过 SnowLuma MCP 发送需活动回合令牌，任意合法群/私聊 key 均可用，不要求命中逐会话白名单；发送仍接受速率限制与审计。若助手通过 QQ 桌面 UI 操作，行为不经过这些桥接 API 检查。
 
 更多权限与安全约束见 [RULES.md](../../RULES.md)。

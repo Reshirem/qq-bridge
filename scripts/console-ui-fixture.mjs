@@ -437,6 +437,10 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           });
           case '/api/whitelist': return json(state.whitelist);
           case '/api/sessions': return json({ sessions: state.sessions });
+          case '/api/console/desktop-agent': return json({
+            ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
+            found: true, running: false, blank: false, agentAvailable: true
+          });
           case '/api/console/dsh-session-status': return json({
             ok: true,
             checkedAt: Date.now(),

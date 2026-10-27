@@ -14,6 +14,10 @@ export const PRESET_PROMPT_MAX_BYTES = 128 * 1024;
 
 // 安全基线段落：缺失说明 AI 的权限边界可能被削弱，保存时警告（不阻断，管理员有最终决定权）。
 export const PRESET_REQUIRED_MARKERS = ['【QQ 自主会话安全规则', '【QQ 自主会话工具协议'];
+export const DESKTOP_PRESET_REQUIRED_MARKERS = [
+  'SnowLuma is the QQ message channel',
+  'complete SnowLuma MCP toolset',
+];
 
 // 硬性不变量：这些串是本项目自己的测试与安全边界所依赖的（test-qq-preset-contract.mjs / verify-persona-config.mjs），
 // 一旦被删就会同时削弱 AI 的权限边界并让 `node scripts/test-audit.mjs`、`npm run verify:persona` 变红，因此保存时直接拒绝。
@@ -27,19 +31,21 @@ export const PRESET_BLOCKING_SUBSTRINGS = [
 export const PRESET_MIN_BODY_CHARS = 500;
 
 /** 固定 qq-chat-v2 预设使用的硬性不变量清单。 */
-export function presetBlockingSubstrings() {
-  return PRESET_BLOCKING_SUBSTRINGS;
+export function presetBlockingSubstrings(preset = 'qq-chat-v2') {
+  return preset === 'desktop-agent'
+    ? ['One global session', ...DESKTOP_PRESET_REQUIRED_MARKERS]
+    : PRESET_BLOCKING_SUBSTRINGS;
 }
 
 /** 硬性校验：返回阻止保存的原因列表（空数组=可保存）。 */
-export function presetPromptBlockers(content) {
+export function presetPromptBlockers(content, preset = 'qq-chat-v2') {
   const text = String(content ?? '');
   const blockers = [];
   if (!text.trim()) {
     blockers.push('仿真提示词不能为空');
     return blockers;
   }
-  for (const needle of presetBlockingSubstrings()) {
+  for (const needle of presetBlockingSubstrings(preset)) {
     if (!text.includes(needle)) {
       blockers.push(`缺少安全不变量「${needle}」：删除它会让 AI 的权限边界失效，并使 npm run test:audit 失败`);
     }
@@ -93,11 +99,12 @@ export function extractPresetPrefix(text) {
 }
 
 /** 保存前的软校验：只提示，不阻断。 */
-export function presetPromptWarnings(content) {
+export function presetPromptWarnings(content, preset = 'qq-chat-v2') {
   const text = String(content ?? '');
   const warnings = [];
   if (!text.trim()) warnings.push('内容为空');
-  for (const marker of PRESET_REQUIRED_MARKERS) {
+  const markers = preset === 'desktop-agent' ? DESKTOP_PRESET_REQUIRED_MARKERS : PRESET_REQUIRED_MARKERS;
+  for (const marker of markers) {
     if (!text.includes(marker)) warnings.push(`缺少「${marker}…】段落：AI 的权限与工具边界可能被削弱`);
   }
   return warnings;
@@ -112,7 +119,7 @@ export function presetPromptWarnings(content) {
  * @param {string} content 新的提示词正文
  * @returns {string} 新的 YAML 全文
  */
-export function renderPresetPromptYaml(text, content) {
+export function renderPresetPromptYaml(text, content, preset = 'qq-chat-v2') {
   const loc = locatePresetPromptBlock(text);
   if (!loc) throw new Error('无法定位预设里的 prefix 块（文件结构可能已变化）');
   const normalized = String(content ?? '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
@@ -120,7 +127,7 @@ export function renderPresetPromptYaml(text, content) {
   if (bytes > PRESET_PROMPT_MAX_BYTES) {
     throw new Error(`仿真提示词过长（${(bytes / 1024).toFixed(1)} KB，上限 ${PRESET_PROMPT_MAX_BYTES / 1024} KB）`);
   }
-  const blockers = presetPromptBlockers(normalized);
+  const blockers = presetPromptBlockers(normalized, preset);
   if (blockers.length) throw new Error(blockers.join('；'));
   // 新增行沿用文件的主导行尾，避免把 CRLF 文件写成更混乱的混合行尾。
   const crlf = (text.match(/\r\n/g) ?? []).length;

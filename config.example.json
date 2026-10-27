@@ -56,6 +56,7 @@
   },
   "socialV2": {
     "enabled": true,
+    "attentionKeywords": [],
     "tools": {
       "getPrompt": true,
       "getUnread": true,

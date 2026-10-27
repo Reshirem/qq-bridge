@@ -1,11 +1,8 @@
 // 安全版 QQ MCP server（stdio）。由 DSH 的 MCP 客户端 spawn。
 //
-// 安全设计：
-// - 只暴露聊天所需的**安全动作子集**（查状态/查群/查消息/发消息），
-//   不暴露任何管理类动作（禁言、踢人、改群设置、文件上传下载等）。
-// - 发送类工具强制校验白名单：目标群/私聊必须命中 config.json 的
-//   allow.groups / allow.private，否则拒绝 —— agent 只能往被允许的地方发消息。
-// - 所有调用走 OneBot HTTP API（httpUrl + accessToken）。
+// SnowLuma 是 QQ 消息通道：全局桌面 agent 可使用本 MCP 已提供的完整读写工具集。
+// 调用仍经桥接的全局会话令牌和活动回合检查；发送保留限频与审计。
+// 本 MCP 暴露的范围由这里注册的工具定义决定；没有宣称覆盖 SnowLuma/OneBot 的全部管理 API。
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -250,17 +247,9 @@ function agentApiLongPoll(path, init = {}) {
 
 const server = new McpServer({ name: 'snowluma-safe', version: '0.2.1-r1' });
 
-// ── 工具开关必须在**注册期**生效，而不是只在校验期 ──────────────────────────
-//
-// 为什么：每个工具的描述 + 参数 schema 都会随 system prompt 在**每一次**请求里重发
-// （实测 41 个工具约 8.8k token）。只在校验时 403 的话，被关掉的工具依然占着上下文、
-// 依然会让模型看见并调用它（然后拿到一个错误），等于「关了个寂寞」。
-//
-// 这里用一个注册过滤器统一处理：开关关闭 ⇒ 该工具根本不注册 ⇒ 既省 token 又不给模型误调的机会。
-// DSH 在启动时读取工具清单，所以关掉/打开后需要重启 DSH 才会刷新（控制台面板已注明）。
-//
-// 旧式单条发送工具仍作为兼容入口保留，但都必须通过自主 QQ 会话令牌与活动回合校验；
-// qq_send_message 是新调用的首选，并受 sendMessage 工具开关控制。
+// DSH profile 会共享这个 MCP provider，故无法按 agent preset 隐藏不同工具。
+// 全局 desktop-agent 的目标是完整使用这里提供的 SnowLuma QQ 工具集，注册时不按旧版
+// socialV2.tools 开关裁剪；桥接仍校验全局会话令牌、活动发送回合、限频和审计。
 const TOOL_CONFIG_FLAGS = {
   qq_get_prompt: 'getPrompt',
   qq_get_unread_messages: 'getUnread',
@@ -292,19 +281,13 @@ const TOOL_CONFIG_FLAGS = {
   qq_get_self_image: 'getSelfImage',
   qq_set_sticker_remark: 'setStickerRemark',
 };
-const disabledTools = [];
-{
-  const registerTool = server.tool.bind(server);
-  server.tool = (name, ...rest) => {
-    const flag = TOOL_CONFIG_FLAGS[name];
-    if (flag && cfg.socialV2?.tools?.[flag] === false) {
-      disabledTools.push(`${name}(${flag})`);
-      return undefined;
-    }
-    return registerTool(name, ...rest);
-  };
-}
-
+// MCP provider 在 DSH profile 共享，不能按 agent preset 给不同会话注册不同 schema。
+// 桌面 agent 使用完整 SnowLuma 工具集，因此注册快照固定为全开；桥接端仍按会话 token
+// 区分全局桌面会话与旧的逐会话令牌。
+cfg.socialV2 ??= {};
+cfg.socialV2.sticker = { ...(cfg.socialV2.sticker ?? {}), enabled: true };
+cfg.socialV2.tools = { ...(cfg.socialV2.tools ?? {}) };
+for (const flag of Object.values(TOOL_CONFIG_FLAGS)) cfg.socialV2.tools[flag] = true;
 server.tool(
   'qq_status',
   '查询 QQ 机器人登录状态与账号信息（只读）。',
@@ -321,13 +304,37 @@ server.tool(
   }
 );
 
-// 群成员列表仅作为带会话令牌的自主 QQ 会话只读工具提供。
+server.tool(
+  'qq_list_conversations',
+  '按需列出当前 QQ 账号所在的群和好友，帮助你发现可读取或发送消息的 SnowLuma 会话。只返回会话标识和显示名，不自动读取消息正文；用 kind 与 offset/limit 分页。仅全局 desktop-agent 可调用，使用当前 DSH 会话令牌。',
+  {
+    kind: z.enum(['all', 'group', 'private']).optional().describe('来源类型：all（默认）、group 或 private'),
+    offset: z.number().int().nonnegative().optional().describe('分页起点，默认 0；用上次返回的 nextOffset 继续'),
+    limit: z.number().int().min(1).max(500).optional().describe('返回条数，默认 100，最大 500'),
+    token: z.string().min(1).describe('全局 desktop-agent 的 SnowLuma 会话令牌')
+  },
+  async ({ kind, offset, limit, token }) => {
+    try {
+      const query = new URLSearchParams();
+      if (kind) query.set('kind', kind);
+      if (offset != null) query.set('offset', String(offset));
+      if (limit != null) query.set('limit', String(limit));
+      const suffix = query.size ? `?${query.toString()}` : '';
+      const data = await agentApi(`/api/socialV2/conversations${suffix}`, { headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取 QQ 会话目录失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+// 群成员列表通过全局桌面会话令牌或旧式逐会话令牌授权。
 server.tool(
   'qq_get_group_members',
-  '列出指定群的成员（只读）：QQ 号、昵称、群名片。等特定的人、要 @ 某个人、或需要确认谁在群里时用；QQ 号取返回里的 userId。只返回白名单群，且只读取桥接允许的会话。',
+  '列出指定群的成员（只读）：QQ 号、昵称、群名片。等特定的人、要 @ 某个人、或需要确认谁在群里时用；QQ 号取返回里的 userId。',
   {
-    key: z.string().describe('会话 key，格式 group:群号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标目标 QQ 会话 key，格式 group:群号'),
+    token: z.string().min(1).describe('全局桌面会话或旧式 QQ 会话令牌'),
     limit: z.number().optional().describe('最多返回多少成员，默认 50，最大 100')
   },
   async ({ key, token, limit }) => {
@@ -344,12 +351,12 @@ server.tool(
 
 server.tool(
   'qq_send_group_message',
-  '向指定 QQ 群发送一条纯文本消息；如需引用某条消息，可传 replyToMessageId（非零整数，可为负数），可先用 qq_get_recent_messages / qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message；必须携带本会话令牌 token，且仅在该会话的 DSH 回合仍活动时可发送。不要在发送后输出“已发送”类汇报。目标群必须命中系统白名单（config.json 的 allow.groups），否则拒绝。',
+  '向指定 QQ 群发送一条纯文本消息；如需引用某条消息，可传 replyToMessageId（非零整数，可为负数），可先用 qq_get_recent_messages / qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message；必须携带当前 DSH 会话令牌 token，且仅在 DSH 回合仍活动时可发送。不要在发送后输出“已发送”类汇报。',
   {
-    groupId: z.union([z.number(), z.string()]).describe('群号（必须在白名单内）'),
+    groupId: z.union([z.number(), z.string()]).describe('目标群号'),
     message: z.string().describe('消息文本，纯文本，不要用 Markdown 或 CQ 码'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-    token: z.string().min(1).describe('会话令牌（当前自主 QQ 会话必填）')
+    token: z.string().min(1).describe('SnowLuma 会话令牌（由当前 DSH 任务上下文提供）')
   },
   async ({ groupId, message, replyToMessageId, token }) => {
     try {
@@ -370,12 +377,12 @@ server.tool(
 
 server.tool(
   'qq_reply',
-  '在指定 QQ 群里引用/回复某条消息，并发送一条文本。适合群消息很多、需要明确“我回的是哪条”时使用；replyToMessageId 是被引用消息的 id（非零整数，QQ 消息 id 可能为负数），可先用 qq_get_recent_messages / qq_get_unread_messages / qq_get_message_detail 查到具体消息内容和 id。发送前桥接会校验该 id 存在且属于当前会话。仅在该会话的 DSH 回合仍活动时可用，且必须携带本会话令牌 token。只有以下情况才需要引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。目标群必须命中系统白名单（config.json 的 allow.groups），否则拒绝。',
+  '在指定 QQ 群里引用/回复某条消息，并发送一条文本。适合群消息很多、需要明确“我回的是哪条”时使用；replyToMessageId 是被引用消息的 id（非零整数，QQ 消息 id 可能为负数），可先用 qq_get_recent_messages / qq_get_unread_messages / qq_get_message_detail 查到具体消息内容和 id。发送前桥接会校验该 id 存在且属于目标会话。仅在 DSH 回合仍活动时可用，且必须携带会话令牌 token。只有以下情况才需要引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
   {
-    groupId: z.union([z.number(), z.string()]).describe('群号（必须在白名单内）'),
+    groupId: z.union([z.number(), z.string()]).describe('目标群号'),
     replyToMessageId: z.union([z.number(), z.string()]).describe('被引用/回复的消息 id（非零整数，可为负数）'),
     message: z.string().describe('要发送的文本，纯文本，不要用 Markdown 或 CQ 码'),
-    token: z.string().min(1).describe('会话令牌（当前自主 QQ 会话必填）')
+    token: z.string().min(1).describe('SnowLuma 会话令牌（由当前 DSH 任务上下文提供）')
   },
   async ({ groupId, replyToMessageId, message, token }) => {
     try {
@@ -394,12 +401,12 @@ server.tool(
 
 server.tool(
   'qq_send_private_message',
-  '向指定 QQ 好友发送一条私聊消息。若提供 replyToMessageId，会以 QQ 引用/回复形式发出（引用条 + 文本）。replyToMessageId 必须是非零整数消息 id（QQ 消息 id 可能为负数），可先用 qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message；必须携带本会话令牌 token，且仅在该会话的 DSH 回合仍活动时可发送。不要在发送后输出“已发送”类汇报。目标 QQ 必须命中系统白名单（config.json 的 allow.private），否则拒绝。',
+  '向指定 QQ 好友发送一条私聊消息。若提供 replyToMessageId，会以 QQ 引用/回复形式发出（引用条 + 文本）。replyToMessageId 必须是非零整数消息 id（QQ 消息 id 可能为负数），可先用 qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message；必须携带会话令牌 token，且仅在 DSH 回合仍活动时可发送。不要在发送后输出“已发送”类汇报。',
   {
-    userId: z.union([z.number(), z.string()]).describe('好友 QQ 号（必须在白名单内）'),
+    userId: z.union([z.number(), z.string()]).describe('目标好友 QQ 号'),
     message: z.string().describe('消息文本，纯文本，不要用 Markdown 或 CQ 码'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
-    token: z.string().min(1).describe('会话令牌（当前自主 QQ 会话必填）')
+    token: z.string().min(1).describe('SnowLuma 会话令牌（由当前 DSH 任务上下文提供）')
   },
   async ({ userId, message, replyToMessageId, token }) => {
     try {
@@ -420,7 +427,7 @@ server.tool(
 server.tool(
   'qq_get_prompt',
   '查看固定自主 QQ 会话的提示词、角色、推荐值、可用工具与唤醒配置（只读）。',
-  { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）') },
+  { key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'), token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）') },
   async ({ key, token }) => {
     try {
       const data = await agentApi(`/api/socialV2/prompt?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
@@ -435,8 +442,8 @@ server.tool(
   'qq_get_unread_messages',
   '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),
     afterSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('读取本地 seq 大于此水位的最早一页；省略则沿用返回最新一页的旧行为')
   },
@@ -454,8 +461,8 @@ server.tool(
   'qq_get_recent_messages',
   '查看指定会话的最近消息（只读），支持 offset 扩大范围。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     limit: z.number().optional().describe('最多返回条数，默认 20，最大 100'),
     offset: z.number().optional().describe('跳过最近 N 条，用于向前翻看更早消息，默认 0')
   },
@@ -471,10 +478,10 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取当前会话的 SnowLuma 消息历史（只读）。默认获取最新记录；传 messageId 可从该消息附近继续读取。只读取当前 key 对应且已允许的群或私聊，不会自动标记本地未读水位；需要收尾时仍用 qq_get_unread_messages / qq_get_recent_messages 返回的 readThroughSeq。',
+  '按需读取目标会话的 SnowLuma 消息历史（只读）。默认获取最新记录；传 messageId 可从该消息附近继续读取。不自动标记本地未读水位；需要收尾时仍用 qq_get_unread_messages / qq_get_recent_messages 返回的 readThroughSeq。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点消息 id；省略时从最新记录开始'),
     count: z.number().int().min(1).max(100).optional().describe('最多返回多少条，默认 20，最大 100'),
     reverseOrder: z.boolean().optional().describe('是否按逆序读取，默认 false')
@@ -498,7 +505,7 @@ server.tool(
 server.tool(
   'qq_social_state',
   '查看指定自主 QQ 会话的唤醒配置、未读数、上次唤醒原因与上次发言时间等（只读）。',
-  { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）') },
+  { key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'), token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）') },
   async ({ key, token }) => {
     try {
       const data = await agentApi(`/api/socialV2/state?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
@@ -513,8 +520,8 @@ server.tool(
   'qq_mark_read',
   '将指定会话已查看的未读消息标记为已读。throughSeq 使用最近读取结果的 readThroughSeq，避免清除读取后才到达的新消息；省略 throughSeq 会按旧行为清空当前全部未读，因此推荐始终带上水位。群聊下一次自动唤醒固定只来自真实 @ 你或验证过的回复你，私聊消息仍会唤醒。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('本次确认已读的消息水位，使用已查看结果中的 readThroughSeq；不会清除更晚到达的消息')
   },
   async ({ key, token, throughSeq }) => {
@@ -529,10 +536,10 @@ server.tool(
 
 server.tool(
   'qq_set_wake_config',
-  '设置指定会话的固定唤醒配置：群聊仅真实 @ 你或验证过的回复你会自动唤醒，私聊消息仍会唤醒；普通群消息只缓存。可选择无限期等待或设置一次性 sleepMs/sleepUntil，并可将本会话消息合并窗口设为 1000~60000ms；需要主动观察时调用 qq_wait_for_messages。',
+  '设置自主会话的唤醒配置。全局 desktop-agent 可设置或取消一个持久的一次性提醒；key 标记提醒关联的 QQ 来源，不会创建逐会话 DSH session。兼容旧式 QQ 会话时仍设置该会话的一次性睡眠/唤醒。没有周期性模型心跳；需要在当前回合主动等消息时调用 qq_wait_for_messages。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('可同时确认已读：使用已查看结果中的 readThroughSeq，省去额外 qq_mark_read；不传则只设置唤醒配置。若 markRead 工具被关闭，该水位会被忽略，本工具只设置唤醒配置'),
     config: z.object({
       infinite: z.boolean().optional().describe('true=无限期，只有固定触发条件命中才唤醒；false=有限时间'),
@@ -553,10 +560,10 @@ server.tool(
 
 server.tool(
   'qq_send_burst',
-  '在指定 QQ 群分多条发送消息；仅在本会话 DSH 回合仍活动时可用，必须携带提示中的会话令牌，桥接会按真人化随机间隔发送。暂不支持引用，需要引用请用 qq_reply。注意：数组里的每个字符串就是一条 QQ 消息，字符串内部不要用空格分隔中文短句，需要多条请用数组元素；每条消息要读起来完整，不要把同一句话拆到两条里。',
+  '在指定 QQ 群分多条发送消息；仅在本会话 DSH 回合仍活动时可用，必须携带当前 DSH 会话令牌，桥接会按真人化随机间隔发送。暂不支持引用，需要引用请用 qq_reply。注意：数组里的每个字符串就是一条 QQ 消息，字符串内部不要用空格分隔中文短句，需要多条请用数组元素；每条消息要读起来完整，不要把同一句话拆到两条里。',
   {
-    groupId: z.union([z.number(), z.string()]).describe('群号（必须在白名单内）'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    groupId: z.union([z.number(), z.string()]).describe('目标群号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     messages: z.union([z.array(z.string()).min(1), z.string()]).describe('要发送的消息数组，每条为纯文本；也兼容传入 JSON 数组字符串')
   },
   async ({ groupId, token, messages }) => {
@@ -595,10 +602,10 @@ server.tool(
 
 server.tool(
   'qq_send_message',
-  '统一发送工具：可发一条或多条，可引用某条消息，可自定义/按字数计算条间时间差。必须携带本会话令牌，且仅在对应 DSH 回合仍活动时可发送。注意：字符串=一条消息，数组=多条消息；每个字符串内部不要用空格分隔中文短句，需要多条请用数组元素；每条消息要读起来完整，不要把同一句话拆到两条里。只有以下情况才需要传 replyToMessageId 引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
+  '统一发送工具：可发一条或多条，可引用某条消息，可自定义/按字数计算条间时间差。必须携带当前 DSH 会话令牌，且仅在对应 DSH 回合仍活动时可发送。注意：字符串=一条消息，数组=多条消息；每个字符串内部不要用空格分隔中文短句，需要多条请用数组元素；每条消息要读起来完整，不要把同一句话拆到两条里。只有以下情况才需要传 replyToMessageId 引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     messages: z.union([z.string(), z.array(z.string()).min(1)]).describe('要发送的内容：字符串=一条；数组=分多条'),
     replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
     atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中用于点名某个人；与引用二选一即可，不要滥用）'),
@@ -642,10 +649,10 @@ server.tool(
 if (cfg.socialV2?.tools?.sendPoke !== false) {
   server.tool(
     'qq_send_poke',
-    '发送 QQ 拍一拍（群聊/私聊）。仅在本会话 DSH 回合仍活动时可用，必须携带会话令牌，并受白名单与发送频率限制。适合自然回应别人的拍一拍或偶尔提醒正在聊的人，但别频繁。群聊必须传 targetUserId（要拍的群友 QQ 号，可从 qq_get_active_members / qq_get_message_detail 的 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。',
+    '发送 QQ 拍一拍（群聊/私聊）。仅在 DSH 回合仍活动时可用，必须携带会话令牌，并受发送频率限制。适合自然回应别人的拍一拍或偶尔提醒正在聊的人，但别频繁。群聊必须传 targetUserId（要拍的群友 QQ 号，可从 qq_get_active_members / qq_get_message_detail 的 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       targetUserId: z.union([z.number(), z.string()]).optional().describe('要拍的群友 QQ 号（群聊必填；私聊可选）')
     },
     async ({ key, token, targetUserId }) => {
@@ -668,8 +675,8 @@ server.tool(
   'qq_wait_for_messages',
   '等待是主动工具调用：purpose="reply" 用于确认对方是否继续补充，purpose="messages" 用于你主动继续观察或等回复；timeoutMs 是最长等待预算，quietMs 控制静默窗口。它不会自动改变唤醒配置，也不是 mark_read 或 sleep 的前置条件。直接看 newMessages、unreadCount 和 readThroughSeq，返回消息无需重复查询；仍有未展示未读才补读。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     purpose: z.enum(['messages', 'reply']).optional().describe('默认 messages：主动等待新消息；reply：回复前短静默，按最后来信时间计算'),
     timeoutMs: z.number().optional().describe('等待预算毫秒数，默认 30000、最大 600000；reply 达到静默即返回，不必等满'),
     minNewMessages: z.number().optional().describe('仅 messages 用途：至少等到多少条新消息才进入静默窗口，默认 1；reply 用途会忽略它'),
@@ -695,8 +702,8 @@ server.tool(
   'qq_report_feedback',
   '向控制台/管理端反馈 AI 遇到的问题、困惑或需要管理员介入的情况。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     level: z.enum(['info', 'warning', 'error']).optional().describe('反馈级别，默认 info'),
     message: z.string().describe('反馈内容')
   },
@@ -718,8 +725,8 @@ server.tool(
   'qq_get_my_recent_messages',
   '查看自己最近发过的消息（只读），避免重复/保持人设。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     limit: z.number().optional().describe('最多返回条数，默认 10，最大 50')
   },
   async ({ key, token, limit }) => {
@@ -736,8 +743,8 @@ server.tool(
   'qq_get_message_detail',
   '按 message_id / 本地 seq 查看单条消息的发送者、引用信息与正文（只读）。注意：正文最多返回 200 字符，textTruncated=true 表示被截断，这里不是读取长消息全文的入口。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可能为负数）')
   },
   async ({ key, token, messageId }) => {
@@ -754,8 +761,8 @@ server.tool(
   'qq_get_active_members',
   '查看最近活跃成员列表（只读），帮助判断话题参与者。',
   {
-    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-    token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
     limit: z.number().optional().describe('最多返回人数，默认 10，最大 20')
   },
   async ({ key, token, limit }) => {
@@ -774,9 +781,9 @@ if (cfg.socialV2?.tools?.getImages !== false) {
     'qq_get_message_images',
     '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情；二代模式下必须携带会话令牌。**动图（GIF/动态表情）会被桥接抽帧拼成多格图再给你**：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」——按格子顺序理解动作即可，不要把它当成一张九宫格照片；没有这类说明就是静态图。体积过大的图会被自动缩放/重编码，说明里会给出原始尺寸与体积；如果真的压不到可用体积，返回里会直接写明原因（例如「超过上限」），此时如实告诉对方你看不到，不要编造画面。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可为负数；二代也可用本地 seq）'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）')
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）')
     },
     async ({ key, messageId, token }) => {
       try {
@@ -816,8 +823,8 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.listSticker
     'qq_list_stickers',
     '查看 QQ 账号上已收藏的表情包（自定义表情）列表：包含 emoji_id、官方备注 desc、图片地址等。可通过 query 按备注搜索；无备注的表情可以调用 qq_get_sticker_image 看图理解。刚新增/删除表情后如需立即同步，请传 refresh=true。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       query: z.string().optional().describe('可选搜索词，按 QQ 备注或表情标识过滤'),
       count: z.number().optional().describe('最多返回条数，默认 48，受 socialV2.sticker.maxListCount 配置上限约束（当前通常 100）'),
       refresh: z.boolean().optional().describe('是否强制从 QQ 重新同步收藏表情，默认 false（走缓存）')
@@ -845,8 +852,8 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerI
     'qq_get_sticker_image',
     '获取指定收藏表情的图片内容并直接以图像返回给模型（视觉模型可“看懂”）。当 qq_list_stickers 返回的表情没有备注、或你想确认表情实际长什么样时调用。stickerId 可用 qq_list_stickers 返回的 id / md5 / url。动图表情会被抽帧拼成多格图（行优先：左上→右下），说明里会写帧数与网格尺寸；体积过大时会自动缩放，说明里会给出原始尺寸。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）')
     },
     async ({ key, token, stickerId }) => {
@@ -871,10 +878,10 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.getStickerI
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker !== false) {
   server.tool(
     'qq_send_sticker',
-    '在指定会话发送一个 QQ 收藏表情包（自定义表情）；必须携带本会话令牌，且仅在该会话的 DSH 回合仍活动时可用。stickerId 用 qq_list_stickers 返回的 id / md5 / url。注意：一条消息只能是一张表情，不能在同一气泡里附带文字；想说的话请先用 qq_send_message / qq_reply 作为单独气泡发送，再单独发这张表情。需要引用/点名时可用 replyToMessageId / atUserId（群聊）。真人偶尔用表情包很自然，但别刷屏。',
+    '在指定会话发送一个 QQ 收藏表情包（自定义表情）；必须携带当前 DSH 会话令牌，且仅在该会话的 DSH 回合仍活动时可用。stickerId 用 qq_list_stickers 返回的 id / md5 / url。注意：一条消息只能是一张表情，不能在同一气泡里附带文字；想说的话请先用 qq_send_message / qq_reply 作为单独气泡发送，再单独发这张表情。需要引用/点名时可用 replyToMessageId / atUserId（群聊）。真人偶尔用表情包很自然，但别刷屏。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）'),
       replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
       atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中可选，私聊不可用）')
@@ -900,8 +907,8 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectStic
     'qq_collect_sticker',
     '收藏当前会话里别人发的一张表情/图片到你的 QQ 收藏表情。messageId 用 qq_get_unread_messages / qq_get_recent_messages 返回的 messageId 或 seq。注意：不要频繁收藏，只在真的觉得有意思/好用/戳中你时才收藏；收藏后你可以在 qq_list_stickers 里看到并继续使用。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       messageId: z.string().describe('要收藏的那条消息的 messageId 或 seq（来自 qq_get_unread_messages / qq_get_recent_messages）')
     },
     async ({ key, token, messageId }) => {
@@ -925,8 +932,8 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
     'qq_get_self_image',
     '查看你自己的默认 Q 版形象图片（DeepSeek 小鲸鱼形象）。当你被问“你长什么样/发张自拍/你是什么形象”时，可以调用这个工具看自己的样子；返回的图片会直接进入你的视觉上下文。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）')
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）')
     },
     async ({ key, token }) => {
       try {
@@ -953,8 +960,8 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerR
     'qq_set_sticker_remark',
     '修改 QQ 账号里收藏表情的官方备注（desc）。这是写操作，会直接影响 QQ 账号的表情备注；仅在管理员明确允许（socialV2.tools.setStickerRemark=true）时可用。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）'),
       remark: z.string().describe('新的表情备注，最多 50 字')
     },
@@ -977,10 +984,10 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerR
 if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   server.tool(
     'qq_get_forward_msg',
-    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_recent_messages` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。只能查看当前会话确实收到过的转发消息 id，不能任意读取。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
+    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_recent_messages` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
     {
-      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
-      token: z.string().min(1).describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().min(1).describe('QQ 工具会话令牌（由当前 DSH 任务上下文提供）'),
       id: z.string().describe('合并转发消息 id（来自消息里的 [转发消息 id=...] 或 forwardIds 数组）')
     },
     async ({ key, token, id }) => {

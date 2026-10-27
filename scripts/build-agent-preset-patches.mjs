@@ -23,8 +23,8 @@ import yaml from 'js-yaml';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..');
 
-/** 桥接固定使用的会话 preset。 */
-export const PRESETS = ['qq-chat-v2'];
+/** 由桥接安装的 QQ 与全局桌面 agent preset。 */
+export const PRESETS = ['qq-chat-v2', 'desktop-agent'];
 
 /** preset 行 id：与 config.id（桥接解析的 preset 名）区分开，方便在 profile patch 里按行定位。 */
 export function presetRowId(name) {

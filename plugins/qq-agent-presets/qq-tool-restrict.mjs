@@ -1,4 +1,5 @@
-// QQ 桥接安全硬边界：只允许 QQ MCP 工具与少量无害模型侧工具。
+// QQ 桥接的 preset 工具策略：legacy qq-chat-v2 保持受限；全局 desktop-agent 可用
+// 完整 SnowLuma QQ 工具与明确授权的 Windows computer-use 工具。
 //
 import fs from 'node:fs'
 import path from 'node:path'
@@ -18,13 +19,12 @@ import { fileURLToPath } from 'node:url'
 //   scripts/setup-dsh.mjs（或 dsh-super-injector 的 dev_heal_links）维护：
 //   不写死任何绝对路径，仓库搬家后重建链接即可。
 // 作用：
-//  1) 用 tools.restrict 把本地执行/文件类工具与开发工具从**工具清单**里隐藏（注册期）；
-//  2) 用 tools.guard 白名单兜底：任何不在允许范围内的工具，执行时一律拒绝。
+//  1) 用 tools.restrict 把 DSH shell、通用文件、子代理和管理工具从工具清单隐藏；
+//  2) 用 tools.guard 按 preset 区分工具面：desktop-agent 允许 Windows computer-use 与
+//     SnowLuma namespaces；legacy qq-chat-v2 仍使用旧的 QQ/web-search 工具范围。
 //
-// ⚠️ 第 1 条是铁律 L7 的落点，不是"附注"：仿真会话的 preset 永不包含本地工具。
-//    `tools.guard` 只能拒绝**执行**，工具名仍会出现在模型的 schema 里——
-//    那既不满足"仿真会话不得拥有本地执行能力"的注册期要求，也会诱导模型去调它。
-//    所以本地工具必须同时出现在下面的 restrict 名单里。
+// DSH 自带 shell、通用文件访问、子代理与 Harness 管理能力仍不属于该 preset；
+// Windows computer-use 由 desktop-agent 单独显式授权，不会放开上述通用执行面。
 export const name = 'qq-tool-restrict'
 
 export const inject = ['tools']
@@ -261,7 +261,13 @@ function writeDiagnostics(lines) {
   } catch {}
 }
 
-export function apply(ctx) {
+export function apply(ctx, config = {}) {
+  // Computer use is granted to the global desktop-agent, which can be started by
+  // WebUI tasks or QQ attention signals. Legacy qq-chat-v2 omits this flag.
+  const allowComputerUse = config?.allowComputerUse === true;
+  const safePrefixes = allowComputerUse
+    ? ['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__']
+    : SAFE_PREFIXES;
   // 1) 把已知危险全局工具从 schema 隐藏（restrict 只影响继承的全局层，
   //    不会误删 preset 自己注册的 scoped 工具）。
   // 逐个 restrict：当前 DSH 版本不存在的工具名会单独抛错并跳过，
@@ -322,7 +328,9 @@ export function apply(ctx) {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
-    if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) return
-    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
+    if (safePrefixes.some((prefix) => name.startsWith(prefix))) return
+    return allowComputerUse
+      ? `工具 "${name}" 不在桌面 agent 工具范围内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具与无害模型侧工具）`
+      : `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
   })
 }

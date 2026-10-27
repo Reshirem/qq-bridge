@@ -6,13 +6,19 @@
  * Private messages are direct by definition. Group wake is reserved for a
  * real OneBot @ segment addressed to this account, or a verified reply to it.
  */
-export function classifyIncomingWake({ kind, message, selfId, replyTargetIsSelf = false } = {}) {
+export function classifyIncomingWake({ kind, message, selfId, replyTargetIsSelf = false, text = '', attentionKeywords = [] } = {}) {
   if (kind === 'private') return 'private';
   if (kind !== 'group') return null;
   const self = String(selfId ?? '').trim();
   const nativeAtSelf = !!self && Array.isArray(message)
     && message.some((segment) => segment?.type === 'at' && String(segment.data?.qq ?? '') === self);
-  return nativeAtSelf || replyTargetIsSelf === true ? 'atMention' : null;
+  if (nativeAtSelf || replyTargetIsSelf === true) return 'atMention';
+  const normalizedText = String(text ?? '').normalize('NFKC').toLocaleLowerCase();
+  for (const rawKeyword of Array.isArray(attentionKeywords) ? attentionKeywords : []) {
+    const keyword = String(rawKeyword ?? '').trim().normalize('NFKC').toLocaleLowerCase();
+    if (keyword.length >= 2 && normalizedText.includes(keyword)) return `keyword:${String(rawKeyword).trim()}`;
+  }
+  return null;
 }
 
 /** Whether this is the first-session prompt, optionally carrying its direct trigger. */

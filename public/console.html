@@ -1752,6 +1752,21 @@ button:active:not(:disabled) {
         <button class="metric metric-link" data-view="sessions" data-target="section-pending"><span>待处理请求</span><strong id="metricPending">—</strong><small>提问与工具审批 <span aria-hidden="true">↗</span></small></button>
       </div>
       <div class="grid">
+<section id="section-desktop-agent" data-page="sessions" class="card span-all">
+      <h2>个人桌面助手 · 全局 DSH 会话</h2>
+      <div class="meta">WebUI 任务和 QQ 注意信号共用同一个持久 DSH 会话。SnowLuma 是 QQ 消息通道；助手拥有本项目当前完整的 QQ 消息读写工具，也可使用 <code>dsh-computer-use-win</code> 操作本机。它可按需列出群/好友并读取或发送消息；@、私聊、已验证回复/引用和关键词只提供提醒，不要求它读取或回复。打开本页只检查状态，不会启动模型回合。</div>
+      <div class="row" style="margin-top:10px">
+        <button id="desktopAgentRefresh" class="small">刷新助手状态</button>
+        <button id="desktopAgentRebuild" class="small danger">重建会话以加载新提示词</button>
+        <span class="meta" id="desktopAgentStatus" role="status">等待检查</span>
+      </div>
+      <label for="desktopAgentMessage">给个人桌面助手的任务</label>
+      <textarea id="desktopAgentMessage" maxlength="20000" placeholder="例如：查看当前打开的项目，告诉我接下来适合处理什么。"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="desktopAgentSubmit">启动 / 继续助手</button>
+        <span class="meta" id="desktopAgentMessageStatus" role="status"></span>
+      </div>
+    </section>
 <section id="section-sessions" data-page="sessions" class="card span-all">
       <h2>DSH 会话</h2>
       <div class="row" style="margin:0 0 10px">
@@ -1762,7 +1777,7 @@ button:active:not(:disabled) {
     </section>
 <section id="section-notify" data-page="sessions" class="card span-all">
       <h2>WebUI 控制 DSH 会话</h2>
-      <div class="meta">选择白名单 QQ 会话，从控制台直接向对应的持久 DSH session 启动或继续一轮，不必等待 QQ 来信。模型文本保留在 DSH 会话中，不会自动转发到 QQ；若模型主动调用 QQ 发送工具，仍受活动回合、令牌、白名单、限频和审计限制。</div>
+      <div class="meta">这是旧逐 QQ 映射会话的兼容管理入口。新任务请使用上方全局桌面助手；它的 QQ 工具可访问任意合法群/私聊 key，不受下方旧白名单限制。旧映射里的显式发送仍受令牌、白名单、限频和审计限制。</div>
       <div class="row" style="margin-top:10px">
         <label for="aiNotifyTarget" style="margin:0">目标会话</label>
         <select id="aiNotifyTarget" style="min-width:260px;max-width:100%">
@@ -1792,10 +1807,10 @@ button:active:not(:disabled) {
       <div class="layer-note">
         <strong>两层提示词的分工</strong>
         <ol>
-          <li><b>QQ 会话提示词</b>（固定预设 <code>qq-chat-v2</code>）：AI 如何使用工具、处理会话与发言 —— <i>行为与协议</i>。</li>
-          <li><b>人格提示词</b>（本页编辑）：AI 是谁、什么性格、怎么说话 —— <i>人设与语气</i>。</li>
+          <li><b>全局助手内置提示词</b>（固定预设 <code>desktop-agent</code>）：SnowLuma 是 QQ 消息通道，决定助手怎样使用桌面和 QQ 工具。</li>
+          <li><b>人格提示词</b>（本页编辑）：仍供旧逐 QQ 映射会话使用；全局助手当前不注入这些角色卡。</li>
         </ol>
-        <p>每轮按 <code>QQ 会话提示词 → 人格提示词 → 本轮消息</code> 的顺序拼装。人格层保存即生效；会话提示词同步后，新建或重置会话即可加载新版。</p>
+        <p>全局助手从 <code>desktop-agent</code> preset 读取内置提示词；保存会更新 preset bundle，重启 DSH 并重建全局会话后加载新版。角色卡仍服务旧兼容会话。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -1834,12 +1849,12 @@ button:active:not(:disabled) {
             <button id="roleSet">设置</button>
             <button id="roleClear">清除</button>
           </div>
-          <div class="meta">清空当前人格后，AI 只按固定 QQ 会话提示词行动，不扮演额外角色。</div>
+          <div class="meta">人格切换只影响兼容中的逐 QQ 会话，不会改变全局 desktop-agent。</div>
         </div>
       </details>
 
-      <h3 class="layer-heading">QQ 会话提示词 <span class="meta" id="simPromptStatus">加载中…</span></h3>
-      <div class="meta" style="margin-bottom:8px">固定预设：<code>qq-chat-v2</code>。此编辑器只管理当前自主 QQ 会话 runtime 的行为与工具协议。</div>
+      <h3 class="layer-heading">全局助手内置提示词 <span class="meta" id="simPromptStatus">加载中…</span></h3>
+      <div class="meta" style="margin-bottom:8px">固定预设：<code>desktop-agent</code>。这里维护“SnowLuma 是 QQ 消息通道”的全局运行概念及桌面工具规则。</div>
       <div class="meta" id="simPromptWarnings"></div>
       <textarea id="simPromptText" class="code-area" spellcheck="false" readonly></textarea>
       <div class="row" style="margin-top:8px">
@@ -1853,15 +1868,21 @@ button:active:not(:disabled) {
     </section>
 <section id="section-social-v2" data-page="social-v2" class="card span-all">
       <h2>QQ 会话运行时</h2>
-      <div class="meta">配置保存后写入 config.json 并热更新。工具开关控制此运行时可调用的能力；关闭的工具会被桥接拒绝，如 DSH 仍缓存其 schema，请重新载入 MCP 工具清单。</div>
+      <div class="meta">配置保存后写入 config.json 并热更新。本页保留旧逐 QQ 会话的兼容设置；工具开关不限制全局 desktop-agent，它固定加载完整的当前 SnowLuma MCP 工具集。</div>
       <div class="layer-note" role="note" aria-label="固定自动唤醒策略">
-        <strong>固定自动唤醒策略</strong>
+        <strong>QQ 注意信号</strong>
         <ul>
-          <li>群聊只在收到指向机器人的原生 @，或经验证的回复/引用机器人时自动唤醒；普通群消息只缓冲，不自动唤醒，可由 AI 按需读取。</li>
-          <li>私聊消息仍会唤醒会话。</li>
-          <li>没有自主或周期性模型心跳；等待和休眠由 AI 在当前活动轮中按需选择。</li>
+          <li>私聊、发给机器人的原生 @、已验证回复/引用和配置关键词会向全局会话发送不带正文的提醒；是否读取或回复由 agent 自己决定。</li>
+          <li>其它群消息只在桥接侧缓冲，不自动送进提示词；全局会话可按需用 SnowLuma 工具读取任何合法群/私聊。</li>
+          <li>没有周期性模型心跳；一次性提醒由 agent 在活动回合中设置。</li>
         </ul>
       </div>
+
+      <details class="settings-group"><summary>群聊注意关键词</summary><div class="settings-content">
+        <label for="v2AttentionKeywords">关键词（每行一个，也可用逗号分隔）</label>
+        <textarea id="v2AttentionKeywords" rows="3" placeholder="例如：你们怎么看&#10;这个问题"></textarea>
+        <div class="meta">命中时只提醒全局助手有消息，不把消息正文放进提示词；助手可自行决定是否查看或回应。私聊和原生 @ / 已验证回复不受此列表影响。最多 50 项，每项 2–64 字符。</div>
+      </div></details>
 
       <div class="row" style="margin-top:10px">
         <label style="flex:1">启用 QQ 会话运行时</label><input type="checkbox" id="v2Enabled" style="width:auto">
@@ -1873,8 +1894,8 @@ button:active:not(:disabled) {
         <span class="meta" id="v2ActivityStatus">读取中…</span>
       </div>
 
-      <details class="settings-group"><summary>工具开关与说明（关闭后桥接会拒绝该工具；需要时重新载入 DSH 的 MCP 工具清单）</summary><div class="settings-content">
-      <div class="meta" style="margin-bottom:8px"><code>qq_status</code> 是独立的只读登录状态查询，不受下方会话工具开关控制。</div>
+      <details class="settings-group"><summary>旧会话工具开关与说明</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">下方设置只用于逐 QQ 映射兼容逻辑。全局 desktop-agent 的 SnowLuma 工具固定全开；<code>qq_list_conversations</code> 可按需列出账号中的群和好友，不读取消息正文。<code>qq_status</code> 提供只读登录状态。</div>
       <div class="v2-tool-list" id="v2Tools">
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getPrompt"> <span><b>qq_get_prompt</b><span class="meta">查看角色卡、可用工具、当前唤醒配置</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getUnread"> <span><b>qq_get_unread_messages</b><span class="meta">查看未读消息，不自动标记已读</span></span></label>
@@ -1894,7 +1915,7 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getImages"> <span><b>qq_get_message_images</b><span class="meta">查看消息中的图片/表情内容</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getForwardMsg"> <span><b>qq_get_forward_msg</b><span class="meta">查看当前会话收到的合并转发消息内容</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getActiveMembers"> <span><b>qq_get_active_members</b><span class="meta">查看最近活跃成员列表</span></span></label>
-        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getGroupMembers"> <span><b>qq_get_group_members</b><span class="meta">按需查看白名单群成员列表</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getGroupMembers"> <span><b>qq_get_group_members</b><span class="meta">按需查看目标群成员列表（旧逐会话兼容设置）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setWakeConfig"> <span><b>qq_set_wake_config</b><span class="meta">设置下一次唤醒时间或无限期休眠；自动唤醒触发规则固定</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="markRead"> <span><b>qq_mark_read</b><span class="meta">标记当前未读为已读（看过但决定不回复）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="listStickers"> <span><b>qq_list_stickers</b><span class="meta">查看/搜索 QQ 收藏表情（含 QQ 备注）</span></span></label>
@@ -2072,7 +2093,7 @@ button:active:not(:disabled) {
       <input type="text" id="wlPrivate" placeholder="123456789">
       <label>管理员 QQ（ownerQQ，最高权限）</label>
       <input type="text" id="ownerQQ" placeholder="123456789">
-      <div class="meta">管理员可执行管理命令与审批；QQ agent 的工具权限仍受会话令牌、白名单和运行时安全规则约束。可留空清除管理员（清除后无管理员，fail-closed）。</div>
+      <div class="meta">管理员可执行兼容 QQ 管理命令与审批。这里的 allow/deny 仅管理旧逐会话入口；全局 desktop-agent 的 SnowLuma 工具可访问任意合法会话 key。可留空清除管理员。</div>
       <label>拒绝的群号（黑名单，逗号分隔）</label>
       <input type="text" id="dnGroups" placeholder="">
       <label>拒绝的私聊 QQ（黑名单，逗号分隔）</label>
@@ -2153,7 +2174,7 @@ button:active:not(:disabled) {
         <button id="tsSend">发送测试</button>
         <span class="meta" id="tsMsg2"></span>
       </div>
-      <div class="meta">目标必须在白名单内，否则拒绝。</div>
+      <div class="meta">此兼容测试发送入口仍要求目标在旧白名单内。</div>
     </section>
 <section id="section-maintenance" data-page="operations" class="card">
       <h2>桥接控制</h2>
@@ -2437,7 +2458,7 @@ async function refreshRoles() {
 
 // ── 固定 qq-chat-v2 会话提示词 ───────────────────────────────────────────────
 let simPromptOriginal = '';
-let simPromptPreset = 'qq-chat-v2';
+let simPromptPreset = 'desktop-agent';
 
 function setSimMsg(text, ok) {
   const el = document.getElementById('simPromptMsg');
@@ -2471,11 +2492,11 @@ async function refreshSimPrompt() {
     setSimMsg('');
     const status = r.status || {};
     document.getElementById('simPromptStatus').textContent =
-      `${status.label || simPromptPreset} · ${r.chars} 字符${status.installed ? ' · 已同步到 DSH' : ' · 尚未同步到 DSH'}`;
+      `${status.label || simPromptPreset} · ${r.chars} 字符${status.patchCurrent ? ' · bundle 已同步' : ' · bundle patch 待生成'}`;
     document.getElementById('simPromptWarnings').textContent = (r.warnings || []).length
       ? '⚠️ ' + r.warnings.join('；') : '';
     document.getElementById('simPromptRestart').textContent =
-      '更改会写入固定 qq-chat-v2 预设并同步到 DSH；新建或重置 QQ 会话后加载新版，现有会话保持当前上下文。';
+      '更改会写入 desktop-agent 源文件并重新生成 bundle patch；重启 DSH 并重建全局会话后加载新版。';
   } catch (error) {
     setSimMsg('读取失败：' + (error?.message ?? error), false);
   }
@@ -2531,6 +2552,38 @@ let dshSessionStatusRequest = null;
 let aiNotifyTargetsAt = 0;
 let aiNotifyTargetKeys = '';
 let aiNotifyTargetsRequest = null;
+let desktopAgentStatusAt = 0;
+let desktopAgentStatusRequest = null;
+
+async function refreshDesktopAgentStatus(force = false) {
+  if (!force && Date.now() - desktopAgentStatusAt < 5000) return;
+  if (desktopAgentStatusRequest) return desktopAgentStatusRequest;
+  const request = (async () => {
+    const status = document.getElementById('desktopAgentStatus');
+    try {
+      const info = await api('/api/console/desktop-agent');
+      let label = '已创建 · 空闲';
+      let tone = 'meta ok';
+      if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; }
+      else if (!info.presetAvailable) { label = '桌面助手 preset 未加载；安装 preset bundle 后重启 DSH'; tone = 'meta err'; }
+      else if (info.error) { label = '读取会话状态失败：' + info.error; tone = 'meta err'; }
+      else if (!info.sessionId) { label = '尚未创建；提交第一项任务时会在 DSH 创建'; tone = 'meta'; }
+      else if (!info.found) { label = 'DSH 中已找不到旧会话；提交任务时会重新创建'; tone = 'meta err'; }
+      else if (!info.agentAvailable) { label = '会话存在，但 agent 当前不可用'; tone = 'meta err'; }
+      else if (info.running) { label = '运行中'; tone = 'meta ok'; }
+      else if (info.blank) { label = '已创建 · 尚未启动过回合'; tone = 'meta'; }
+      status.textContent = label + (info.sessionId ? ` · ${info.sessionId}` : '');
+      status.className = tone;
+    } catch (error) {
+      status.textContent = '状态读取失败：' + (error?.message || '请求失败');
+      status.className = 'meta err';
+    } finally {
+      desktopAgentStatusAt = Date.now();
+    }
+  })();
+  desktopAgentStatusRequest = request;
+  try { await request; } finally { if (desktopAgentStatusRequest === request) desktopAgentStatusRequest = null; }
+}
 
 async function refreshDshSessionStatus(force = false) {
   if (!force && Date.now() - dshSessionStatusAt < 15000) return;
@@ -2602,11 +2655,15 @@ async function loadAiNotifyTargets(force = false, mappedSessions = null) {
 async function refreshSessions(forceDshStatus = false) {
   try {
     const s = await api('/api/sessions');
-    await Promise.all([refreshDshSessionStatus(forceDshStatus), loadAiNotifyTargets(false, s.sessions)]);
+    await Promise.all([
+      refreshDshSessionStatus(forceDshStatus),
+      loadAiNotifyTargets(false, s.sessions),
+      refreshDesktopAgentStatus(forceDshStatus)
+    ]);
     const box = document.getElementById('sessionList');
     document.getElementById('metricSessions').textContent = s.sessions.length;
     if (!s.sessions.length) {
-      box.innerHTML = '<div class="empty-state"><strong>还没有 DSH session</strong><p>可在下方选择白名单会话并从 WebUI 启动第一轮；QQ 私聊与原生 @ 唤醒仍按原规则工作。</p></div>';
+      box.innerHTML = '<div class="empty-state"><strong>还没有旧 QQ 映射 session</strong><p>全局 desktop-agent 会在首次 WebUI 任务或 QQ 注意信号到达时创建；此列表仅显示旧逐会话映射。</p></div>';
       return;
     }
     let html = '<table><tr><th>QQ 映射</th><th>DSH 状态</th><th>未读缓冲</th><th>DSH 会话 ID</th><th>操作</th></tr>';
@@ -2726,7 +2783,7 @@ document.getElementById('simPromptCancel').addEventListener('click', () => {
 });
 document.getElementById('simPromptSave').addEventListener('click', async () => {
   const content = document.getElementById('simPromptText').value;
-  if (!confirm('保存会改写固定 qq-chat-v2 预设并同步到 DSH。新建会话将使用新版；已有会话需重置后加载新版。确定继续？')) return;
+  if (!confirm('保存会改写 desktop-agent 源文件并重新生成 bundle patch。重启 DSH 并重建全局会话后加载新版。确定继续？')) return;
   setSimMsg('保存中…');
   const r = await api('/api/preset/sim-prompt', 'POST', { preset: simPromptPreset, content });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '保存失败'), false); return; }
@@ -2738,15 +2795,15 @@ document.getElementById('simPromptSave').addEventListener('click', async () => {
   }
   simPromptOriginal = content;
   setSimEditing(false);
-  setSimMsg(`✅ 已保存${r.synced ? '并同步到 DSH' : ''}；新建或重置会话后加载新版`, true);
+  setSimMsg(`✅ 已保存${r.synced ? '并生成 bundle patch' : ''}；重启 DSH 并重建全局会话后加载新版`, true);
   document.getElementById('simPromptWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
   document.getElementById('simPromptStatus').textContent = `${r.status?.label || simPromptPreset} · ${content.length} 字符 · 已保存`;
 });
 document.getElementById('simPromptRestore').addEventListener('click', async () => {
-  if (!confirm('还原固定 qq-chat-v2 预设上一次保存前的备份？当前改动会丢失（原文件会先自动备份）。')) return;
+  if (!confirm('还原 desktop-agent 上次保存前的提示词备份？当前改动会丢失（原文件会先自动备份）。')) return;
   const r = await api('/api/preset/sim-prompt/restore', 'POST', { preset: simPromptPreset });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '还原失败'), false); return; }
-  setSimMsg(`✅ 已还原（${r.restoredFrom}）；新建或重置会话后加载新版`, true);
+  setSimMsg(`✅ 已还原（${r.restoredFrom}）；重启 DSH 并重建全局会话后加载新版`, true);
   refreshSimPrompt();
 });
 
@@ -2810,6 +2867,54 @@ document.getElementById('dshSessionRefresh').addEventListener('click', async () 
   button.disabled = true;
   try { await refreshSessions(true); } finally { button.disabled = false; }
 });
+document.getElementById('desktopAgentRefresh').addEventListener('click', async () => {
+  const button = document.getElementById('desktopAgentRefresh');
+  button.disabled = true;
+  try { await refreshDesktopAgentStatus(true); } finally { button.disabled = false; }
+});
+document.getElementById('desktopAgentRebuild').addEventListener('click', async () => {
+  if (!confirm('将归档当前全局 DSH 会话并创建一个新会话，以加载 DSH 刚载入的 desktop-agent 提示词。旧会话历史保留在 DSH 中。继续吗？')) return;
+  const button = document.getElementById('desktopAgentRebuild');
+  const status = document.getElementById('desktopAgentMessageStatus');
+  button.disabled = true;
+  status.textContent = '正在归档旧会话并创建新会话…';
+  status.className = 'meta';
+  try {
+    const result = await api('/api/console/desktop-agent/reset', 'POST', {});
+    status.textContent = result.ok
+      ? `✅ 新会话已创建：${result.sessionId}${result.archivedSessionId ? `；旧历史已归档：${result.archivedSessionId}` : ''}`
+      : ('❌ ' + (result.error || '重建失败'));
+    status.className = result.ok ? 'meta ok' : 'meta err';
+    desktopAgentStatusAt = 0;
+    await refreshDesktopAgentStatus(true);
+  } catch (error) {
+    status.textContent = '❌ ' + (error?.message || '重建失败');
+    status.className = 'meta err';
+  } finally {
+    button.disabled = false;
+  }
+});
+document.getElementById('desktopAgentSubmit').addEventListener('click', async () => {
+  const message = document.getElementById('desktopAgentMessage').value.trim();
+  const button = document.getElementById('desktopAgentSubmit');
+  const status = document.getElementById('desktopAgentMessageStatus');
+  if (!message) { status.textContent = '请先填写任务内容。'; status.className = 'meta err'; return; }
+  button.disabled = true;
+  status.textContent = '正在提交到 DSH…';
+  status.className = 'meta';
+  try {
+    const result = await api('/api/console/desktop-agent', 'POST', { message });
+    status.textContent = result.ok ? `✅ 已启动一轮：${result.sessionId}` : ('❌ ' + (result.error || '提交失败'));
+    status.className = result.ok ? 'meta ok' : 'meta err';
+    desktopAgentStatusAt = 0;
+    await refreshDesktopAgentStatus(true);
+  } catch (error) {
+    status.textContent = '❌ ' + (error?.message || '提交失败');
+    status.className = 'meta err';
+  } finally {
+    button.disabled = false;
+  }
+});
 document.getElementById('aiNotifyTargetsRefresh').addEventListener('click', async () => {
   await loadAiNotifyTargets(true);
 });
@@ -2841,6 +2946,7 @@ async function loadV2Config() {
     const r = await api('/api/socialV2/config');
     const c = r.config || {};
     document.getElementById('v2Enabled').checked = c.enabled !== false;
+    document.getElementById('v2AttentionKeywords').value = Array.isArray(c.attentionKeywords) ? c.attentionKeywords.join('\n') : '';
     document.querySelectorAll('[data-v2-tool]').forEach(el => {
       el.checked = (c.tools && c.tools[el.dataset.v2Tool] !== false);
     });
@@ -2896,6 +3002,10 @@ async function saveV2Config() {
   document.querySelectorAll('[data-v2-tool]').forEach(el => { tools[el.dataset.v2Tool] = el.checked; });
   const body = {
     enabled: document.getElementById('v2Enabled').checked,
+    attentionKeywords: document.getElementById('v2AttentionKeywords').value
+      .split(/[\r\n,，]+/)
+      .map(value => value.trim())
+      .filter(Boolean),
     tools,
     wake: {
       sleepMinMs: (Math.round(Number(document.getElementById('v2SleepMinMs').value) || 0)) * 1000,

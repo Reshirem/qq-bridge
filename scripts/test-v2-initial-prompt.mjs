@@ -253,8 +253,8 @@ await test('手动唤醒在会话未 bootstrap 时必须走 bootstrap（否则�
   } finally { await h.close(); }
 });
 
-// ── 8. 端到端：真实进线消息 → bootstrap 唤醒 → 投递的 prompt 带环境说明 ────────
-await test('端到端：群消息进线触发的首次唤醒，投递给 DSH 的 prompt 带初始提示词', async () => {
+// ── 8. 新消息进入全局 agent 时只传元数据，不注入 per-conversation 背景 ──
+await test('端到端：QQ 注意信号只提交来源元数据，不注入消息正文或旧会话初始提示词', async () => {
   const h = await bridgeHarness({ config: { socialV2: { wake: { batchWindowMs: 1000 } } } });
   try {
     h.setMode('reserved2');
@@ -268,11 +268,15 @@ await test('端到端：群消息进线触发的首次唤醒，投递给 DSH 的
       sender: { nickname: '测试群友', card: '测试群友' }
     };
     await h.handleIncoming('group', '456', event, h.cfg);
-    for (let i = 0; i < 100 && !h.calls.prompts.length; i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(h.calls.prompts.length, 1, '首条消息应触发恰好一次 bootstrap 唤醒');
+    for (let i = 0; i < 200 && !h.calls.prompts.length; i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(h.calls.prompts.length, 1, '注意信号应启动一个全局 desktop-agent 回合');
     const delivered = h.calls.prompts[0].content.map((c) => String(c?.text ?? '')).join('\n');
-    assert.ok(delivered.includes('【群聊环境（操作者预设，仅本次首次唤醒参考）】'), '首次直接唤醒包含一次性群聊环境提示');
-    assert.ok(delivered.includes(ENV_TEXT), 'bootstrap prompt 必须带操作者预写的环境说明');
+    assert.ok(delivered.includes('group:456'), '注意信号应标明来源会话');
+    assert.ok(delivered.includes('atMention'), '注意信号应标明触发原因');
+    assert.ok(!delivered.includes('大家好'), 'QQ 消息正文不进入全局 agent 提示词');
+    assert.ok(!delivered.includes(ENV_TEXT), '逐会话初始提示词不注入全局 agent');
+    assert.equal(h.calls.created.length, 1);
+    assert.equal(h.calls.created[0].agentPreset, 'desktop-agent', '新提醒只能创建全局桌面助手 preset');
 
     // 第二条消息（非首次唤醒）不得再注入
     const second = { ...event, message_id: 4243, message: [{ type: 'text', data: { text: '有没有人在' } }], raw_message: '有没有人在' };

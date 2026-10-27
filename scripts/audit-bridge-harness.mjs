@@ -28,6 +28,11 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
+  const fixturePatchFileFor = (name) => path.join(temp, 'plugins', 'qq-agent-presets', 'presets', `${name}.patch.yml`);
+  for (const name of ['qq-chat-v2', 'desktop-agent']) {
+    fs.mkdirSync(path.dirname(fixturePatchFileFor(name)), { recursive: true });
+    fs.writeFileSync(fixturePatchFileFor(name), '# audit fixture generated patch\n');
+  }
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
@@ -72,11 +77,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       describe: async () => success({ namespaces: [] }),
       update: async () => success({ updated: true })
     },
+    agentPresets: { list: async () => success({ presets: [{ id: 'qq-chat-v2' }, { id: 'desktop-agent' }] }) },
     workspace: {
       create: async () => success({ created: false, workspace: { workspaceId: 'fixture-workspace' } }),
       archiveSession: async ({ sessionId }) => { calls.archived.push(sessionId); return success({}); },
     },
     sessions: {
+      list: async () => success({ items: [] }),
       create: async (params) => { calls.created.push(params); return success({ sessionId: `fixture-${calls.created.length}` }); },
       selectModel: async () => success({ selected: { provider: 'fixture', model: 'fixture' } }),
       prompt: async (params) => { calls.prompts.push(params); return success({}); },
@@ -141,6 +148,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     syncStickerLibrary, listStickersForV2, getStickerImageData,
     refreshBridgeSettings, sessionAllowed, trackTurnEvent, replayPendingWakeReasonsV2,
     collectors, setupSleepTimerV2,
+    ensureDesktopAgentSession, recreateDesktopAgentSession,
     getInitialPrompt, setInitialPrompt, loadInitialPrompts, formatInitialPromptV2,
     initialPrompts, initialPromptMaxChars,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
@@ -160,6 +168,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     setMode(_value) {},
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; },
+    setDesktopAgentTurnActive(value) { desktopAgentTurnActive = !!value; },
     resetEpoch() { sessionEpoch++; },
   };
   bot.onPrivateMessage(async (event) => {`);
@@ -176,7 +185,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
-    discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
+    discoverDshLaunchToken: () => '',
+    // The production runtime may discover DSH's randomly allocated Desktop API port.
+    // The offline harness has no DSH process, so deterministically retain configured baseUrl.
+    discoverDshBaseUrl: async (configuredBaseUrl) => ({ source: 'fallback', baseUrl: configuredBaseUrl }),
+    patchFileFor: fixturePatchFileFor,
+    buildPatches: () => ['qq-chat-v2', 'desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
+    unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...safeFetch, ...forward, ...sticker,
     ...modelPrices, ...tokenLedger, ...roleCard, ...stateAcl, ...presetPrompt,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
@@ -195,7 +210,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData, describeAge }; })());`, context);
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
-  bridge.setPresets(['standard', 'qq-chat-v2']);
+  bridge.setPresets(['standard', 'qq-chat-v2', 'desktop-agent']);
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
     for (const timer of timers) clearTimeout(timer);

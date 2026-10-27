@@ -7,7 +7,7 @@
 | 路径 | 用途 |
 | --- | --- |
 | `src/` | 桥接运行时、DSH/OneBot 客户端、MCP 服务与独立辅助模块 |
-| `dsh/agent-presets/qq-chat-v2/` | 当前唯一 QQ 会话 preset 的权威源 |
+| `dsh/agent-presets/` | `qq-chat-v2` 与全局 `desktop-agent` 的 preset 权威源 |
 | `plugins/` | DSH preset bundle 与承载 `ownerQQ` 的兼容设置插件 |
 | `public/` | 桥接本地控制台页面 |
 | `roles/` | 可由管理员管理的人格卡；格式见 `roles/README.md` |
