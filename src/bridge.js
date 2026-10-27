@@ -5605,7 +5605,7 @@ async function main() {
     armDesktopAgentRestTimer();
     log(desktopAgentRestUntil
       ? `个人桌面助手进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
-      : '个人桌面助手进入无限期休息；有效 QQ 提醒或人工 WebUI 任务可恢复');
+      : '个人桌面助手进入无限期休息；DSH 对话输入、有效 QQ 提醒或人工 WebUI 任务可恢复');
     appendActivity(desktopAgentRestUntil ? '个人桌面助手进入定时休息' : '个人桌面助手进入无限期休息');
 
     // Let the MCP result reach DSH before cancelling this turn. The lifecycle epoch
@@ -6898,6 +6898,9 @@ async function main() {
               const turnWasAlreadyActive = desktopAgentTurnActive;
               desktopAgentTurnActive = true;
               const manualQueued = !turnWasAlreadyActive && desktopAgentManualPromptPending > 0 && desktopAgentLifecycle !== 'stopped';
+              const directDshWake = !turnWasAlreadyActive
+                && desktopAgentManualPromptPending === 0
+                && desktopAgentLifecycle === 'resting';
               if (manualQueued) {
                 desktopAgentManualPromptPending = Math.max(0, desktopAgentManualPromptPending - 1);
                 if (desktopAgentLifecycle === 'resting' || desktopAgentLifecycle === 'recovering') {
@@ -6911,6 +6914,18 @@ async function main() {
                   desktopAgentPendingWakeReason = '';
                 }
                 saveDesktopAgentState();
+              } else if (directDshWake) {
+                desktopAgentLifecycleEpoch += 1;
+                clearDesktopAgentRestTimer();
+                clearDesktopAgentRecoveryTimer();
+                desktopAgentLifecycle = 'active';
+                desktopAgentRestUntil = 0;
+                desktopAgentRecoveryAt = 0;
+                desktopAgentRecoveryAttempt = 0;
+                desktopAgentPendingWakeReason = '';
+                saveDesktopAgentState();
+                log('DSH 对话中的手动消息提前结束个人桌面助手休息');
+                appendActivity('DSH 对话中的手动消息提前结束个人桌面助手休息');
               } else if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'resting') {
                 const lifecycle = desktopAgentLifecycle;
                 const sessionId = frame.sessionId;

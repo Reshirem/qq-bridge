@@ -323,7 +323,7 @@ async function refreshDesktopAgentStatus(force = false) {
       else if (info.lifecycle === 'resting') {
         const until = info.restUntil ? `，至 ${new Date(info.restUntil).toLocaleString()}` : '，无限期';
         const queued = info.pendingManualTasks > 0 ? `，${info.pendingManualTasks} 个手动任务排队` : '';
-        label = '休息中' + until + queued; tone = 'meta'; summaryLabel = '休息中'; hint = info.pendingManualTasks > 0 ? '手动任务已排队；有效 QQ 提醒也会提前唤醒' : '有效 QQ 提醒可提前结束休息并唤醒会话';
+        label = '休息中' + until + queued; tone = 'meta'; summaryLabel = '休息中'; hint = info.pendingManualTasks > 0 ? 'WebUI 手动任务已排队；DSH 对话输入和有效 QQ 提醒也可提前唤醒' : '可直接在 DSH 对话中发消息，或由 WebUI 任务、有效 QQ 提醒提前结束休息';
       }
       else if (info.lifecycle === 'recovering') {
         const retryAt = info.recoveryAt ? new Date(info.recoveryAt).toLocaleString() : '即将';

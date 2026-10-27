@@ -66,7 +66,7 @@
           <button id="desktopAgentRefresh" class="small">刷新状态</button>
           <span class="meta" id="desktopAgentMessageStatus" role="status"></span>
         </div>
-        <p class="meta desktop-agent-note">每个回合结束前，助手应调用 agent_rest 并自行选择休息时长；有效 QQ 提醒可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未正常休息的回合会按指数间隔尝试恢复，最长间隔 30 分钟。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。不会发送周期性模型心跳。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。QQ 私聊、原生 @、已验证回复/引用和关键词只是提醒，是否读取或回复由助手自己决定。</p>
+        <p class="meta desktop-agent-note">每个回合结束前，助手应调用 agent_rest 并自行选择休息时长；直接在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未正常休息的回合会按指数间隔尝试恢复，最长间隔 30 分钟。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。不会发送周期性模型心跳。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。QQ 私聊、原生 @、已验证回复/引用和关键词只是提醒，是否读取或回复由助手自己决定。</p>
         <details class="settings-group desktop-agent-management">
           <summary>会话管理</summary>
           <div class="settings-content">
@@ -177,7 +177,7 @@
         <ul>
           <li>私聊、发给机器人的原生 @、已验证回复/引用和配置关键词会向全局会话发送不带正文的提醒；是否读取或回复由 agent 自己决定。</li>
           <li>其它群消息只在桥接侧缓冲，不自动送进提示词；全局会话可按需用 SnowLuma 工具读取任何合法群/私聊。</li>
-          <li>没有周期性模型心跳；每个活动回合结束前必须最后调用 agent_rest。有效 QQ 提醒可提前结束休息并唤醒一轮；休息期间异常回合的指数恢复重试暂停。</li>
+          <li>没有周期性模型心跳；每个活动回合结束前必须最后调用 agent_rest。DSH 对话中的手动消息、WebUI 任务和有效 QQ 提醒可提前结束休息并唤醒一轮；休息期间异常回合的指数恢复重试暂停。</li>
         </ul>
       </div>
 
