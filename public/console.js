@@ -85,10 +85,10 @@ async function refresh() {
 }
 
 // ── 人格管理 ────────────────────────────────────────────────────────────────
-// 人格提示词 = roles/<名称>.md，桥接每条消息注入，保存即生效。
+// 人格卡只在全局会话首次收到提示时注入；修改后用于新建或重建的会话。
 let roleEditorState = { mode: 'new', name: '' };
 let roleCache = [];
-let roleInjectMax = 6000;
+let roleInjectMax = 8000;
 
 function setRoleMsg(text, ok) {
   const el = document.getElementById('roleCreateMsg');
@@ -180,7 +180,7 @@ async function refreshRoles() {
         const badge = document.createElement('span');
         badge.className = 'persona-badge warn';
         badge.textContent = `超出上限`;
-        badge.title = `当前 desktop-agent runtime 注入 ${role.injectedV2 ?? role.chars} 字符，超过 ${roleInjectMax} 字符上限`;
+        badge.title = `新会话首次注入 ${role.injectedV2 ?? role.chars} 字符，超过 ${roleInjectMax} 字符上限`;
         head.appendChild(badge);
       }
       if (role.hasModeTags) {
@@ -369,9 +369,19 @@ async function refreshDesktopAgentStatus(force = false) {
 
 document.getElementById('roleSet').addEventListener('click', async () => {
   const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim() });
-  if (r.ok) refreshRoles(); else alert(r.error || '设置失败');
+  if (r.ok) {
+    setRoleMsg(r.role
+      ? `已选择「${r.role}」。人格卡会在全局会话首次收到任务或提醒时注入；已开始的会话需重建后更新。`
+      : '已清除角色卡选择；新会话不再注入人格卡，已开始的会话保留现有上下文。', true);
+    refreshRoles();
+  } else alert(r.error || '设置失败');
 });
-document.getElementById('roleClear').addEventListener('click', async () => { await api('/api/role', 'POST', { role: null }); refreshRoles(); refresh(); });
+document.getElementById('roleClear').addEventListener('click', async () => {
+  const r = await api('/api/role', 'POST', { role: null });
+  setRoleMsg(r.ok ? '已清除角色卡选择；新会话不再注入人格卡，已开始的会话保留现有上下文。' : (r.error || '清除失败'), r.ok);
+  refreshRoles();
+  refresh();
+});
 document.getElementById('roleCreate').addEventListener('click', async () => {
   const name = document.getElementById('newRoleName').value.trim();
   const content = document.getElementById('newRoleContent').value.trim();
@@ -385,7 +395,7 @@ document.getElementById('roleCreate').addEventListener('click', async () => {
   }
   const endpoint = editing || exists ? '/api/roles/update' : '/api/roles/create';
   const r = await api(endpoint, 'POST', { name, content });
-  setRoleMsg(r.ok ? `✅ 已保存「${name}」` : ('❌ ' + (r.error || '失败')), r.ok);
+  setRoleMsg(r.ok ? `✅ 已保存「${name}」。已开始的会话不会重复注入人格卡，新建或重建会话时加载当前选择。` : ('❌ ' + (r.error || '失败')), r.ok);
   if (r.ok) {
     roleEditorState = { mode: 'edit', name };
     document.getElementById('roleEditorWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
@@ -461,7 +471,7 @@ document.getElementById('roleInjectMaxSave').addEventListener('click', async () 
   const value = Number(document.getElementById('roleInjectMax').value);
   if (!Number.isFinite(value) || value < 1000 || value > 20000) { msg.textContent = '请输入 1000~20000 之间的整数'; msg.className = 'meta err'; return; }
   const r = await api('/api/roles/limit', 'POST', { maxInjectChars: value });
-  msg.textContent = r.ok ? `✅ 已设为 ${r.maxInjectChars} 字符，下一条消息生效` : ('❌ ' + (r.error || '保存失败'));
+  msg.textContent = r.ok ? `✅ 已设为 ${r.maxInjectChars} 字符，新建或重建会话时生效` : ('❌ ' + (r.error || '保存失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) refreshRoles();
 });

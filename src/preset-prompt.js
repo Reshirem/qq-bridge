@@ -4,7 +4,7 @@
 //   预设提示词 = 预设内置（dsh/agent-presets/desktop-agent/agent.cordis.yml 的 persona.prefix），
 //                规定 AI 如何使用工具与参与对话；改完需重启 DSH 生效。
 //   人格提示词 = roles/<名称>.md，规定 AI 是谁、什么性格（人设与语气）；
-//                由桥接每条消息注入，保存即生效。
+//                由桥接在全局 DSH 会话首次收到提示时注入一次，新会话加载更新后的内容。
 //
 // 本模块只做纯文本/YAML 处理，不碰文件系统以外的任何状态，便于单测。
 import yaml from 'js-yaml';

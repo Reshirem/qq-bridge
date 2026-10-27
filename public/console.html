@@ -100,7 +100,7 @@
           <li><b>全局助手内置提示词</b>（固定预设 <code>desktop-agent</code>）：SnowLuma 是 QQ 消息通道，决定助手怎样使用桌面和 QQ 工具。</li>
           <li><b>人格提示词</b>（本页编辑）：由全局 desktop-agent 注入，用于身份、性格和表达方式。</li>
         </ol>
-        <p>全局助手从 <code>desktop-agent</code> preset 读取内置提示词；保存会更新 preset bundle，重启 DSH 并重建全局会话后加载新版。角色卡会注入唯一的全局桌面助手。</p>
+        <p>全局助手从 <code>desktop-agent</code> preset 读取内置提示词；保存会更新 preset bundle，重启 DSH 并重建全局会话后加载新版。角色卡只在全局会话首次收到提示时注入一次。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -114,7 +114,7 @@
             <label style="flex:0 0 auto">注入上限（字符）</label>
             <input type="number" id="roleInjectMax" min="1000" max="20000" step="500" style="flex:0 1 140px">
             <button id="roleInjectMaxSave" class="small">保存上限</button>
-            <span class="meta" id="roleInjectMaxMsg">每条约 4~6k token 的成本护栏；按当前 QQ 会话 runtime 筛选内容后才截断。</span>
+            <span class="meta" id="roleInjectMaxMsg">限制角色卡首次加入全局会话的字符数；只在开场提示注入一次。</span>
           </div>
           <label>人格名（中文 / 字母 / 数字 / 横线）</label>
           <input type="text" id="newRoleName" placeholder="如：猫娘">
@@ -139,7 +139,7 @@
             <button id="roleSet">设置</button>
             <button id="roleClear">清除</button>
           </div>
-          <div class="meta">角色卡会注入唯一的全局 desktop-agent 会话；保存后，下一轮使用新角色。</div>
+          <div class="meta">角色卡只在全局会话首次收到任务或提醒时注入一次。编辑或切换后，新角色会在新建或重建会话时生效。</div>
         </div>
       </details>
 
