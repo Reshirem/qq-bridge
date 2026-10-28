@@ -68,6 +68,8 @@ WebUI 管理同一个长期记忆空间，侧栏按“长期记忆”归组，�
 
 只读账本适配器从 A_Memorix 控制数据库读取当前 namespace 的 storage key，并限制路径位于配置的数据目录；查询固定在 `paragraphs` 表、使用参数化 SQL、每页最多 100 条。连接启用 SQLite `mode=ro` 和 `query_only`，缺少必需表或列时拒绝读取并提示检查版本兼容性。此接口只接受控制台鉴权，不进入 agent-call 白名单。所有写入仍走 Gateway。
 
+“浏览全部”不是额外安装的 Python 应用，也不需要手动启动脚本。桥接会自动调用仓库内的 `scripts/a-memorix-readonly-list.py`，复用 `scripts/a-memorix.ps1 setup` 创建的 `state/a-memorix/venv/Scripts/python.exe`；该部署本身要求 Python 3.12+，读取器只使用 Python 标准库，不需要额外 `pip install`。它读取本项目 `state/a-memorix/data/` 下的 namespace 数据，因此本机 A_Memorix 安装、虚拟环境和账本必须存在。若虚拟环境缺失或损坏，可重新运行部署脚本的 `setup`；若预期的账本数据缺失，应检查 `config.toml` 中的数据目录并从备份恢复，重新 `setup` 不会恢复已丢失的记录。若只配置了另一个 Gateway 或数据目录不在本机 `state/a-memorix/`，全量浏览不会读取那个实例，但 Gateway 检索与常规记忆操作仍按其连接配置工作。
+
 ### MaiBot WebUI 模块与当前 Gateway 能力缺口
 
 部署脚本固定使用 A_Memorix Gateway `v2.0.0a4`（版本定义见 `scripts/a-memorix.ps1`）。当前将 Gateway 源码视为只读；未获得正式新版接口前，不修改其源码、二进制或底层存储。MaiBot 源码中的 `src/webui/routers/memory.py` 是 MaiBot 宿主 WebUI API，依赖 MaiBot 自己的记忆服务和数据库会话，不是独立 Gateway 的实现。

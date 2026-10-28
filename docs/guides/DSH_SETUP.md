@@ -22,6 +22,8 @@ powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 setup
 
 脚本使用官方 [`v2.0.0a4` 发布](https://github.com/A-Dawn/A_memorix/releases/tag/v2.0.0a4)中的 Python wheel 和 Windows Gateway，并在安装前校验固定的 SHA-256。此部署不需要 Docker 或 Go；需要 Python 3.12+。脚本会建立 namespace `qq-bridge`、生成本机管理员令牌和 namespace API key、设置 `config.json` 并启动服务。发布版本固定在 `scripts/a-memorix.ps1`；运行时文件、虚拟环境、密钥、数据库和日志都位于被忽略的 `state/a-memorix/`。不需要把 A_Memorix 源码 clone 到 qq-bridge，也没有设置 Git submodule。
 
+WebUI 的“浏览全部”由桥接自动调用仓库内的只读 Python 脚本，并复用上述 `state/a-memorix/venv/`，不需另装 Python 包或手动运行脚本。它只能浏览本项目 `state/a-memorix/data/` 中的 namespace 原始记录。若虚拟环境缺失或损坏，可重新运行 `setup`；若预期账本数据缺失，应检查 `config.toml` 中的数据目录并从备份恢复，重新 `setup` 不会恢复已丢失的记录。单独配置另一个 Gateway 不会把它的数据库带到这个本机读取路径；Gateway 相关度检索和常规记忆操作仍使用设置页里的连接。详细范围见 [长期记忆方案](MEMORY_ARCHITECTURE.md)。
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 status
 powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 start
