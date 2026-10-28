@@ -21,8 +21,9 @@
 - 全局陪伴者使用 `mcp-snowluma-safe.js` 当前注册的完整 QQ 工具集，可按需枚举群/好友、读取消息及主动发送。MCP 自动从 `state/desktop-agent.json` 读取桥接内部凭证并附加到请求，模型不用处理令牌；不会检查发起调用的 DSH session，MCP profile 中可用该工具的会话共享相同权限。桥接用全局自主运行时状态校验凭证，发送仍检查全局活动回合并执行限频与审计。直接通过 QQ 桌面 UI 发送不经过桥接 API 门禁。
 - 可选 A_Memorix 记忆由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 管理 API 都经过它访问同一 namespace。DSH 工具继续经受活动回合与 agent token 校验；调用参数中的记忆正文和搜索词不会进入工具参数日志。桥接不直接读写记忆服务文件。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - `dsh-computer-use-win` 提供本机桌面操作能力。用户开始使用电脑时，陪伴者应让出界面控制权；ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
-- 全局会话生命周期为 `idle`、`active`、`resting`、`recovering` 和 `stopped`。活动回合最后调用 `agent_rest`；有限休息为 1 秒至 12 小时，到期后恢复一轮；用户在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束有限或无限休息。休息期间异常回合的指数恢复重试暂停。
+- 全局会话生命周期为 `idle`、`active`、`resting`、`recovering` 和 `stopped`。活动回合最后调用 `agent_rest`；有限休息为 1 秒至 12 小时，到期后恢复一轮；用户在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ/人格卡提醒，都可提前结束有限或无限休息。休息期间异常回合的指数恢复重试暂停。
 - 如果活动回合刚通过 QQ 回复某个来源，陪伴者会在休息前用最近一次 `readThroughSeq` 检查该来源是否有新未读；桥接会清掉已被读取水位覆盖的排队提醒，只保留尚未展示的新提醒，避免同一消息重复唤醒。
+- 桥接运行期间，首次提交的 QQ 提醒会保留到对应消息被 `readThroughSeq` 确认。若它仍未读，会话进入休息后由单一全局计时器每分钟检查一次，并最多补发一次；异常回合处于指数退避 `recovering` 时不运行这类提醒检查。人格卡选择/清除使用同一提醒队列通知卡名，不包含卡片正文。
 - 回合没有调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟尝试恢复，之后间隔最长 30 分钟。WebUI 停止会取消当前和排队中的 DSH 工作并持久进入 `stopped`；只有 WebUI 手动启动或提交任务才解除停止态。
 - 桥接不运行周期性模型心跳，也不靠无目的的长等待工具维持在线。`qq_wait_for_messages` 可用于活动回合内等待某个具体相关交流。
 - `state/desktop-agent.json` 保存全局会话 ID、令牌和生命周期。旧的逐 QQ 会话映射、映射令牌、映射控制接口和 `qq-chat-v2` preset 已从当前代码与 bundle 移除。历史 DSH 会话由 DSH 自行保留，桥接不再枚举、修改或归档它们。

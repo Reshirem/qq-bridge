@@ -1721,9 +1721,12 @@ async function main() {
   let desktopAgentTurnActive = false;
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
-  const desktopAttentionQueue = new Map(); // conversation key -> aggregated metadata-only signal
+  const desktopAttentionQueue = new Map(); // source key -> aggregated metadata-only notice
+  const desktopAttentionUnresolved = new Map(); // key -> last unread signal that may receive one rest-time reminder
   const DESKTOP_ATTENTION_BATCH_MS = 5000;
   const DESKTOP_ATTENTION_MAX_SOURCES = 50;
+  const DESKTOP_ATTENTION_REMINDER_CHECK_MS = 60_000;
+  let desktopAttentionReminderTimer = null;
   let desktopAgentRestTimer = null;
   let desktopAgentRecoveryTimer = null;
   async function refreshBridgeSettings() {
@@ -2545,10 +2548,12 @@ async function main() {
               return;
             }
             writeRoleState(name, rs.mode);
+            if (rs.role !== name) queueDesktopPersonaCardChange(name);
             log(`控制台：角色已设置为 ${name}`);
             sendJson({ ok: true, role: name });
           } else {
             writeRoleState(null, rs.mode);
+            if (rs.role) queueDesktopPersonaCardChange(null);
             log('控制台：角色已清除');
             sendJson({ ok: true, role: null });
           }
@@ -2676,7 +2681,10 @@ async function main() {
           fs.renameSync(roleFilePath(from), roleFilePath(to));
           const rs = readRoleState();
           const switched = rs.role === from;
-          if (switched) writeRoleState(to, rs.mode);
+          if (switched) {
+            writeRoleState(to, rs.mode);
+            queueDesktopPersonaCardChange(to);
+          }
           log(`控制台：人格重命名「${from}」→「${to}」${switched ? '（当前启用中，已跟随切换）' : ''}`);
           sendJson({ ok: true, role: to, renamed: true, currentFollowed: switched });
           return;
@@ -2689,7 +2697,10 @@ async function main() {
           fs.rmSync(roleFilePath(name));
           const rs = readRoleState();
           const cleared = rs.role === name;
-          if (cleared) writeRoleState(null, rs.mode);
+          if (cleared) {
+            writeRoleState(null, rs.mode);
+            queueDesktopPersonaCardChange(null);
+          }
           log(`控制台：删除人格「${name}」${cleared ? '（该人格正在启用，已同时清除当前人格）' : ''}`);
           sendJson({ ok: true, deleted: name, clearedCurrent: cleared });
           return;
@@ -3114,7 +3125,7 @@ async function main() {
               manualPromptRegistered = true;
             }
             const accepted = await submitDesktopAgentPrompt(sessionId, message);
-            if (!accepted?.result?.ok) {
+        if (!accepted?.result?.ok) {
               const error = accepted?.result?.error;
               desktopAgentManualPromptPending = Math.max(0, desktopAgentManualPromptPending - 1);
               saveDesktopAgentState();
@@ -6293,10 +6304,85 @@ async function main() {
     desktopAgentRecoveryTimer = null;
   }
 
+  function clearDesktopAttentionReminderTimer() {
+    if (desktopAttentionReminderTimer) clearTimeout(desktopAttentionReminderTimer);
+    desktopAttentionReminderTimer = null;
+  }
+
+  function hasDesktopAttentionReminderCandidates() {
+    return [...desktopAttentionUnresolved.values()].some((item) => (
+      item.remindAfterRest === true
+      && item.reminderSent !== true
+      && item.reminderQueued !== true
+      && Number.isSafeInteger(item.seq)
+      && item.seq > 0
+      && Number.isSafeInteger(item.promptedSeq)
+      && item.promptedSeq >= item.seq
+    ));
+  }
+
+  function armDesktopAttentionReminderCheck() {
+    if (desktopAttentionReminderTimer
+      || desktopAgentLifecycle !== 'resting'
+      || !hasDesktopAttentionReminderCandidates()) return;
+    desktopAttentionReminderTimer = setTimeout(() => {
+      desktopAttentionReminderTimer = null;
+      if (desktopAgentLifecycle !== 'resting') return;
+      if (!dshReady || desktopAgentResetting || desktopAgentTurnActive) {
+        armDesktopAttentionReminderCheck();
+        return;
+      }
+
+      const candidates = [...desktopAttentionUnresolved.entries()]
+        .filter(([, item]) => (
+          item.remindAfterRest === true
+          && item.reminderSent !== true
+          && item.reminderQueued !== true
+          && Number.isSafeInteger(item.seq)
+          && item.seq > 0
+          && Number.isSafeInteger(item.promptedSeq)
+          && item.promptedSeq >= item.seq
+          && !desktopAttentionQueue.has(item.key)
+        ))
+        .slice(0, 20);
+
+      for (const [key, item] of candidates) {
+        desktopAttentionQueue.set(key, {
+          key: item.key,
+          kind: item.kind,
+          id: item.id,
+          reason: `未处理提醒（再次提醒）：${item.reason}`,
+          sender: item.sender,
+          senderId: item.senderId,
+          messageId: item.messageId,
+          seq: item.seq,
+          count: item.count,
+          firstAt: item.firstAt,
+          lastAt: item.lastAt,
+          reminder: true
+        });
+        item.reminderQueued = true;
+      }
+
+      if (candidates.length > 0) {
+        desktopAgentPendingWakeReason = 'qq-attention';
+        saveDesktopAgentState();
+        log(`全局陪伴者休息满一个检查间隔，补发 ${candidates.length} 个仍未读 QQ 提醒（每项最多一次）`);
+        appendActivity(`全局陪伴者休息期间补发 ${candidates.length} 个仍未读 QQ 提醒`);
+        resumeDesktopAgentRestForAttention();
+      }
+      // One global timer checks all sources together. Further eligible sources wait
+      // for a later rest and a later one-minute check.
+      armDesktopAttentionReminderCheck();
+    }, DESKTOP_ATTENTION_REMINDER_CHECK_MS);
+    desktopAttentionReminderTimer.unref?.();
+  }
+
   function stopDesktopAgentLifecycle() {
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
+    clearDesktopAttentionReminderTimer();
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
     desktopAgentLifecycle = 'stopped';
@@ -6314,6 +6400,7 @@ async function main() {
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
+    clearDesktopAttentionReminderTimer();
     desktopAgentLifecycle = 'active';
     desktopAgentRestUntil = 0;
     desktopAgentRecoveryAttempt = 0;
@@ -6357,8 +6444,9 @@ async function main() {
     armDesktopAgentRestTimer();
     log(desktopAgentRestUntil
       ? `全局陪伴者进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
-      : '全局陪伴者进入无限期休息；DSH 对话输入、有效 QQ 提醒或人工 WebUI 任务可恢复');
+      : '全局陪伴者进入无限期休息；DSH 对话输入、有效注意提醒或人工 WebUI 任务可恢复');
     appendActivity(desktopAgentRestUntil ? '全局陪伴者进入定时休息' : '全局陪伴者进入无限期休息');
+    armDesktopAttentionReminderCheck();
 
     // Let the MCP result reach DSH before cancelling this turn. The lifecycle epoch
     // prevents a just-submitted manual task or a WebUI stop from being cancelled by
@@ -6390,13 +6478,14 @@ async function main() {
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
+    clearDesktopAttentionReminderTimer();
     desktopAgentLifecycle = 'active';
     desktopAgentRestUntil = 0;
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
     saveDesktopAgentState();
-    log('有效 QQ 提醒提前结束全局陪伴者休息');
-    appendActivity('有效 QQ 提醒提前结束全局陪伴者休息');
+    log('有效注意提醒提前结束全局陪伴者休息');
+    appendActivity('有效注意提醒提前结束全局陪伴者休息');
     scheduleDesktopAttentionFlush(0);
     return true;
   }
@@ -6409,6 +6498,7 @@ async function main() {
     }
     desktopAgentRestUntil = 0;
     desktopAgentPendingWakeReason = 'rest-expired';
+    clearDesktopAttentionReminderTimer();
     if (!dshReady) {
       desktopAgentLifecycle = 'recovering';
       desktopAgentRecoveryAt = Date.now();
@@ -6426,8 +6516,19 @@ async function main() {
   function scheduleDesktopAgentRecovery(reason = 'turn ended without agent_rest') {
     if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'resting' || desktopAgentLifecycle === 'idle') return;
     if (desktopAgentRecoveryTimer) return;
+    clearDesktopAttentionReminderTimer();
+    for (const [key, item] of desktopAttentionQueue) {
+      if (item.reminder !== true) continue;
+      desktopAttentionQueue.delete(key);
+      const unresolved = desktopAttentionUnresolved.get(key);
+      if (unresolved && unresolved.seq <= (item.seq || 0)) unresolved.reminderQueued = false;
+    }
     desktopAgentLifecycle = 'recovering';
-    desktopAgentPendingWakeReason ||= 'recovery';
+    if (desktopAgentPendingWakeReason === 'qq-attention' && desktopAttentionQueue.size === 0) {
+      desktopAgentPendingWakeReason = 'recovery';
+    } else {
+      desktopAgentPendingWakeReason ||= 'recovery';
+    }
     const exponent = Math.min(desktopAgentRecoveryAttempt, 30);
     const delayMs = Math.min(DESKTOP_AGENT_RECOVERY_BASE_MS * (2 ** exponent), DESKTOP_AGENT_RECOVERY_MAX_MS);
     desktopAgentRecoveryAttempt += 1;
@@ -6561,8 +6662,42 @@ async function main() {
     desktopAttentionFlushTimer.unref?.();
   }
 
-  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq }) {
+  function trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now }) {
+    if (!Number.isSafeInteger(seq) || seq <= 0) return;
+    const existing = desktopAttentionUnresolved.get(key);
+    if (!existing) {
+      if (desktopAttentionUnresolved.size >= DESKTOP_ATTENTION_MAX_SOURCES) {
+        const oldestKey = desktopAttentionUnresolved.keys().next().value;
+        if (oldestKey) desktopAttentionUnresolved.delete(oldestKey);
+        log(`[autonomy] 未读 QQ 提醒跟踪达到上限 ${DESKTOP_ATTENTION_MAX_SOURCES}，丢弃最早来源`);
+      }
+      desktopAttentionUnresolved.set(key, {
+        key, kind, id, reason, sender, senderId, messageId, seq,
+        count: 1,
+        firstAt: now,
+        lastAt: now,
+        promptedSeq: 0,
+        remindAfterRest: true,
+        reminderQueued: false,
+        reminderSent: false
+      });
+      return;
+    }
+
+    existing.count += 1;
+    existing.lastAt = now;
+    if (seq > existing.seq) {
+      Object.assign(existing, { kind, id, reason, sender, senderId, messageId, seq });
+      existing.reminderQueued = false;
+      existing.reminderSent = false;
+    }
+  }
+
+  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq, remindAfterRest = true }) {
     const now = Date.now();
+    if (remindAfterRest) {
+      trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
+    }
     const existing = desktopAttentionQueue.get(key);
     if (existing) {
       existing.count += 1;
@@ -6572,6 +6707,7 @@ async function main() {
       existing.messageId = messageId;
       if (Number.isSafeInteger(seq) && seq > 0) existing.seq = seq;
       existing.lastAt = now;
+      existing.reminder = false;
     } else {
       if (desktopAttentionQueue.size >= DESKTOP_ATTENTION_MAX_SOURCES) {
         const oldestKey = desktopAttentionQueue.keys().next().value;
@@ -6581,7 +6717,7 @@ async function main() {
       desktopAttentionQueue.set(key, {
         key, kind, id, reason, sender, senderId, messageId,
         seq: Number.isSafeInteger(seq) && seq > 0 ? seq : null,
-        count: 1, firstAt: now, lastAt: now
+        count: 1, firstAt: now, lastAt: now, reminder: false
       });
     }
     if (desktopAgentLifecycle === 'idle') {
@@ -6595,24 +6731,65 @@ async function main() {
     scheduleDesktopAttentionFlush();
   }
 
+  function queueDesktopPersonaCardChange(roleName) {
+    const name = String(roleName ?? '').trim();
+    queueDesktopAttentionSignal({
+      key: 'system:persona-card',
+      kind: 'system',
+      id: 'persona-card',
+      reason: name ? `人格卡已切换为：${name}` : '当前人格卡已清除',
+      sender: '管理端',
+      seq: null,
+      remindAfterRest: false
+    });
+  }
+
   function acknowledgeDesktopAttentionThrough(key, throughSeq) {
     if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) return false;
+    let acknowledged = false;
     const pending = desktopAttentionQueue.get(key);
-    if (!pending || !Number.isSafeInteger(pending.seq) || pending.seq > throughSeq) return false;
-    desktopAttentionQueue.delete(key);
-    if (desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
+    if (pending && Number.isSafeInteger(pending.seq) && pending.seq <= throughSeq) {
+      desktopAttentionQueue.delete(key);
+      acknowledged = true;
+    }
+    const unresolved = desktopAttentionUnresolved.get(key);
+    if (unresolved && Number.isSafeInteger(unresolved.seq) && unresolved.seq <= throughSeq) {
+      desktopAttentionUnresolved.delete(key);
+      acknowledged = true;
+    }
+    if (acknowledged && desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
       desktopAgentPendingWakeReason = '';
       saveDesktopAgentState();
     }
-    return true;
+    return acknowledged;
   }
 
-  function requeueDesktopAttentionBatch(batch) {
+  function recordDesktopAttentionBatchAccepted(batch) {
     for (const [key, item] of batch) {
+      const unresolved = desktopAttentionUnresolved.get(key);
+      if (!unresolved || !Number.isSafeInteger(item.seq) || item.seq <= 0) continue;
+      if (item.reminder === true) {
+        if (unresolved.seq <= item.seq) {
+          unresolved.reminderQueued = false;
+          unresolved.reminderSent = true;
+        }
+      } else if (item.seq <= unresolved.seq) {
+        unresolved.promptedSeq = Math.max(unresolved.promptedSeq, item.seq);
+      }
+    }
+    armDesktopAttentionReminderCheck();
+  }
+
+  function requeueDesktopAttentionBatch(batch, { accepted = false } = {}) {
+    for (const [key, item] of batch) {
+      // Once DSH accepted a follow-up reminder or one-shot system notice, do not
+      // submit it again if a concurrent lifecycle change cancels the turn.
+      if (accepted && (item.reminder === true || item.kind === 'system')) continue;
       const newer = desktopAttentionQueue.get(key);
       if (newer) {
         newer.count += item.count;
         if (Number.isSafeInteger(item.seq) && item.seq > (newer.seq || 0)) newer.seq = item.seq;
+        if (item.reminder === true && newer.seq === item.seq) newer.reminder = true;
       }
       else desktopAttentionQueue.set(key, item);
     }
@@ -6670,21 +6847,22 @@ async function main() {
           const error = accepted?.result?.error;
           throw new Error(`${error?.code ?? 'prompt_rejected'}: ${error?.message ?? 'DSH 未接受提醒'}`);
         }
+        recordDesktopAttentionBatchAccepted(batch);
         if (desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch) {
           if (desktopAgentLifecycle === 'stopped' && dshReady) {
             try { await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }); } catch {}
           }
-          requeueDesktopAttentionBatch(batch);
+          requeueDesktopAttentionBatch(batch, { accepted: true });
           return;
         }
         desktopAgentTurnActive = true;
         if (wakeReason && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
         saveDesktopAgentState();
-        log(`全局陪伴者会话已接收唤醒提示（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
-        if (batch.length) appendActivity(`QQ 注意信号已提交给全局陪伴者（${batch.length} 个来源，仅元数据）`);
+        log(`全局陪伴者会话已接收注意提醒（${batch.length} 个来源，未包含 QQ 消息正文，${sessionId}）`);
+        if (batch.length) appendActivity(`注意提醒已提交给全局陪伴者（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
         requeueDesktopAttentionBatch(batch);
-        log(`陪伴者唤醒提示提交失败，保留待处理提醒：${error?.message ?? error}`);
+        log(`陪伴者注意提醒提交失败，保留待处理提醒：${error?.message ?? error}`);
         if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('wake prompt failed');
       }
     })();
@@ -7555,14 +7733,19 @@ async function main() {
         const name = sanitizeRoleName(plainContent.slice(5).trim());
         if (!name || name === 'off' || name === 'clear') {
           writeRoleState(null, roleState.mode);
-          await sendToQQ(key, '已清除角色卡选择；已开始的全局会话保留原有上下文，新会话不再注入人格卡。');
+          const changed = !!roleState.role;
+          if (changed) queueDesktopPersonaCardChange(null);
+          await sendToQQ(key, changed
+            ? '已清除角色卡选择；已向全局会话发送人格卡提醒，已开始的会话保留原有上下文。'
+            : '当前没有选择角色卡。');
         } else {
           const roleFile = path.join(ROOT, 'roles', name + '.md');
           if (!fs.existsSync(roleFile)) {
             await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
           } else {
             writeRoleState(name, roleState.mode);
-            await sendToQQ(key, `已选择角色卡：${name}。会话首次收到任务或提醒时载入；已开始的会话需重建后更新。`);
+            if (roleState.role !== name) queueDesktopPersonaCardChange(name);
+            await sendToQQ(key, `已选择角色卡：${name}。已向全局会话发送人格卡提醒；已开始的会话需重建后载入完整卡片。`);
           }
         }
         return;
@@ -7691,6 +7874,7 @@ async function main() {
                   desktopAgentLifecycleEpoch += 1;
                   clearDesktopAgentRestTimer();
                   clearDesktopAgentRecoveryTimer();
+                  clearDesktopAttentionReminderTimer();
                   desktopAgentLifecycle = 'active';
                   desktopAgentRestUntil = 0;
                   desktopAgentRecoveryAttempt = 0;
@@ -7702,6 +7886,7 @@ async function main() {
                 desktopAgentLifecycleEpoch += 1;
                 clearDesktopAgentRestTimer();
                 clearDesktopAgentRecoveryTimer();
+                clearDesktopAttentionReminderTimer();
                 desktopAgentLifecycle = 'active';
                 desktopAgentRestUntil = 0;
                 desktopAgentRecoveryAt = 0;
