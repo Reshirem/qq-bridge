@@ -3,10 +3,10 @@
 
 export const DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
   roleCard: '【当前角色卡：{roleName}】\n{roleContent}',
-  qqAttention: '【注意提醒】\n有以下 QQ 消息或人格卡变更需要留意。这里只附来源信息，不含 QQ 消息正文；你可以结合正在做的事，决定是否查看、回应或稍后再看。\n{sources}',
+  qqAttention: '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以结合正在做的事，决定是否查看、回应或稍后再看。\n{sources}',
   qqSource: '- {key}（{kind}，提醒原因：{reason}，发送者：{sender}{senderId}{messageId}{count}）',
   restExpired: '【休息结束】休息时间到了。先留意当前情况，再按自己的兴趣和判断决定下一步。',
-  qqWake: '【休息被提醒提前结束】',
+  qqWake: '【休息被 QQ 提醒提前结束】',
   recovery: '【状态恢复检查】桥接需要重新确认会话状态。先查看当前会话和已有操作，避免重复已完成的事，再按当前情况继续。',
   memoryBootstrap: '【长期记忆摘要｜来源为自身经历；用于延续经历与未完成事项，仍需按当前上下文判断】\n{entries}',
 });
@@ -19,13 +19,13 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS = Object.freeze({
     requiredTokens: ['roleContent'],
   },
   qqAttention: {
-    label: '注意提醒模板',
-    description: '有 QQ 消息或人格卡变更提醒时使用。必须保留 {sources}，QQ 正文不会被放进提醒。',
+    label: 'QQ 消息提醒模板',
+    description: '有 QQ 来源提醒时使用。必须保留 {sources}，正文不会被放进提醒。',
     tokens: ['sources'],
     requiredTokens: ['sources'],
   },
   qqSource: {
-    label: '提醒来源信息行模板',
+    label: 'QQ 来源信息行模板',
     description: '每个提醒来源生成一行；{senderId}、{messageId} 和 {count} 在无对应信息时为空。',
     tokens: ['key', 'kind', 'reason', 'sender', 'senderId', 'messageId', 'count'],
     requiredTokens: ['key', 'reason'],
@@ -38,8 +38,8 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS = Object.freeze({
     allowEmpty: true,
   },
   qqWake: {
-    label: '注意提醒提前结束休息提示',
-    description: 'QQ 消息或人格卡提醒提前结束休息时使用；可留空。',
+    label: 'QQ 提前结束休息提示',
+    description: 'QQ 提醒提前结束休息时使用；可留空。',
     tokens: [],
     requiredTokens: [],
     allowEmpty: true,
@@ -60,11 +60,6 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS = Object.freeze({
 });
 
 const PROMPT_TEMPLATE_MAX_CHARS = 16_000;
-const LEGACY_DEFAULTS = Object.freeze({
-  qqAttention: '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以结合正在做的事，决定是否查看、回应或稍后再看。\n{sources}',
-  qqWake: '【休息被 QQ 提醒提前结束】',
-});
-
 export function normalizeDesktopAgentPromptTemplates(value) {
   if (value != null && (typeof value !== 'object' || Array.isArray(value))) {
     throw new Error('运行时提示模板必须是对象');
@@ -73,8 +68,7 @@ export function normalizeDesktopAgentPromptTemplates(value) {
   const output = {};
   let totalChars = 0;
   for (const [key, field] of Object.entries(DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS)) {
-    let raw = Object.hasOwn(input, key) ? input[key] : DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS[key];
-    if (raw === LEGACY_DEFAULTS[key]) raw = DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS[key];
+    const raw = Object.hasOwn(input, key) ? input[key] : DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS[key];
     if (typeof raw !== 'string') throw new Error(`「${field.label}」必须是文本`);
     const template = raw.replace(/\r\n/g, '\n').trim();
     if (!template && !field.allowEmpty) throw new Error(`「${field.label}」不能为空`);

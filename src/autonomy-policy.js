@@ -3,10 +3,10 @@
 
 /**
  * Classify an incoming event without exposing its body to the model.
- * Private messages are direct by definition. Group wake is reserved for a
- * real OneBot @ segment addressed to this account, or a verified reply to it.
+ * Private messages are direct by definition. Group wake signals include a real
+ * @ or verified reply to this account, a persona-card name, or a configured keyword.
  */
-export function classifyIncomingWake({ kind, message, selfId, replyTargetIsSelf = false, text = '', attentionKeywords = [] } = {}) {
+export function classifyIncomingWake({ kind, message, selfId, replyTargetIsSelf = false, text = '', attentionKeywords = [], roleCardNames = [] } = {}) {
   if (kind === 'private') return 'private';
   if (kind !== 'group') return null;
   const self = String(selfId ?? '').trim();
@@ -14,6 +14,11 @@ export function classifyIncomingWake({ kind, message, selfId, replyTargetIsSelf 
     && message.some((segment) => segment?.type === 'at' && String(segment.data?.qq ?? '') === self);
   if (nativeAtSelf || replyTargetIsSelf === true) return 'atMention';
   const normalizedText = String(text ?? '').normalize('NFKC').toLocaleLowerCase();
+  for (const rawName of Array.isArray(roleCardNames) ? roleCardNames : []) {
+    const name = String(rawName ?? '').trim();
+    const normalizedName = name.normalize('NFKC').toLocaleLowerCase();
+    if (normalizedName && normalizedText.includes(normalizedName)) return `roleCardName:${name}`;
+  }
   for (const rawKeyword of Array.isArray(attentionKeywords) ? attentionKeywords : []) {
     const keyword = String(rawKeyword ?? '').trim().normalize('NFKC').toLocaleLowerCase();
     if (keyword.length >= 2 && normalizedText.includes(keyword)) return `keyword:${String(rawKeyword).trim()}`;

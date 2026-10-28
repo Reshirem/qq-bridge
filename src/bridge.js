@@ -1721,7 +1721,7 @@ async function main() {
   let desktopAgentTurnActive = false;
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
-  const desktopAttentionQueue = new Map(); // source key -> aggregated metadata-only notice
+  const desktopAttentionQueue = new Map(); // conversation key -> aggregated metadata-only signal
   const desktopAttentionUnresolved = new Map(); // key -> last unread signal that may receive one rest-time reminder
   const DESKTOP_ATTENTION_BATCH_MS = 5000;
   const DESKTOP_ATTENTION_MAX_SOURCES = 50;
@@ -2548,12 +2548,10 @@ async function main() {
               return;
             }
             writeRoleState(name, rs.mode);
-            if (rs.role !== name) queueDesktopPersonaCardChange(name);
             log(`控制台：角色已设置为 ${name}`);
             sendJson({ ok: true, role: name });
           } else {
             writeRoleState(null, rs.mode);
-            if (rs.role) queueDesktopPersonaCardChange(null);
             log('控制台：角色已清除');
             sendJson({ ok: true, role: null });
           }
@@ -2681,10 +2679,7 @@ async function main() {
           fs.renameSync(roleFilePath(from), roleFilePath(to));
           const rs = readRoleState();
           const switched = rs.role === from;
-          if (switched) {
-            writeRoleState(to, rs.mode);
-            queueDesktopPersonaCardChange(to);
-          }
+          if (switched) writeRoleState(to, rs.mode);
           log(`控制台：人格重命名「${from}」→「${to}」${switched ? '（当前启用中，已跟随切换）' : ''}`);
           sendJson({ ok: true, role: to, renamed: true, currentFollowed: switched });
           return;
@@ -2697,10 +2692,7 @@ async function main() {
           fs.rmSync(roleFilePath(name));
           const rs = readRoleState();
           const cleared = rs.role === name;
-          if (cleared) {
-            writeRoleState(null, rs.mode);
-            queueDesktopPersonaCardChange(null);
-          }
+          if (cleared) writeRoleState(null, rs.mode);
           log(`控制台：删除人格「${name}」${cleared ? '（该人格正在启用，已同时清除当前人格）' : ''}`);
           sendJson({ ok: true, deleted: name, clearedCurrent: cleared });
           return;
@@ -6311,8 +6303,7 @@ async function main() {
 
   function hasDesktopAttentionReminderCandidates() {
     return [...desktopAttentionUnresolved.values()].some((item) => (
-      item.remindAfterRest === true
-      && item.reminderSent !== true
+      item.reminderSent !== true
       && item.reminderQueued !== true
       && Number.isSafeInteger(item.seq)
       && item.seq > 0
@@ -6335,8 +6326,7 @@ async function main() {
 
       const candidates = [...desktopAttentionUnresolved.entries()]
         .filter(([, item]) => (
-          item.remindAfterRest === true
-          && item.reminderSent !== true
+          item.reminderSent !== true
           && item.reminderQueued !== true
           && Number.isSafeInteger(item.seq)
           && item.seq > 0
@@ -6444,7 +6434,7 @@ async function main() {
     armDesktopAgentRestTimer();
     log(desktopAgentRestUntil
       ? `全局陪伴者进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
-      : '全局陪伴者进入无限期休息；DSH 对话输入、有效注意提醒或人工 WebUI 任务可恢复');
+      : '全局陪伴者进入无限期休息；DSH 对话输入、有效 QQ 提醒或人工 WebUI 任务可恢复');
     appendActivity(desktopAgentRestUntil ? '全局陪伴者进入定时休息' : '全局陪伴者进入无限期休息');
     armDesktopAttentionReminderCheck();
 
@@ -6484,8 +6474,8 @@ async function main() {
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
     saveDesktopAgentState();
-    log('有效注意提醒提前结束全局陪伴者休息');
-    appendActivity('有效注意提醒提前结束全局陪伴者休息');
+    log('有效 QQ 提醒提前结束全局陪伴者休息');
+    appendActivity('有效 QQ 提醒提前结束全局陪伴者休息');
     scheduleDesktopAttentionFlush(0);
     return true;
   }
@@ -6677,7 +6667,6 @@ async function main() {
         firstAt: now,
         lastAt: now,
         promptedSeq: 0,
-        remindAfterRest: true,
         reminderQueued: false,
         reminderSent: false
       });
@@ -6693,11 +6682,9 @@ async function main() {
     }
   }
 
-  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq, remindAfterRest = true }) {
+  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq }) {
     const now = Date.now();
-    if (remindAfterRest) {
-      trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
-    }
+    trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
     const existing = desktopAttentionQueue.get(key);
     if (existing) {
       existing.count += 1;
@@ -6729,19 +6716,6 @@ async function main() {
       resumeDesktopAgentRestForAttention();
     }
     scheduleDesktopAttentionFlush();
-  }
-
-  function queueDesktopPersonaCardChange(roleName) {
-    const name = String(roleName ?? '').trim();
-    queueDesktopAttentionSignal({
-      key: 'system:persona-card',
-      kind: 'system',
-      id: 'persona-card',
-      reason: name ? `人格卡已切换为：${name}` : '当前人格卡已清除',
-      sender: '管理端',
-      seq: null,
-      remindAfterRest: false
-    });
   }
 
   function acknowledgeDesktopAttentionThrough(key, throughSeq) {
@@ -6782,9 +6756,9 @@ async function main() {
 
   function requeueDesktopAttentionBatch(batch, { accepted = false } = {}) {
     for (const [key, item] of batch) {
-      // Once DSH accepted a follow-up reminder or one-shot system notice, do not
-      // submit it again if a concurrent lifecycle change cancels the turn.
-      if (accepted && (item.reminder === true || item.kind === 'system')) continue;
+      // Once DSH accepted a follow-up reminder, do not submit it again if a
+      // concurrent lifecycle change cancels the turn.
+      if (accepted && item.reminder === true) continue;
       const newer = desktopAttentionQueue.get(key);
       if (newer) {
         newer.count += item.count;
@@ -6858,11 +6832,11 @@ async function main() {
         desktopAgentTurnActive = true;
         if (wakeReason && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
         saveDesktopAgentState();
-        log(`全局陪伴者会话已接收注意提醒（${batch.length} 个来源，未包含 QQ 消息正文，${sessionId}）`);
-        if (batch.length) appendActivity(`注意提醒已提交给全局陪伴者（${batch.length} 个来源，仅元数据）`);
+        log(`全局陪伴者会话已接收唤醒提示（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
+        if (batch.length) appendActivity(`QQ 注意信号已提交给全局陪伴者（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
         requeueDesktopAttentionBatch(batch);
-        log(`陪伴者注意提醒提交失败，保留待处理提醒：${error?.message ?? error}`);
+        log(`陪伴者唤醒提示提交失败，保留待处理提醒：${error?.message ?? error}`);
         if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('wake prompt failed');
       }
     })();
@@ -7630,7 +7604,8 @@ async function main() {
       selfId: event?.self_id ?? selfUserId,
       replyTargetIsSelf: quoteTargetIsSelf,
       text: plainContent,
-      attentionKeywords: cfg.socialV2?.attentionKeywords
+      attentionKeywords: cfg.socialV2?.attentionKeywords,
+      roleCardNames: kind === 'group' ? listRoles() : []
     });
   }
 
@@ -7733,19 +7708,14 @@ async function main() {
         const name = sanitizeRoleName(plainContent.slice(5).trim());
         if (!name || name === 'off' || name === 'clear') {
           writeRoleState(null, roleState.mode);
-          const changed = !!roleState.role;
-          if (changed) queueDesktopPersonaCardChange(null);
-          await sendToQQ(key, changed
-            ? '已清除角色卡选择；已向全局会话发送人格卡提醒，已开始的会话保留原有上下文。'
-            : '当前没有选择角色卡。');
+          await sendToQQ(key, '已清除角色卡选择；已开始的全局会话保留原有上下文，新会话不再注入人格卡。');
         } else {
           const roleFile = path.join(ROOT, 'roles', name + '.md');
           if (!fs.existsSync(roleFile)) {
             await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
           } else {
             writeRoleState(name, roleState.mode);
-            if (roleState.role !== name) queueDesktopPersonaCardChange(name);
-            await sendToQQ(key, `已选择角色卡：${name}。已向全局会话发送人格卡提醒；已开始的会话需重建后载入完整卡片。`);
+            await sendToQQ(key, `已选择角色卡：${name}。会话首次收到任务或提醒时载入；已开始的会话需重建后更新。`);
           }
         }
         return;
