@@ -350,7 +350,7 @@
     </section>
 <section id="section-social-v2" data-page="social-v2" class="card span-all">
       <h2>QQ 提醒与消息通道</h2>
-      <div class="meta">配置保存后写入 config.json 并热更新。QQ 消息按需缓冲；提醒只提供注意信号，唯一的全局 desktop-agent 可自行决定是否读取或回应。已注册的 SnowLuma MCP 工具对该会话开放，桥接发送仍执行活动回合、限频和审计检查。</div>
+      <div class="meta">配置保存后写入 config.json 并热更新。QQ 消息按需缓冲；提醒只提供注意信号，唯一的全局 desktop-agent 可自行决定是否读取或回应。已注册的 SnowLuma MCP 工具对该会话开放；agent_rest 只结束当前回合，不限制后续调用，桥接发送仍执行限频和审计检查。</div>
       <div class="layer-note" role="note" aria-label="固定自动唤醒策略">
         <strong>QQ 注意信号</strong>
         <ul>
@@ -593,7 +593,7 @@
         <button id="tsSend">发送测试</button>
         <span class="meta" id="tsMsg2"></span>
       </div>
-      <div class="meta">控制台测试发送受 allow/deny 限制；陪伴者的 QQ 工具独立校验全局令牌、活动回合、限频与审计。</div>
+      <div class="meta">控制台测试发送受 allow/deny 限制；陪伴者的 QQ 工具校验全局令牌、限频与审计，不受 agent_rest 状态限制。</div>
     </section>
 <section id="section-maintenance" data-page="operations" class="card">
       <h2>桥接控制</h2>

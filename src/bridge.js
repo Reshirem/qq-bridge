@@ -2037,8 +2037,6 @@ async function main() {
       const match = /^(group|private):(\d+)$/.exec(canonical);
       return !!match && allowed(match[1], Number(match[2]), cfg);
     };
-    const activeV2Turn = (_key, token = '') => isDesktopAgentToken(token)
-      && desktopAgentTurnActive && desktopAgentLifecycle === 'active';
     const server = http.createServer(async (req, res) => {
       let url;
       try { url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`); }
@@ -2261,10 +2259,6 @@ async function main() {
             || url.pathname === '/api/authorize/read';
           if (!agentAllowed) {
             sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
-            return;
-          }
-          if (isDesktopAgentToken(String(req.headers['x-agent-token'])) && desktopAgentLifecycle !== 'active') {
-            sendJson({ ok: false, error: `全局陪伴者当前为 ${desktopAgentLifecycle} 状态，不能继续调用工具` }, 409);
             return;
           }
         }
@@ -3733,10 +3727,6 @@ async function main() {
             sendJson({ ok: false, error: '陪伴者会话令牌无效' }, 403);
             return;
           }
-          if (!desktopAgentTurnActive || desktopAgentLifecycle !== 'active') {
-            sendJson({ ok: false, error: 'agent_rest 只能在未停止的活动回合内调用' }, 409);
-            return;
-          }
           let durationMs = null;
           if (body.durationMs !== undefined && body.durationMs !== null) {
             durationMs = Number(body.durationMs);
@@ -3760,13 +3750,10 @@ async function main() {
             sendJson({ ok: false, error: '记忆工具仅支持 POST' }, 405);
             return;
           }
+          const operation = url.pathname.slice('/api/desktop-agent/memory/'.length);
           const token = String(req.headers['x-agent-token'] ?? '').trim();
           if (!isDesktopAgentToken(token)) {
             sendJson({ ok: false, error: '陪伴者会话令牌无效' }, 403);
-            return;
-          }
-          if (!desktopAgentTurnActive || desktopAgentLifecycle !== 'active') {
-            sendJson({ ok: false, error: '记忆工具只能在活动回合内调用' }, 409);
             return;
           }
           if (!memoryGateway.status().configured) {
@@ -3774,7 +3761,6 @@ async function main() {
             return;
           }
           const body = await readBody();
-          const operation = url.pathname.slice('/api/desktop-agent/memory/'.length);
           try {
             let result;
             if (operation === 'search') {
@@ -3880,7 +3866,6 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
           if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: '自主会话发送必须携带 agent token' }, 403); return; }
-           if (!activeV2Turn(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '只有正在运行的 DSH 回合可以发送 QQ 消息' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) {
             sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400);
@@ -4004,7 +3989,6 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
                     if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: '自主会话发送必须携带 agent token' }, 403); return; }
-           if (!activeV2Turn(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '只有正在运行的 DSH 回合可以发送 QQ 消息' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
           const kind = keyMatch[1];
@@ -4113,7 +4097,6 @@ async function main() {
                     if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: '自主会话发送拍一拍必须携带 agent token' }, 403); return; }
           if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (!v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
-          if (!activeV2Turn(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '只有正在运行的 DSH 回合可以发送 QQ 消息' }, 403); return; }
           if (socialV2.paused) { sendJson({ ok: false, error: '二代 AI 已暂停，不能发送拍一拍' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
@@ -4150,8 +4133,7 @@ async function main() {
           }
           st.sendTimes.push(now);
           if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
-          // 成员校验是异步的（要问 OneBot）；期间操作者可能切模式/改白名单/开静默。
-          // 拍一拍此前完全没有发送守卫，这里补上：真正发之前再确认一次。
+          // 成员校验是异步的（要问 OneBot）；发送前确认 QQ 目标和全局会话凭证没有切换。
           const sendGuard = captureSendGuard(key);
           try {
             sendGuard();
@@ -4297,7 +4279,6 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
                     if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: '自主会话发送必须携带 agent token' }, 403); return; }
-           if (!activeV2Turn(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '只有正在运行的 DSH 回合可以发送 QQ 消息' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
           const kind = keyMatch[1];
@@ -5142,7 +5123,6 @@ async function main() {
           }
           if (!token) { sendJson({ ok: false, error: '发送必须携带会话令牌' }, 403); return; }
           if (token && !agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (!activeV2Turn(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '只有正在运行的 DSH 回合可以发送 QQ 消息' }, 403); return; }
           const flag = isPrivate ? 'sendPrivate' : (isReply ? 'reply' : 'sendGroup');
           if (shouldBlockSilentReply(key)) {
             sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403);
@@ -5270,7 +5250,7 @@ async function main() {
   const lastSendFailed = new Map(); // key -> true（下一次成功即清除）
 
   function sendToQQ(key, msg) {
-    const assertSendAllowed = captureSendGuard(key, { requireActiveTurn: false });
+    const assertSendAllowed = captureSendGuard(key);
     const safeMsg = redactKnownTokensOnly(msg);
     const [kind, id] = key.split(':');
     const parts = splitForQQ(safeMsg);
@@ -6056,19 +6036,14 @@ async function main() {
     return true;
   }
 
-  // 入队校验无法约束排队等待期间的权限变化，每条消息临近实际发送时再次校验。
-  function captureSendGuard(key, { requireActiveTurn = true } = {}) {
+  // 入队后如果 QQ 目标或全局会话凭证切换，每条消息临近实际发送时会重新校验。
+  function captureSendGuard(key) {
     const canonical = canonicalV2Key(key);
     const sessionId = desktopAgentSessionId;
     const token = desktopAgentToken;
-    const epoch = desktopAgentLifecycleEpoch;
     return () => {
       if (!canonical || sessionId !== desktopAgentSessionId || token !== desktopAgentToken) {
         throw new Error('发送已取消：QQ 目标或全局陪伴者会话已变化');
-      }
-      if (requireActiveTurn && (!isDesktopAgentToken(token) || !desktopAgentTurnActive
-          || desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch)) {
-        throw new Error('发送已取消：全局陪伴者回合已结束或进入暂停状态');
       }
     };
   }

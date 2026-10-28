@@ -54,7 +54,7 @@ try {
     arguments: { groupId: 100003, message: '测试', replyToMessageId: -123456789 }
   });
   const negText = negativeReply.content?.[0]?.text ?? '';
-  console.log('🚫 负 id + 白名单外 结果:', negativeReply.isError ? '被拒绝 ✓' : '⚠️ 未被拒绝（异常！）', negText.slice(0, 120), '| 校验阶段:', negText.includes('白名单') ? '白名单（参数已通过）' : '活动回合 / 会话令牌');
+  console.log('🚫 负 id + 白名单外 结果:', negativeReply.isError ? '被拒绝 ✓' : '⚠️ 未被拒绝（异常！）', negText.slice(0, 120), '| 校验阶段:', negText.includes('白名单') ? '白名单（参数已通过）' : '会话令牌 / 目标校验');
 
   // 专用引用工具 qq_reply：白名单外 + 负 id 应被白名单拦截（参数已通过）
   const replyDenied = await client.callTool({
@@ -62,7 +62,7 @@ try {
     arguments: { groupId: 100003, replyToMessageId: -123456789, message: '测试' }
   });
   const replyText = replyDenied.content?.[0]?.text ?? '';
-  console.log('🚫 qq_reply 白名单外 结果:', replyDenied.isError ? '被拒绝 ✓' : '⚠️ 未被拒绝（异常！）', replyText.slice(0, 120), '| 校验阶段:', replyText.includes('白名单') ? '白名单（参数已通过）' : '活动回合 / 会话令牌');
+  console.log('🚫 qq_reply 白名单外 结果:', replyDenied.isError ? '被拒绝 ✓' : '⚠️ 未被拒绝（异常！）', replyText.slice(0, 120), '| 校验阶段:', replyText.includes('白名单') ? '白名单（参数已通过）' : '会话令牌 / 目标校验');
 
   process.exit(0);
 } catch (error) {
