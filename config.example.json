@@ -35,6 +35,15 @@
   "sendDelayMs": 300,
   "consolePort": 3100,
   "consoleToken": "",
+  "memory": {
+    "enabled": false,
+    "baseUrl": "http://127.0.0.1:8080",
+    "namespace": "qq-bridge",
+    "apiKey": "",
+    "timeoutMs": 45000,
+    "bootstrapLimit": 6,
+    "bootstrapMaxChars": 2500
+  },
   "pricing": {
     "models": {
       "my-relay-model": {

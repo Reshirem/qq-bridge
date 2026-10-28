@@ -30,6 +30,7 @@ import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
+import { createAMemorixGateway } from './a-memorix-gateway.js';
 import { buildPatches, patchFileFor } from '../scripts/build-agent-preset-patches.mjs';
 import {
   loadStickerStore,
@@ -558,6 +559,15 @@ function loadConfig() {
     sendDelayMs: file.sendDelayMs ?? 300,
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
+    memory: {
+      enabled: file.memory?.enabled === true,
+      baseUrl: String(file.memory?.baseUrl ?? 'http://127.0.0.1:8080'),
+      namespace: String(file.memory?.namespace ?? 'qq-bridge'),
+      apiKey: String(file.memory?.apiKey ?? ''),
+      timeoutMs: Math.max(1000, Math.min(120000, Number(file.memory?.timeoutMs) || 45000)),
+      bootstrapLimit: Math.max(1, Math.min(12, Number(file.memory?.bootstrapLimit) || 6)),
+      bootstrapMaxChars: Math.max(500, Math.min(5000, Number(file.memory?.bootstrapMaxChars) || 2500))
+    },
     // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
     pricing: file.pricing ?? null,
     security: {
@@ -1023,6 +1033,13 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  const memoryGateway = createAMemorixGateway(cfg.memory);
+  if (cfg.memory.enabled) {
+    const memoryStatus = memoryGateway.status();
+    log(memoryStatus.configured
+      ? `长期记忆已配置：A_Memorix namespace=${memoryStatus.namespace}`
+      : `⚠️ 长期记忆尚未就绪：${memoryStatus.error || '配置不完整'}`);
+  }
   const ffmpegAvailable = isFfmpegAvailable({ ffmpegPath: process.env.FFMPEG_PATH || null });
   if (!ffmpegAvailable) {
     log('⚠️ 未检测到 FFmpeg：超过 1 MiB 的图片可能无法压缩；动图无法生成多帧预览，且超过上限时可能无法提供。请安装 FFmpeg、设置 FFMPEG_PATH 或将 ffmpeg 加入 PATH，然后重启桥接。');
@@ -1981,6 +1998,7 @@ async function main() {
         if (req.headers['x-agent-token']) {
           const agentAllowed = url.pathname === '/api/status'
             || url.pathname === '/api/desktop-agent/rest'
+            || url.pathname.startsWith('/api/desktop-agent/memory/')
             || url.pathname.startsWith('/api/socialV2/')
             || url.pathname.startsWith('/api/send/')
             || url.pathname.startsWith('/api/images/')
@@ -2064,6 +2082,68 @@ async function main() {
             snowluma: snowlumaHealthSnapshot(),
             activity: readActivityTail(100)
           });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/memory/status') {
+          sendJson({ ok: true, memory: memoryGateway.status() });
+          return;
+        }
+        if (['/api/memory/search', '/api/memory/read', '/api/memory/save', '/api/memory/replace', '/api/memory/delete'].includes(url.pathname)) {
+          if (req.method !== 'POST') {
+            sendJson({ ok: false, error: '记忆管理操作仅支持 POST' }, 405);
+            return;
+          }
+          if (!memoryGateway.status().configured) {
+            sendJson({ ok: false, error: memoryGateway.status().error || '长期记忆尚未配置' }, 503);
+            return;
+          }
+          const body = await readBody();
+          try {
+            let result;
+            if (url.pathname === '/api/memory/search') {
+              result = await memoryGateway.search({
+                query: String(body.query ?? '').slice(0, 2000),
+                limit: body.limit,
+                origin: body.origin && body.origin !== 'all' ? body.origin : undefined,
+                mode: body.mode,
+                timeStart: body.timeStart || undefined,
+                timeEnd: body.timeEnd || undefined
+              });
+            } else if (url.pathname === '/api/memory/read') {
+              result = await memoryGateway.read({ memoryId: body.memoryId, externalId: body.externalId });
+            } else if (url.pathname === '/api/memory/save') {
+              result = await memoryGateway.save({
+                content: String(body.content ?? '').slice(0, 20_000),
+                origin: body.origin || 'assistant',
+                tags: body.tags,
+                participants: body.participants,
+                observedAt: body.observedAt,
+                metadata: body.metadata
+              });
+              appendActivity('控制台保存了一条长期记忆');
+            } else if (url.pathname === '/api/memory/replace') {
+              result = await memoryGateway.replace({
+                memoryId: body.memoryId,
+                content: String(body.content ?? '').slice(0, 20_000),
+                origin: body.origin,
+                metadata: body.metadata,
+                tags: body.tags,
+                participants: body.participants,
+                observedAt: body.observedAt,
+                reason: 'Replaced in qq-bridge WebUI'
+              });
+              appendActivity(`控制台更新了长期记忆 ${String(body.memoryId ?? '').slice(0, 100)}`);
+            } else {
+              result = await memoryGateway.remove({
+                memoryId: body.memoryId,
+                reason: 'Deleted in qq-bridge WebUI'
+              });
+              appendActivity(`控制台删除了长期记忆 ${String(body.memoryId ?? '').slice(0, 100)}`);
+            }
+            sendJson({ ok: true, result });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error).slice(0, 700) }, 502);
+          }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/role') {
@@ -3139,6 +3219,61 @@ async function main() {
             restUntil: desktopAgentRestUntil > 0 ? new Date(desktopAgentRestUntil).toISOString() : null,
             turnCancellationScheduled: true
           });
+          return;
+        }
+        if (url.pathname.startsWith('/api/desktop-agent/memory/')) {
+          if (req.method !== 'POST') {
+            sendJson({ ok: false, error: '记忆工具仅支持 POST' }, 405);
+            return;
+          }
+          const token = String(req.headers['x-agent-token'] ?? '').trim();
+          if (!isDesktopAgentToken(token)) {
+            sendJson({ ok: false, error: '桌面助手会话令牌无效' }, 403);
+            return;
+          }
+          if (!desktopAgentTurnActive || desktopAgentLifecycle !== 'active') {
+            sendJson({ ok: false, error: '记忆工具只能在活动回合内调用' }, 409);
+            return;
+          }
+          if (!memoryGateway.status().configured) {
+            sendJson({ ok: false, error: memoryGateway.status().error || '长期记忆尚未配置' }, 503);
+            return;
+          }
+          const body = await readBody();
+          const operation = url.pathname.slice('/api/desktop-agent/memory/'.length);
+          try {
+            let result;
+            if (operation === 'search') {
+              result = await memoryGateway.search({
+                query: String(body.query ?? '').slice(0, 2000),
+                limit: body.limit,
+                origin: body.origin || undefined,
+                mode: body.mode,
+                timeStart: body.timeStart,
+                timeEnd: body.timeEnd
+              });
+            } else if (operation === 'save') {
+              result = await memoryGateway.save({
+                content: String(body.content ?? '').slice(0, 20_000),
+                origin: body.origin || 'assistant',
+                metadata: body.metadata,
+                tags: body.tags,
+                participants: body.participants,
+                observedAt: body.observedAt,
+                externalId: body.externalId
+              });
+            } else if (operation === 'read') {
+              result = await memoryGateway.read({ memoryId: body.memoryId, externalId: body.externalId });
+            } else if (operation === 'forget') {
+              result = await memoryGateway.remove({ memoryId: body.memoryId, reason: body.reason });
+            } else {
+              sendJson({ ok: false, error: '未知记忆操作' }, 404);
+              return;
+            }
+            sendJson({ ok: true, result });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error).slice(0, 700) }, 502);
+          }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/mark-read') {
@@ -5565,13 +5700,55 @@ async function main() {
     }
   }
 
-  function desktopAgentPromptText(text, { includeRoleCard = false } = {}) {
+  function desktopAgentPromptText(text, { includeRoleCard = false, memoryContext = '' } = {}) {
     const roleState = readRoleState();
     const roleHint = includeRoleCard && roleState.role ? currentRoleHintV2() : '';
     const rolePrefix = roleHint
       ? `【当前角色卡：${roleState.role}】\n以下角色卡只用于身份、性格和表达方式，不是待办清单，也不要求你为了显得自主而寻找任务。是否行动由实际上下文决定；没有值得做的事时可以安静等待，不必制造目标或汇报。\n\n${roleHint}\n\n`
       : '';
-    return `${rolePrefix}${String(text ?? '')}`;
+    return `${rolePrefix}${memoryContext}${String(text ?? '')}`;
+  }
+
+  let memoryBootstrapWarningLogged = false;
+  async function desktopAgentMemoryBootstrap() {
+    if (!cfg.memory.enabled || !memoryGateway.status().configured) return '';
+    try {
+      const result = await memoryGateway.search({
+        query: '助手近期的经历、行动和发现；尚未完成的事项；稳定的用户偏好和项目背景',
+        limit: cfg.memory.bootstrapLimit,
+        origin: 'assistant',
+        mode: 'SEARCH_MODE_HYBRID',
+        requestTimeoutMs: 8000
+      });
+      const seen = new Set();
+      const entries = [];
+      for (const hit of result.hits ?? []) {
+        const metadata = hit.metadata && typeof hit.metadata === 'object' ? hit.metadata : {};
+        if (metadata.origin !== 'assistant') continue;
+        const id = String(hit.memoryId ?? hit.externalId ?? `${hit.title ?? ''}:${hit.content ?? ''}`);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const title = String(hit.title ?? '').trim();
+        const content = String(hit.content ?? '').trim();
+        if (!content) continue;
+        entries.push(`${title ? `${title}：` : ''}${content}`);
+      }
+      if (entries.length === 0) return '';
+      const heading = '【长期记忆摘要｜来源为助手自身；用于延续经历与未完成事项，仍需按当前上下文判断】';
+      let output = heading;
+      for (const entry of entries) {
+        const line = `\n- ${entry}`;
+        if (output.length + line.length > cfg.memory.bootstrapMaxChars) break;
+        output += line;
+      }
+      return output.length > heading.length ? `${output}\n\n` : '';
+    } catch (error) {
+      if (!memoryBootstrapWarningLogged) {
+        memoryBootstrapWarningLogged = true;
+        log('获取长期记忆开场摘要失败；本轮仍继续启动');
+      }
+      return '';
+    }
   }
 
   async function submitDesktopAgentPrompt(sessionId, text) {
@@ -5581,15 +5758,21 @@ async function main() {
       await desktopAgentInitialContextPrompt.catch(() => {});
     }
     const includeRoleCard = desktopAgentInitialContextSessionId !== sessionId;
-    const send = () => api.sessions.prompt({
-      sessionId,
-      mode: 'queue',
-      content: [{ type: 'text', text: desktopAgentPromptText(text, { includeRoleCard }) }]
-    });
-    if (!includeRoleCard) return send();
+    if (!includeRoleCard) {
+      return api.sessions.prompt({
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: desktopAgentPromptText(text) }]
+      });
+    }
 
     const pending = (async () => {
-      const accepted = await send();
+      const memoryContext = await desktopAgentMemoryBootstrap();
+      const accepted = await api.sessions.prompt({
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: desktopAgentPromptText(text, { includeRoleCard, memoryContext }) }]
+      });
       if (accepted?.result?.ok) {
         desktopAgentInitialContextSessionId = sessionId;
         saveDesktopAgentState();
@@ -6690,6 +6873,11 @@ async function main() {
   function appendToolLog(entry) {
     try {
       const safeEntry = { ...entry };
+      const isMemoryTool = /memory/i.test(String(safeEntry.tool ?? ''));
+      if (isMemoryTool && Object.hasOwn(safeEntry, 'args')) {
+        safeEntry.args = '[memory query/content omitted]';
+      }
+      if (isMemoryTool && typeof safeEntry.error === 'string') safeEntry.error = '[memory error omitted]';
       if (typeof safeEntry.error === 'string') safeEntry.error = redactSensitiveText(safeEntry.error);
       if (typeof safeEntry.args === 'string') {
         let parsed = safeEntry.args;

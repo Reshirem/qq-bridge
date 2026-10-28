@@ -1244,11 +1244,195 @@ const consolePages = {
   overview: ['桌面助手', '个人桌面助手运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。'],
   sessions: ['会话控制', '控制个人桌面助手', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。'],
   persona: ['助手提示词', '维护助手使用的提示词', '这里可以编辑桌面助手的固定提示词和当前人格卡。'],
+  memory: ['长期记忆', '检索与维护共享长期记忆', 'QQ 内容和助手自身经历共用 A_Memorix，由模型按需决定读写。'],
   'social-v2': ['提醒与消息', 'QQ 作为助手的消息通道', '查看 QQ 提醒策略、消息工具和发送安全设置。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。']
 };
+let memoryHits = [];
+function memoryDateInput(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+function memoryListInput(value) {
+  return Array.isArray(value) ? value.map(String).join(', ') : '';
+}
+function memoryListParse(value) {
+  return String(value || '').split(/[\n,，]/).map(item => item.trim()).filter(Boolean).slice(0, 20);
+}
+async function refreshMemoryStatus() {
+  const status = document.getElementById('memoryStatus');
+  try {
+    const response = await api('/api/memory/status');
+    const memory = response.memory || {};
+    if (!memory.enabled) status.textContent = '长期记忆未启用。配置 config.json 的 memory.enabled、Gateway 地址、namespace API key 后重启桥接。';
+    else if (!memory.configured) status.textContent = `长期记忆配置不完整：${memory.error || '请检查 config.json'}`;
+    else status.textContent = `A_Memorix 已配置 · namespace ${memory.namespace} · ${memory.baseUrl}（连接会在检索或保存时检查）`;
+    status.className = `meta ${memory.configured ? 'ok' : 'err'}`;
+  } catch (error) {
+    status.textContent = `读取状态失败：${error.message || '未知错误'}`;
+    status.className = 'meta err';
+  }
+}
+function renderMemoryResults(result) {
+  const box = document.getElementById('memoryResults');
+  memoryHits = Array.isArray(result?.hits) ? result.hits : [];
+  if (!memoryHits.length) {
+    box.innerHTML = '<div class="empty-state"><strong>没有匹配记录</strong><p>可以换个问法，或扩大时间范围。</p></div>';
+    return;
+  }
+  box.innerHTML = memoryHits.map((hit, index) => {
+    const origin = hit.metadata?.origin === 'qq' ? 'QQ 对话' : hit.metadata?.origin === 'assistant' ? '助手经历' : '来源未标注';
+    const title = hit.title || hit.kind || origin;
+    const time = hit.observedAt || hit.metadata?.observedAt || '';
+    return `<button class="memory-hit" type="button" data-memory-index="${index}"><span class="memory-hit-head"><strong>${esc(title)}</strong><span class="tag">${esc(origin)}</span></span><span class="memory-hit-content">${esc(hit.content)}</span><span class="meta">${time ? `观察时间：${esc(new Date(time).toLocaleString())} · ` : ''}memoryId：<code>${esc(hit.memoryId)}</code></span></button>`;
+  }).join('');
+}
+async function searchMemory() {
+  const status = document.getElementById('memorySearchStatus');
+  const query = document.getElementById('memoryQuery').value.trim();
+  const start = document.getElementById('memoryTimeStart').value;
+  const end = document.getElementById('memoryTimeEnd').value;
+  if (!query && !start && !end) {
+    status.textContent = '请输入关键词，或设置时间范围。';
+    status.className = 'meta err';
+    return;
+  }
+  status.textContent = '正在检索…';
+  status.className = 'meta';
+  try {
+    const response = await api('/api/memory/search', 'POST', {
+      query,
+      origin: document.getElementById('memoryOriginFilter').value,
+      mode: query ? 'SEARCH_MODE_HYBRID' : 'SEARCH_MODE_TIME',
+      timeStart: start ? new Date(`${start}T00:00:00`).toISOString() : undefined,
+      timeEnd: end ? new Date(`${end}T23:59:59`).toISOString() : undefined,
+      limit: 50
+    });
+    if (!response.ok) throw new Error(response.error || '检索失败');
+    const result = response.result || {};
+    renderMemoryResults(result);
+    status.textContent = `检索到 ${memoryHits.length} 条${result.degraded ? '（检索服务处于降级状态）' : ''}。当前 Gateway 不支持全量列举。`;
+    status.className = result.degraded ? 'meta err' : 'meta ok';
+  } catch (error) {
+    document.getElementById('memoryResults').innerHTML = `<div class="empty-state"><strong>检索失败</strong><p>${esc(error.message || '未知错误')}</p></div>`;
+    status.textContent = error.message || '检索失败';
+    status.className = 'meta err';
+  }
+}
+function resetMemoryEditor() {
+  document.getElementById('memoryId').value = '';
+  document.getElementById('memoryOrigin').value = 'assistant';
+  document.getElementById('memoryContent').value = '';
+  document.getElementById('memorySourceContext').value = '';
+  document.getElementById('memoryConfidence').value = '';
+  document.getElementById('memoryEvidenceReferences').value = '';
+  document.getElementById('memoryTags').value = '';
+  document.getElementById('memoryParticipants').value = '';
+  document.getElementById('memoryObservedAt').value = '';
+  document.getElementById('memoryEditorTitle').textContent = '新建记忆';
+  document.getElementById('memorySave').hidden = false;
+  document.getElementById('memoryReplace').hidden = true;
+  document.getElementById('memoryDelete').hidden = true;
+  document.getElementById('memoryEditorStatus').textContent = '';
+}
+async function selectMemoryHit(index) {
+  const hit = memoryHits[index];
+  if (!hit?.memoryId) return;
+  const status = document.getElementById('memoryEditorStatus');
+  status.textContent = '正在读取完整记录…';
+  try {
+    const response = await api('/api/memory/read', 'POST', { memoryId: hit.memoryId });
+    if (!response.ok) throw new Error(response.error || '读取失败');
+    const record = response.result;
+    if (!record) throw new Error('记忆记录不存在');
+    document.getElementById('memoryId').value = record.memoryId;
+    const recordOrigin = record.metadata?.origin || record.sourceType;
+    document.getElementById('memoryOrigin').value = recordOrigin === 'qq' || recordOrigin === 'assistant' ? recordOrigin : '';
+    document.getElementById('memoryContent').value = record.content || '';
+    document.getElementById('memorySourceContext').value = record.metadata?.sourceContext || '';
+    document.getElementById('memoryConfidence').value = ['firsthand', 'reported', 'inferred', 'uncertain'].includes(record.metadata?.confidence) ? record.metadata.confidence : '';
+    document.getElementById('memoryEvidenceReferences').value = memoryListInput(record.metadata?.evidenceReferences);
+    document.getElementById('memoryTags').value = memoryListInput(record.tags || record.metadata?.tags);
+    document.getElementById('memoryParticipants').value = memoryListInput(record.participants || record.metadata?.participants);
+    document.getElementById('memoryObservedAt').value = memoryDateInput(record.observedAt);
+    document.getElementById('memoryEditorTitle').textContent = '编辑记忆';
+    document.getElementById('memorySave').hidden = true;
+    document.getElementById('memoryReplace').hidden = false;
+    document.getElementById('memoryDelete').hidden = false;
+    status.textContent = `已读取 ${record.memoryId}`;
+    status.className = 'meta ok';
+  } catch (error) {
+    status.textContent = error.message || '读取失败';
+    status.className = 'meta err';
+  }
+}
+function memoryEditorBody() {
+  const observed = document.getElementById('memoryObservedAt').value;
+  return {
+    content: document.getElementById('memoryContent').value,
+    origin: document.getElementById('memoryOrigin').value,
+    tags: memoryListParse(document.getElementById('memoryTags').value),
+    participants: memoryListParse(document.getElementById('memoryParticipants').value),
+    observedAt: observed ? new Date(observed).toISOString() : undefined,
+    metadata: {
+      sourceContext: document.getElementById('memorySourceContext').value.trim(),
+      confidence: document.getElementById('memoryConfidence').value || undefined,
+      evidenceReferences: String(document.getElementById('memoryEvidenceReferences').value || '').split(/\n/).map(item => item.trim()).filter(Boolean).slice(0, 20)
+    }
+  };
+}
+async function saveMemory(isReplace) {
+  const status = document.getElementById('memoryEditorStatus');
+  const memoryId = document.getElementById('memoryId').value;
+  if (isReplace && !memoryId) return;
+  if (isReplace && !document.getElementById('memoryOrigin').value) {
+    status.textContent = '该记录没有已知来源；请选择“助手经历”或“QQ 对话”后再保存。';
+    status.className = 'meta err';
+    return;
+  }
+  status.textContent = '正在保存…';
+  status.className = 'meta';
+  try {
+    const response = await api(isReplace ? '/api/memory/replace' : '/api/memory/save', 'POST', {
+      ...memoryEditorBody(),
+      ...(isReplace ? { memoryId } : {})
+    });
+    if (!response.ok) throw new Error(response.error || '保存失败');
+    const warning = response.result?.warning;
+    if (!isReplace) resetMemoryEditor();
+    status.textContent = warning ? `已保存，但有提示：${warning}` : (isReplace ? '已保存修改' : '已保存新记忆');
+    status.className = warning ? 'meta err' : 'meta ok';
+    await searchMemoryIfActive();
+  } catch (error) {
+    status.textContent = error.message || '保存失败';
+    status.className = 'meta err';
+  }
+}
+async function searchMemoryIfActive() {
+  if (currentConsolePage === 'memory' && (document.getElementById('memoryQuery').value.trim() || document.getElementById('memoryTimeStart').value || document.getElementById('memoryTimeEnd').value)) await searchMemory();
+}
+async function deleteMemory() {
+  const memoryId = document.getElementById('memoryId').value;
+  if (!memoryId || !confirm(`删除这条长期记忆？\n${memoryId}\n此操作不可恢复。`)) return;
+  const status = document.getElementById('memoryEditorStatus');
+  status.textContent = '正在删除…';
+  try {
+    const response = await api('/api/memory/delete', 'POST', { memoryId });
+    if (!response.ok) throw new Error(response.error || '删除失败');
+    resetMemoryEditor();
+    status.textContent = '已删除';
+    status.className = 'meta ok';
+    await searchMemoryIfActive();
+  } catch (error) {
+    status.textContent = error.message || '删除失败';
+    status.className = 'meta err';
+  }
+}
 let currentConsolePage = 'overview';
 let toastTimer;
 function showConsoleToast(message) {
@@ -1274,6 +1458,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   document.title = consolePages[page][0] + ' · QQ 桥接控制台';
   if (updateHash && location.hash !== '#' + page) history.pushState({}, '', '#' + page);
   if (page === 'overview' || page === 'sessions') refreshDesktopAgentStatus();
+  if (page === 'memory') refreshMemoryStatus();
   closeConsoleSearch();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
@@ -1283,6 +1468,19 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   setConsolePage(button.dataset.view, { focus: true, target: button.dataset.target });
 }));
+document.getElementById('memoryRefreshStatus').addEventListener('click', refreshMemoryStatus);
+document.getElementById('memorySearch').addEventListener('click', searchMemory);
+document.getElementById('memoryQuery').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); searchMemory(); }
+});
+document.getElementById('memoryResults').addEventListener('click', event => {
+  const hit = event.target.closest('[data-memory-index]');
+  if (hit) selectMemoryHit(Number(hit.dataset.memoryIndex));
+});
+document.getElementById('memorySave').addEventListener('click', () => saveMemory(false));
+document.getElementById('memoryReplace').addEventListener('click', () => saveMemory(true));
+document.getElementById('memoryDelete').addEventListener('click', deleteMemory);
+document.getElementById('memoryClear').addEventListener('click', resetMemoryEditor);
 window.addEventListener('hashchange', () => {
   const page = location.hash.slice(1);
   if (Object.hasOwn(consolePages, page) || !page) setConsolePage(page, { updateHash: false });

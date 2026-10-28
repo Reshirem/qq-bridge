@@ -30,6 +30,7 @@
       <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>桌面助手</button>
       <button data-view="sessions" class="nav-item"><span class="nav-icon" aria-hidden="true">☷</span>会话控制</button>
       <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>助手提示词</button>
+      <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>长期记忆</button>
       <div class="nav-label">QQ 通道</div>
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>提醒与消息</button>
 
@@ -168,6 +169,60 @@
       <div id="desktopAgentHistory" class="context-history" aria-live="polite">
         <div class="empty-state"><strong>尚未读取会话记录</strong><p>点击“刷新记录”查看当前桌面助手会话。</p></div>
       </div>
+    </section>
+<section id="section-memory" data-page="memory" class="card span-all">
+      <div class="memory-heading">
+        <div><h2>长期记忆</h2><p id="memoryStatus" class="meta" role="status">正在检查 A_Memorix…</p></div>
+        <button id="memoryRefreshStatus" class="small">刷新状态</button>
+      </div>
+      <div class="layer-note">
+        <strong>共享记忆库</strong>
+        <p>QQ 来源和助手自身经历共用 A_Memorix；模型通过工具决定何时读写。这里按需检索、查看、编辑或删除。当前 Gateway 不提供全量列举接口，结果由查询词和时间范围决定，不代表完整账本。</p>
+      </div>
+      <h3>检索记忆</h3>
+      <div class="row memory-search-controls">
+        <label for="memoryQuery">关键词或问题</label>
+        <input id="memoryQuery" type="search" maxlength="2000" placeholder="例如：上次处理 DSH 启动问题时的发现">
+        <label for="memoryOriginFilter">来源</label>
+        <select id="memoryOriginFilter"><option value="all">全部</option><option value="assistant">助手经历</option><option value="qq">QQ 对话</option></select>
+        <label for="memoryTimeStart">从</label>
+        <input id="memoryTimeStart" type="date">
+        <label for="memoryTimeEnd">到</label>
+        <input id="memoryTimeEnd" type="date">
+        <button id="memorySearch" class="primary">检索</button>
+      </div>
+      <p id="memorySearchStatus" class="meta" role="status"></p>
+      <div id="memoryResults" class="memory-results" aria-live="polite"><div class="empty-state"><strong>尚未检索</strong><p>输入问题后查询长期记忆。</p></div></div>
+
+      <details class="settings-group" open>
+        <summary id="memoryEditorTitle">新建记忆</summary>
+        <div class="settings-content">
+          <input id="memoryId" type="hidden">
+          <label for="memoryOrigin">来源</label>
+          <select id="memoryOrigin"><option value="assistant">助手经历</option><option value="qq">QQ 对话</option><option value="">来源未标注（编辑前请确认）</option></select>
+          <label for="memoryContent">记忆内容</label>
+          <textarea id="memoryContent" rows="6" maxlength="20000" placeholder="写下可长期复用的信息，并说明来源、时间、背景或确定程度。"></textarea>
+          <label for="memorySourceContext">来源上下文</label>
+          <input id="memorySourceContext" type="text" maxlength="2000" placeholder="例如：某次桌面操作、QQ 群/私聊及说话人">
+          <label for="memoryConfidence">可信程度</label>
+          <select id="memoryConfidence"><option value="">未标注</option><option value="firsthand">亲自观察</option><option value="reported">他人陈述</option><option value="inferred">推断</option><option value="uncertain">不确定</option></select>
+          <label for="memoryEvidenceReferences">证据引用（每行一个）</label>
+          <textarea id="memoryEvidenceReferences" rows="2" placeholder="消息 ID、会话 ID、任务记录标题等"></textarea>
+          <div class="row">
+            <label for="memoryTags">标签</label><input id="memoryTags" type="text" placeholder="逗号分隔">
+            <label for="memoryParticipants">涉及主体</label><input id="memoryParticipants" type="text" placeholder="逗号分隔">
+            <label for="memoryObservedAt">观察时间</label><input id="memoryObservedAt" type="datetime-local">
+          </div>
+          <div class="row memory-editor-actions">
+            <button id="memorySave" class="primary">保存新记忆</button>
+            <button id="memoryReplace" class="small" hidden>保存修改</button>
+            <button id="memoryDelete" class="small danger" hidden>删除记忆</button>
+            <button id="memoryClear" class="small">清空编辑器</button>
+            <span id="memoryEditorStatus" class="meta" role="status"></span>
+          </div>
+          <p class="meta">编辑会先写入新版本并标记替代关系，再删除旧版本；若旧版本删除失败，新版本会保留并显示提示。</p>
+        </div>
+      </details>
     </section>
 <section id="section-social-v2" data-page="social-v2" class="card span-all">
       <h2>QQ 提醒与消息通道</h2>

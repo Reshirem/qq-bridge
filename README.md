@@ -60,7 +60,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
 
 - **QQ 侧**：`@snowluma/sdk` 的 `SnowLumaWebSocketClient`（OneBot v11 WebSocket 客户端，自动重连）
 - **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.1-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。全局会话创建后，桥接按 `config.json` 的 `dsh.provider`、`dsh.model` 和 `dsh.reasoningEffort` 用 `session.selectModel` 选择模型（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
-- **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入三个 MCP server：
+- **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入四个 MCP server：
   - `snowluma`（桥接自带 `src/mcp-snowluma-safe.js`）：本项目当前注册的完整 QQ 消息/媒体读写工具集；全局桌面会话可面向任意合法群/私聊 key 使用。发送要求活动 DSH 回合，仍受限频和审计；这不包含未注册在 MCP 内的 OneBot 群管理 API。
   - `snowluma-host`（桥接自带 `src/mcp-host-server.js`）：**只有** `snowluma_status`（只读探活 `get_login_info`）。
     ⚠️ **v0.1.5 起移除了 `start_snowluma` / `stop_snowluma`**（以及 `snowluma.allowProcessControl` 配置项）——
@@ -72,14 +72,16 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
     因而结果质量与 DSH 内的搜索一致、且**不再默认把群聊关键词发给 Bing**（Bing RSS 只在 DeepSeek 不可用时兜底）。
     抓取由桥接自己做 SSRF 校验并限制正文大小。搜索只在 agent 明确调用时发生，不会自动从群聊提取词条或建立词库。
     数据出机清单见 [LICENSE](LICENSE) 的「数据出机清单」。
+  - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；助手经历由 agent 自行选择记录。QQ 与助手经历共用固定 namespace，工具仅提供搜索、读取、保存和删除，并受桥接活动回合与会话令牌检查。该能力需单独部署 A_Memorix HTTP/JSON Gateway 并在 `memory` 配置中启用。
 - **会话模型**：所有自主活动共用一个持久的 `desktop-agent` DSH 会话。QQ 群和私聊 ID 只作为消息来源/目标，不拆分 agent 上下文；全局助手可通过 `qq_list_conversations` 发现账号中的群和好友，再按需读写。桥接不再创建或管理逐 QQ DSH 会话。
 - **个人桌面助手**：WebUI 的“会话控制”页可启动/继续自主探索、提交任务或持久停止；QQ 私聊、原生 @、已验证回复/引用或 `socialV2.attentionKeywords` 命中也会向同一个全局会话发送元数据提醒。普通群消息留在桥接缓冲，agent 选择是否通过 SnowLuma MCP 或 QQ 桌面界面查看和操作。每个活动回合以 `agent_rest` 结束：有限休息（最长 12 小时）到期后恢复一轮，有效 QQ 提醒也可提前结束休息并恢复一轮；休息期间不会运行异常回合的指数恢复重试。漏掉休息调用时按指数退避恢复，最长间隔 30 分钟。WebUI 停止会取消当前/排队任务并阻断自动恢复，只有 WebUI 手动任务能解除。
 - **提示词维护**：全局助手固定使用 `desktop-agent` preset；人格提示词源位于 `dsh/agent-presets/desktop-agent/agent.cordis.yml`，WebUI 可编辑并生成 `plugins/qq-agent-presets/` bundle patch。DSH 0.1.7 起 preset 由 `@deepseek-ai/dsh-agent-preset` 行加载，保存后需重启 DSH，并重建全局会话才能获得新版提示词。
-- **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——按操作任务提供运行总览、会话控制、助手提示词、提醒与消息、令牌与花费、访问与安全、调试与运维七个页面，右上角搜索框可跨页定位功能项；“会话控制”页启动/继续或停止全局桌面助手，提示词页维护 `desktop-agent`；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；可查看活动日志、维护关键词提醒、配置管理员/控制台令牌（`consoleToken` 未配置时自动生成并打印在启动日志；可在控制台内修改或重新生成）
+- **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——按操作任务提供运行总览、会话控制、助手提示词、长期记忆、提醒与消息、令牌与花费、访问与安全、调试与运维八个页面，右上角搜索框可跨页定位功能项；“会话控制”页启动/继续或停止全局桌面助手，提示词页维护 `desktop-agent`；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；可查看活动日志、维护关键词提醒、配置管理员/控制台令牌（`consoleToken` 未配置时自动生成并打印在启动日志；可在控制台内修改或重新生成）
   - **令牌与花费看板**：实时显示 AI 的 token 消耗与折算金额（元），可下钻到**每个群 / 每个好友 / 每一轮对话**（轮次、步数、缓存命中/未命中输入、输出、命中率、花费、峰谷时段），并有**按时间的消耗走势图**（24 小时 / 3 天 / 7 天 / 30 天，柱子按高峰/空闲着色，一眼看出什么时候烧得凶、哪几个小时是 2 倍价）。累计总量取自 DSH 的 `tokenUsage` 投影（精确，含桥接启动前的历史），逐轮明细由 `assistant/message` 的 `usage` 折叠而来；金额按 DeepSeek 官方价目表折算并区分**高峰 / 空闲时段**（高峰单价为空闲的 2 倍，已内置中国法定节假日）。详见 [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)
   - **人格（角色扮演）管理**：列表点选即可载入查看/编辑提示词，支持新建、保存修改、改名（自动重命名文件）、另存为副本、删除；全局会话开场只注入一次，超过字符上限会实时提示
   - **全局助手提示词**：WebUI 维护 `desktop-agent` 内置提示词，保存前校验 SnowLuma/QQ 通道核心约定，自动备份并重新生成 DSH bundle patch；重启 DSH 并重建全局会话后生效。当前选中的 `roles/*.md` 人格卡只在全局会话首次收到任务或提醒时注入一次；编辑或切换后，新卡片在新建或重建会话时生效。
   - **DSH 模型与思考强度**：控制台从 DSH 模型目录读取可用模型和对应思考档位；目录不可用或模型未列出时可手动填写 Provider / Model ID。保存后下一条消息生效，并会同步改变 DSH 全局默认
+  - **长期记忆**：启用 A_Memorix 后，可在 WebUI 按关键词、时间范围和来源检索记录，并查看、编辑、删除；修改采用新版本替代旧记录。新建或重建的 DSH 会话在首次任务前得到一次精简的助手自身经历摘要，QQ 来源记忆仍按需查询。该页不承诺列出 Gateway 无法枚举的全部记录。
 - **全局 QQ 自主策略**：无周期模型心跳，也不靠长等待工具维持在线。每个活动回合必须最后调用 `agent_rest`；有效 QQ 提醒可中断休息并唤醒一轮，异常回合的指数重试不会在休息期间运行。未正常休息则以 1、2、4、8、16 分钟递增重试，之后最长每 30 分钟一次。私聊、原生 @、已验证回复/引用和配置关键词只产生不带正文的提醒，agent 可忽略；普通群消息只缓冲。SnowLuma MCP 在每次桥接请求时自动附加 `state/desktop-agent.json` 中的桥接内部凭证，模型不用传令牌，也不区分哪个 DSH session 发起调用；可访问任意合法 QQ key，不依赖逐会话白名单。桥接发送仍要求活动回合并经过限频和审计。
 - **个人桌面助手**：WebUI 和符合条件的 QQ 注意信号复用一个持久 `desktop-agent` DSH session。它可以使用 `dsh-computer-use-win` 和完整的当前 SnowLuma MCP 工具集。GUI 发送不经过桥接 API 限频和审计。
 - **交互增强**：
@@ -130,10 +132,14 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `socialV2.attentionKeywords` | 可选关键词数组。匹配群聊正文时只给全局 agent 发元数据提醒，不把正文注入提示词；空数组关闭关键词提醒 |
 | `ownerQQ` | 兼容 QQ 管理命令的可选管理员 QQ；也可由 DSH 的 `qq-mode.ownerQQ` 设置提供 |
 | `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
+| `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | 可选 A_Memorix 长期记忆。默认关闭；需自行部署本机 HTTP/JSON Gateway、创建固定 namespace 和 namespace API key。API key 只保存在不入库的 `config.json`；检索和保存时才连接。 |
+| `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | A_Memorix 请求超时与新会话首次注入摘要的条数/字符上限；默认 `45000` ms、`6` 条、`2500` 字符。配置与维护说明见 [长期记忆方案](docs/guides/MEMORY_ARCHITECTURE.md) |
 | `deny.*` | 控制台直接测试发送的目标拒绝名单；全局桌面会话具有完整 SnowLuma 读写能力 |
 | `sendDelayMs` | QQ 连续发送间隔，防止触发频率限制 |
 
 > `allowAllWhenEmpty` 只影响控制台直接测试发送在白名单为空时是否放行，不限制全局 desktop-agent。SnowLuma MCP 自动附加桥接内部凭证，可读写任意合法 QQ 群/私聊 key；调用方不用提供令牌，也不按发起调用的 DSH session 区分权限。令牌不暴露给模型。
+
+长期记忆的完整目标、A_Memorix 部署前提、来源约定与检索限制见 [docs/guides/MEMORY_ARCHITECTURE.md](docs/guides/MEMORY_ARCHITECTURE.md)。A_Memorix 目前处于 alpha 阶段；未启用时，桥接与其余功能正常运行。
 
 ### DSH 端安装（必做：装 preset + 挂 MCP）
 

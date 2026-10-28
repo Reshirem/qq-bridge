@@ -19,10 +19,10 @@ import { fileURLToPath } from 'node:url'
 //   不写死任何绝对路径，仓库搬家后重建链接即可。
 // 作用：
 //  1) 用 tools.restrict 把 DSH shell、通用文件、子代理和管理工具从工具清单隐藏；
-//  2) 用 tools.guard 固定允许 Windows computer-use、SnowLuma namespaces 与无害模型侧工具。
+//  2) 用 tools.guard 固定允许 Windows computer-use、SnowLuma/A_Memorix namespaces 与无害模型侧工具。
 //
 // DSH 自带 shell、通用文件访问、子代理与 Harness 管理能力仍由该 preset 隐藏；
-// Windows computer-use 通过专用 computer-use MCP 工具开放。
+// Windows computer-use、SnowLuma 和 A_Memorix 通过专用 MCP 工具开放。
 export const name = 'qq-tool-restrict'
 
 export const inject = ['tools']
@@ -259,7 +259,7 @@ export function apply(ctx) {
   // 不会导致整批限制失败（restrict 的 unknown 校验是整批原子性的）。
   //
   // 口径（2026-09-27 实测 web profile 的全局层）：实际存在的全局工具只有
-  // `dev_*`（注入器）与三个 MCP 命名空间的工具；`read`/`pwsh`/`subagent` 这类
+  // `dev_*`（注入器）与 MCP 命名空间的工具；`read`/`pwsh`/`subagent` 这类
   // 是**各 preset 行自己注册的 scoped 工具**，在 QQ preset 里根本没挂载，
   // 因此本名单主要防的是"别的 composition 把它们注册进全局层"这种回归，
   // 以及 MCP 之外的宿主工具（plugin-guard / cordis 检查工具等）。
@@ -313,7 +313,7 @@ export function apply(ctx) {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
-    if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__'].some((prefix) => name.startsWith(prefix))) return
-    return `工具 "${name}" 不在桌面 agent 工具范围内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具与无害模型侧工具）`
+    if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__', 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
+    return `工具 "${name}" 不在桌面 agent 工具范围内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具、A_Memorix 记忆工具与无害模型侧工具）`
   })
 }

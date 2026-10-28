@@ -27,6 +27,7 @@
 | `dsh-client.js` | DSH API、鉴权和事件流客户端 |
 | `mcp-snowluma-safe.js` / `mcp-host-server.js` | 受限 QQ 工具与只读网关状态工具 |
 | `mcp-web-search-safe.js` / `web-search.js` / `safe-fetch.js` | 安全搜索、抓取和网络目标校验 |
+| `mcp-memory-safe.js` / `a-memorix-gateway.js` | A_Memorix Gateway 客户端、受活动回合保护的 DSH 记忆工具与共享记忆检索/管理接口 |
 | `media-normalize.js` / `ffmpeg-resolve.js` / `forward.js` | 图片媒体转换、通用 ffmpeg 路径解析与合并转发处理 |
 | `sticker-lib.js` | QQ 收藏表情数据读取与发送辅助 |
 | `state-acl.mjs` / `sensitive.js` | 本地状态目录 ACL 与敏感内容判断 |

@@ -11,6 +11,7 @@
 - SnowLuma 提供 OneBot 事件流。桥接按 QQ 来源缓存收到的消息；普通群消息正文不会自动进入模型上下文。
 - 私聊、真正发给机器人的原生 @、已验证的回复/引用和配置的 `socialV2.attentionKeywords` 命中会向同一全局会话发送元数据提醒。提醒不含正文，也不强迫助手读取或响应。
 - 全局助手使用 `mcp-snowluma-safe.js` 当前注册的完整 QQ 工具集，可按需枚举群/好友、读取消息及主动发送。MCP 自动从 `state/desktop-agent.json` 读取桥接内部凭证并附加到请求，模型不用处理令牌；不会检查发起调用的 DSH session，MCP profile 中可用该工具的会话共享相同权限。桥接用全局自主运行时状态校验凭证，发送仍检查全局活动回合并执行限频与审计。直接通过 QQ 桌面 UI 发送不经过桥接 API 门禁。
+- 可选 A_Memorix 记忆由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 管理 API 都经过它访问同一 namespace。DSH 工具继续经受活动回合与 agent token 校验；调用参数中的记忆正文和搜索词不会进入工具参数日志。桥接不直接读写记忆服务文件。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - `dsh-computer-use-win` 提供本机桌面操作能力。用户开始使用电脑时，助手应让出界面控制权；ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
 - 全局会话生命周期为 `idle`、`active`、`resting`、`recovering` 和 `stopped`。活动回合最后调用 `agent_rest`；有限休息为 1 秒至 12 小时，到期后恢复一轮；用户在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束有限或无限休息。休息期间异常回合的指数恢复重试暂停。
 - 如果活动回合刚通过 QQ 回复某个来源，助手会在休息前用最近一次 `readThroughSeq` 检查该来源是否有新未读；桥接会清掉已被读取水位覆盖的排队提醒，只保留尚未展示的新提醒，避免同一消息重复唤醒。
@@ -19,7 +20,7 @@
 - `state/desktop-agent.json` 保存全局会话 ID、令牌和生命周期。旧的逐 QQ 会话映射、映射令牌、映射控制接口和 `qq-chat-v2` preset 已从当前代码与 bundle 移除。历史 DSH 会话由 DSH 自行保留，桥接不再枚举、修改或归档它们。
 - 读取本地 NTQQ 数据库仍是延期的技术尝试。当前消息来源仍是 SnowLuma；不要自行开始数据库读取实验，等用户再次提出后再评估。
 
-当前权限约定见 [RULES.md](../../RULES.md)，安装过程见 [DSH_SETUP.md](DSH_SETUP.md)。
+当前权限约定见 [RULES.md](../../RULES.md)，安装过程见 [DSH_SETUP.md](DSH_SETUP.md)。长期记忆目标与实施边界见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 
 ## 当前代码边界
 

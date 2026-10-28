@@ -74,6 +74,8 @@ Key settings:
 | `socialV2.media` | Incoming image/sticker limits: `maxBytes` (8 MB per message by default), `maxPixels` (64 MP per image), and `maxCount` (5 per message). Images sent to the model are normally kept under 1 MiB; resizing large images and extracting animated-sticker frames require FFmpeg. See the [DSH setup guide](docs/guides/DSH_SETUP.md#图片与动图依赖) |
 | `allow.private` / `allow.groups` | Whitelist used by console direct test-send actions; the global agent's SnowLuma tools can target any valid QQ key |
 | `consolePort` / `consoleToken` | Fixed local console port (default `3100`) and access token. The bridge exits if the port is occupied; a blank token is generated and saved to `state/console-token`. After login, the browser session uses an HttpOnly cookie |
+| `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | Optional A_Memorix long-term memory. Disabled by default; deploy its local HTTP/JSON Gateway and create a fixed namespace API key first. The key stays in untracked `config.json`. |
+| `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | Gateway request timeout and the new-session summary count/character limits; defaults are `45000` ms, `6`, and `2500`. See [the memory guide](docs/guides/MEMORY_ARCHITECTURE.md) |
 
 Start:
 
@@ -95,18 +97,20 @@ node scripts/setup-dsh.mjs
 This installs:
 
 - the `qq-agent-presets` bundle, which generates the single `desktop-agent` row and shared `qq-tool-restrict` guard
-- MCP entries in `~/.dsh/profiles/web/cordis.patch.yml`
+- MCP entries in `~/.dsh/profiles/web/cordis.patch.yml`, including the optional A_Memorix memory facade
 - `qq-mode-console` and `qq-agent-presets` in the profile `package.json` (`bundles` + `link:` dependencies)
 - All autonomous activity uses the persistent global `desktop-agent`. Setup does not configure DSH runtime modes or create `state/mode.json`. The historical `qq-mode` namespace remains for the DSH `ownerQQ` administrator setting; its legacy `mode` field does not affect runtime behavior.
 
 Then restart DSH. See [docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md) for details.
+
+When A_Memorix is configured, the WebUI provides memory search and maintenance. The agent receives a compact assistant-origin memory summary once when a new or rebuilt global session starts; QQ-origin memory remains on demand. See [the memory guide](docs/guides/MEMORY_ARCHITECTURE.md) for deployment and API limitations.
 
 ## Security Notes
 
 - `config.json` and `state/` are **never committed**; the repository only ships `config.example.json`. Both are ACL-hardened to the owner / SYSTEM / Administrators (`npm run harden-acl`).
 - Global SnowLuma MCP tools can read and write any valid QQ group/private key. Sends require the global session token and an active DSH turn; the bridge still applies rate limits and audit.
 - Local paths, credentials, tokens and other sensitive patterns are filtered by the audit layer.
-- The global `desktop-agent` gets `mcp__wincu__*`, the complete current `mcp__snowluma__*` QQ namespace, and the read-only `mcp__snowluma-host__snowluma_status` tool. It may list the account's groups and friends, then read or write any valid conversation key. Shell, generic filesystem, subagent and Harness-management tools remain hidden and guarded.
+- The global `desktop-agent` gets `mcp__wincu__*`, the complete current `mcp__snowluma__*` QQ namespace, the read-only `mcp__snowluma-host__snowluma_status` tool, and `mcp__qq-memory__*` (when configured). It may list the account's groups and friends, then read or write any valid conversation key. Shell, generic filesystem, subagent and Harness-management tools remain hidden and guarded.
 - QQ actions made through the desktop UI do not pass through the bridge's API send token, rate limit or audit checks.
 - The console uses a generated token when none is configured.
 
