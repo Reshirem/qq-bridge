@@ -1,4 +1,4 @@
-// 探测 DSH settings 命名空间机制：列出全部命名空间（重点 `qq-mode.ownerQQ`）并**幂等写回原值**
+// 探测 DSH settings 命名空间机制：列出全部命名空间（重点 `qq-agent-presets.ownerQQ`）并**幂等写回原值**
 // 验证写入路径，同时打印桥接关心的几个命名空间。
 //
 // 用途：管理员 `ownerQQ` 设置不生效时的第一手诊断 —— 它能区分「命名空间不可见」
@@ -15,8 +15,8 @@ const namespaces = st?.value?.namespaces ?? [];
 console.log('命名空间总数:', namespaces.length);
 console.log('全部命名空间:', namespaces.map((n) => n.ns).join(', '));
 
-const qq = namespaces.find((n) => n.ns === 'qq-mode');
-console.log('\n=== qq-mode 命名空间 ===');
+const qq = namespaces.find((n) => n.ns === 'qq-agent-presets');
+console.log('\n=== qq-agent-presets 命名空间 ===');
 if (!qq) console.log('❌ 未出现在 describe 里');
 else {
   console.log('ns       =', qq.ns);
@@ -32,7 +32,7 @@ else {
 if (qq) {
   const current = qq.value?.ownerQQ;
   if (typeof current === 'string') {
-    const up = await rpc('settings/update', { ns: 'qq-mode', patch: { ownerQQ: current }, expectedRevision: qq.revision });
+    const up = await rpc('settings/update', { ns: 'qq-agent-presets', patch: { ownerQQ: current }, expectedRevision: qq.revision });
     console.log('\n=== settings/update（写回原值） ===');
     console.log(up?.ok === true ? `✅ 写入成功 accepted=${JSON.stringify(up.value)}` : `❌ ${up?.error?.code}: ${up?.error?.message}`);
     const again = await rpc('settings/describe', {});

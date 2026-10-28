@@ -15,7 +15,6 @@ const tmpHome = path.join(os.tmpdir(), 'qq-bridge-setup-test-home');
 fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, 'profiles', 'web'), { recursive: true });
 fs.mkdirSync(path.join(tmpHome, 'plugins'), { recursive: true });
-
 // 预置一个「历史版本」patch：无 BEGIN/END 标记、含空的 [] 根节点、只挂了 2 个 MCP
 const legacyPatch = `# legacy profile patch
 []
@@ -42,13 +41,12 @@ const legacyPatch = `# legacy profile patch
 fs.writeFileSync(path.join(tmpHome, 'profiles', 'web', 'cordis.patch.yml'), legacyPatch, 'utf8');
 fs.writeFileSync(path.join(tmpHome, 'profiles', 'web', 'package.json'), JSON.stringify({
   name: 'dsh-profile-web', private: true,
-  dependencies: { 'dsh-approval-toast': 'file:C:/x/dsh-approval-toast' },
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-approval-toast'] } },
+  dependencies: {
+    'dsh-approval-toast': 'file:C:/x/dsh-approval-toast',
+    'qq-mode-console': `link:${path.join(tmpHome, 'plugins', 'qq-mode-console').replace(/\\/g, '/')}`,
+  },
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-approval-toast', 'qq-mode-console'] } },
 }, null, 2), 'utf8');
-
-// 用指向本仓库插件的 junction 冒充上一轮已安装的插件链接（与真实安装形态一致），
-// 这样脚本会走「已存在且指向本仓库 → 跳过」的正常分支。
-fs.symlinkSync(path.join(ROOT, 'plugins', 'qq-mode-console'), path.join(tmpHome, 'plugins', 'qq-mode-console'), 'junction');
 
 function runSetup(label) {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'setup-dsh.mjs'), 'web'], {
@@ -102,15 +100,15 @@ if (doc) {
   console.log(`   解析出的 MCP id: ${ids.join(', ')}`);
 }
 
-// 断言 5：profile package.json 含两个 bundle（qq-mode-console + qq-agent-presets），且未破坏其他 bundle
+// 断言 5：profile package.json 已移除独立 qq-mode-console，且未破坏其他 bundle
 const pkg = JSON.parse(fs.readFileSync(path.join(tmpHome, 'profiles', 'web', 'package.json'), 'utf8'));
 const bundles = pkg.dsh.profile.bundles;
-const okBundle = bundles.includes('qq-mode-console') && bundles.includes('qq-agent-presets') && bundles.includes('dsh-approval-toast');
+const okBundle = !bundles.includes('qq-mode-console') && bundles.includes('qq-agent-presets') && bundles.includes('dsh-approval-toast');
 console.log(`${okBundle ? '✅' : '❌'} profile bundles 正确: ${bundles.join(', ')}`);
 if (!okBundle) failed += 1;
 const depOk = String(pkg.dependencies['qq-agent-presets'] ?? '').startsWith('link:')
-  && String(pkg.dependencies['qq-mode-console'] ?? '').startsWith('link:');
-console.log(`${depOk ? '✅' : '❌'} link: 依赖已登记（preset 子行的裸说明符靠它解析）`);
+  && !Object.hasOwn(pkg.dependencies, 'qq-mode-console');
+console.log(`${depOk ? '✅' : '❌'} 单个 qq-agent-presets link: 依赖已登记（旧独立依赖已移除）`);
 if (!depOk) failed += 1;
 
 // 断言 6：DSH 0.1.7 机制 —— preset 由 qq-agent-presets bundle 的 patch 层装配，

@@ -45,6 +45,7 @@ import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardR
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import { createAMemorixGateway } from './a-memorix-gateway.js';
+import { listAMemorixParagraphs } from './a-memorix-readonly.js';
 import { buildPatches, patchFileFor } from '../scripts/build-agent-preset-patches.mjs';
 import {
   loadStickerStore,
@@ -1732,7 +1733,7 @@ async function main() {
   async function refreshBridgeSettings() {
     try {
       const s = unwrap(await api.settings.describe({}), 'settings.describe');
-      const ns = s.namespaces.find((n) => n.ns === 'qq-mode');
+      const ns = s.namespaces.find((n) => n.ns === 'qq-agent-presets');
       const rawOwnerValue = settingFromDshNamespace(ns, 'ownerQQ');
       if (rawOwnerValue === undefined) return;
       const rawOwner = String(rawOwnerValue ?? '').trim();
@@ -2353,6 +2354,46 @@ async function main() {
           const serviceInstalled = fs.existsSync(A_MEMORIX_CONFIG_FILE)
             && fs.existsSync(A_MEMORIX_CLI) && fs.existsSync(A_MEMORIX_GATEWAY);
           sendJson({ ok: true, memory: { ...memory, gatewayReachable, gatewayHealthError, serviceInstalled } });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/records/list') {
+          const memory = memoryGateway.status();
+          if (!memory.namespace) {
+            sendJson({ ok: false, error: memory.error || '当前 A_Memorix namespace 未配置或格式无效' }, 503);
+            return;
+          }
+          const body = await readBody();
+          const query = String(body.query ?? '').trim();
+          const origin = String(body.origin ?? 'all').trim().toLowerCase();
+          const timeStart = String(body.timeStart ?? '').trim();
+          const timeEnd = String(body.timeEnd ?? '').trim();
+          const cursor = String(body.cursor ?? '').trim();
+          const limit = Number(body.limit ?? 50);
+          if (query.length > 2000 || !['all', 'qq', 'assistant'].includes(origin) || cursor.length > 1024) {
+            sendJson({ ok: false, error: '全量浏览筛选条件无效' }, 400);
+            return;
+          }
+          const startMs = timeStart ? Date.parse(timeStart) : null;
+          const endMs = timeEnd ? Date.parse(timeEnd) : null;
+          if ((timeStart && !Number.isFinite(startMs)) || (timeEnd && !Number.isFinite(endMs)) || (startMs !== null && endMs !== null && startMs > endMs)) {
+            sendJson({ ok: false, error: '起止时间格式无效，或起始时间晚于结束时间' }, 400);
+            return;
+          }
+          try {
+            const result = await listAMemorixParagraphs({
+              stateDir: A_MEMORIX_STATE_DIR,
+              namespace: memory.namespace,
+              query,
+              origin,
+              timeStart,
+              timeEnd,
+              cursor,
+              limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 50
+            });
+            sendJson({ ok: true, result });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error).slice(0, 500) }, 503);
+          }
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/memory/settings') {

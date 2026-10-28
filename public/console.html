@@ -30,11 +30,13 @@
       <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>陪伴者</button>
       <button data-view="sessions" class="nav-item"><span class="nav-icon" aria-hidden="true">☷</span>会话控制</button>
       <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>陪伴者提示词</button>
-      <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>长期记忆</button>
+      <div class="nav-label">长期记忆</div>
+      <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>检索与记录</button>
+      <button data-view="memory-settings" class="nav-item"><span class="nav-icon" aria-hidden="true">⚙</span>设置</button>
       <div class="nav-label">QQ 通道</div>
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>提醒与消息</button>
 
-      <div class="nav-label">管理</div>
+      <div class="nav-label">系统与管理</div>
       <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
       <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
       <button data-view="operations" class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>调试与运维</button>
@@ -43,7 +45,7 @@
   </aside>
   <div class="workspace">
     <header class="topbar">
-      <div class="breadcrumb">工作空间<span>/</span><span id="breadcrumbPage">运行总览</span></div>
+      <div class="breadcrumb"><span id="breadcrumbSection">工作空间</span><span>/</span><span id="breadcrumbPage">运行总览</span></div>
       <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
     </header>
     <main id="mainContent" tabindex="-1">
@@ -226,68 +228,13 @@
     </section>
 <section id="section-memory" data-page="memory" class="card span-all">
       <div class="memory-heading">
-        <div><h2>长期记忆</h2><p id="memoryStatus" class="meta" role="status">正在检查 A_Memorix…</p></div>
+        <div><h2>记忆检索与记录</h2><p id="memoryStatus" class="meta" role="status">正在检查 A_Memorix…</p></div>
         <button id="memoryRefreshStatus" class="small">刷新状态</button>
       </div>
       <div class="layer-note">
         <strong>共享记忆库</strong>
-        <p>QQ 来源和自身经历共用 A_Memorix；模型通过工具决定何时读写。这里按需检索、查看、编辑或删除。当前 Gateway 不提供全量列举接口，结果由查询词和时间范围决定，不代表完整账本。</p>
+        <p>QQ 来源和自身经历共用 A_Memorix；模型通过工具决定何时读写。关键词检索走 Gateway；“浏览全部”以只读方式分页读取本机记忆账本中的活动原始记录。</p>
       </div>
-      <details class="settings-group memory-config-group" open>
-        <summary>桥接连接与启动摘要</summary>
-        <div class="settings-content">
-          <p class="meta">Gateway 只允许本机回环地址；namespace 必须已在 A_Memorix 中创建。密钥不会从服务端回显，留空表示保留已保存的密钥。</p>
-          <div class="memory-config-grid">
-            <label class="memory-toggle" for="memoryEnabled"><input id="memoryEnabled" type="checkbox"> 启用长期记忆</label>
-            <label for="memoryBaseUrl">A_Memorix Gateway 地址<input id="memoryBaseUrl" type="url" maxlength="2048" placeholder="http://127.0.0.1:8080"></label>
-            <label for="memoryNamespace">Namespace<input id="memoryNamespace" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9._-]{0,127}" placeholder="qq-bridge"></label>
-            <label for="memoryApiKey">Namespace API Key（留空不变）<input id="memoryApiKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
-            <label class="memory-toggle" for="memoryClearApiKey"><input id="memoryClearApiKey" type="checkbox"> 清除已保存的 namespace 密钥</label>
-            <label for="memoryTimeoutSeconds">请求超时（秒）<input id="memoryTimeoutSeconds" type="number" min="1" max="120" step="1"></label>
-            <label for="memoryBootstrapLimit">新会话摘要最多记忆数<input id="memoryBootstrapLimit" type="number" min="1" max="12" step="1"></label>
-            <label for="memoryBootstrapMaxChars">新会话摘要字符上限<input id="memoryBootstrapMaxChars" type="number" min="500" max="5000" step="100"></label>
-          </div>
-          <div class="row memory-config-actions">
-            <button id="memorySettingsSave" class="primary">保存连接设置</button>
-            <button id="memoryServiceStart" class="small">启动 A_Memorix</button>
-            <span id="memorySettingsStatus" class="meta" role="status"></span>
-          </div>
-        </div>
-      </details>
-      <details class="settings-group memory-config-group">
-        <summary>A_Memorix 模型服务（Embedding / LLM）</summary>
-        <div class="settings-content">
-          <p>Embedding 用于语义检索；LLM 用于记忆关系、画像和情景整理。配置后，A_Memorix 会将相应记忆内容发送到这些服务地址，可能产生费用。外部地址必须使用 HTTPS。密钥只写入本机受保护的 state 目录，页面不会回读。</p>
-          <div class="memory-provider-grid">
-            <fieldset class="memory-provider-card">
-              <legend>Embedding</legend>
-              <p id="memoryEmbeddingStatus" class="meta" role="status">尚未读取配置</p>
-              <label for="memoryEmbeddingEndpoint">OpenAI 兼容 API 地址<input id="memoryEmbeddingEndpoint" type="url" maxlength="2048" placeholder="https://服务地址/v1"></label>
-              <label for="memoryEmbeddingModel">模型 ID<input id="memoryEmbeddingModel" type="text" maxlength="256" autocomplete="off" placeholder="例如 embedding 模型名"></label>
-              <label for="memoryEmbeddingKey">API Key（留空不变）<input id="memoryEmbeddingKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
-              <label for="memoryEmbeddingDimension">向量维度<input id="memoryEmbeddingDimension" type="number" min="1" max="8192" step="1"></label>
-              <p class="meta">必须与该 Embedding 模型实际返回的维度一致；常见默认值为 1024。</p>
-              <label class="memory-toggle" for="memoryEmbeddingClearKey"><input id="memoryEmbeddingClearKey" type="checkbox"> 清除已保存的 Embedding 密钥</label>
-            </fieldset>
-            <fieldset class="memory-provider-card">
-              <legend>LLM</legend>
-              <p id="memoryLlmStatus" class="meta" role="status">尚未读取配置</p>
-              <label for="memoryLlmEndpoint">OpenAI 兼容 API 地址<input id="memoryLlmEndpoint" type="url" maxlength="2048" placeholder="https://服务地址/v1"></label>
-              <label for="memoryLlmModel">模型 ID<input id="memoryLlmModel" type="text" maxlength="256" autocomplete="off" placeholder="例如聊天模型名"></label>
-              <label for="memoryLlmKey">API Key（留空不变）<input id="memoryLlmKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
-              <div class="memory-provider-numbers">
-                <label for="memoryLlmMaxTokens">最大输出 token<input id="memoryLlmMaxTokens" type="number" min="1" max="65536" step="1"></label>
-                <label for="memoryLlmTemperature">Temperature<input id="memoryLlmTemperature" type="number" min="0" max="2" step="0.1"></label>
-              </div>
-              <label class="memory-toggle" for="memoryLlmClearKey"><input id="memoryLlmClearKey" type="checkbox"> 清除已保存的 LLM 密钥</label>
-            </fieldset>
-          </div>
-          <div class="row memory-config-actions">
-            <button id="memoryProvidersSave" class="primary">保存并重启 A_Memorix</button>
-            <span id="memoryProviderSaveStatus" class="meta" role="status"></span>
-          </div>
-        </div>
-      </details>
       <h3>检索记忆</h3>
       <div class="row memory-search-controls">
         <label for="memoryQuery">关键词或问题</label>
@@ -299,9 +246,12 @@
         <label for="memoryTimeEnd">到</label>
         <input id="memoryTimeEnd" type="date">
         <button id="memorySearch" class="primary">检索</button>
+        <button id="memoryBrowseAll" class="small">浏览全部</button>
       </div>
       <p id="memorySearchStatus" class="meta" role="status"></p>
-      <div id="memoryResults" class="memory-results" aria-live="polite"><div class="empty-state"><strong>尚未检索</strong><p>输入问题后查询长期记忆。</p></div></div>
+      <p class="meta memory-search-help">检索按相关度返回结果；“浏览全部”会按正文包含关键词、来源和时间范围筛选活动原始记录并分页。已删除记录以及关系、Episode、人物画像等派生视图不在这份原始记录列表中。</p>
+      <div id="memoryResults" class="memory-results" aria-live="polite"><div class="empty-state"><strong>尚未检索</strong><p>输入关键词，或选择时间范围。</p></div></div>
+      <div id="memoryLoadMoreContainer" class="memory-list-actions" hidden><button id="memoryLoadMore" class="small">加载更多</button></div>
 
       <details class="settings-group" open>
         <summary id="memoryEditorTitle">新建记忆</summary>
@@ -330,6 +280,71 @@
             <span id="memoryEditorStatus" class="meta" role="status"></span>
           </div>
           <p class="meta">编辑会先写入新版本并标记替代关系，再删除旧版本；若旧版本删除失败，新版本会保留并显示提示。</p>
+        </div>
+      </details>
+    </section>
+<section id="section-memory-settings" data-page="memory-settings" class="card span-all">
+      <div class="memory-heading">
+        <div><h2>长期记忆设置</h2><p id="memorySettingsGatewayStatus" class="meta" role="status">正在检查 A_Memorix…</p></div>
+        <button id="memorySettingsRefreshStatus" class="small">刷新状态</button>
+      </div>
+      <div class="layer-note">
+        <strong>A_Memorix 连接与模型服务</strong>
+        <p>连接设置控制桥接如何访问共享记忆库以及首次会话摘要的大小。Embedding 和 LLM Provider 由 A_Memorix 用于语义检索与记忆整理；配置后，记忆内容会发送到所填服务并可能产生费用。</p>
+      </div>
+      <details class="settings-group memory-config-group" open>
+        <summary>桥接连接与启动摘要</summary>
+        <div class="settings-content">
+          <p class="meta">Gateway 只允许本机回环地址；namespace 必须已在 A_Memorix 中创建。密钥不会从服务端回显，留空表示保留已保存的密钥。</p>
+          <div class="memory-config-grid">
+            <label class="memory-toggle" for="memoryEnabled"><input id="memoryEnabled" type="checkbox"> 启用长期记忆</label>
+            <label for="memoryBaseUrl">A_Memorix Gateway 地址<input id="memoryBaseUrl" type="url" maxlength="2048" placeholder="http://127.0.0.1:8080"></label>
+            <label for="memoryNamespace">Namespace<input id="memoryNamespace" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9._-]{0,127}" placeholder="qq-bridge"></label>
+            <label for="memoryApiKey">Namespace API Key（留空不变）<input id="memoryApiKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
+            <label class="memory-toggle" for="memoryClearApiKey"><input id="memoryClearApiKey" type="checkbox"> 清除已保存的 namespace 密钥</label>
+            <label for="memoryTimeoutSeconds">请求超时（秒）<input id="memoryTimeoutSeconds" type="number" min="1" max="120" step="1"></label>
+            <label for="memoryBootstrapLimit">新会话摘要最多记忆数<input id="memoryBootstrapLimit" type="number" min="1" max="12" step="1"></label>
+            <label for="memoryBootstrapMaxChars">新会话摘要字符上限<input id="memoryBootstrapMaxChars" type="number" min="500" max="5000" step="100"></label>
+          </div>
+          <div class="row memory-config-actions">
+            <button id="memorySettingsSave" class="primary">保存连接设置</button>
+            <button id="memoryServiceStart" class="small">启动 A_Memorix</button>
+            <span id="memorySettingsStatus" class="meta" role="status"></span>
+          </div>
+        </div>
+      </details>
+      <details class="settings-group memory-config-group">
+        <summary>A_Memorix 模型服务（Embedding / LLM）</summary>
+        <div class="settings-content">
+          <p>Embedding 用于语义检索；LLM 用于记忆关系、画像和情景整理。外部地址必须使用 HTTPS。密钥只写入本机受保护的 state 目录，页面不会回读。</p>
+          <div class="memory-provider-grid">
+            <fieldset class="memory-provider-card">
+              <legend>Embedding</legend>
+              <p id="memoryEmbeddingStatus" class="meta" role="status">尚未读取配置</p>
+              <label for="memoryEmbeddingEndpoint">OpenAI 兼容 API 地址<input id="memoryEmbeddingEndpoint" type="url" maxlength="2048" placeholder="https://服务地址/v1"></label>
+              <label for="memoryEmbeddingModel">模型 ID<input id="memoryEmbeddingModel" type="text" maxlength="256" autocomplete="off" placeholder="例如 embedding 模型名"></label>
+              <label for="memoryEmbeddingKey">API Key（留空不变）<input id="memoryEmbeddingKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
+              <label for="memoryEmbeddingDimension">向量维度<input id="memoryEmbeddingDimension" type="number" min="1" max="8192" step="1"></label>
+              <p class="meta">必须与该 Embedding 模型实际返回的维度一致；常见默认值为 1024。</p>
+              <label class="memory-toggle" for="memoryEmbeddingClearKey"><input id="memoryEmbeddingClearKey" type="checkbox"> 清除已保存的 Embedding 密钥</label>
+            </fieldset>
+            <fieldset class="memory-provider-card">
+              <legend>LLM</legend>
+              <p id="memoryLlmStatus" class="meta" role="status">尚未读取配置</p>
+              <label for="memoryLlmEndpoint">OpenAI 兼容 API 地址<input id="memoryLlmEndpoint" type="url" maxlength="2048" placeholder="https://服务地址/v1"></label>
+              <label for="memoryLlmModel">模型 ID<input id="memoryLlmModel" type="text" maxlength="256" autocomplete="off" placeholder="例如聊天模型名"></label>
+              <label for="memoryLlmKey">API Key（留空不变）<input id="memoryLlmKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
+              <div class="memory-provider-numbers">
+                <label for="memoryLlmMaxTokens">最大输出 token<input id="memoryLlmMaxTokens" type="number" min="1" max="65536" step="1"></label>
+                <label for="memoryLlmTemperature">Temperature<input id="memoryLlmTemperature" type="number" min="0" max="2" step="0.1"></label>
+              </div>
+              <label class="memory-toggle" for="memoryLlmClearKey"><input id="memoryLlmClearKey" type="checkbox"> 清除已保存的 LLM 密钥</label>
+            </fieldset>
+          </div>
+          <div class="row memory-config-actions">
+            <button id="memoryProvidersSave" class="primary">保存并重启 A_Memorix</button>
+            <span id="memoryProviderSaveStatus" class="meta" role="status"></span>
+          </div>
         </div>
       </details>
     </section>

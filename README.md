@@ -72,16 +72,16 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
     因而结果质量与 DSH 内的搜索一致、且**不再默认把群聊关键词发给 Bing**（Bing RSS 只在 DeepSeek 不可用时兜底）。
     抓取由桥接自己做 SSRF 校验并限制正文大小。搜索只在 agent 明确调用时发生，不会自动从群聊提取词条或建立词库。
     数据出机清单见 [LICENSE](LICENSE) 的「数据出机清单」。
-  - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；自身经历由 agent 自行选择记录。QQ 与自身经历共用固定 namespace，工具仅提供搜索、读取、保存和删除，并受桥接活动回合与会话令牌检查。WebUI 的“长期记忆”页可配置记忆注入上限、Embedding/LLM Provider 和服务状态；Provider 地址、模型和密钥由用户手动填写。Windows 部署见 [记忆部署说明](docs/guides/DSH_SETUP.md#安装)；官方 `v2.0.0a4` 发布文件及校验值由部署脚本固定，运行数据留在 `state/a-memorix/`。
+  - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；自身经历由 agent 自行选择记录。QQ 与自身经历共用固定 namespace，工具仅提供搜索、读取、保存和删除，并受桥接活动回合与会话令牌检查。WebUI 的“长期记忆 → 检索与记录”页支持 Gateway 相关度检索，也可按正文、时间和来源只读分页浏览本机账本中的全部活动原始记录；编辑和删除仍走 Gateway。“长期记忆 → 设置”页配置连接、启动摘要上限、Embedding/LLM Provider 和服务状态。Provider 地址、模型和密钥由用户手动填写。Windows 部署见 [记忆部署说明](docs/guides/DSH_SETUP.md#安装)；官方 `v2.0.0a4` 发布文件及校验值由部署脚本固定，运行数据留在 `state/a-memorix/`。
 - **会话模型**：所有自主活动共用一个持久的 `desktop-agent` DSH 会话。人格卡决定陪伴者的具体身份；QQ 群和私聊 ID 只作为消息来源/目标，不拆分会话上下文。全局陪伴者可通过 `qq_list_conversations` 发现账号中的群和好友，再按需读写。桥接不再创建或管理逐 QQ DSH 会话。
 - **全局陪伴者活动**：WebUI 的“会话控制”页可启动/继续自主探索、提交任务或持久停止；QQ 私聊、原生 @、已验证回复/引用、群消息中提到已有的人格卡名称或 `socialV2.attentionKeywords` 命中，也会向同一个全局会话发送元数据提醒。普通群消息留在桥接缓冲，由陪伴者自行选择是否通过 SnowLuma MCP 或 QQ 桌面界面查看和操作。每个活动回合以 `agent_rest` 结束：有限休息（最长 12 小时）到期后恢复一轮，有效 QQ 提醒也可提前结束休息并恢复一轮；未读的 QQ 提醒会在后续休息期间每分钟检查一次，最多补发一次；指数退避恢复时不补发。漏掉休息调用时按指数退避恢复，最长间隔 30 分钟。WebUI 停止会取消当前/排队任务并阻断自动恢复，只有 WebUI 手动任务能解除。
 - **提示词维护**：全局陪伴者固定使用技术 preset `desktop-agent`；WebUI 按用途拆分编辑固定前缀，支持逐个添加、命名、启用或删除自定义模块。模块源配置在 `dsh/agent-presets/desktop-agent/prompt-modules.json`，生成的完整前缀写入 `agent.cordis.yml` 并同步 `plugins/qq-agent-presets/` bundle patch。人格卡开场、QQ 来源提醒、休息/恢复和长期记忆摘要等桥接运行时动态提示模板也可在 WebUI 单独编辑，保存后直接用于后续对应场景。必要的会话、安全和回合收尾模块不能关闭；固定前缀中的模块开关只控制提示词文本，实际工具能力仍由各自设置控制。DSH 0.1.7 起 preset 由 `@deepseek-ai/dsh-agent-preset` 行加载，保存固定前缀后需重启 DSH，并重建全局会话才能获得新版前缀。
-- **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——按操作任务提供运行总览、会话控制、陪伴者提示词、长期记忆、提醒与消息、令牌与花费、访问与安全、调试与运维八个页面，右上角搜索框可跨页定位功能项；“会话控制”页管理全局陪伴者，提示词页维护技术 preset `desktop-agent`；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；可查看活动日志、维护关键词提醒、配置管理员/控制台令牌（`consoleToken` 未配置时自动生成并打印在启动日志；可在控制台内修改或重新生成）
+- **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——按操作任务提供运行总览、会话控制、陪伴者提示词、长期记忆（检索与记录、设置）、提醒与消息、令牌与花费、访问与安全、调试与运维九个页面，右上角搜索框可跨页定位功能项；导航按工作空间、长期记忆、QQ 通道、系统与管理分组；“会话控制”页管理全局陪伴者，提示词页维护技术 preset `desktop-agent`；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；可查看活动日志、维护关键词提醒、配置管理员/控制台令牌（`consoleToken` 未配置时自动生成并打印在启动日志；可在控制台内修改或重新生成）
   - **令牌与花费看板**：实时显示 AI 的 token 消耗与折算金额（元），可下钻到**每个群 / 每个好友 / 每一轮对话**（轮次、步数、缓存命中/未命中输入、输出、命中率、花费、峰谷时段），并有**按时间的消耗走势图**（24 小时 / 3 天 / 7 天 / 30 天，柱子按高峰/空闲着色，一眼看出什么时候烧得凶、哪几个小时是 2 倍价）。累计总量取自 DSH 的 `tokenUsage` 投影（精确，含桥接启动前的历史），逐轮明细由 `assistant/message` 的 `usage` 折叠而来；金额按 DeepSeek 官方价目表折算并区分**高峰 / 空闲时段**（高峰单价为空闲的 2 倍，已内置中国法定节假日）。详见 [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)
   - **人格（角色扮演）管理**：列表点选即可载入查看/编辑提示词，支持新建、保存修改、改名（自动重命名文件）、另存为副本、删除；全局会话开场只注入一次，超过字符上限会实时提示
   - **全局陪伴者提示词**：WebUI 按模块编辑 `desktop-agent` 固定前缀，可独立调整自主探索、有限休息、QQ 等待、长期记忆等指引，也可逐个追加自定义模块，并预览组合后的完整前缀；保存会同时备份模块文件和 preset、重新生成 DSH bundle patch。另有“运行时提示模板”可编辑人格卡开场、QQ 来源提醒、休息/恢复和长期记忆摘要的桥接注入文本，保存后直接更新桥接配置，不需重启 DSH。固定前缀保存后仍需重启 DSH 并重建全局会话。模块开关只控制提示词文本；记忆服务的实际开关位于“长期记忆”页，活动回合收尾工具始终保留。当前选中的 `roles/*.md` 人格卡定义具体身份和形态，只在全局会话首次收到任务或提醒时注入一次；编辑或切换后，新卡片在新建或重建会话时生效。
   - **DSH 模型与思考强度**：控制台从 DSH 模型目录读取可用模型和对应思考档位；目录不可用或模型未列出时可手动填写 Provider / Model ID。保存后下一条消息生效，并会同步改变 DSH 全局默认
-  - **长期记忆**：启用 A_Memorix 后，可在 WebUI 按关键词、时间范围和来源检索记录，并查看、编辑、删除；修改采用新版本替代旧记录。新建或重建的 DSH 会话在首次任务前得到一次精简的自身经历摘要，QQ 来源记忆仍按需查询。该页不承诺列出 Gateway 无法枚举的全部记录。
+  - **长期记忆**：namespace 有效且本机账本可读取时，可在“检索与记录”页按关键词、时间范围和来源进行 Gateway 检索，也可“浏览全部”分页查看本机账本中的活动原始记录；全量浏览不依赖 Gateway 可达性，是受控制台鉴权保护的 SQLite 只读查询。Gateway 检索、编辑和删除仍要求 A_Memorix 服务配置可用。纯关键词不选日期时走 `SEARCH`，关键词与日期同时给出时走 `HYBRID`，纯时间检索走 `TIME` 且至少需要一个日期边界。查看、编辑、删除均可从记录列表操作，修改采用新版本替代旧记录。“设置”页独立管理 Gateway、首次摘要和 Provider。新建或重建的 DSH 会话在首次任务前得到一次精简的自身经历摘要，QQ 来源记忆仍按需查询。全量列表只包含活动原始段落，不包含已删除项或关系、Episode、人物画像等派生管理视图。
 - **全局 QQ 自主策略**：无周期模型心跳，也不靠长等待工具维持在线。每个活动回合必须最后调用 `agent_rest`；有效 QQ 提醒可中断休息并唤醒一轮。桥接运行期间，未由 `readThroughSeq` 确认的 QQ 提醒会在后续休息期间每分钟检查一次，最多补发一次；异常回合处于指数退避时不提醒。未正常休息则以 1、2、4、8、16 分钟递增重试，之后最长每 30 分钟一次。私聊、原生 @、已验证回复/引用、群消息中提到的人格卡名称和配置关键词只产生不带正文的提醒，agent 可忽略；普通群消息只缓冲。SnowLuma MCP 在每次桥接请求时自动附加 `state/desktop-agent.json` 中的桥接内部凭证，模型不用传令牌，也不区分哪个 DSH session 发起调用；可访问任意合法 QQ key，不依赖逐会话白名单。桥接发送仍要求活动回合并经过限频和审计。
 - **全局陪伴者能力**：WebUI 和符合条件的 QQ 注意信号复用一个持久 `desktop-agent` DSH session。会话可按需使用 `dsh-computer-use-win` 和完整的当前 SnowLuma MCP 工具集。GUI 发送不经过桥接 API 限频和审计。
 - **交互增强**：
@@ -130,7 +130,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `webSearch.baseURL` / `model` / `maxUses` / `maxResults` | 搜索端点（默认 `https://api.deepseek.com/anthropic/v1`，必须 https 且解析到公网）、模型（默认 `deepseek-v4-flash`）、单次搜索最多用几次工具、返回条数上限 |
 | `allow.private` / `allow.groups` | 控制台直接测试发送的目标白名单；全局陪伴者会话的 SnowLuma 工具不受其限制 |
 | `socialV2.attentionKeywords` | 可选关键词数组。匹配群聊正文时只给全局 agent 发元数据提醒，不把正文注入提示词；空数组关闭关键词提醒 |
-| `ownerQQ` | 兼容 QQ 管理命令的可选管理员 QQ；也可由 DSH 的 `qq-mode.ownerQQ` 设置提供 |
+| `ownerQQ` | 兼容 QQ 管理命令的可选管理员 QQ；也可由 DSH 的 `qq-agent-presets.ownerQQ` 设置提供 |
 | `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
 | `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | 可选 A_Memorix 长期记忆。默认关闭；部署本机 HTTP/JSON Gateway 并创建 namespace 后，可在 WebUI 配置连接地址、namespace、密钥和使用上限；API key 只保存在不入库的 `config.json`。 |
 | `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | A_Memorix 请求超时与新会话首次注入摘要的条数/字符上限；默认 `45000` ms、`6` 条、`2500` 字符。配置与维护说明见 [长期记忆方案](docs/guides/MEMORY_ARCHITECTURE.md) |
@@ -149,7 +149,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 node scripts/setup-dsh.mjs
 ```
 
-> `setup-dsh.mjs` 只安装 `desktop-agent` 和当前 MCP 工具；不再设置 DSH 运行模式或创建 `state/mode.json`。历史 `qq-mode` 兼容命名空间仍承载 DSH 设置中的 `ownerQQ` 管理员配置。
+> `setup-dsh.mjs` 安装 `desktop-agent`、管理员 `ownerQQ` 设置和当前 MCP 工具；不再设置 DSH 运行模式或创建 `state/mode.json`。设置命名空间为 `qq-agent-presets.ownerQQ`。
 
 详细步骤见 **[docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md)**。
 
@@ -264,7 +264,7 @@ qq-bridge/
     FOLDER_MAP.md       # 目录结构与 scripts/ 命名约定
     guides/             # 当前架构、安装、安全、隐私、控制台与兼容性指南
   dsh/agent-presets/    # 全局 desktop-agent preset 源文件
-  plugins/qq-mode-console  # DSH 兼容设置命名空间：承载 ownerQQ，不提供运行模式选择
+  plugins/qq-agent-presets/ # DSH 全局 preset、工具守卫及 ownerQQ 管理员设置
   src/
     bridge.js           # 主程序
     autonomy-policy.js  # 纯唤醒策略

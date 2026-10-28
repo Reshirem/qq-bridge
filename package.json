@@ -32,7 +32,7 @@
     "test:dsh-inbox": "node scripts/test-dsh-inbox-projection.mjs",
     "verify:persona": "node scripts/verify-persona-config.mjs",
     "test:mcp-servers": "node scripts/test-mcp-servers-stdio.mjs",
-    "test:plugin": "node scripts/test-qq-mode-plugin.mjs",
+    "test:plugin": "node scripts/test-qq-agent-presets-settings.mjs",
     "test:setup-idempotent": "node scripts/test-setup-dsh-idempotent.mjs",
     "test:mux-reconnect": "node scripts/test-mux-reconnect.mjs",
     "probe:events": "node scripts/probe-events.mjs",

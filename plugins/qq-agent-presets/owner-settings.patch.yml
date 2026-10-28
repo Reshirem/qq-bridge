@@ -1,0 +1,6 @@
+# DSH Settings 命名空间随 qq-agent-presets bundle 提供。
+# id 与设置命名空间一致；桥接从 qq-agent-presets.ownerQQ 读取管理员 QQ。
+- insert:
+    - id: qq-agent-presets
+      name: qq-agent-presets
+      config: {}

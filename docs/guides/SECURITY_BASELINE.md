@@ -83,6 +83,7 @@
 | 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token，桥接还要求活动回合；保存有限或无限休息状态，并在返回工具结果后取消当前 DSH turn。休息到期只发起一次恢复回合。 |
 | 记忆工具 | `/api/desktop-agent/memory/*` | 仅活动 `desktop-agent` 回合可调用；校验全局 agent token；仅暴露搜索/保存/读取/删除，并固定访问 `config.json` 中的 A_Memorix namespace。参数正文与检索词不写入工具参数日志。 |
 | 记忆管理 | `/api/memory/*` | 受控制台令牌保护；用于 WebUI 搜索、查看、保存、替代和删除。A_Memorix namespace API key 留在桥接本地配置，不返回给页面或 DSH。 |
+| 记忆全量浏览 | `POST /api/memory/records/list` | 受控制台令牌与 JSON/Origin 校验保护；带 `x-agent-token` 时因默认拒绝白名单而返回 403。仅读取配置 namespace 的 `paragraphs` 表，校验 storage key 路径与必需列，使用 SQLite `mode=ro` + `query_only` 和参数化查询；不读向量/图存储，不写数据库。 |
 | 记忆开场摘要 | `submitDesktopAgentPrompt()` | 只在新/重建会话首次提示查询 `assistant` 来源；QQ 来源不自动注入。检索失败不阻止提示提交。 |
 | 请求体限制 | `readBody()` | 声明长度或实际累计超过 1 MB → 413；30 秒读取超时 |
 | 安全响应头 | 全部响应 | `X-Frame-Options: DENY`、CSP、`nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` |
@@ -186,6 +187,7 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 - [x] SSRF：scheme、URL 凭据、私有 IP、重定向、超时、大小限制（11 项）
 - [x] 桥接 `200 + {ok:false}` 会被 MCP 当作失败上报（不产生静默假成功）
 - [x] bridge API 发送必须通过活动回合租约、全局会话令牌、限频和审计
+- [ ] WebUI 全量记忆浏览只读当前 namespace 原始段落；普通控制台令牌可访问，agent token 必须被默认拒绝
 - [x] `state/` ACL 助手：非阻断、防递归、`start.bat` 纯 ASCII+CRLF 且先于桥接调用（**结构级断言**）
 - [ ] **`state/` ACL 的真实 icacls/UAC 行为**：需在普通终端手动复跑 `node scripts/harden-state-acl.mjs` 确认（沙箱/CI 里改 ACL 会被拒，无法自动化）
 

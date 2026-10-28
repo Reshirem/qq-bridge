@@ -36,8 +36,9 @@ function fixture(name, patch = '') {
   const patchFile = path.join(home, 'profiles/web/cordis.patch.yml');
   fs.writeFileSync(patchFile, patch);
   fs.writeFileSync(path.join(home, 'profiles/web/package.json'), JSON.stringify({
-    name: 'fixture-profile', dependencies: { existing: '1.0.0' },
-    dsh: { profile: { bundles: ['existing'] } },
+    name: 'fixture-profile',
+    dependencies: { existing: '1.0.0', 'qq-mode-console': 'link:/legacy/plugins/qq-mode-console' },
+    dsh: { profile: { bundles: ['existing', 'qq-mode-console'] } },
   }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
   Object.assign(env, { PATH: path.dirname(process.execPath), DSH_HOME: home, HOME: home, USERPROFILE: home, QQ_BRIDGE_SKIP_DSH_INSTALL: '1' });
@@ -70,7 +71,8 @@ try {
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
-    assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'qq-mode-console', 'qq-agent-presets']);
+    assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'qq-agent-presets']);
+    assert.equal(Object.hasOwn(pkg.dependencies, 'qq-mode-console'), false);
   });
 
   test('legacy root [] is repaired without altering literal strings', () => {
@@ -106,10 +108,10 @@ try {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.readFileSync(path.join(f.repo, 'state/unrelated.json'), 'utf8'), state);
     const blocker = fixture('plugin-conflict', '[]\n');
-    fs.mkdirSync(path.join(blocker.home, 'plugins/qq-mode-console'), { recursive: true });
-    fs.writeFileSync(path.join(blocker.home, 'plugins/qq-mode-console/keep.txt'), 'keep');
+    fs.mkdirSync(path.join(blocker.home, 'plugins/qq-agent-presets'), { recursive: true });
+    fs.writeFileSync(path.join(blocker.home, 'plugins/qq-agent-presets/keep.txt'), 'keep');
     assert.notEqual(blocker.run().status, 0);
-    assert.equal(fs.readFileSync(path.join(blocker.home, 'plugins/qq-mode-console/keep.txt'), 'utf8'), 'keep');
+    assert.equal(fs.readFileSync(path.join(blocker.home, 'plugins/qq-agent-presets/keep.txt'), 'utf8'), 'keep');
   });
 
   if (process.platform === 'win32') test('Windows runs the npm .cmd shim with literal profile arguments', () => {

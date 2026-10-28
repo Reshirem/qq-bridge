@@ -12,7 +12,7 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并面向任意合法会话 key 使用完整的当前 SnowLuma MCP 工具集。`ownerQQ` 只供桥接直接执行的管理员 QQ 命令；历史 `qq-mode` 命名空间仍兼容承载该设置，运行模式字段不参与运行。
+Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并面向任意合法会话 key 使用完整的当前 SnowLuma MCP 工具集。`ownerQQ` 只供桥接直接执行的管理员 QQ 命令；也可在 DSH 设置的 `qq-agent-presets.ownerQQ` 中填写。DSH 运行模式字段不参与运行。
 
 长期记忆为可选能力。Windows 上可在仓库根目录运行：
 
@@ -32,9 +32,9 @@ powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 stop
 
 Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过 `setup` 安装，启动器会先尝试启动 Gateway 和记忆服务；启动失败会显示警告，但不会阻止桥接运行。直接使用 `npm start` 时，需先单独运行脚本的 `start` 操作。
 
-如果在桥接运行期间首次运行了 `setup`，重启一次 qq-bridge 以读取脚本写入的 namespace 凭据。之后无需改 `config.json`，可直接在 WebUI「长期记忆」页设置启用状态、本机 Gateway 地址、已创建的 namespace、namespace API key、请求超时和首次摘要上限。Gateway 地址只允许本机回环地址；切换 namespace 前需先在 A_Memorix 中创建它。保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态；未配置时桥接仍可正常运行，WebUI 会显示连接状态。
+如果在桥接运行期间首次运行了 `setup`，重启一次 qq-bridge 以读取脚本写入的 namespace 凭据。之后无需改 `config.json`，可在 WebUI「长期记忆 → 设置 → 桥接连接与启动摘要」中设置启用状态、本机 Gateway 地址、已创建的 namespace、namespace API key、请求超时和首次摘要上限。Gateway 地址只允许本机回环地址；切换 namespace 前需先在 A_Memorix 中创建它。保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态；未配置时桥接仍可正常运行，WebUI 会显示连接状态。
 
-启用后可在 WebUI「长期记忆」页手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机受 ACL 保护的 `state/a-memorix/secrets/`，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
+启用后可在 WebUI「长期记忆 → 设置 → A_Memorix 模型服务」中手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机受 ACL 保护的 `state/a-memorix/secrets/`，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
 
 Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接会在**每次启动时**识别由 DeepSeek Harness 进程持有并经 API 确认的本机监听端口，因此应先启动 DSH，再启动桥接。发现的 URL 只用于当前桥接进程，不写回 `config.json`。未发现桌面 API 时使用 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`）作为回退；非 Windows 或固定端口部署可设置 `dsh.autoDetectPort: false`。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会拒绝猜测；将 `dsh.baseUrl` 指向目标实例即可明确选择。DSH Desktop 重启后若换了端口，重启桥接以重新发现。
 
@@ -60,9 +60,9 @@ DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
 
 脚本会：
 
-1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并注册 `qq-agent-presets`。
+1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
 2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe`、`mcp-qq-memory` 四个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
-3. 注册 `qq-agent-presets` 和 host 配置插件 bundle。host 插件的既有包名 `qq-mode-console` 为兼容性名称，当前仅承载管理配置，不提供运行模式切换。
+3. 从目标 profile 移除旧的 `qq-mode-console` bundle 及安装脚本创建的链接，并注册合并后的 `qq-agent-presets`。
 4. 尝试执行 `dsh plugin --profile <profile> install` 安装 bundle 依赖；如 DSH CLI 不可用，会提示手动执行命令。
 
 脚本可重复运行；修改 MCP 配置前会备份目标文件，解析失败时不会覆盖它。preset patch 是生成文件，修改 preset 时请编辑 `dsh/agent-presets/<preset>/` 下的源文件，然后运行：
@@ -75,7 +75,7 @@ node scripts/build-agent-preset-patches.mjs
 
 > DSH 0.1.7 起不再读取旧的 `~/.dsh/.agent-presets/<name>/` 目录。安装脚本只报告并保留该旧目录，不会删除或迁移其中的手工修改；如有自定义内容，请自行合并到仓库源文件。
 
-安装完成后，重启 DSH（或重新加载 profile），使 preset 和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。历史 `qq-mode` 命名空间只兼容承载 `ownerQQ` 管理员配置。
+安装完成后，重启 DSH（或重新加载 profile），使 preset、管理员设置和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。管理员 QQ 设置现在位于 `qq-agent-presets.ownerQQ`；旧 `qq-mode.ownerQQ` 值不会自动迁移，需要在新命名空间重新填写。
 
 电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
@@ -116,7 +116,7 @@ node scripts/test-audit-setup-guards.mjs
 
 - **QQ 信号没有启动全局会话**：确认 SnowLuma 事件进入桥接，且私聊或群聊原生 @ / 验证回复 / 配置关键词符合注意信号规则；普通群消息只缓冲。再检查 DSH preset 清单是否包含 `desktop-agent`。
 - **陪伴者会话不可用**：确认 `desktop-agent` 已出现在 DSH preset 清单，且 DSH profile 中的 `dsh-computer-use-win` 已启用；更新 bundle 后重启 DSH，再从 WebUI 提交任务或触发一条 QQ 注意信号。
-- **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 有 `qq-agent-presets` 和 host 配置 bundle 依赖，然后重启 DSH。
+- **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 已注册 `qq-agent-presets`，然后重启 DSH。
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否有三个 `mcp-*` 条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
 - **preset 未出现**：检查 `qq-agent-presets` bundle 是否注册并安装，再运行 `node scripts/build-agent-preset-patches.mjs --check`；修改源文件后需重新生成 patch 并重启 DSH。
 - **401 / Cookie 鉴权失败**：确认 `DSH_HOME` 指向当前 DSH 根目录且本机凭据可读。`dsh.authToken` 通常应留空；详见根目录 README 的配置说明。

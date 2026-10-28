@@ -3,12 +3,17 @@
   "version": "0.2.1-r1",
   "description": "qq-bridge 的 DSH 全局自主陪伴者 preset bundle，并携带工具守卫",
   "type": "module",
+  "main": "./lib/index.js",
   "license": "MIT",
   "dsh": {
     "bundle": {
       "patch": [
-        "./presets/desktop-agent.patch.yml"
+        "./presets/desktop-agent.patch.yml",
+        "./owner-settings.patch.yml"
       ]
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
   }
 }

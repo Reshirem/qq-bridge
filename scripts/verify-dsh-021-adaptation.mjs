@@ -19,7 +19,7 @@
 //   §4 语法检查
 //   §5 **运行中的 DSH 0.2.0 实测**（本文件的核心）：
 //        · 鉴权：本机签名密钥离线铸造 Cookie
-//        · settings/describe 可用，`qq-mode` 命名空间在列且可写
+//        · settings/describe 可用，`qq-agent-presets` 命名空间在列
 //          （0.2.0 删除了 ctx.settings.register()，命名空间改由 entry id + Config 推导）
 //        · agentPresets/list 含固定 preset desktop-agent
 //        · session/create 挂 preset + selectModel(deepseek-flash)
@@ -185,9 +185,9 @@ check('mcp 路径指向本仓库', mcpIds.every((id) => {
 }));
 
 const pkg = JSON.parse(fs.readFileSync(path.join(DSH_HOME, 'profiles/web/package.json'), 'utf8'));
-check('profile bundles 含 qq-mode-console', pkg.dsh.profile.bundles.includes('qq-mode-console'));
-check('qq-mode-console link 依赖已注册', String(pkg.dependencies['qq-mode-console'] ?? '').startsWith('link:'));
-check('qq-mode-console 已 link 进 node_modules', fs.existsSync(path.join(DSH_HOME, 'profiles/web/node_modules/qq-mode-console')));
+check('profile bundles 含 qq-agent-presets', pkg.dsh.profile.bundles.includes('qq-agent-presets'));
+check('qq-agent-presets link 依赖已注册', String(pkg.dependencies['qq-agent-presets'] ?? '').startsWith('link:'));
+check('qq-agent-presets 已 link 进 node_modules', fs.existsSync(path.join(DSH_HOME, 'profiles/web/node_modules/qq-agent-presets')));
 
 // ── 3. 仓库配置：模型 ───────────────────────────────────────────────────────
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
@@ -219,10 +219,10 @@ check('bridge.js 不回退到 standard preset', !/agentPreset:\s*['"]standard['"
 // 复发，这里把「所有对外自称的版本号必须等于 package.json」固定下来。
 const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const lockJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'));
-const pluginPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugins/qq-mode-console/package.json'), 'utf8'));
+const pluginPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugins/qq-agent-presets/package.json'), 'utf8'));
 check('package-lock.json 顶层 version 与 package.json 一致', lockJson.version === pkgJson.version, `lock=${lockJson.version} pkg=${pkgJson.version}`);
 check('package-lock.json packages[""] version 与 package.json 一致', lockJson.packages?.['']?.version === pkgJson.version, `lock=${lockJson.packages?.['']?.version}`);
-check('qq-mode-console 插件版本与主包一致', pluginPkg.version === pkgJson.version, `plugin=${pluginPkg.version}`);
+check('qq-agent-presets 插件版本与主包一致', pluginPkg.version === pkgJson.version, `plugin=${pluginPkg.version}`);
 for (const f of ['src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js']) {
   const m = /new McpServer\(\{[^}]*version:\s*'([^']+)'/.exec(fs.readFileSync(path.join(ROOT, f), 'utf8'));
   check(`${f} 的 MCP serverInfo.version 与主包一致`, m?.[1] === pkgJson.version, `声明=${m?.[1]} 主包=${pkgJson.version}`);
@@ -271,16 +271,14 @@ const registryNs = st.value?.namespaces?.find((n) => n.ns === 'agent-preset-regi
 check('preset 注册表命名空间已装载', registryNs !== undefined, st.value?.namespaces?.map((n) => n.ns).filter((n) => n.includes('preset')).join(', '));
 check('DSH 提供唯一 desktop-agent preset', presetIds.includes('desktop-agent'), presetIds.join(', '));
 
-// ── 5a. qq-mode 兼容命名空间（仅提供 ownerQQ）───────────────────────────────
-// 0.2.0 里命名空间由 profile entry + 插件导出的 Config 推导，不再调用
-// ctx.settings.register()。运行时不再使用 DSH 模式字段；桥接仍从该兼容命名空间
-// 读取管理员 ownerQQ，因此这里只验证设置可见，不写入或切换运行模式。
-const qqMode = st.value?.namespaces?.find((n) => n.ns === 'qq-mode');
-check('settings/describe 列出 qq-mode 命名空间', qqMode !== undefined, st.value?.namespaces?.map((n) => n.ns).length + ' 个命名空间');
-if (qqMode) {
-  const ownerQQ = qqMode.value?.ownerQQ;
-  check('qq-mode ownerQQ 配置为空或为字符串', ownerQQ === undefined || typeof ownerQQ === 'string', JSON.stringify(qqMode.value));
-  check('qq-mode 带 revision', Number.isInteger(qqMode.revision), String(qqMode.revision));
+// ── 5a. qq-agent-presets 管理员 QQ 设置 ─────────────────────────────────────
+// 命名空间由 profile entry + 插件导出的 Config 推导；DSH 运行模式字段不参与当前运行时。
+const ownerSettings = st.value?.namespaces?.find((n) => n.ns === 'qq-agent-presets');
+check('settings/describe 列出 qq-agent-presets 命名空间', ownerSettings !== undefined, st.value?.namespaces?.map((n) => n.ns).length + ' 个命名空间');
+if (ownerSettings) {
+  const ownerQQ = ownerSettings.value?.ownerQQ;
+  check('qq-agent-presets ownerQQ 配置为空或为字符串', ownerQQ === undefined || typeof ownerQQ === 'string', JSON.stringify(ownerSettings.value));
+  check('qq-agent-presets 带 revision', Number.isInteger(ownerSettings.revision), String(ownerSettings.revision));
 }
 
 // ── 5b. session/projections：读会话队列的主路径 ──────────────────────────────

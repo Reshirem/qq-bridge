@@ -1,7 +1,7 @@
-// qq-mode-console 插件的登记期静态检验。
+// qq-agent-presets bundle 内管理员设置插件的登记期静态检验。
 //
-// 钉住的东西（这些是 `qq-mode` 兼容命名空间提供 ownerQQ 设置的前提，缺一即失败）：
-//   ① entry id 恰好等于命名空间名（在 cordis.patch.yml 里，不是插件模块里）；
+// 钉住的东西（这些是 `qq-agent-presets` 命名空间提供 ownerQQ 设置的前提，缺一即失败）：
+//   ① entry id 恰好等于命名空间名（在 owner-settings.patch.yml 里，不是插件模块里）；
 //   ② 插件模块导出 `Config`，且它是可用的 schemastery schema；
 //   ③ `Config` 至少有一个带 `volatile` 标记的字段（否则 settings 写入会抛
 //      "Plugin entry ... has no volatile fields"）；
@@ -21,26 +21,24 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const PLUGIN_DIR = path.join(ROOT, 'plugins', 'qq-mode-console');
-const NS = 'qq-mode';
+const PLUGIN_DIR = path.join(ROOT, 'plugins', 'qq-agent-presets');
+const NS = 'qq-agent-presets';
 
 const mod = await import(pathToFileURL(path.join(PLUGIN_DIR, 'lib', 'index.js')).href);
-const patchText = fs.readFileSync(path.join(PLUGIN_DIR, 'cordis.patch.yml'), 'utf8');
+const patchText = fs.readFileSync(path.join(PLUGIN_DIR, 'owner-settings.patch.yml'), 'utf8');
 const source = fs.readFileSync(path.join(PLUGIN_DIR, 'lib', 'index.js'), 'utf8');
 
 test('插件导出 name / inject / Config / apply', () => {
-  assert.equal(mod.name, 'qq-mode-console');
+  assert.equal(mod.name, 'qq-agent-presets');
   assert.deepEqual(mod.inject, ['settings'], 'inject 必须声明 settings，命名空间才随 settings seam 就绪');
   assert.ok(mod.Config, '必须导出 Config —— 0.2.0 里这就是命名空间的 schema 来源');
   assert.equal(typeof mod.apply, 'function');
 });
 
-test('cordis.patch.yml 的 entry id 恰好等于命名空间名', () => {
-  // ① 是三点契约里最容易写错的一条：id 写成插件包名（qq-mode-console）会让
-  //    settings 定位失败并抛 No configurable plugin entry "qq-mode"。
+test('owner-settings.patch.yml 的 entry id 恰好等于命名空间名', () => {
+  // ① 是三点契约里最容易写错的一条：id 必须与 settings 命名空间一致。
   const ids = [...patchText.matchAll(/^\s*-\s*id:\s*(\S+)\s*$/gm)].map((m) => m[1]);
   assert.ok(ids.includes(NS), `patch 里应有 id: ${NS}，实际 ${ids.join(', ')}`);
-  assert.ok(!ids.includes('qq-mode-console'), 'entry id 不应是插件包名');
 });
 
 test('Config is a usable schemastery schema with only volatile ownerQQ', () => {
