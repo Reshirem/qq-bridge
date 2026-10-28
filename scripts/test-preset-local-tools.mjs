@@ -1,4 +1,4 @@
-// desktop-agent 的注册期断言：全局助手不得继承未授权的 DSH 本地执行能力。
+// desktop-agent 的注册期断言：全局陪伴者不得继承未授权的 DSH 本地执行能力。
 //
 // 为什么必须有这个文件
 // --------------------
@@ -107,7 +107,7 @@ function collectDshToolNames() {
 /** 允许出现在名单里、但不属于"本地执行"语义的名字（开发/注入器）。 */
 const DEV_TOOL_PREFIX = /^dev_/;
 
-/** 全局助手允许使用的 MCP 命名空间前缀。 */
+/** 全局陪伴者允许使用的 MCP 命名空间前缀。 */
 const EXPECTED_SAFE_PREFIXES = [
   'mcp__wincu__',
   'mcp__snowluma__',
@@ -214,7 +214,7 @@ test('守卫名单里的每个名字都是 DSH 真实注册的工具（防拼错
   }
 });
 
-test('守卫仍放行全局助手 MCP 命名空间与无害模型侧工具', async () => {
+test('守卫仍放行全局陪伴者 MCP 命名空间与无害模型侧工具', async () => {
   for (const id of GLOBAL_AGENT_PRESETS) {
     const guardPath = GUARD_PATH;
     const fakeTools = { restrict() {}, guard(fn) { this._guard = fn; } };

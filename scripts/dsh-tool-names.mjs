@@ -126,5 +126,5 @@ export function dshToolNameSet(options) {
  */
 export const DANGER_TOOL_RE = /(pwsh|bash|shell|exec|spawn|process|terminal|pty|read|write|edit|file|fs_|glob|grep|patch|str_replace|subagent|agent_|teammate|workflow|ralph|job|skill|present|goal|plan|todo|memory|snapshot|rollback|incident|plugin|cordis|dsh_|dev_|import|install|reload|inject|stage|config|workspace|session|export|office|slash|command|schedule|voice|speech|team|mcp_resource)/;
 
-/** 明确无害、允许出现在桌面助手 schema 里的模型侧工具。 */
+/** 明确无害、允许出现在陪伴者 schema 里的模型侧工具。 */
 export const SAFE_MODEL_TOOLS = new Set(['ask_user_question', 'todo_write']);

@@ -78,7 +78,7 @@ const server = new McpServer({ name: 'qq-bridge-memory', version: '1.0.0' });
 
 server.tool(
   'memory_search',
-  '按需检索 A_Memorix 长期记忆。来源可以筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（助手自己的经历、发现与待办）；QQ 来源记忆只在需要时读取。',
+  '按需检索 A_Memorix 长期记忆。来源可以筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（陪伴者自身经历、发现与待办；assistant 是现有数据来源标记）；QQ 来源记忆只在需要时读取。',
   {
     query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；仅按时间检索时可省略'),
     limit: z.number().int().min(1).max(20).optional().describe('最多返回条数，默认 8'),
@@ -94,7 +94,7 @@ server.tool(
 
 server.tool(
   'memory_save',
-  '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；助手自己的经历、发现和未完成事项使用 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。',
+  '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；陪伴者自身的经历、发现和未完成事项使用现有数据标记 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。',
   {
     content: z.string().min(1).max(20000).describe('要保存的记忆，尽量写清来源、时间、背景与确定程度'),
     origin: z.enum(['qq', 'assistant']).default('assistant').describe('来源类别：qq 或 assistant'),

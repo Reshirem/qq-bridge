@@ -480,7 +480,7 @@ server.tool(
 
 server.tool(
   'agent_rest',
-  '结束当前个人桌面助手回合并进入休息。每个自主运行回合都应在完成当前有意义的行动后调用此工具，并将它作为本轮最后一个工具调用；调用后桥接会取消当前 DSH 回合。若本轮刚向某个 QQ 来源发送过回复，调用本工具前先对同一 key 使用最近一次 readThroughSeq 调用 qq_get_unread_messages 检查一次；有新消息时先按上下文处理，最后一次回复后再检查。只检查刚处理的来源，不扫描其他会话或反复轮询。durationMs 可设为 1 秒至 12 小时；省略表示无限期休息。有效 QQ 提醒可以提前结束休息并唤醒一轮；有限休息到期也会唤醒一轮。休息期间不会运行异常回合的指数恢复重试；QQ 提醒仍只提供来源元数据，不要求读取、回复或采取行动。',
+  '结束当前全局陪伴者活动回合。完成本轮有意义的工作后，必须将此工具作为最后一个工具调用；调用后桥接会结束当前 DSH 回合。durationMs 可设为 1 秒至 12 小时，安排到期后启动新回合；省略表示无限期休息。休息期间不会运行异常回合的指数恢复重试。',
   {
     durationMs: z.number().int().min(1000).max(12 * 60 * 60_000).optional().describe('休息时长，单位毫秒；省略表示无限期休息，最长 12 小时')
   },
@@ -606,7 +606,7 @@ if (cfg.socialV2?.tools?.sendPoke !== false) {
 
 server.tool(
   'qq_wait_for_messages',
-  '等待是主动工具调用：purpose="reply" 用于确认对方是否继续补充，purpose="messages" 用于你主动继续观察或等回复；timeoutMs 是最长等待预算，quietMs 控制静默窗口。它不会自动改变唤醒配置，也不是 mark_read 或 sleep 的前置条件。直接看 newMessages、unreadCount 和 readThroughSeq，返回消息无需重复查询；仍有未展示未读才补读。',
+  '这是当前活动回合内的主动等待：purpose="reply" 用于确认对方是否继续补充，purpose="messages" 用于你主动继续观察或等回复；timeoutMs 是最长等待预算，quietMs 控制静默窗口。它只等待当前来源的消息，不结束当前回合，也不安排未来回合。直接看 newMessages、unreadCount 和 readThroughSeq，返回消息无需重复查询；仍有未展示未读才补读。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     purpose: z.enum(['messages', 'reply']).optional().describe('默认 messages：主动等待新消息；reply：回复前短静默，按最后来信时间计算'),

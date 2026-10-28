@@ -6,8 +6,8 @@
 //   0.1.5：preset = ~/.dsh/.agent-presets/<preset>/{preset.yml,agent.cordis.yml} 目录，DSH 扫目录。
 //   0.1.7：注册表既不扫目录也不接受 preset 路径，preset 变成一条普通 loader 行
 //          （@deepseek-ai/dsh-agent-preset），它的 config.plugins 必须是**内联的行列表**，
-//          只能由 bundle 的 patch 文件插入。于是同一份行列表必然存在两种表示：
-//            源（人写/控制台改）：dsh/agent-presets/<preset>/{preset.yml,agent.cordis.yml}
+//          只能由 bundle 的 patch 文件插入。提示词模块源会组合到 preset row，再生成 patch：
+//            源（人写/控制台改）：dsh/agent-presets/<preset>/{preset.yml,agent.cordis.yml,prompt-modules.json}
 //            装（DSH 读）：      plugins/qq-agent-presets/presets/<preset>.patch.yml
 //          本脚本是两者之间**唯一**的转换器：源是唯一权威，产物是纯生成物（文件头写明「请勿手工编辑」）。
 //          setup-dsh.mjs 在安装时会重新生成；test-agent-preset-patches.mjs 用 --check 钉住不漂移。
@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { composePresetPromptModules, normalizePresetPromptModules } from '../src/preset-prompt.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..');
@@ -53,6 +54,24 @@ export function patchFileFor(name) {
 }
 function sourceDirFor(name) {
   return path.join(REPO_ROOT, 'dsh', 'agent-presets', name);
+}
+
+function assertPromptModulesMatchSource(name, rows) {
+  const file = path.join(sourceDirFor(name), 'prompt-modules.json');
+  if (!fs.existsSync(file)) return;
+  let modules;
+  try {
+    const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+    modules = normalizePresetPromptModules(JSON.parse(text));
+  } catch (error) {
+    throw new Error(`${name}: prompt-modules.json 无效：${error?.message ?? error}`);
+  }
+  const persona = rows.find((row) => row?.id === 'persona');
+  const actual = persona?.config?.prefix;
+  const expected = composePresetPromptModules(modules);
+  if (actual !== expected) {
+    throw new Error(`${name}: agent.cordis.yml 的 persona.prefix 与 prompt-modules.json 不一致；请用 WebUI 模块编辑器保存或同步模块文件`);
+  }
 }
 
 function readYaml(file) {
@@ -117,7 +136,9 @@ export function renderPatch(name) {
   for (const field of ['name', 'description', 'order']) {
     if (meta[field] === undefined) throw new Error(`${name}: preset.yml 缺少 ${field}`);
   }
-  const plugins = normalizeRows(readYaml(path.join(dir, 'agent.cordis.yml')), name);
+  const sourceRows = readYaml(path.join(dir, 'agent.cordis.yml'));
+  assertPromptModulesMatchSource(name, sourceRows);
+  const plugins = normalizeRows(sourceRows, name);
   const row = {
     id: presetRowId(name),
     name: '@deepseek-ai/dsh-agent-preset',
@@ -131,7 +152,7 @@ export function renderPatch(name) {
   };
   const header = [
     `# 本文件由 scripts/build-agent-preset-patches.mjs 生成，请勿手工编辑。`,
-    `# 源：dsh/agent-presets/${name}/preset.yml + agent.cordis.yml（人格正文与工具面都在那里改）。`,
+    `# 源：dsh/agent-presets/${name}/preset.yml + agent.cordis.yml + prompt-modules.json（模块配置由 WebUI 生成到 persona.prefix）。`,
     `# 作用：把 ${name} 作为一条 @deepseek-ai/dsh-agent-preset 行插入 profile（DSH 0.1.7+ 的 preset 机制）。`,
     `# 守卫行 qq-tool-restrict 用裸说明符 ${GUARD_SPECIFIER}：子行 name 按 profile 目录解析，`,
     `# 该包以 link: 依赖注册在 profile package.json（node_modules junction 由 setup-dsh.mjs 维护）。`,

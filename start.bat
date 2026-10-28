@@ -8,6 +8,12 @@ rem so no UAC prompt in the usual case). This NEVER blocks startup: if it cannot
 rem permission it prints a copy-pasteable command and exits 0.
 rem See docs/guides/SECURITY_BASELINE.md ("secrets at rest").
 node scripts\harden-state-acl.mjs --quiet
+rem Start the separately installed A_Memorix runtime when its local config exists.
+rem Failure is non-fatal: the bridge itself can run without long-term memory.
+if exist "%~dp0state\a-memorix\config.toml" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\a-memorix.ps1" start
+    if errorlevel 1 echo [warning] A_Memorix did not start; the bridge will continue without it.
+)
 :loop
 node src/bridge.js
 set code=%errorlevel%

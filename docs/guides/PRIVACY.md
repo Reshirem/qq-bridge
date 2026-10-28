@@ -34,7 +34,7 @@ node scripts/privacy-scan.mjs --json         # 机读输出（给 CI 用）
 
 ### 长期记忆
 
-- A_Memorix 的记忆正文、QQ 来源证据和助手经历由单独部署的 A_Memorix 服务持久化；它们不会写入 qq-bridge 仓库。`memory.apiKey` 只保存在本地、被忽略的 `config.json`。
+- A_Memorix 的记忆正文、QQ 来源证据和自身经历由单独部署的 A_Memorix 服务持久化；它们不会写入 qq-bridge 仓库。`memory.apiKey` 只保存在本地、被忽略且 ACL 收紧的 `config.json`；Embedding/LLM Provider 密钥保存在被忽略、ACL 收紧的 `state/a-memorix/secrets/`，WebUI 不回显密钥。Provider 地址、模型与密钥由用户在 WebUI 手动配置。
 - 桥接只向本机回环 Gateway 发送显式提交的记忆内容和按需检索词。A_Memorix 后端可能将内容交给部署配置中的 Embedding/LLM Provider；配置者应按该服务与 Provider 的数据处理规则决定是否启用。
 - WebUI 和 DSH 工具参数都可能包含个人记忆。桥接工具调用审计省略记忆工具参数，但 DSH 自身的持久会话事件仍可能保存工具调用与结果；不要把 A_Memorix 服务日志、备份或真实记忆样本提交到仓库。
 

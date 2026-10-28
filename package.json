@@ -3,7 +3,7 @@
   "version": "0.2.1-r1",
   "private": true,
   "license": "MIT",
-  "description": "Persistent desktop companion for DeepSeek Harness with QQ available on demand through SnowLuma; one global DSH session is shared by WebUI tasks and QQ attention signals.",
+  "description": "Persistent autonomous companion for DeepSeek Harness; computer and QQ tools are available as needed, with one global DSH session shared by WebUI tasks and QQ attention signals.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"

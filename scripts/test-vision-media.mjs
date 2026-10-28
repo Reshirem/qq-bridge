@@ -74,7 +74,7 @@ if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File) && fs.existsS
     console.log(`⚠️ 桥接端点检查跳过：${error?.message ?? error}`);
   }
 } else {
-  console.log('⚠️ 跳过桥接端点检查：缺少 console token、全局助手状态或 QQ 消息缓存');
+  console.log('⚠️ 跳过桥接端点检查：缺少 console token、全局陪伴者状态或 QQ 消息缓存');
 }
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);

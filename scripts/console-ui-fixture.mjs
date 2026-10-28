@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { roleCharStats, roleSectionReport } from '../src/role-card.js';
 import { pickBucketMs } from '../src/token-ledger.js';
 import { manualDirCommand } from '../src/state-acl.mjs';
+import { composePresetPromptModules, PRESET_PROMPT_MODULE_DEFINITIONS } from '../src/preset-prompt.js';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
@@ -15,7 +16,7 @@ const timestamp = '2026-09-20T08:30:00.000Z';
 function presetStatusFixture() {
   return {
     preset: 'desktop-agent',
-    label: '全局桌面助手',
+    label: '全局陪伴者',
     sourceFile: 'dsh/agent-presets/desktop-agent/agent.cordis.yml',
     installed: true,
     requiresRestart: true,
@@ -284,6 +285,14 @@ function usageRecentFixture() {
 }
 
 export function makeFixtureState() {
+  const promptContent = {
+    identity: '你是用户长期相处的自主陪伴者；人格卡定义你的具体身份和形态，可以采用非人设定。',
+  };
+  const desktopPromptModules = PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => ({
+    ...definition,
+    enabled: true,
+    content: promptContent[definition.id] || `离线演示模块：${definition.title}。`,
+  }));
   return {
     role: '小鲸鱼', roleMode: 'active', activityPaused: false, desktopAgentStopped: false,
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
@@ -292,7 +301,8 @@ export function makeFixtureState() {
       温柔助手: '# 温柔助手\n\n- 性格：温和、有耐心\n- 说话风格：先共情再回答',
       技术伙伴: '# 技术伙伴\n\n- 性格：直接、爱讲原理\n- 说话风格：先给结论再解释',
     },
-    desktopPrompt: '你是用户长期使用的桌面伙伴。网页控制台任务和 QQ 提醒共用一个全局会话。QQ 对话只是消息来源，不会为每个 QQ 对话单独建立 DSH 会话。',
+    desktopPrompt: composePresetPromptModules({ version: 1, modules: desktopPromptModules }),
+    desktopPromptModules,
     roleInjectMax: 8000,
     dshEffort: 'max',
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
@@ -403,6 +413,10 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               sections: { v1: roleSectionReport(content, 'v1'), v2: roleSectionReport(content, 'v2') },
             });
           }
+          case '/api/preset/desktop-agent-prompt/modules': {
+            const content = composePresetPromptModules({ version: 1, modules: state.desktopPromptModules });
+            return json({ ok: true, modules: state.desktopPromptModules, content, chars: content.length, warnings: [], migrated: false, status: presetStatusFixture() });
+          }
           case '/api/preset/desktop-agent-prompt': {
             return json({
               ok: true,
@@ -501,11 +515,18 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return json({ ok: true, deleted: body.name, clearedCurrent: cleared });
           }
           case '/api/roles/limit': state.roleInjectMax = Number(body.maxInjectChars) || state.roleInjectMax; return json({ ok: true, maxInjectChars: state.roleInjectMax, limits: { injectMaxChars: state.roleInjectMax } });
-          case '/api/preset/desktop-agent-prompt': {
-            const content = String(body.content ?? '');
+          case '/api/preset/desktop-agent-prompt/modules': {
+            state.desktopPromptModules = PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => {
+              const supplied = (Array.isArray(body.modules) ? body.modules : []).find((module) => module?.id === definition.id) || {};
+              return { ...definition, enabled: supplied.enabled === true, content: String(supplied.content ?? '') };
+            });
+            const content = composePresetPromptModules({ version: 1, modules: state.desktopPromptModules });
             const unchanged = content === state.desktopPrompt;
             if (!unchanged) state.desktopPrompt = content;
-            return json({ ok: true, unchanged, chars: content.length, warnings: [], synced: true, requiresRestart: !unchanged, status: presetStatusFixture() });
+            return json({ ok: true, unchanged, chars: content.length, content, modules: state.desktopPromptModules, warnings: [], synced: true, requiresRestart: !unchanged, status: presetStatusFixture() });
+          }
+          case '/api/preset/desktop-agent-prompt': {
+            return json({ ok: false, error: 'fixture uses the modular prompt API' }, 409);
           }
           case '/api/preset/desktop-agent-prompt/restore': {
             return json({ ok: true, restoredFrom: 'desktop-agent.agent.cordis.yml.fixture', requiresRestart: true });

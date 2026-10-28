@@ -16,28 +16,19 @@ test('desktop-agent is the only session persona and preserves registered templat
   const used = [...JSON.stringify(persona.config).matchAll(/\{\{([a-z][a-z0-9_]*)\}\}/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(used)].filter((v) => !['provider', 'model'].includes(v)), []);
   assert.equal(Object.hasOwn(persona.config, 'text'), false);
-  assert.match(prefix, /网页控制台任务和 QQ 提醒共用一个全局会话/);
-  assert.match(prefix, /QQ 对话只是消息来源，不会为每个 QQ 对话单独建立 DSH 会话/);
 });
 
-test('global rest and recovery behavior is clear in the persona', () => {
-  assert.match(prefix, /每个活动回合结束前，都必须把 `agent_rest` 作为最后一个工具调用/);
-  assert.match(prefix, /范围为 1 秒至 12 小时/);
-  assert.match(prefix, /有效 QQ 提醒也可以提前结束休息并启动一轮/);
-  assert.match(prefix, /休息期间不会运行异常回合的指数恢复重试/);
-  assert.match(prefix, /有限休息到期后会启动一个新回合/);
-  assert.match(prefix, /按指数间隔尝试恢复，最长间隔为 30 分钟/);
-  assert.match(prefix, /不要设置周期性模型心跳，也不要反复轮询/);
+test('activity turns end through the rest tool', () => {
+  assert.match(prefix, /每个活动回合都必须以 `agent_rest` 作为最后一个工具调用/);
+  assert.match(prefix, /调用后本轮结束，不再调用工具/);
 });
 
 test('QQ is an on-demand source with metadata-only attention signals', () => {
   assert.match(prefix, /SnowLuma 是 QQ 消息通道/);
-  assert.match(prefix, /完整的 SnowLuma MCP 工具集/);
-  assert.match(prefix, /想了解账号可用的群和好友时，可以使用 `qq_list_conversations`/);
-  assert.match(prefix, /新的 QQ 事件只会作为包含元数据的提醒到达/);
+  assert.match(prefix, /使用会话列表工具/);
+  assert.match(prefix, /提醒，只表示有消息值得留意，不包含消息正文/);
   assert.match(prefix, /不要自动读取每段对话/);
   assert.match(prefix, /qq_wait_for_messages/);
-  assert.match(prefix, /QQ 对话只是消息来源，不会为每个 QQ 对话单独建立 DSH 会话/);
 });
 
 test('desktop and protected-app boundaries remain explicit', () => {

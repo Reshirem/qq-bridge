@@ -206,7 +206,9 @@ async function refreshRoles() {
 }
 
 // ── 全局 desktop-agent 提示词 ───────────────────────────────────────────────
-let desktopPromptOriginal = '';
+let desktopPromptOriginalModules = [];
+let desktopPromptOriginalContent = '';
+let desktopPromptMigrationPending = false;
 let desktopPromptPreset = 'desktop-agent';
 
 function setSimMsg(text, ok) {
@@ -216,36 +218,125 @@ function setSimMsg(text, ok) {
 }
 
 function setSimEditing(editing) {
-  const area = document.getElementById('desktopPromptText');
-  area.readOnly = !editing;
-  area.classList.toggle('editing', editing);
+  document.querySelectorAll('#desktopPromptModules .prompt-module-card').forEach((card) => {
+    const textarea = card.querySelector('.prompt-module-textarea');
+    const toggle = card.querySelector('.prompt-module-toggle input');
+    const required = card.dataset.required === 'true';
+    textarea.readOnly = !editing;
+    textarea.classList.toggle('editing', editing);
+    toggle.disabled = !editing || required;
+  });
   document.getElementById('desktopPromptEdit').disabled = editing;
   document.getElementById('desktopPromptSave').disabled = !editing;
   document.getElementById('desktopPromptCancel').disabled = !editing;
 }
 
+function collectPromptModules() {
+  return [...document.querySelectorAll('#desktopPromptModules .prompt-module-card')].map((card) => ({
+    id: card.dataset.moduleId,
+    enabled: card.querySelector('.prompt-module-toggle input').checked,
+    content: card.querySelector('.prompt-module-textarea').value,
+  }));
+}
+
+function updatePromptPreview() {
+  const content = collectPromptModules()
+    .filter((module) => module.enabled)
+    .map((module) => {
+      const definition = desktopPromptOriginalModules.find((item) => item.id === module.id);
+      return `【${definition?.title || module.id}】\n${module.content.trim()}`;
+    })
+    .join('\n\n');
+  document.getElementById('desktopPromptPreview').value = content;
+  return content;
+}
+
+function renderPromptModules(modules) {
+  const list = document.getElementById('desktopPromptModules');
+  list.replaceChildren();
+  for (const module of modules || []) {
+    const card = document.createElement('section');
+    card.className = 'prompt-module-card';
+    card.dataset.moduleId = module.id;
+    card.dataset.required = module.required ? 'true' : 'false';
+
+    const head = document.createElement('div');
+    head.className = 'prompt-module-head';
+    const title = document.createElement('h4');
+    title.textContent = module.title;
+    head.appendChild(title);
+
+    const toggleLabel = document.createElement('label');
+    toggleLabel.className = 'prompt-module-toggle';
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = module.enabled === true;
+    toggle.disabled = module.required === true;
+    toggle.setAttribute('aria-label', `${module.title} 模块开关`);
+    const toggleText = document.createElement('span');
+    if (module.required) toggleText.className = 'prompt-module-required';
+    toggleText.textContent = module.required ? '必须启用' : (toggle.checked ? '已启用' : '已关闭');
+    toggle.addEventListener('change', () => {
+      toggleText.textContent = toggle.checked ? '已启用' : '已关闭';
+      updatePromptPreview();
+    });
+    toggleLabel.append(toggle, toggleText);
+    head.appendChild(toggleLabel);
+    card.appendChild(head);
+
+    const description = document.createElement('p');
+    description.className = 'prompt-module-description';
+    description.textContent = module.description || '';
+    card.appendChild(description);
+
+    const editor = document.createElement('details');
+    editor.className = 'prompt-module-editor';
+    const editorSummary = document.createElement('summary');
+    editorSummary.textContent = '查看 / 编辑模块正文';
+    editor.appendChild(editorSummary);
+    const textarea = document.createElement('textarea');
+    textarea.className = 'prompt-module-textarea';
+    textarea.spellcheck = false;
+    textarea.readOnly = true;
+    textarea.value = module.content || '';
+    textarea.setAttribute('aria-label', `${module.title} 提示词正文`);
+    textarea.addEventListener('input', updatePromptPreview);
+    editor.appendChild(textarea);
+    card.appendChild(editor);
+    list.appendChild(card);
+  }
+  updatePromptPreview();
+}
+
 async function refreshSimPrompt() {
   setSimMsg('读取中…');
   try {
-    const r = await api('/api/preset/desktop-agent-prompt?preset=' + encodeURIComponent(desktopPromptPreset));
-    const area = document.getElementById('desktopPromptText');
+    const r = await api('/api/preset/desktop-agent-prompt/modules?preset=' + encodeURIComponent(desktopPromptPreset));
     if (!r.ok) {
-      area.value = '';
+      document.getElementById('desktopPromptModules').replaceChildren();
+      document.getElementById('desktopPromptPreview').value = '';
+      setSimEditing(false);
+      document.getElementById('desktopPromptEdit').disabled = true;
       setSimMsg(r.error || '读取失败', false);
       document.getElementById('desktopPromptStatus').textContent = '不可用';
       return;
     }
-    desktopPromptOriginal = r.content;
-    area.value = r.content;
+    desktopPromptOriginalModules = (r.modules || []).map((module) => ({ ...module }));
+    desktopPromptOriginalContent = r.content || '';
+    desktopPromptMigrationPending = r.migrated === true;
+    renderPromptModules(desktopPromptOriginalModules);
     setSimEditing(false);
+    document.getElementById('desktopPromptEdit').disabled = false;
     setSimMsg('');
     document.getElementById('desktopPromptStatus').textContent =
-      `桌面助手 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}`;
+      `陪伴者 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}${r.migrated ? ' · 旧格式待模块化保存' : ''}`;
     document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length
       ? '⚠️ ' + r.warnings.join('；') : '';
     document.getElementById('desktopPromptRestart').textContent =
-      '更改会写入桌面助手预设；重启 DSH 并重建全局会话后加载新版。';
+      '更改会写入陪伴者预设；重启 DSH 并重建全局会话后加载新版。';
   } catch (error) {
+    setSimEditing(false);
+    document.getElementById('desktopPromptEdit').disabled = true;
     setSimMsg('读取失败：' + (error?.message ?? error), false);
   }
 }
@@ -410,7 +501,7 @@ async function refreshDesktopAgentStatus(force = false) {
       let summaryLabel = '已就绪';
       let hint = '持久会话可启动自主探索或接收任务';
       if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; summaryLabel = 'DSH 未连接'; hint = '检查 DSH 是否正在运行'; }
-      else if (!info.presetAvailable) { label = '桌面助手 preset 未加载；请安装 preset bundle 并重启 DSH'; tone = 'meta err'; summaryLabel = '缺少 preset'; hint = '请先完成 DSH preset 配置'; }
+      else if (!info.presetAvailable) { label = '陪伴者 preset 未加载；请安装 preset bundle 并重启 DSH'; tone = 'meta err'; summaryLabel = '缺少 preset'; hint = '请先完成 DSH preset 配置'; }
       else if (info.error) { label = '读取会话状态失败：' + info.error; tone = 'meta err'; summaryLabel = '状态异常'; hint = '点击“刷新状态”重试'; }
       else if (info.lifecycle === 'stopped') {
         label = info.running ? '已停止；正在等待 DSH 取消当前回合' : '已停止；不会自动唤醒';
@@ -428,7 +519,7 @@ async function refreshDesktopAgentStatus(force = false) {
         const retryAt = info.recoveryAt ? new Date(info.recoveryAt).toLocaleString() : '即将';
         label = `异常恢复等待 · 第 ${info.recoveryAttempt || 1} 次，${retryAt} 重试`; tone = 'meta err'; summaryLabel = '等待恢复'; hint = '未正常进入休息态，桥接按指数间隔尝试恢复';
       }
-      else if (info.running) { label = '正在运行'; tone = 'meta ok'; summaryLabel = '运行中'; hint = '助手正在自主探索或处理任务'; }
+      else if (info.running) { label = '正在运行'; tone = 'meta ok'; summaryLabel = '运行中'; hint = '陪伴者正在自主探索或处理任务'; }
       else if (info.blank) { label = '会话已创建，尚未启动'; tone = 'meta'; summaryLabel = '等待启动'; hint = '点击“启动自主探索”'; }
       else { label = '会话空闲，可继续探索'; tone = 'meta'; summaryLabel = '空闲'; hint = '点击“启动自主探索”或发送具体任务'; }
       status.textContent = label + (info.sessionId ? ` · ${info.sessionId}` : '');
@@ -535,7 +626,7 @@ function renderDesktopAgentHistory(records, prepend = false) {
       const note = document.createElement('span');
       note.className = 'context-record-note';
       note.textContent = record.internalDetailsOmitted
-        ? '该内部助手事件的详细内容未展示。'
+        ? '该模型内部事件的详细内容未展示。'
         : `已隐藏 ${record.hiddenInternalItems} 项推理内容或流式数据。`;
       details.appendChild(note);
     }
@@ -665,39 +756,48 @@ document.getElementById('roleDelete').addEventListener('click', async () => {
 document.getElementById('roleFormReset').addEventListener('click', () => resetRoleForm());
 document.getElementById('newRoleContent').addEventListener('input', updateRoleEditorWarnings);
 
-// ── 全局桌面助手提示词 ──────────────────────────────────────────────────────
+// ── 全局陪伴者提示词 ──────────────────────────────────────────────────────
 document.getElementById('desktopPromptEdit').addEventListener('click', () => {
   setSimEditing(true);
-  setSimMsg('编辑中：改完点「保存固定前缀」。保存前会备份，并校验文件格式与必要的运行规则。');
+  setSimMsg('编辑中：可修改模块正文和开关。必要的会话、安全与回合收尾模块保持启用。');
 });
 document.getElementById('desktopPromptCancel').addEventListener('click', () => {
-  document.getElementById('desktopPromptText').value = desktopPromptOriginal;
+  renderPromptModules(desktopPromptOriginalModules);
   setSimEditing(false);
   setSimMsg('已放弃修改');
 });
 document.getElementById('desktopPromptSave').addEventListener('click', async () => {
-  const content = document.getElementById('desktopPromptText').value;
-  if (!confirm('保存会更新桌面助手的全局固定提示词。重启 DSH 并重建全局会话后加载新版。确定继续？')) return;
+  const modules = collectPromptModules();
+  const activeContent = updatePromptPreview();
+  const changesActivePrompt = desktopPromptMigrationPending || activeContent !== desktopPromptOriginalContent;
+  const confirmText = changesActivePrompt
+    ? '保存会更新陪伴者的固定前缀。重启 DSH 并重建全局会话后加载新版。确定继续？'
+    : '保存模块设置。当前启用的固定前缀不变，因此无需重启 DSH。确定继续？';
+  if (!confirm(confirmText)) return;
   setSimMsg('保存中…');
-  const r = await api('/api/preset/desktop-agent-prompt', 'POST', { preset: desktopPromptPreset, content });
+  const r = await api('/api/preset/desktop-agent-prompt/modules', 'POST', { preset: desktopPromptPreset, modules });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '保存失败'), false); return; }
   if (r.unchanged) {
-    desktopPromptOriginal = content;
     setSimEditing(false);
-    setSimMsg('内容没有变化，未写入文件（避免无谓地重排预设格式）', true);
+    setSimMsg('模块没有变化，未写入文件', true);
     return;
   }
-  desktopPromptOriginal = content;
+  desktopPromptOriginalModules = (r.modules || modules).map((module) => ({ ...module }));
+  desktopPromptOriginalContent = r.content || activeContent;
+  desktopPromptMigrationPending = false;
+  renderPromptModules(desktopPromptOriginalModules);
   setSimEditing(false);
-  setSimMsg(`✅ 已保存${r.synced ? '并更新 DSH 配置包' : ''}；重启 DSH 并重建全局会话后加载新版`, true);
+  setSimMsg(r.requiresRestart
+    ? `✅ 已保存${r.synced ? '并更新 DSH 配置包' : ''}；重启 DSH 并重建全局会话后加载新版`
+    : '✅ 已保存未启用模块的正文；当前固定前缀未变化', true);
   document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
-  document.getElementById('desktopPromptStatus').textContent = `桌面助手 · ${content.length} 字符 · 已保存`;
+  document.getElementById('desktopPromptStatus').textContent = `陪伴者 · ${r.chars} 字符 · 已保存`;
 });
 document.getElementById('desktopPromptRestore').addEventListener('click', async () => {
-  if (!confirm('还原桌面助手上次保存前的提示词备份？当前改动会丢失（现有文件会先自动备份）。')) return;
+  if (!confirm('还原陪伴者上次保存前的模块和固定前缀？当前改动会丢失（现有配置会先自动备份）。')) return;
   const r = await api('/api/preset/desktop-agent-prompt/restore', 'POST', { preset: desktopPromptPreset });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '还原失败'), false); return; }
-  setSimMsg('✅ 已还原上次保存的提示词备份；重启 DSH 并重建全局会话后加载新版', true);
+  setSimMsg('✅ 已还原模块和提示词备份；重启 DSH 并重建全局会话后加载新版', true);
   refreshSimPrompt();
 });
 document.getElementById('desktopAgentHistoryRefresh').addEventListener('click', () => loadDesktopAgentHistory(false));
@@ -839,7 +939,7 @@ document.getElementById('desktopAgentStart').addEventListener('click', async () 
   const task = document.getElementById('desktopAgentMessage').value.trim();
   const message = task ?
     `请按当前角色优先处理这项任务：\n${task}\n\n完成后只在有自然且有价值的下一步时继续；没有就结束行动。每个主动回合结束前都必须调用 agent_rest 并将它作为最后一个工具调用，自行选择休息时长；不要用长等待工具维持会话在线，也不要做周期性心跳。`
-    : '请按当前角色在这个长期会话里自然活动。你可以从桌面、QQ 提醒或之前聊到的事情里，随手挑一件你真感兴趣或觉得有用的事；也可以判断现在没什么想做的，直接结束行动。不要为了证明自主而反复巡查、制造目标或汇报每一步。每个主动回合结束前都必须调用 agent_rest 并将它作为最后一个工具调用，自行选择休息时长；不要用长等待工具维持会话在线，也不要做周期性心跳。';
+    : '请按当前人格卡在这个长期会话里自然活动。你可以从电脑上看到的线索、QQ 提醒、其他可用工具或之前聊到的事情里，挑一件你真感兴趣或觉得有用的事；也可以判断现在没什么想做的，直接结束行动。不要为了证明自主而反复巡查、制造目标或汇报每一步。每个主动回合结束前都必须调用 agent_rest 并将它作为最后一个工具调用，自行选择休息时长；不要用长等待工具维持会话在线，也不要做周期性心跳。';
   button.disabled = true;
   status.textContent = '正在启动自主探索…';
   status.className = 'meta';
@@ -858,7 +958,7 @@ document.getElementById('desktopAgentStart').addEventListener('click', async () 
   }
 });
 document.getElementById('desktopAgentStop').addEventListener('click', async () => {
-  if (!confirm('停止个人桌面助手？当前运行和排队中的 DSH 任务会被取消；自动唤醒会保持关闭，直到你从此页面手动启动或提交任务。')) return;
+  if (!confirm('停止全局陪伴者？当前运行和排队中的 DSH 任务会被取消；自动唤醒会保持关闭，直到你从此页面手动启动或提交任务。')) return;
   const button = document.getElementById('desktopAgentStop');
   const status = document.getElementById('desktopAgentMessageStatus');
   button.disabled = true;
@@ -883,7 +983,7 @@ document.getElementById('desktopAgentRebuild').addEventListener('click', async (
   const button = document.getElementById('desktopAgentRebuild');
   const status = document.getElementById('desktopAgentMessageStatus');
   button.disabled = true;
-  status.textContent = '正在重建全局桌面助手会话…';
+  status.textContent = '正在重建全局陪伴者会话…';
   status.className = 'meta';
   try {
     const result = await api('/api/console/desktop-agent/reset', 'POST', {});
@@ -910,7 +1010,7 @@ document.getElementById('desktopAgentSubmit').addEventListener('click', async ()
   status.className = 'meta';
   try {
     const result = await api('/api/console/desktop-agent', 'POST', { message });
-    status.textContent = result.ok ? `✅ 已提交到助手：${result.sessionId}` : ('❌ ' + (result.error || '提交失败'));
+    status.textContent = result.ok ? `✅ 已提交到全局会话：${result.sessionId}` : ('❌ ' + (result.error || '提交失败'));
     status.className = result.ok ? 'meta ok' : 'meta err';
     desktopAgentStatusAt = 0;
     await refreshDesktopAgentStatus(true);
@@ -1146,7 +1246,7 @@ document.getElementById('v2ResumeBtn').addEventListener('click', async () => {
   refreshV2Activity();
 });
 document.getElementById('v2ResetBtn').addEventListener('click', async () => {
-  if (!confirm('确定清空本地 QQ 消息缓存与读取水位？全局桌面助手会话和运行状态不会改变。')) return;
+  if (!confirm('确定清空本地 QQ 消息缓存与读取水位？全局陪伴者会话和运行状态不会改变。')) return;
   const r = await api('/api/socialV2/reset', 'POST', {});
   const msg = document.getElementById('v2ConfigMsg');
   msg.textContent = r.ok ? '✅ 已清空 QQ 消息缓存' : ('❌ ' + (r.error || '失败'));
@@ -1241,11 +1341,11 @@ document.getElementById('consoleTokenRandom').addEventListener('click', () => ch
 
 // Presentation layer: keep every existing control mounted so drafts and API contracts survive navigation.
 const consolePages = {
-  overview: ['桌面助手', '个人桌面助手运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。'],
-  sessions: ['会话控制', '控制个人桌面助手', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。'],
-  persona: ['助手提示词', '维护助手使用的提示词', '这里可以编辑桌面助手的固定提示词和当前人格卡。'],
-  memory: ['长期记忆', '检索与维护共享长期记忆', 'QQ 内容和助手自身经历共用 A_Memorix，由模型按需决定读写。'],
-  'social-v2': ['提醒与消息', 'QQ 作为助手的消息通道', '查看 QQ 提醒策略、消息工具和发送安全设置。'],
+  overview: ['陪伴者', '全局陪伴者运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。'],
+  sessions: ['会话控制', '控制全局陪伴者', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。'],
+  persona: ['陪伴者提示词', '维护自主陪伴者的固定提示词', '这里可以编辑陪伴者的固定提示词和当前人格卡。'],
+  memory: ['长期记忆', '检索与维护共享长期记忆', 'QQ 内容和自身经历共用 A_Memorix，由模型按需决定读写。'],
+  'social-v2': ['提醒与消息', 'QQ 消息渠道', '查看 QQ 提醒策略、消息工具和发送安全设置。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。']
@@ -1269,14 +1369,146 @@ async function refreshMemoryStatus() {
   try {
     const response = await api('/api/memory/status');
     const memory = response.memory || {};
-    if (!memory.enabled) status.textContent = '长期记忆未启用。配置 config.json 的 memory.enabled、Gateway 地址、namespace API key 后重启桥接。';
-    else if (!memory.configured) status.textContent = `长期记忆配置不完整：${memory.error || '请检查 config.json'}`;
-    else status.textContent = `A_Memorix 已配置 · namespace ${memory.namespace} · ${memory.baseUrl}（连接会在检索或保存时检查）`;
-    status.className = `meta ${memory.configured ? 'ok' : 'err'}`;
+    const serviceButton = document.getElementById('memoryServiceStart');
+    serviceButton.disabled = !memory.serviceInstalled;
+    serviceButton.title = memory.serviceInstalled ? '' : '先在仓库根目录运行 scripts/a-memorix.ps1 setup';
+    if (!memory.serviceInstalled) status.textContent = '尚未安装本机 A_Memorix。先运行 scripts/a-memorix.ps1 setup，再回来启用长期记忆。';
+    else if (!memory.gatewayReachable) status.textContent = `A_Memorix Gateway 未连接${memory.gatewayHealthError ? `（${memory.gatewayHealthError}）` : ''}。可点击“启动 A_Memorix”。`;
+    else if (!memory.enabled) status.textContent = `A_Memorix Gateway 正常 · 长期记忆尚未启用 · namespace ${memory.namespace}`;
+    else if (!memory.configured) status.textContent = `Gateway 正常，但桥接长期记忆配置不完整：${memory.error || '检查 namespace API Key'}`;
+    else status.textContent = `长期记忆已启用 · Gateway 正常 · namespace ${memory.namespace} · ${memory.baseUrl}`;
+    status.className = `meta ${memory.serviceInstalled && memory.gatewayReachable && (!memory.enabled || memory.configured) ? 'ok' : 'err'}`;
   } catch (error) {
     status.textContent = `读取状态失败：${error.message || '未知错误'}`;
     status.className = 'meta err';
   }
+}
+async function refreshMemorySettings() {
+  const status = document.getElementById('memorySettingsStatus');
+  try {
+    const [settingsResponse, providerResponse] = await Promise.all([
+      api('/api/memory/settings'), api('/api/memory/providers')
+    ]);
+    if (!settingsResponse.ok) throw new Error(settingsResponse.error || '无法读取长期记忆设置');
+    if (!providerResponse.ok) throw new Error(providerResponse.error || '无法读取 Provider 设置');
+    const settings = settingsResponse.settings || {};
+    document.getElementById('memoryEnabled').checked = settings.enabled === true;
+    document.getElementById('memoryBaseUrl').value = settings.baseUrl || '';
+    document.getElementById('memoryNamespace').value = settings.namespace || '';
+    document.getElementById('memoryTimeoutSeconds').value = Math.round(Number(settings.timeoutMs || 45000) / 1000);
+    document.getElementById('memoryBootstrapLimit').value = Number(settings.bootstrapLimit || 6);
+    document.getElementById('memoryBootstrapMaxChars').value = Number(settings.bootstrapMaxChars || 2500);
+    document.getElementById('memoryApiKey').value = '';
+    document.getElementById('memoryClearApiKey').checked = false;
+    status.textContent = settings.apiKeyConfigured ? 'namespace API Key 已保存（不回显）' : '尚未保存 namespace API Key';
+    status.className = `meta ${settings.apiKeyConfigured ? 'ok' : 'err'}`;
+
+    const providers = providerResponse.providers || {};
+    const embedding = providers.embedding || {};
+    const llm = providers.llm || {};
+    document.getElementById('memoryEmbeddingEndpoint').value = embedding.endpoint || '';
+    document.getElementById('memoryEmbeddingModel').value = embedding.model || '';
+    document.getElementById('memoryEmbeddingDimension').value = Number(embedding.dimension || 1024);
+    document.getElementById('memoryEmbeddingKey').value = '';
+    document.getElementById('memoryEmbeddingClearKey').checked = false;
+    document.getElementById('memoryEmbeddingStatus').textContent = embedding.configured
+      ? `设置已保存 · ${embedding.model} · API Key ${embedding.apiKeyConfigured ? '已保存' : '未设置'}；连通性尚未探测`
+      : `未配置 · API Key ${embedding.apiKeyConfigured ? '已保存' : '未设置'}`;
+    document.getElementById('memoryEmbeddingStatus').className = 'meta';
+    document.getElementById('memoryLlmEndpoint').value = llm.endpoint || '';
+    document.getElementById('memoryLlmModel').value = llm.model || '';
+    document.getElementById('memoryLlmMaxTokens').value = Number(llm.maxTokens || 8192);
+    document.getElementById('memoryLlmTemperature').value = Number(llm.temperature || 0);
+    document.getElementById('memoryLlmKey').value = '';
+    document.getElementById('memoryLlmClearKey').checked = false;
+    document.getElementById('memoryLlmStatus').textContent = llm.configured
+      ? `设置已保存 · ${llm.model} · API Key ${llm.apiKeyConfigured ? '已保存' : '未设置'}；连通性尚未探测`
+      : `未配置 · API Key ${llm.apiKeyConfigured ? '已保存' : '未设置'}`;
+    document.getElementById('memoryLlmStatus').className = 'meta';
+  } catch (error) {
+    status.textContent = `读取设置失败：${error.message || '未知错误'}`;
+    status.className = 'meta err';
+  }
+}
+async function saveMemorySettings() {
+  const status = document.getElementById('memorySettingsStatus');
+  const button = document.getElementById('memorySettingsSave');
+  button.disabled = true;
+  status.textContent = '正在保存…';
+  status.className = 'meta';
+  try {
+    const result = await api('/api/memory/settings', 'POST', {
+      enabled: document.getElementById('memoryEnabled').checked,
+      baseUrl: document.getElementById('memoryBaseUrl').value,
+      namespace: document.getElementById('memoryNamespace').value,
+      apiKey: document.getElementById('memoryApiKey').value,
+      clearApiKey: document.getElementById('memoryClearApiKey').checked,
+      timeoutSeconds: Number(document.getElementById('memoryTimeoutSeconds').value),
+      bootstrapLimit: Number(document.getElementById('memoryBootstrapLimit').value),
+      bootstrapMaxChars: Number(document.getElementById('memoryBootstrapMaxChars').value)
+    });
+    if (!result.ok) throw new Error(result.error || '保存失败');
+    status.textContent = result.settings.apiKeyConfigured ? '连接设置已保存；密钥已保存在本机且不会回显。' : '连接设置已保存。';
+    status.className = 'meta ok';
+    await Promise.all([refreshMemoryStatus(), refreshMemorySettings()]);
+    status.textContent = result.settings.apiKeyConfigured ? '连接设置已保存；namespace API Key 仅本机保存，不会回显。' : '连接设置已保存。';
+    status.className = 'meta ok';
+  } catch (error) {
+    status.textContent = error.message || '保存失败';
+    status.className = 'meta err';
+  } finally { button.disabled = false; }
+}
+async function saveMemoryProviders() {
+  const status = document.getElementById('memoryProviderSaveStatus');
+  const button = document.getElementById('memoryProvidersSave');
+  button.disabled = true;
+  status.textContent = '正在校验并保存；A_Memorix 会短暂重启…';
+  status.className = 'meta';
+  try {
+    const result = await api('/api/memory/providers', 'POST', {
+      embedding: {
+        endpoint: document.getElementById('memoryEmbeddingEndpoint').value,
+        model: document.getElementById('memoryEmbeddingModel').value,
+        apiKey: document.getElementById('memoryEmbeddingKey').value,
+        clearApiKey: document.getElementById('memoryEmbeddingClearKey').checked,
+        dimension: Number(document.getElementById('memoryEmbeddingDimension').value)
+      },
+      llm: {
+        endpoint: document.getElementById('memoryLlmEndpoint').value,
+        model: document.getElementById('memoryLlmModel').value,
+        apiKey: document.getElementById('memoryLlmKey').value,
+        clearApiKey: document.getElementById('memoryLlmClearKey').checked,
+        maxTokens: Number(document.getElementById('memoryLlmMaxTokens').value),
+        temperature: Number(document.getElementById('memoryLlmTemperature').value)
+      }
+    });
+    if (!result.ok) throw new Error(result.error || 'Provider 配置保存失败');
+    status.textContent = result.restarted ? 'Provider 配置已保存，A_Memorix 已重启。' : 'Provider 配置没有变化。';
+    status.className = 'meta ok';
+    await Promise.all([refreshMemoryStatus(), refreshMemorySettings()]);
+    status.textContent = result.restarted ? 'Provider 配置已保存，A_Memorix 已重启。' : 'Provider 配置没有变化。';
+    status.className = 'meta ok';
+  } catch (error) {
+    status.textContent = error.message || 'Provider 配置保存失败';
+    status.className = 'meta err';
+  } finally { button.disabled = false; }
+}
+async function startAMemorix() {
+  const button = document.getElementById('memoryServiceStart');
+  const status = document.getElementById('memorySettingsStatus');
+  button.disabled = true;
+  status.textContent = '正在启动 A_Memorix…';
+  status.className = 'meta';
+  try {
+    const result = await api('/api/memory/service', 'POST', { action: 'start' });
+    if (!result.ok) throw new Error(result.error || '启动失败');
+    status.textContent = 'A_Memorix 已启动。';
+    status.className = 'meta ok';
+    await refreshMemoryStatus();
+  } catch (error) {
+    status.textContent = error.message || '启动失败';
+    status.className = 'meta err';
+  } finally { button.disabled = false; }
 }
 function renderMemoryResults(result) {
   const box = document.getElementById('memoryResults');
@@ -1286,7 +1518,7 @@ function renderMemoryResults(result) {
     return;
   }
   box.innerHTML = memoryHits.map((hit, index) => {
-    const origin = hit.metadata?.origin === 'qq' ? 'QQ 对话' : hit.metadata?.origin === 'assistant' ? '助手经历' : '来源未标注';
+    const origin = hit.metadata?.origin === 'qq' ? 'QQ 对话' : hit.metadata?.origin === 'assistant' ? '自身经历' : '来源未标注';
     const title = hit.title || hit.kind || origin;
     const time = hit.observedAt || hit.metadata?.observedAt || '';
     return `<button class="memory-hit" type="button" data-memory-index="${index}"><span class="memory-hit-head"><strong>${esc(title)}</strong><span class="tag">${esc(origin)}</span></span><span class="memory-hit-content">${esc(hit.content)}</span><span class="meta">${time ? `观察时间：${esc(new Date(time).toLocaleString())} · ` : ''}memoryId：<code>${esc(hit.memoryId)}</code></span></button>`;
@@ -1391,7 +1623,7 @@ async function saveMemory(isReplace) {
   const memoryId = document.getElementById('memoryId').value;
   if (isReplace && !memoryId) return;
   if (isReplace && !document.getElementById('memoryOrigin').value) {
-    status.textContent = '该记录没有已知来源；请选择“助手经历”或“QQ 对话”后再保存。';
+    status.textContent = '该记录没有已知来源；请选择“自身经历”或“QQ 对话”后再保存。';
     status.className = 'meta err';
     return;
   }
@@ -1458,7 +1690,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   document.title = consolePages[page][0] + ' · QQ 桥接控制台';
   if (updateHash && location.hash !== '#' + page) history.pushState({}, '', '#' + page);
   if (page === 'overview' || page === 'sessions') refreshDesktopAgentStatus();
-  if (page === 'memory') refreshMemoryStatus();
+  if (page === 'memory') { refreshMemoryStatus(); refreshMemorySettings(); }
   closeConsoleSearch();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
@@ -1468,7 +1700,13 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   setConsolePage(button.dataset.view, { focus: true, target: button.dataset.target });
 }));
-document.getElementById('memoryRefreshStatus').addEventListener('click', refreshMemoryStatus);
+document.getElementById('memoryRefreshStatus').addEventListener('click', () => { refreshMemoryStatus(); refreshMemorySettings(); });
+document.getElementById('memorySettingsSave').addEventListener('click', saveMemorySettings);
+document.getElementById('memoryProvidersSave').addEventListener('click', saveMemoryProviders);
+document.getElementById('memoryServiceStart').addEventListener('click', startAMemorix);
+document.getElementById('memoryClearApiKey').addEventListener('change', event => { if (event.target.checked) document.getElementById('memoryApiKey').value = ''; });
+document.getElementById('memoryEmbeddingClearKey').addEventListener('change', event => { if (event.target.checked) document.getElementById('memoryEmbeddingKey').value = ''; });
+document.getElementById('memoryLlmClearKey').addEventListener('change', event => { if (event.target.checked) document.getElementById('memoryLlmKey').value = ''; });
 document.getElementById('memorySearch').addEventListener('click', searchMemory);
 document.getElementById('memoryQuery').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); searchMemory(); }

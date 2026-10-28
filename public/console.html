@@ -27,9 +27,9 @@
     <a href="#overview" class="brand"><span class="brand-mark" aria-hidden="true">q<span>↗</span></span><span>QQ Bridge<small>DeepSeek Harness 控制台</small></span></a>
     <div class="nav-label">工作空间</div>
     <nav id="mainNav">
-      <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>桌面助手</button>
+      <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>陪伴者</button>
       <button data-view="sessions" class="nav-item"><span class="nav-icon" aria-hidden="true">☷</span>会话控制</button>
-      <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>助手提示词</button>
+      <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>陪伴者提示词</button>
       <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>长期记忆</button>
       <div class="nav-label">QQ 通道</div>
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>提醒与消息</button>
@@ -47,18 +47,18 @@
       <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
     </header>
     <main id="mainContent" tabindex="-1">
-      <div class="page-heading"><div><div class="eyebrow">桌面助手 / 本地控制台</div><h1 id="pageTitle">桌面助手</h1><p id="pageDescription">查看运行状态，或前往会话控制启动自主探索。</p></div>
+      <div class="page-heading"><div><div class="eyebrow">qq-bridge / 本地控制台</div><h1 id="pageTitle">陪伴者</h1><p id="pageDescription">查看运行状态，或前往会话控制启动自主探索。</p></div>
         <div class="search-wrap"><label class="sr-only" for="consoleSearch">搜索功能或参数</label><input id="consoleSearch" type="search" placeholder="搜索功能或参数…" autocomplete="off" aria-controls="searchResults" aria-expanded="false"><div id="searchResults" class="search-results" hidden></div></div>
       </div>
       <div id="connectionAlert" class="connection-alert" role="alert" hidden></div>
       <section id="section-desktop-agent" data-page="sessions" class="card desktop-agent-card">
         <div class="desktop-agent-heading">
-          <div><div class="eyebrow">全局 DSH 会话</div><h2>个人桌面助手</h2></div>
+          <div><div class="eyebrow">全局 DSH 会话</div><h2>全局陪伴者</h2></div>
           <span class="meta" id="desktopAgentStatus" role="status">正在检查会话…</span>
         </div>
         <p class="meta err" id="desktopAgentMediaWarning" role="status" hidden></p>
-        <p class="meta desktop-agent-intro">这是唯一的长期 DSH 会话。尚未创建时，启动自主探索或发送任务会自动创建它。点“启动自主探索”即可让它查看桌面并自行选择下一步；也可以输入明确任务。电脑和 QQ 都是它可用的工具，QQ 只是一条按需使用的消息渠道。</p>
-        <label for="desktopAgentMessage">给助手一个具体任务（可选）</label>
+        <p class="meta desktop-agent-intro">这是唯一的长期 DSH 会话。尚未创建时，启动自主探索或发送任务会自动创建它。点“启动自主探索”即可开始自主活动并选择关注点；也可以输入明确任务。电脑、QQ 和其他已开放工具都可按需使用，QQ 只是消息渠道之一。</p>
+        <label for="desktopAgentMessage">给陪伴者一个具体任务（可选）</label>
         <textarea id="desktopAgentMessage" maxlength="20000" placeholder="可以留空并直接启动自主探索；也可以写一个具体任务。"></textarea>
         <div class="row desktop-agent-actions">
           <button id="desktopAgentStart" class="primary" disabled>启动自主探索</button>
@@ -67,7 +67,7 @@
           <button id="desktopAgentRefresh" class="small">刷新状态</button>
           <span class="meta" id="desktopAgentMessageStatus" role="status"></span>
         </div>
-        <p class="meta desktop-agent-note">每个回合结束前，助手应调用 agent_rest 并自行选择休息时长；直接在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未正常休息的回合会按指数间隔尝试恢复，最长间隔 30 分钟。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。不会发送周期性模型心跳。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。QQ 私聊、原生 @、已验证回复/引用和关键词只是提醒，是否读取或回复由助手自己决定。</p>
+        <p class="meta desktop-agent-note">每个回合结束前，陪伴者应调用 agent_rest 并自行选择休息时长；直接在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未正常休息的回合会按指数间隔尝试恢复，最长间隔 30 分钟。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。不会发送周期性模型心跳。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。QQ 私聊、原生 @、已验证回复/引用和关键词只是提醒，是否读取或回复由陪伴者自己决定。</p>
         <details class="settings-group desktop-agent-management">
           <summary>会话管理</summary>
           <div class="settings-content">
@@ -79,11 +79,11 @@
       <div id="overviewSummary" class="overview-summary span-all" data-page="overview">
         <div class="metric"><span>DSH 连接</span><strong id="metricDsh">连接中</strong><small id="metricDshHint">等待服务响应</small></div>
         <div class="metric"><span>SnowLuma 上游</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
-        <div class="metric"><span>桌面助手会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
+        <div class="metric"><span>陪伴者会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
         <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复/引用、关键词</small></div>
       </div>
       <section class="card span-all" data-page="overview">
-        <h2>控制个人桌面助手</h2>
+        <h2>控制全局陪伴者</h2>
         <p class="meta">会话控制、启动自主探索或发送具体任务。</p>
         <button class="small" data-view="sessions" data-target="desktopAgentStart">打开会话控制 →</button>
       </section>
@@ -93,17 +93,17 @@
       <pre id="activity">（空）</pre>
     </section>
 <section id="section-persona" data-page="persona" class="card span-all">
-      <h2>助手提示词与人格</h2>
+      <h2>陪伴者提示词与人格</h2>
       <div class="meta">当前人格：<span id="roleText">-</span> ｜ 状态：<span id="roleModeText">-</span></div>
 
       <div class="layer-note">
         <strong>全局会话上下文</strong>
         <ol>
-          <li><b>DSH 固定前缀</b>：整个全局会话共用的一段规则，下面可直接编辑。</li>
+          <li><b>DSH 固定前缀</b>：整个全局会话共用，按用途拆成可编辑的模块；部分规则为必要模块，会保持启用。</li>
           <li><b>人格提示词</b>：在全局会话第一次收到任务或提醒时注入一次，用于身份、性格和表达方式。</li>
           <li><b>会话事件记录</b>：可按页查看 DSH 持久化的消息、工具调用和回合事件。</li>
         </ol>
-        <p>保存后会更新桌面助手预设；重启 DSH 并重建全局会话后生效。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；DSH 会根据运行状态整理或压缩上下文，推理过程不会在此展示。</p>
+        <p>保存后会更新陪伴者预设；重启 DSH 并重建全局会话后生效。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；DSH 会根据运行状态整理或压缩上下文，推理过程不会在此展示。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -147,27 +147,39 @@
       </details>
 
       <h3 class="layer-heading">DSH 固定前缀 <span class="meta" id="desktopPromptStatus">加载中…</span></h3>
-      <div class="meta" style="margin-bottom:8px">桌面助手在全局会话中始终使用这段提示词。它是一整段文本；保存后需重启 DSH 并重建全局会话才会生效。</div>
+      <div class="prompt-operation-guide" role="note" aria-label="固定前缀模块操作指引">
+        <div class="prompt-operation-guide-heading"><span>操作指引</span><span>先编辑，再保存</span></div>
+        <ol>
+          <li>点击下方的“编辑模块”</li>
+          <li>修改正文；只可关闭未标注“必须启用”的模块</li>
+          <li>点击“保存模块”应用，或点击“取消编辑”放弃</li>
+        </ol>
+        <p>开关只控制固定前缀提示词，不会关闭记忆服务或工具能力。保存后需重启 DSH 并重建全局会话才会生效。</p>
+      </div>
       <div class="meta" id="desktopPromptWarnings"></div>
-      <textarea id="desktopPromptText" class="code-area" spellcheck="false" readonly></textarea>
+      <div id="desktopPromptModules" class="prompt-module-list" aria-live="polite"></div>
       <div class="row" style="margin-top:8px">
-        <button id="desktopPromptEdit">编辑</button>
-        <button id="desktopPromptSave" disabled>保存固定前缀</button>
+        <button id="desktopPromptEdit">编辑模块</button>
+        <button id="desktopPromptSave" disabled>保存模块</button>
         <button id="desktopPromptRestore">还原上次备份</button>
         <button id="desktopPromptCancel" disabled>取消编辑</button>
         <span class="meta" id="desktopPromptMsg"></span>
       </div>
+      <details class="prompt-preview">
+        <summary>预览完整固定前缀</summary>
+        <textarea id="desktopPromptPreview" class="code-area" spellcheck="false" readonly></textarea>
+      </details>
       <div class="meta" id="desktopPromptRestart"></div>
 
-      <h3 class="layer-heading">当前桌面助手会话记录 <span class="meta" id="desktopAgentHistoryStatus">尚未加载</span></h3>
-      <div class="meta">读取当前桌面助手会话的持久事件，包括已保存的消息、工具和回合记录；不会读取其它会话。推理过程、内部尝试详情和流式片段会隐藏。</div>
+      <h3 class="layer-heading">当前陪伴者会话记录 <span class="meta" id="desktopAgentHistoryStatus">尚未加载</span></h3>
+      <div class="meta">读取当前陪伴者会话的持久事件，包括已保存的消息、工具和回合记录；不会读取其它会话。推理过程、内部尝试详情和流式片段会隐藏。</div>
       <div class="meta">此记录可用于核对会话实际保存了什么，但不等同于最终模型请求：运行环境可能整理或压缩上下文。上方可查看当前配置的固定提示词。</div>
       <div class="row context-history-controls" style="margin-top:10px">
         <button id="desktopAgentHistoryRefresh" class="small">刷新记录</button>
         <button id="desktopAgentHistoryOlder" class="small" hidden disabled>加载更早记录</button>
       </div>
       <div id="desktopAgentHistory" class="context-history" aria-live="polite">
-        <div class="empty-state"><strong>尚未读取会话记录</strong><p>点击“刷新记录”查看当前桌面助手会话。</p></div>
+        <div class="empty-state"><strong>尚未读取会话记录</strong><p>点击“刷新记录”查看当前陪伴者会话。</p></div>
       </div>
     </section>
 <section id="section-memory" data-page="memory" class="card span-all">
@@ -177,14 +189,69 @@
       </div>
       <div class="layer-note">
         <strong>共享记忆库</strong>
-        <p>QQ 来源和助手自身经历共用 A_Memorix；模型通过工具决定何时读写。这里按需检索、查看、编辑或删除。当前 Gateway 不提供全量列举接口，结果由查询词和时间范围决定，不代表完整账本。</p>
+        <p>QQ 来源和自身经历共用 A_Memorix；模型通过工具决定何时读写。这里按需检索、查看、编辑或删除。当前 Gateway 不提供全量列举接口，结果由查询词和时间范围决定，不代表完整账本。</p>
       </div>
+      <details class="settings-group memory-config-group" open>
+        <summary>桥接连接与启动摘要</summary>
+        <div class="settings-content">
+          <p class="meta">Gateway 只允许本机回环地址；namespace 必须已在 A_Memorix 中创建。密钥不会从服务端回显，留空表示保留已保存的密钥。</p>
+          <div class="memory-config-grid">
+            <label class="memory-toggle" for="memoryEnabled"><input id="memoryEnabled" type="checkbox"> 启用长期记忆</label>
+            <label for="memoryBaseUrl">A_Memorix Gateway 地址<input id="memoryBaseUrl" type="url" maxlength="2048" placeholder="http://127.0.0.1:8080"></label>
+            <label for="memoryNamespace">Namespace<input id="memoryNamespace" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9._-]{0,127}" placeholder="qq-bridge"></label>
+            <label for="memoryApiKey">Namespace API Key（留空不变）<input id="memoryApiKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
+            <label class="memory-toggle" for="memoryClearApiKey"><input id="memoryClearApiKey" type="checkbox"> 清除已保存的 namespace 密钥</label>
+            <label for="memoryTimeoutSeconds">请求超时（秒）<input id="memoryTimeoutSeconds" type="number" min="1" max="120" step="1"></label>
+            <label for="memoryBootstrapLimit">新会话摘要最多记忆数<input id="memoryBootstrapLimit" type="number" min="1" max="12" step="1"></label>
+            <label for="memoryBootstrapMaxChars">新会话摘要字符上限<input id="memoryBootstrapMaxChars" type="number" min="500" max="5000" step="100"></label>
+          </div>
+          <div class="row memory-config-actions">
+            <button id="memorySettingsSave" class="primary">保存连接设置</button>
+            <button id="memoryServiceStart" class="small">启动 A_Memorix</button>
+            <span id="memorySettingsStatus" class="meta" role="status"></span>
+          </div>
+        </div>
+      </details>
+      <details class="settings-group memory-config-group">
+        <summary>A_Memorix 模型服务（Embedding / LLM）</summary>
+        <div class="settings-content">
+          <p>Embedding 用于语义检索；LLM 用于记忆关系、画像和情景整理。配置后，A_Memorix 会将相应记忆内容发送到这些服务地址，可能产生费用。外部地址必须使用 HTTPS。密钥只写入本机受保护的 state 目录，页面不会回读。</p>
+          <div class="memory-provider-grid">
+            <fieldset class="memory-provider-card">
+              <legend>Embedding</legend>
+              <p id="memoryEmbeddingStatus" class="meta" role="status">尚未读取配置</p>
+              <label for="memoryEmbeddingEndpoint">OpenAI 兼容 API 地址<input id="memoryEmbeddingEndpoint" type="url" maxlength="2048" placeholder="https://服务地址/v1"></label>
+              <label for="memoryEmbeddingModel">模型 ID<input id="memoryEmbeddingModel" type="text" maxlength="256" autocomplete="off" placeholder="例如 embedding 模型名"></label>
+              <label for="memoryEmbeddingKey">API Key（留空不变）<input id="memoryEmbeddingKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
+              <label for="memoryEmbeddingDimension">向量维度<input id="memoryEmbeddingDimension" type="number" min="1" max="8192" step="1"></label>
+              <p class="meta">必须与该 Embedding 模型实际返回的维度一致；常见默认值为 1024。</p>
+              <label class="memory-toggle" for="memoryEmbeddingClearKey"><input id="memoryEmbeddingClearKey" type="checkbox"> 清除已保存的 Embedding 密钥</label>
+            </fieldset>
+            <fieldset class="memory-provider-card">
+              <legend>LLM</legend>
+              <p id="memoryLlmStatus" class="meta" role="status">尚未读取配置</p>
+              <label for="memoryLlmEndpoint">OpenAI 兼容 API 地址<input id="memoryLlmEndpoint" type="url" maxlength="2048" placeholder="https://服务地址/v1"></label>
+              <label for="memoryLlmModel">模型 ID<input id="memoryLlmModel" type="text" maxlength="256" autocomplete="off" placeholder="例如聊天模型名"></label>
+              <label for="memoryLlmKey">API Key（留空不变）<input id="memoryLlmKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
+              <div class="memory-provider-numbers">
+                <label for="memoryLlmMaxTokens">最大输出 token<input id="memoryLlmMaxTokens" type="number" min="1" max="65536" step="1"></label>
+                <label for="memoryLlmTemperature">Temperature<input id="memoryLlmTemperature" type="number" min="0" max="2" step="0.1"></label>
+              </div>
+              <label class="memory-toggle" for="memoryLlmClearKey"><input id="memoryLlmClearKey" type="checkbox"> 清除已保存的 LLM 密钥</label>
+            </fieldset>
+          </div>
+          <div class="row memory-config-actions">
+            <button id="memoryProvidersSave" class="primary">保存并重启 A_Memorix</button>
+            <span id="memoryProviderSaveStatus" class="meta" role="status"></span>
+          </div>
+        </div>
+      </details>
       <h3>检索记忆</h3>
       <div class="row memory-search-controls">
         <label for="memoryQuery">关键词或问题</label>
         <input id="memoryQuery" type="search" maxlength="2000" placeholder="例如：上次处理 DSH 启动问题时的发现">
         <label for="memoryOriginFilter">来源</label>
-        <select id="memoryOriginFilter"><option value="all">全部</option><option value="assistant">助手经历</option><option value="qq">QQ 对话</option></select>
+        <select id="memoryOriginFilter"><option value="all">全部</option><option value="assistant">自身经历</option><option value="qq">QQ 对话</option></select>
         <label for="memoryTimeStart">从</label>
         <input id="memoryTimeStart" type="date">
         <label for="memoryTimeEnd">到</label>
@@ -199,11 +266,11 @@
         <div class="settings-content">
           <input id="memoryId" type="hidden">
           <label for="memoryOrigin">来源</label>
-          <select id="memoryOrigin"><option value="assistant">助手经历</option><option value="qq">QQ 对话</option><option value="">来源未标注（编辑前请确认）</option></select>
+          <select id="memoryOrigin"><option value="assistant">自身经历</option><option value="qq">QQ 对话</option><option value="">来源未标注（编辑前请确认）</option></select>
           <label for="memoryContent">记忆内容</label>
           <textarea id="memoryContent" rows="6" maxlength="20000" placeholder="写下可长期复用的信息，并说明来源、时间、背景或确定程度。"></textarea>
           <label for="memorySourceContext">来源上下文</label>
-          <input id="memorySourceContext" type="text" maxlength="2000" placeholder="例如：某次桌面操作、QQ 群/私聊及说话人">
+          <input id="memorySourceContext" type="text" maxlength="2000" placeholder="例如：某次电脑操作、QQ 群/私聊及说话人">
           <label for="memoryConfidence">可信程度</label>
           <select id="memoryConfidence"><option value="">未标注</option><option value="firsthand">亲自观察</option><option value="reported">他人陈述</option><option value="inferred">推断</option><option value="uncertain">不确定</option></select>
           <label for="memoryEvidenceReferences">证据引用（每行一个）</label>
@@ -239,7 +306,7 @@
       <details class="settings-group"><summary>群聊注意关键词</summary><div class="settings-content">
         <label for="v2AttentionKeywords">关键词（每行一个，也可用逗号分隔）</label>
         <textarea id="v2AttentionKeywords" rows="3" placeholder="例如：你们怎么看&#10;这个问题"></textarea>
-        <div class="meta">命中时只提醒全局助手有消息，不把消息正文放进提示词；助手可自行决定是否查看或回应。私聊和原生 @ / 已验证回复不受此列表影响。最多 50 项，每项 2–64 字符。</div>
+        <div class="meta">命中时只提醒全局陪伴者有消息，不把消息正文放进提示词；陪伴者可自行决定是否查看或回应。私聊和原生 @ / 已验证回复不受此列表影响。最多 50 项，每项 2–64 字符。</div>
       </div></details>
 
       <div class="row" style="margin-top:10px">
@@ -345,7 +412,7 @@
       </div></details>
 
 <details class="settings-group"><summary>QQ 消息缓冲</summary><div class="settings-content">
-      <div class="meta">QQ 消息只缓存在本地供桌面助手按需读取。下方可查看各群和私聊的未读数量与最近消息时间；这不代表对应 DSH 会话。</div>
+      <div class="meta">QQ 消息只缓存在本地供陪伴者按需读取。下方可查看各群和私聊的未读数量与最近消息时间；这不代表对应 DSH 会话。</div>
       <div class="row" style="margin-top:8px">
         <button id="v2StatesList" class="small">刷新缓冲状态</button>
       </div>
@@ -382,7 +449,7 @@
         <button id="silentOn">开启静默</button>
         <button id="silentOff">恢复正常</button>
       </div>
-      <div class="meta">静默时群消息仍会缓存在本地，但不会作为提醒发送给桌面助手；桌面助手仍可按需读取。</div>
+      <div class="meta">静默时群消息仍会缓存在本地，但不会作为提醒发送给陪伴者；陪伴者仍可按需读取。</div>
     </section>
 <section id="section-dsh" data-page="overview" class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
@@ -430,7 +497,7 @@
       <div class="meta">开启：回复被安全拦截时会在群里提示；关闭：直接沉默，只在日志/活动记录里留下记录。</div>
       <div id="stateDirWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
         <b>⚠️ state/ 目录权限未收紧</b>
-        <div class="meta" style="margin:4px 0">Windows 上改文件权限需要管理员身份，本次启动没能收紧 <code id="stateDirPath"></code>。它里面的控制台令牌、SnowLuma 令牌、全局助手令牌与 QQ 消息缓存，本机任何已登录用户都可能读到。</div>
+        <div class="meta" style="margin:4px 0">Windows 上改文件权限需要管理员身份，本次启动没能收紧 <code id="stateDirPath"></code>。它里面的控制台令牌、SnowLuma 令牌、全局陪伴者令牌与 QQ 消息缓存，本机任何已登录用户都可能读到。</div>
         <div class="meta">两种做法：① 用<b>管理员身份</b>打开终端执行下面这条命令（一次即可，可复制）；② 或者<b>用管理员身份重启桥接</b>，让它自己收紧。做完点下面的按钮复检。</div>
         <pre id="stateDirCmd" style="user-select:all;overflow:auto;margin:4px 0;padding:6px;background:rgba(127,127,127,.12);border-radius:4px"></pre>
         <button id="stateDirReharden" class="small">重新检测</button>
@@ -469,7 +536,7 @@
         <button id="tsSend">发送测试</button>
         <span class="meta" id="tsMsg2"></span>
       </div>
-      <div class="meta">控制台测试发送受 allow/deny 限制；桌面助手的 QQ 工具独立校验全局令牌、活动回合、限频与审计。</div>
+      <div class="meta">控制台测试发送受 allow/deny 限制；陪伴者的 QQ 工具独立校验全局令牌、活动回合、限频与审计。</div>
     </section>
 <section id="section-maintenance" data-page="operations" class="card">
       <h2>桥接控制</h2>

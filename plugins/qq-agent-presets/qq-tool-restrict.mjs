@@ -78,7 +78,7 @@ export const inject = ['tools']
  * 该轮结论：**旧名字全部还在**（0 个假名，0.1.7 那次替换后没有再次改名），
  * 但 0.2.0 的包里多出 13 个「危险语义」名字是名单没覆盖的，逐条判定如下：
  *
- *   ① 会进入桌面助手 schema、必须隐藏的（它们在**全局层**，所有 preset 都继承）：
+ *   ① 会进入 `desktop-agent` schema、必须隐藏的（它们在**全局层**，所有 preset 都继承）：
  *      · `list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`
  *        —— `dsh-base` 的 `mcp-resources` 行**默认启用**（cordis.patch.yml 里没有
  *        disabled），所以 desktop-agent 会继承这三个工具。`read_mcp_resource` 的
@@ -96,7 +96,7 @@ export const inject = ['tools']
  *
  * 2026-10-22 针对 DSH 0.2.1-rc.2 重新对账（`node scripts/scan-dsh-tool-names.mjs`）。
  * DSH 这轮把不少能力从「实验组合包」转正，工具面因此变了三处：
- *   ① **新增一个会进入桌面助手 schema 的全局工具**：`dsh-base` 现在默认挂
+ *   ① **新增一个会进入 `desktop-agent` schema 的全局工具**：`dsh-base` 现在默认挂
  *      `working-directory` + `tool-working-directory` 两行，于是 `working_directory`
  *      和 `list_mcp_resources` 一样属于**全局层继承**——desktop-agent 会拿到，
  *      必须从 schema 隐藏（`state/tool-restrict.log` 的 known global tools 实测可见）。
@@ -138,7 +138,7 @@ const LOCAL_EXECUTION_TOOLS = [
   'job_list', 'job_output', 'job_kill', 'skill', 'present',
   'get_goal', 'create_goal', 'update_goal',
   // 0.2.0 新增对账（见上方长注释的 4 类判定）：
-  //   ① 全局层默认启用 ⇒ 会进入桌面助手 schema
+  //   ① 全局层默认启用 ⇒ 会进入 `desktop-agent` schema
   'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource',
   //   ② 派生 agent / 执行外部代码
   'spawn_teammate', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',

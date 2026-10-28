@@ -1,4 +1,4 @@
-// QQ ↔ DeepSeek Harness 桥接主程序。
+// DSH 全局自主陪伴运行时与 QQ 消息桥接。
 //
 // 链路：
 //   QQ 消息 → SnowLuma (OneBot v11 WS) → 本进程 → DSH Web API session.prompt
@@ -10,9 +10,18 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
-import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
+import {
+  composePresetPromptModules,
+  extractPresetPrefix,
+  migrateLegacyPresetPromptModules,
+  normalizePresetPromptModules,
+  presetPromptBlockers,
+  presetPromptWarnings,
+  renderPresetPromptYaml,
+  serializePresetPromptModules,
+} from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
@@ -26,7 +35,7 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel } from './media-normalize.js';
 import { isFfmpegAvailable } from './ffmpeg-resolve.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
-import { hardenDir, manualDirCommand } from './state-acl.mjs';
+import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
@@ -45,6 +54,15 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const STATE_DIR = path.join(ROOT, 'state');
+const A_MEMORIX_STATE_DIR = path.join(STATE_DIR, 'a-memorix');
+const A_MEMORIX_CONFIG_FILE = path.join(A_MEMORIX_STATE_DIR, 'config.toml');
+const A_MEMORIX_CLI = path.join(A_MEMORIX_STATE_DIR, 'venv', 'Scripts', 'a-memorix.exe');
+const A_MEMORIX_GATEWAY = path.join(A_MEMORIX_STATE_DIR, 'bin', 'a-memorix-gateway.exe');
+const A_MEMORIX_PROVIDER_SETTINGS_FILE = path.join(A_MEMORIX_STATE_DIR, 'providers.json');
+const A_MEMORIX_PROVIDER_KEYS = {
+  embedding: path.join(A_MEMORIX_STATE_DIR, 'secrets', 'embedding-api-key'),
+  llm: path.join(A_MEMORIX_STATE_DIR, 'secrets', 'llm-api-key')
+};
 const DESKTOP_AGENT_FILE = path.join(STATE_DIR, 'desktop-agent.json');
 const DESKTOP_AGENT_RECOVERY_BASE_MS = 60_000;
 const DESKTOP_AGENT_RECOVERY_MAX_MS = 30 * 60_000;
@@ -153,6 +171,191 @@ function atomicWriteText(file, text) {
   }
 }
 
+function atomicWriteConfigJson(file, obj) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmp, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    const acl = hardenFile(tmp);
+    if (!acl.ok) throw new Error(`无法收紧临时配置文件权限：${acl.detail}`);
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { encoding: 'utf8' });
+    renameWithRetry(tmp, file);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw error;
+  }
+}
+
+function memoryProviderSettings() {
+  const saved = readJsonSafe(A_MEMORIX_PROVIDER_SETTINGS_FILE, {}, false);
+  const embedding = saved?.embedding && typeof saved.embedding === 'object' ? saved.embedding : {};
+  const llm = saved?.llm && typeof saved.llm === 'object' ? saved.llm : {};
+  const positiveInteger = (value, fallback, max) => {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 1 ? Math.min(number, max) : fallback;
+  };
+  const temperature = Number(llm.temperature);
+  return {
+    embedding: {
+      endpoint: String(embedding.endpoint ?? ''),
+      model: String(embedding.model ?? ''),
+      dimension: positiveInteger(embedding.dimension, 1024, 8192),
+      configured: Boolean(String(embedding.endpoint ?? '').trim() && String(embedding.model ?? '').trim()),
+      apiKeyConfigured: fs.existsSync(A_MEMORIX_PROVIDER_KEYS.embedding)
+    },
+    llm: {
+      endpoint: String(llm.endpoint ?? ''),
+      model: String(llm.model ?? ''),
+      maxTokens: positiveInteger(llm.maxTokens, 8192, 65536),
+      temperature: Number.isFinite(temperature) ? Math.max(0, Math.min(2, temperature)) : 0,
+      configured: Boolean(String(llm.endpoint ?? '').trim() && String(llm.model ?? '').trim()),
+      apiKeyConfigured: fs.existsSync(A_MEMORIX_PROVIDER_KEYS.llm)
+    }
+  };
+}
+
+function validateMemoryProvider(value, label, current, kind) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const endpoint = String(input.endpoint ?? current.endpoint ?? '').trim();
+  const model = String(input.model ?? current.model ?? '').trim();
+  if (endpoint.length > 2048 || /[\u0000-\u001f\u007f]/.test(endpoint)) throw new Error(`${label} Endpoint 格式或长度无效`);
+  if (model.length > 256 || /[\u0000-\u001f\u007f]/.test(model)) throw new Error(`${label} Model ID 格式或长度无效`);
+  if (Boolean(endpoint) !== Boolean(model)) throw new Error(`${label} Endpoint 和 Model ID 必须同时填写或同时留空`);
+  if (endpoint) {
+    let url;
+    try { url = new URL(endpoint); } catch { throw new Error(`${label} Endpoint 必须是有效的 HTTP(S) 地址`); }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      throw new Error(`${label} Endpoint 只允许不含凭据、查询参数或片段的 HTTP(S) 地址`);
+    }
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (url.protocol === 'http:' && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
+      throw new Error(`${label} 外部 Endpoint 必须使用 HTTPS；HTTP 仅允许本机回环地址`);
+    }
+  }
+  const result = { endpoint, model };
+  if (kind === 'embedding') {
+    const dimension = Number(input.dimension ?? current.dimension ?? 1024);
+    if (!Number.isInteger(dimension) || dimension < 1 || dimension > 8192) throw new Error('Embedding 维度必须是 1 至 8192 的整数');
+    result.dimension = dimension;
+  } else {
+    const maxTokens = Number(input.maxTokens ?? current.maxTokens ?? 8192);
+    const temperature = Number(input.temperature ?? current.temperature ?? 0);
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 65536) throw new Error('LLM 最大输出 token 必须是 1 至 65536 的整数');
+    if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw new Error('LLM temperature 必须在 0 至 2 之间');
+    result.maxTokens = maxTokens;
+    result.temperature = temperature;
+  }
+  const apiKey = String(input.apiKey ?? '');
+  if (apiKey.length > 4096 || /[\u0000-\u001f\u007f]/.test(apiKey)) throw new Error(`${label} API Key 格式或长度无效`);
+  if (input.clearApiKey === true && apiKey.trim()) throw new Error(`${label} API Key 不能同时输入新值并选择清除`);
+  return { ...result, apiKey: apiKey.trim(), clearApiKey: input.clearApiKey === true };
+}
+
+function tomlString(value) { return JSON.stringify(String(value)); }
+
+function renderAMemorixProviderConfig(toml, settings, keyConfigured) {
+  const removedSections = new Set(['providers.embedding', 'providers.llm']);
+  let skipSection = false;
+  const kept = [];
+  for (const line of String(toml).split(/\r?\n/)) {
+    const section = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/.exec(line)?.[1]?.trim();
+    if (section) skipSection = [...removedSections].some((name) => section === name || section.startsWith(`${name}.`));
+    if (!skipSection) kept.push(line);
+  }
+  const lines = [kept.join('\n').trimEnd(), '', '[providers.embedding]', 'provider = "openai-compatible"',
+    `endpoint = ${tomlString(settings.embedding.endpoint)}`, `model = ${tomlString(settings.embedding.model)}`];
+  if (keyConfigured.embedding) lines.push('api_key_file = "./secrets/embedding-api-key"');
+  lines.push(`dimension = ${settings.embedding.dimension}`, 'dimension_request_mode = "explicit"', '', '[providers.llm]',
+    'provider = "openai-compatible"', `endpoint = ${tomlString(settings.llm.endpoint)}`, `model = ${tomlString(settings.llm.model)}`);
+  if (keyConfigured.llm) lines.push('api_key_file = "./secrets/llm-api-key"');
+  lines.push(`max_tokens = ${settings.llm.maxTokens}`, `temperature = ${settings.llm.temperature}`, '');
+  return lines.join('\n');
+}
+
+function validateAMemorixConfigText(text) {
+  if (!fs.existsSync(A_MEMORIX_CLI)) throw new Error('未找到本机 A_Memorix；请先运行 scripts/a-memorix.ps1 setup');
+  const temporary = path.join(A_MEMORIX_STATE_DIR, `config.validate-${process.pid}-${crypto.randomBytes(5).toString('hex')}.toml`);
+  try {
+    fs.writeFileSync(temporary, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    execFileSync(A_MEMORIX_CLI, ['--config', temporary, '--pretty', 'config'], {
+      cwd: A_MEMORIX_STATE_DIR, encoding: 'utf8', windowsHide: true, timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch (error) {
+    const detail = String(error?.stderr || error?.message || error).trim().slice(0, 500);
+    throw new Error(`A_Memorix 配置校验失败：${detail}`);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch {}
+  }
+}
+
+function atomicWriteProviderSecret(file, secret) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicWriteText(file, secret);
+}
+
+function restoreFile(file, content) {
+  if (content === null) { try { fs.unlinkSync(file); } catch (error) { if (error?.code !== 'ENOENT') throw error; } }
+  else atomicWriteText(file, content);
+}
+
+function saveAMemorixProviderSettings(embeddingInput, llmInput) {
+  if (!fs.existsSync(A_MEMORIX_CONFIG_FILE)) throw new Error('未找到本机 A_Memorix 配置；请先运行 scripts/a-memorix.ps1 setup');
+  const current = memoryProviderSettings();
+  const embedding = validateMemoryProvider(embeddingInput, 'Embedding', current.embedding, 'embedding');
+  const llm = validateMemoryProvider(llmInput, 'LLM', current.llm, 'llm');
+  const settings = {
+    embedding: { endpoint: embedding.endpoint, model: embedding.model, dimension: embedding.dimension },
+    llm: { endpoint: llm.endpoint, model: llm.model, maxTokens: llm.maxTokens, temperature: llm.temperature }
+  };
+  const credentialActions = { embedding, llm };
+  const oldConfig = fs.readFileSync(A_MEMORIX_CONFIG_FILE, 'utf8');
+  const oldSettings = fs.existsSync(A_MEMORIX_PROVIDER_SETTINGS_FILE) ? fs.readFileSync(A_MEMORIX_PROVIDER_SETTINGS_FILE, 'utf8') : null;
+  const oldKeys = Object.fromEntries(Object.entries(A_MEMORIX_PROVIDER_KEYS).map(([kind, file]) => [kind, fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null]));
+  const keyConfigured = { embedding: fs.existsSync(A_MEMORIX_PROVIDER_KEYS.embedding), llm: fs.existsSync(A_MEMORIX_PROVIDER_KEYS.llm) };
+  for (const kind of ['embedding', 'llm']) {
+    if (credentialActions[kind].clearApiKey) keyConfigured[kind] = false;
+    else if (credentialActions[kind].apiKey) keyConfigured[kind] = true;
+  }
+  const updatedConfig = renderAMemorixProviderConfig(oldConfig, settings, keyConfigured);
+  try {
+    validateAMemorixConfigText(updatedConfig);
+    for (const kind of ['embedding', 'llm']) {
+      const action = credentialActions[kind];
+      const file = A_MEMORIX_PROVIDER_KEYS[kind];
+      if (action.clearApiKey) restoreFile(file, null);
+      else if (action.apiKey) atomicWriteProviderSecret(file, action.apiKey);
+    }
+    atomicWriteText(A_MEMORIX_CONFIG_FILE, updatedConfig);
+    atomicWriteJson(A_MEMORIX_PROVIDER_SETTINGS_FILE, settings);
+  } catch (error) {
+    try { restoreFile(A_MEMORIX_CONFIG_FILE, oldConfig); } catch {}
+    try { restoreFile(A_MEMORIX_PROVIDER_SETTINGS_FILE, oldSettings); } catch {}
+    for (const kind of ['embedding', 'llm']) {
+      try { restoreFile(A_MEMORIX_PROVIDER_KEYS[kind], oldKeys[kind]); } catch {}
+    }
+    throw error;
+  }
+  return memoryProviderSettings();
+}
+
+function runAMemorixControl(action) {
+  if (!['start', 'restart'].includes(action)) return Promise.reject(new Error('A_Memorix 操作无效'));
+  const script = path.join(ROOT, 'scripts', 'a-memorix.ps1');
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, action], {
+      cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 90_000, maxBuffer: 512 * 1024
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const detail = String(stderr || error.message || '启动脚本失败').trim().slice(0, 500);
+        reject(new Error(redactSensitiveText(detail)));
+        return;
+      }
+      resolve(String(stdout || '').trim());
+    });
+  });
+}
+
 // 控制台鉴权 token：未配置时自动生成并持久化到 state/console-token，避免默认无鉴权。
 function loadOrCreateConsoleToken() {
   const tokenFile = path.join(STATE_DIR, 'console-token');
@@ -170,7 +373,7 @@ function loadOrCreateConsoleToken() {
  *
  * **Windows 上 `mode: 0o600` 是空操作**（实测：chmod 之后 ACL 不变），文件继承父目录 ACL ——
  * 本机 state/console-token 实测为 `NT AUTHORITY\Authenticated Users:(M)`，也就是任何能登录
- * 这台机器的用户都能读走控制台令牌、Snowluma accessToken、全局助手令牌和全部 QQ 聊天记录。
+ * 这台机器的用户都能读走控制台令牌、Snowluma accessToken、全局陪伴者令牌和全部 QQ 聊天记录。
  * 这里用 icacls 切断 state/ 的继承链，只保留「当前用户 + SYSTEM + Administrators」。
  *
  * ⚠️ 具体实现已抽到 `src/state-acl.mjs`（与 scripts/harden-state-acl.mjs 共用同一份）。
@@ -337,14 +540,14 @@ function writeRoleContent(name, content) {
   atomicWriteText(roleFilePath(name), content);
 }
 
-// ── 全局桌面助手 preset 提示词 ───────────────────────────────────────────────
+// ── 全局陪伴者 preset 提示词 ───────────────────────────────────────────────
 // 人格提示词仍单独保存在 roles/<名称>.md；修改 preset 后需重启 DSH 并重建全局会话。
 const PRESET_NAMES = { desktop: 'desktop-agent' };
 const PRESET_BACKUP_DIR = path.join(STATE_DIR, 'preset-backups');
 const PRESET_BACKUP_KEEP = 10;
 
 /**
- * 控制台的 preset 参数校验：只接受全局桌面助手 preset。
+ * 控制台的 preset 参数校验：只接受全局陪伴者 preset。
  *
  * 为什么必须在拼路径**之前**校验：main() 里的 resolvePresetName() 在「DSH preset 清单为空」
  * （DSH 还没连上 / 正在启动）时会把调用方给的字符串**原样返回**。那四个 preset 控制台路由
@@ -362,10 +565,14 @@ function presetSourceYaml(name) {
   return path.join(ROOT, 'dsh', 'agent-presets', name, 'agent.cordis.yml');
 }
 
+function presetPromptModulesFile(name) {
+  return path.join(ROOT, 'dsh', 'agent-presets', name, 'prompt-modules.json');
+}
+
 // 这里**没有**模块级的 resolvePresetName —— 曾经有一个，但它被 main() 内部同名函数完全遮蔽
 // （函数声明提升到 main 作用域，main 里所有调用点都落到内部那个），是纯死代码。
-// 未知名字必须拒绝，不能绕过全局助手固定使用 desktop-agent 的策略。
-// DSH preset 不可用时全局助手拒绝建会话，不回退到默认 preset。
+// 未知名字必须拒绝，不能绕过全局陪伴者固定使用 desktop-agent 的策略。
+// DSH preset 不可用时全局陪伴者拒绝建会话，不回退到默认 preset。
 
 function readPresetPromptText(name) {
   const file = presetSourceYaml(name);
@@ -374,6 +581,20 @@ function readPresetPromptText(name) {
   const prefix = extractPresetPrefix(text);
   if (prefix === null) throw new Error('预设里找不到 persona.prefix（结构可能已变化）');
   return { text, prefix };
+}
+
+function readPresetPromptModules(name) {
+  const { prefix: sourcePrefix } = readPresetPromptText(name);
+  const file = presetPromptModulesFile(name);
+  const migrated = !fs.existsSync(file);
+  const modules = migrated
+    ? migrateLegacyPresetPromptModules(sourcePrefix)
+    : normalizePresetPromptModules(readJsonSafe(file, null, true));
+  const content = composePresetPromptModules(modules);
+  if (!migrated && content !== sourcePrefix) {
+    throw new Error('模块配置与 DSH 固定前缀不同步；请通过模块编辑器保存，或还原一份配套备份');
+  }
+  return { file, modules, content, sourcePrefix, migrated };
 }
 
 // 备份文件名带上预设名，便于辨认还原目标。
@@ -388,10 +609,15 @@ function backupPresetFile(name) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dest = path.join(PRESET_BACKUP_DIR, `${presetBackupPrefix(name)}.${stamp}`);
   fs.copyFileSync(file, dest);
+  const modulesFile = presetPromptModulesFile(name);
+  if (fs.existsSync(modulesFile)) fs.copyFileSync(modulesFile, `${dest}.modules.json`);
   const prefix = presetBackupPrefix(name) + '.';
-  const backups = fs.readdirSync(PRESET_BACKUP_DIR).filter((f) => f.startsWith(prefix)).sort();
+  const backups = fs.readdirSync(PRESET_BACKUP_DIR)
+    .filter((f) => f.startsWith(prefix) && !f.endsWith('.modules.json'))
+    .sort();
   for (const stale of backups.slice(0, Math.max(0, backups.length - PRESET_BACKUP_KEEP))) {
     try { fs.rmSync(path.join(PRESET_BACKUP_DIR, stale)); } catch {}
+    try { fs.rmSync(path.join(PRESET_BACKUP_DIR, `${stale}.modules.json`)); } catch {}
   }
   return dest;
 }
@@ -400,7 +626,7 @@ function listPresetBackups(name) {
   try {
     const prefix = presetBackupPrefix(name) + '.';
     return fs.readdirSync(PRESET_BACKUP_DIR)
-      .filter((f) => f.startsWith(prefix))
+      .filter((f) => f.startsWith(prefix) && !f.endsWith('.modules.json'))
       .sort().reverse()
       .map((f) => ({ file: f, mtime: fs.statSync(path.join(PRESET_BACKUP_DIR, f)).mtimeMs }));
   } catch {
@@ -411,12 +637,20 @@ function listPresetBackups(name) {
 function presetStatus(name) {
   // 0.1.7+ 从 bundle patch 加载 preset；source 是权威源，patch 是生成物。
   const patch = patchFileFor(name);
+  let patchCurrent = false;
+  let patchError = null;
+  try {
+    patchCurrent = buildPatches({ check: true }).find((item) => item.file === patch)?.changed === false;
+  } catch (error) {
+    patchError = String(error?.message ?? error);
+  }
   return {
     preset: name,
-    label: '全局桌面助手（desktop-agent）',
+    label: '全局陪伴者（desktop-agent）',
     sourceFile: path.relative(ROOT, presetSourceYaml(name)),
     generatedPatch: fs.existsSync(patch),
-    patchCurrent: buildPatches({ check: true }).find((item) => item.file === patch)?.changed === false,
+    patchCurrent,
+    patchError,
     requiresRestart: true,
   };
 }
@@ -493,7 +727,7 @@ function appendActivity(line) {
   appendActivityLog(`[${localClock()}] ${redactSensitiveText(String(line).replace(/[\r\n]+/g, ' '))}\n`);
 }
 
-// 读取角色/模式状态：{"role": "傲娇助手", "mode": "active"|"silent"}
+// 读取角色/模式状态：{"role": "傲娇角色", "mode": "active"|"silent"}
 function readRoleState() {
   return readJsonSafe(ROLE_STATE_FILE, { role: null, mode: 'active' });
 }
@@ -1033,7 +1267,7 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
-  const memoryGateway = createAMemorixGateway(cfg.memory);
+  let memoryGateway = createAMemorixGateway(cfg.memory);
   if (cfg.memory.enabled) {
     const memoryStatus = memoryGateway.status();
     log(memoryStatus.configured
@@ -1375,7 +1609,7 @@ async function main() {
     file: TOKEN_USAGE_FILE,
     log: (...args) => log(...args),
     priceTable,
-    // 旧逐 QQ DSH 映射已移除；只把唯一全局助手会话归到桌面助手。
+    // 旧逐 QQ DSH 映射已移除；只把唯一全局陪伴者会话归到陪伴者。
     resolveKey: (sessionId) => sessionId === desktopAgentSessionId ? 'desktop-agent' : undefined
   });
 
@@ -1431,11 +1665,11 @@ async function main() {
     }
   }
 
-  // DSH 可用性探活；QQ 消息正文独立缓冲，注意信号在 DSH 恢复后交给唯一全局助手。
+  // DSH 可用性探活；QQ 消息正文独立缓冲，注意信号在 DSH 恢复后交给唯一全局陪伴者。
   let dshReady = false;
   let dshCheckStarted = false;
   let snowlumaWatchStarted = false; // SnowLuma 上游健康探测只启动一次（见 startSnowlumaWatch）
-  // DSH 侧真实的 preset 清单，用于验证唯一全局助手 preset，避免未知 preset 回退到默认工具面。
+  // DSH 侧真实的 preset 清单，用于验证唯一全局陪伴者 preset，避免未知 preset 回退到默认工具面。
   let dshPresetIds = [];
   // The desktop companion is the sole destination for new QQ attention signals.
   // Signals contain source metadata only; the agent chooses whether to inspect QQ.
@@ -1490,14 +1724,14 @@ async function main() {
     } catch {}
   }
 
-  /** 拉取 DSH 当前可用的 agent preset 清单；全局助手只允许 desktop-agent。 */
+  /** 拉取 DSH 当前可用的 agent preset 清单；全局陪伴者只允许 desktop-agent。 */
   async function refreshPresetList() {
     try {
       const { presets: list } = unwrap(await api.agentPresets.list({}), 'agentPresets.list');
       dshPresetIds = list.map((p) => String(p.id));
     } catch (error) {
       dshPresetIds = [];
-      log(`获取 DSH preset 清单失败：${error?.message ?? error}；拒绝创建未验证 preset 的全局助手会话`);
+      log(`获取 DSH preset 清单失败：${error?.message ?? error}；拒绝创建未验证 preset 的全局陪伴者会话`);
     }
   }
 
@@ -1549,7 +1783,7 @@ async function main() {
       if (!dshReady) {
         dshReady = true;
         log('DSH 已就绪（autonomous 自主会话运行时）');
-        log('全局桌面助手运行时已就绪；QQ 消息按需读取，不创建逐会话 DSH 映射');
+        log('全局陪伴者运行时已就绪；QQ 消息按需读取，不创建逐会话 DSH 映射');
         if (desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(1000);
         void reconcileDesktopAgentLifecycle();
       }
@@ -1928,7 +2162,7 @@ async function main() {
       }
       // 智能体调用隔离（集中关卡）。
       //
-      // MCP 请求必须显式声明 agent-call 并携带唯一全局助手令牌；否则不能借用控制台权限。
+      // MCP 请求必须显式声明 agent-call 并携带唯一全局陪伴者令牌；否则不能借用控制台权限。
       // 各端点用 `if (x-agent-token && !agentTokenOk(...))` 做会话绑定校验，但那个写法在
       // **头缺失时整条跳过** —— 而头缺失恰恰是模型没传 token 时的自然结果
       // （旧版 mcp-snowluma-safe.js 用 `...(token ? {...} : {})` 直接省略了这个头）。
@@ -1937,7 +2171,7 @@ async function main() {
       // 现在 MCP 端一律带上 x-agent-call: 1；带了令牌就必须命中某个活跃会话，
       // 端点自己漏写校验也不会退回管理端。
       //
-      // 全局助手调用都必须携带令牌；唯一无令牌例外是脱敏后的 /api/status 探活。
+      // 全局陪伴者调用都必须携带令牌；唯一无令牌例外是脱敏后的 /api/status 探活。
       //
       if (req.headers['x-agent-call'] !== undefined) {
         const agentToken = req.headers['x-agent-token'];
@@ -2008,7 +2242,7 @@ async function main() {
             return;
           }
           if (isDesktopAgentToken(String(req.headers['x-agent-token'])) && desktopAgentLifecycle !== 'active') {
-            sendJson({ ok: false, error: `个人桌面助手当前为 ${desktopAgentLifecycle} 状态，不能继续调用工具` }, 409);
+            sendJson({ ok: false, error: `全局陪伴者当前为 ${desktopAgentLifecycle} 状态，不能继续调用工具` }, 409);
             return;
           }
         }
@@ -2085,7 +2319,144 @@ async function main() {
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/memory/status') {
-          sendJson({ ok: true, memory: memoryGateway.status() });
+          const memory = memoryGateway.status();
+          let gatewayReachable = false;
+          let gatewayHealthError = '';
+          if (memory.baseUrl) {
+            try {
+              const healthResponse = await fetch(`${memory.baseUrl}/healthz`, { signal: AbortSignal.timeout(2500) });
+              gatewayReachable = healthResponse.ok;
+              if (!healthResponse.ok) gatewayHealthError = `HTTP ${healthResponse.status}`;
+            } catch (error) { gatewayHealthError = String(error?.message ?? error).slice(0, 200); }
+          }
+          const serviceInstalled = fs.existsSync(A_MEMORIX_CONFIG_FILE)
+            && fs.existsSync(A_MEMORIX_CLI) && fs.existsSync(A_MEMORIX_GATEWAY);
+          sendJson({ ok: true, memory: { ...memory, gatewayReachable, gatewayHealthError, serviceInstalled } });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/memory/settings') {
+          sendJson({
+            ok: true,
+            settings: {
+              enabled: cfg.memory.enabled,
+              baseUrl: cfg.memory.baseUrl,
+              namespace: cfg.memory.namespace,
+              apiKeyConfigured: Boolean(cfg.memory.apiKey),
+              timeoutMs: cfg.memory.timeoutMs,
+              bootstrapLimit: cfg.memory.bootstrapLimit,
+              bootstrapMaxChars: cfg.memory.bootstrapMaxChars
+            }
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/settings') {
+          const body = await readBody();
+          const inputKey = String(body.apiKey ?? '');
+          if (inputKey.length > 4096 || /[\u0000-\u001f\u007f]/.test(inputKey)) {
+            sendJson({ ok: false, error: 'A_Memorix namespace API Key 格式或长度无效' }, 400);
+            return;
+          }
+          if (body.clearApiKey === true && inputKey.trim()) {
+            sendJson({ ok: false, error: '不能同时输入新 API Key 并选择清除' }, 400);
+            return;
+          }
+          const timeoutSeconds = Number(body.timeoutSeconds ?? Math.round(cfg.memory.timeoutMs / 1000));
+          const bootstrapLimit = Number(body.bootstrapLimit ?? cfg.memory.bootstrapLimit);
+          const bootstrapMaxChars = Number(body.bootstrapMaxChars ?? cfg.memory.bootstrapMaxChars);
+          if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 120) {
+            sendJson({ ok: false, error: '请求超时必须是 1 至 120 秒的整数' }, 400);
+            return;
+          }
+          if (!Number.isInteger(bootstrapLimit) || bootstrapLimit < 1 || bootstrapLimit > 12) {
+            sendJson({ ok: false, error: '启动摘要条数必须是 1 至 12 的整数' }, 400);
+            return;
+          }
+          if (!Number.isInteger(bootstrapMaxChars) || bootstrapMaxChars < 500 || bootstrapMaxChars > 5000) {
+            sendJson({ ok: false, error: '启动摘要字数上限必须是 500 至 5000 的整数' }, 400);
+            return;
+          }
+          const apiKey = body.clearApiKey === true ? '' : inputKey.trim() || cfg.memory.apiKey;
+          const nextMemory = {
+            ...cfg.memory,
+            enabled: body.enabled === true,
+            baseUrl: String(body.baseUrl ?? cfg.memory.baseUrl).trim(),
+            namespace: String(body.namespace ?? cfg.memory.namespace).trim(),
+            apiKey,
+            timeoutMs: timeoutSeconds * 1000,
+            bootstrapLimit,
+            bootstrapMaxChars
+          };
+          const nextStatus = createAMemorixGateway(nextMemory).status();
+          if (body.enabled === true && !nextStatus.configured) {
+            sendJson({ ok: false, error: nextStatus.error || 'A_Memorix 配置不完整' }, 400);
+            return;
+          }
+          if (!nextStatus.baseUrl || !nextStatus.namespace) {
+            sendJson({ ok: false, error: nextStatus.error || 'A_Memorix 地址或 namespace 无效' }, 400);
+            return;
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.memory = {
+            ...(file.memory && typeof file.memory === 'object' ? file.memory : {}),
+            enabled: nextMemory.enabled,
+            baseUrl: nextMemory.baseUrl,
+            namespace: nextMemory.namespace,
+            apiKey: nextMemory.apiKey,
+            timeoutMs: nextMemory.timeoutMs,
+            bootstrapLimit: nextMemory.bootstrapLimit,
+            bootstrapMaxChars: nextMemory.bootstrapMaxChars
+          };
+          atomicWriteConfigJson(configFile, file);
+          cfg.memory = nextMemory;
+          memoryGateway = createAMemorixGateway(cfg.memory);
+          appendActivity(`控制台${nextMemory.enabled ? '启用' : '停用'}长期记忆配置`);
+          sendJson({ ok: true, settings: { ...nextMemory, apiKey: undefined, apiKeyConfigured: Boolean(nextMemory.apiKey) } });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/memory/providers') {
+          sendJson({ ok: true, providers: memoryProviderSettings() });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/providers') {
+          const body = await readBody();
+          const previous = memoryProviderSettings();
+          let providers;
+          try { providers = saveAMemorixProviderSettings(body.embedding, body.llm); }
+          catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error).slice(0, 700) }, 400);
+            return;
+          }
+          const stable = (value) => JSON.stringify({
+            embedding: { endpoint: value.embedding.endpoint, model: value.embedding.model, dimension: value.embedding.dimension },
+            llm: { endpoint: value.llm.endpoint, model: value.llm.model, maxTokens: value.llm.maxTokens, temperature: value.llm.temperature }
+          });
+          const credentialsChanged = [body.embedding, body.llm].some((value) => value && (String(value.apiKey ?? '').trim() || value.clearApiKey === true));
+          const restartRequired = stable(previous) !== stable(providers) || credentialsChanged;
+          if (restartRequired) {
+            try { await runAMemorixControl('restart'); }
+            catch (error) {
+              sendJson({ ok: false, configSaved: true, error: `配置已保存，但 A_Memorix 重启失败：${String(error?.message ?? error).slice(0, 700)}` }, 503);
+              return;
+            }
+          }
+          appendActivity(`控制台更新了 A_Memorix Provider 配置${restartRequired ? '并重启服务' : ''}`);
+          sendJson({ ok: true, providers, restarted: restartRequired });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/memory/service') {
+          const body = await readBody();
+          const action = String(body.action ?? '');
+          if (action !== 'start') {
+            sendJson({ ok: false, error: '仅支持启动 A_Memorix；应用 Provider 变更时会自动重启' }, 400);
+            return;
+          }
+          try {
+            await runAMemorixControl('start');
+            sendJson({ ok: true, status: 'started' });
+          } catch (error) {
+            sendJson({ ok: false, error: String(error?.message ?? error).slice(0, 700) }, 503);
+          }
           return;
         }
         if (['/api/memory/search', '/api/memory/read', '/api/memory/save', '/api/memory/replace', '/api/memory/delete'].includes(url.pathname)) {
@@ -2273,6 +2644,89 @@ async function main() {
         }
 
         // ── 全局 desktop-agent 预设提示词 ────────────────────────────────
+        if (req.method === 'GET' && url.pathname === '/api/preset/desktop-agent-prompt/modules') {
+          const preset = knownPresetName(url.searchParams.get('preset'));
+          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
+          try {
+            const prompt = readPresetPromptModules(preset);
+            sendJson({
+              ok: true,
+              modules: prompt.modules.modules,
+              content: prompt.content,
+              chars: prompt.content.length,
+              bytes: Buffer.byteLength(prompt.content, 'utf8'),
+              warnings: presetPromptWarnings(prompt.content),
+              migrated: prompt.migrated,
+              status: presetStatus(preset),
+            });
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? '读取提示词模块失败', status: presetStatus(preset) }, 500);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/preset/desktop-agent-prompt/modules') {
+          const body = await readBody();
+          const preset = knownPresetName(body.preset);
+          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
+          let current;
+          let nextModules;
+          let nextContent;
+          let nextYaml;
+          try {
+            current = readPresetPromptModules(preset);
+            nextModules = normalizePresetPromptModules({ version: 1, modules: body.modules });
+            nextContent = composePresetPromptModules(nextModules);
+            const blockers = presetPromptBlockers(nextContent);
+            if (blockers.length) throw new Error(blockers.join('；'));
+            nextYaml = renderPresetPromptYaml(readPresetPromptText(preset).text, nextContent);
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? '模块校验失败' }, 400);
+            return;
+          }
+          const nextModuleJson = `${JSON.stringify(serializePresetPromptModules(nextModules), null, 2)}\n`;
+          const currentModuleJson = JSON.stringify(serializePresetPromptModules(current.modules), null, 2);
+          const moduleChanged = nextModuleJson.trimEnd() !== currentModuleJson;
+          const promptChanged = nextContent !== current.sourcePrefix;
+          if (!moduleChanged && !promptChanged) {
+            sendJson({ ok: true, unchanged: true, chars: nextContent.length, warnings: presetPromptWarnings(nextContent), requiresRestart: false, status: presetStatus(preset) });
+            return;
+          }
+
+          const sourceBackup = backupPresetFile(preset);
+          const modulesFile = presetPromptModulesFile(preset);
+          const hadModulesFile = fs.existsSync(modulesFile);
+          try {
+            atomicWriteText(modulesFile, nextModuleJson);
+            if (promptChanged) atomicWriteText(presetSourceYaml(preset), nextYaml);
+            if (promptChanged) buildPatches();
+          } catch (error) {
+            if (sourceBackup && fs.existsSync(sourceBackup)) {
+              try { fs.copyFileSync(sourceBackup, presetSourceYaml(preset)); } catch {}
+              const moduleBackup = `${sourceBackup}.modules.json`;
+              if (fs.existsSync(moduleBackup)) {
+                try { fs.copyFileSync(moduleBackup, modulesFile); } catch {}
+              } else if (!hadModulesFile) {
+                try { fs.rmSync(modulesFile); } catch {}
+              }
+            }
+            try { buildPatches(); } catch {}
+            sendJson({ ok: false, error: `写入失败：${error?.message ?? error}` }, 500);
+            return;
+          }
+          log(`控制台：${preset} 固定前缀模块已更新${promptChanged ? '；需重启 DSH 生效' : '（启用模块正文未变化）'}`);
+          const status = presetStatus(preset);
+          sendJson({
+            ok: true,
+            chars: nextContent.length,
+            warnings: presetPromptWarnings(nextContent),
+            synced: status.patchCurrent,
+            requiresRestart: promptChanged,
+            modules: nextModules.modules,
+            content: nextContent,
+            status,
+          });
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/preset/desktop-agent-prompt') {
           const preset = knownPresetName(url.searchParams.get('preset'));
           if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
@@ -2293,49 +2747,7 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/preset/desktop-agent-prompt') {
-          const body = await readBody();
-          const preset = knownPresetName(body.preset);
-          if (!preset) { sendJson({ ok: false, error: `未知预设（只支持 ${Object.values(PRESET_NAMES).join(' / ')}）` }, 400); return; }
-          let nextText;
-          try {
-            const { text, prefix } = readPresetPromptText(preset);
-            // 内容没变就不要写：写回会把折叠块规整成字面量块（值不变但排版变化），
-            // 让一次"打开又保存"把整个提示词块变成全删全加的 diff，失去可复审性。
-            const normalized = String(body.content ?? '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
-            if (normalized === prefix) {
-              sendJson({ ok: true, unchanged: true, chars: prefix.length, warnings: presetPromptWarnings(prefix), synced: presetStatus(preset).patchCurrent, requiresRestart: false, status: presetStatus(preset) });
-              return;
-            }
-            nextText = renderPresetPromptYaml(text, body.content);
-          } catch (error) {
-            sendJson({ ok: false, error: error?.message ?? '校验失败' }, 400);
-            return;
-          }
-          const warnings = presetPromptWarnings(body.content);
-          let sourceBackup = null;
-          try {
-            sourceBackup = backupPresetFile(preset);
-            atomicWriteText(presetSourceYaml(preset), nextText);
-            // DSH 0.1.7+ 从 bundle patch 加载预设；保存后同步生成物。
-            buildPatches();
-          } catch (error) {
-            // 尽力回滚源文件，避免留下半截状态
-            if (sourceBackup && fs.existsSync(sourceBackup)) {
-              try { fs.copyFileSync(sourceBackup, presetSourceYaml(preset)); } catch {}
-            }
-            try { buildPatches(); } catch {}
-            sendJson({ ok: false, error: `写入失败：${error?.message ?? error}` }, 500);
-            return;
-          }
-          log(`控制台：${preset} 全局助手提示词已更新（${String(body.content ?? '').length} 字符）${warnings.length ? `，${warnings.length} 条警告` : ''}；需重启 DSH 生效`);
-          sendJson({
-            ok: true,
-            chars: String(body.content ?? '').length,
-            warnings,
-            synced: presetStatus(preset).patchCurrent,
-            requiresRestart: true,
-            status: presetStatus(preset),
-          });
+          sendJson({ ok: false, error: '固定前缀已改为分类模块编辑，请使用 /api/preset/desktop-agent-prompt/modules' }, 409);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/preset/desktop-agent-prompt/backups') {
@@ -2362,25 +2774,51 @@ async function main() {
             const restored = fs.readFileSync(backupPath, 'utf8');
             const restoredPrefix = extractPresetPrefix(restored);
             if (restoredPrefix === null) { sendJson({ ok: false, error: '备份内容不是有效的预设文件' }, 400); return; }
+            const pairedModulesFile = `${backupPath}.modules.json`;
+            let restoredModules;
+            let restoredContent;
+            let restoredYaml = restored;
+            if (fs.existsSync(pairedModulesFile)) {
+              restoredModules = normalizePresetPromptModules(readJsonSafe(pairedModulesFile, null, true));
+              restoredContent = composePresetPromptModules(restoredModules);
+              if (restoredContent !== restoredPrefix) {
+                sendJson({ ok: false, error: '备份中的模块配置与固定前缀不一致，拒绝还原' }, 400);
+                return;
+              }
+            } else {
+              // 兼容模块化改造前生成的 11 段固定前缀备份。
+              restoredModules = migrateLegacyPresetPromptModules(restoredPrefix);
+              restoredContent = composePresetPromptModules(restoredModules);
+              restoredYaml = renderPresetPromptYaml(restored, restoredContent);
+            }
             // 还原路径必须与保存路径同样严格：备份必须保留对应 preset 的核心协议内容。
-            const blockers = presetPromptBlockers(restoredPrefix);
+            const blockers = presetPromptBlockers(restoredContent);
             if (blockers.length) {
-              sendJson({ ok: false, error: `该备份不满足当前的安全不变量，拒绝还原：${blockers.join('；')}` }, 400);
+              sendJson({ ok: false, error: `该备份缺少必要的 QQ 渠道说明，拒绝还原：${blockers.join('；')}` }, 400);
               return;
             }
             const sourceBackup = backupPresetFile(preset);
-            atomicWriteText(presetSourceYaml(preset), restored);
+            const modulesFile = presetPromptModulesFile(preset);
+            const hadModulesFile = fs.existsSync(modulesFile);
             try {
+              atomicWriteText(modulesFile, `${JSON.stringify(serializePresetPromptModules(restoredModules), null, 2)}\n`);
+              atomicWriteText(presetSourceYaml(preset), restoredYaml);
               buildPatches();
             } catch (error) {
               if (sourceBackup && fs.existsSync(sourceBackup)) {
                 try { fs.copyFileSync(sourceBackup, presetSourceYaml(preset)); } catch {}
+                const moduleBackup = `${sourceBackup}.modules.json`;
+                if (fs.existsSync(moduleBackup)) {
+                  try { fs.copyFileSync(moduleBackup, modulesFile); } catch {}
+                } else if (!hadModulesFile) {
+                  try { fs.rmSync(modulesFile); } catch {}
+                }
               }
               try { buildPatches(); } catch {}
               throw error;
             }
-            log(`控制台：${preset} 全局助手提示词已还原自备份 ${target}；需重启 DSH 生效`);
-            sendJson({ ok: true, restoredFrom: target, requiresRestart: true });
+            log(`控制台：${preset} 全局陪伴者提示词已还原自备份 ${target}；需重启 DSH 生效`);
+            sendJson({ ok: true, restoredFrom: target, requiresRestart: true, modules: restoredModules.modules, content: restoredContent });
           } catch (error) {
             sendJson({ ok: false, error: error?.message ?? '还原失败' }, 500);
           }
@@ -2574,13 +3012,13 @@ async function main() {
                   throw new Error(result?.result?.error?.message ?? 'DSH 未确认当前回合取消');
                 }
               })
-              .catch((error) => log(`WebUI：立即取消助手当前回合失败，仍将继续清理排队任务：${error?.message ?? error}`));
+              .catch((error) => log(`WebUI：立即取消陪伴者当前回合失败，仍将继续清理排队任务：${error?.message ?? error}`));
             try {
               await api.stopSessionWork(desktopAgentSessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS });
               cancelled = true;
             } catch (error) {
               cancelError = String(error?.message ?? error);
-              log(`WebUI：助手已持久停止，但 DSH 会话取消失败：${cancelError}`);
+              log(`WebUI：陪伴者已持久停止，但 DSH 会话取消失败：${cancelError}`);
             }
           }
           sendJson({ ok: true, lifecycle: 'stopped', dshReady, cancelled, error: cancelError || null });
@@ -2635,12 +3073,12 @@ async function main() {
             }
             if (desktopAgentLifecycle === 'stopped') {
               try { await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }); } catch {}
-              sendJson({ ok: false, error: '任务提交期间助手已被停止' }, 409);
+              sendJson({ ok: false, error: '任务提交期间全局会话已被停止' }, 409);
               return;
             }
             desktopAgentTurnActive = true;
-            log(`WebUI：已向个人桌面助手提交任务（${message.length} 字符，${sessionId}）`);
-            appendActivity(`个人桌面助手收到 WebUI 任务（${message.length} 字符）`);
+            log(`WebUI：已向全局陪伴者提交任务（${message.length} 字符，${sessionId}）`);
+            appendActivity(`全局陪伴者收到 WebUI 任务（${message.length} 字符）`);
             sendJson({ ok: true, sessionId });
           } catch (error) {
             if (manualPromptRegistered && desktopAgentLifecycle !== 'stopped') {
@@ -3061,7 +3499,7 @@ async function main() {
           lastSendFailed.clear();
           feedbackTimes.clear();
           saveSocialV2State();
-          log('控制台：已清空 QQ 消息缓冲和读取水位；全局助手会话与运行状态保持不变');
+          log('控制台：已清空 QQ 消息缓冲和读取水位；全局陪伴者会话与运行状态保持不变');
           sendJson({ ok: true });
           return;
         }
@@ -3196,7 +3634,7 @@ async function main() {
           const body = await readBody();
           const token = String(req.headers['x-agent-token'] ?? '').trim();
           if (!isDesktopAgentToken(token)) {
-            sendJson({ ok: false, error: '桌面助手会话令牌无效' }, 403);
+            sendJson({ ok: false, error: '陪伴者会话令牌无效' }, 403);
             return;
           }
           if (!desktopAgentTurnActive || desktopAgentLifecycle !== 'active') {
@@ -3228,7 +3666,7 @@ async function main() {
           }
           const token = String(req.headers['x-agent-token'] ?? '').trim();
           if (!isDesktopAgentToken(token)) {
-            sendJson({ ok: false, error: '桌面助手会话令牌无效' }, 403);
+            sendJson({ ok: false, error: '陪伴者会话令牌无效' }, 403);
             return;
           }
           if (!desktopAgentTurnActive || desktopAgentLifecycle !== 'active') {
@@ -3288,7 +3726,7 @@ async function main() {
           const markedCount = acknowledgeMessagesV2(st, throughSeq);
           st.lastActionAt = Date.now();
           saveSocialV2State();
-          log(`全局助手/控制台标记 ${key} 未读已读：${markedCount} 条`);
+          log(`全局陪伴者/控制台标记 ${key} 未读已读：${markedCount} 条`);
           sendJson({ ok: true, key, markedCount, unreadCount: st.unread.length, readThroughSeq: readThroughSeqV2(st) });
           return;
         }
@@ -4485,7 +4923,7 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/socialV2/conversations') {
           const token = String(req.headers['x-agent-token'] ?? '').trim();
           if (!token || !isDesktopAgentToken(token)) {
-            sendJson({ ok: false, error: '读取 QQ 会话目录必须使用全局桌面助手令牌' }, 403);
+            sendJson({ ok: false, error: '读取 QQ 会话目录必须使用全局陪伴者令牌' }, 403);
             return;
           }
           const kind = String(url.searchParams.get('kind') || 'all').trim();
@@ -5530,11 +5968,11 @@ async function main() {
     const epoch = desktopAgentLifecycleEpoch;
     return () => {
       if (!canonical || sessionId !== desktopAgentSessionId || token !== desktopAgentToken) {
-        throw new Error('发送已取消：QQ 目标或全局助手会话已变化');
+        throw new Error('发送已取消：QQ 目标或全局陪伴者会话已变化');
       }
       if (requireActiveTurn && (!isDesktopAgentToken(token) || !desktopAgentTurnActive
           || desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch)) {
-        throw new Error('发送已取消：全局助手回合已结束或进入暂停状态');
+        throw new Error('发送已取消：全局陪伴者回合已结束或进入暂停状态');
       }
     };
   }
@@ -5595,7 +6033,7 @@ async function main() {
 
   async function ensureDesktopAgentSession() {
     if (!dshReady) throw new Error('DSH 当前不可用，请稍后再试');
-    if (desktopAgentResetting) throw new Error('全局桌面会话正在重建，请稍后再试');
+    if (desktopAgentResetting) throw new Error('全局陪伴者会话正在重建，请稍后再试');
     if (desktopAgentSessionPromise) return desktopAgentSessionPromise;
     const promise = (async () => {
       await refreshPresetList();
@@ -5621,7 +6059,7 @@ async function main() {
           const modelState = await ensureChatModel(desktopAgentSessionId);
           if (modelState !== 'not-found') return desktopAgentSessionId;
         }
-        log(`个人桌面助手在 DSH 中已不存在，清理失效的全局会话状态 ${desktopAgentSessionId}`);
+        log(`全局陪伴者在 DSH 中已不存在，清理失效的全局会话状态 ${desktopAgentSessionId}`);
         desktopAgentSessionId = '';
         desktopAgentTurnActive = false;
         KNOWN_AGENT_TOKENS.delete(desktopAgentToken);
@@ -5634,7 +6072,7 @@ async function main() {
       fs.mkdirSync(dir, { recursive: true });
       const wsValue = unwrap(await api.workspace.create({ path: dir }), 'workspace.create');
       if (wsValue.created) {
-        try { await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: '个人桌面助手' }); } catch {}
+        try { await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: '全局陪伴者' }); } catch {}
       }
       const value = unwrap(await api.sessions.create({
         workspaceId: wsValue.workspace.workspaceId,
@@ -5647,7 +6085,7 @@ async function main() {
       saveDesktopAgentState();
       api.events.follow(sessionId);
       await ensureChatModel(sessionId);
-      log(`个人桌面助手 DSH 会话已创建：${sessionId}`);
+      log(`全局陪伴者 DSH 会话已创建：${sessionId}`);
       return sessionId;
     })();
     desktopAgentSessionPromise = promise;
@@ -5660,7 +6098,7 @@ async function main() {
 
   async function recreateDesktopAgentSession() {
     if (!dshReady) throw new Error('DSH 当前不可用，请稍后再试');
-    if (desktopAgentResetting || desktopAgentSessionPromise) throw new Error('全局桌面会话正在处理另一项操作，请稍后再试');
+    if (desktopAgentResetting || desktopAgentSessionPromise) throw new Error('全局陪伴者会话正在处理另一项操作，请稍后再试');
     desktopAgentResetting = true;
     const oldSessionId = desktopAgentSessionId;
     try {
@@ -5670,7 +6108,7 @@ async function main() {
         existing = (Array.isArray(list.items) ? list.items : [])
           .find((item) => String(item?.sessionId ?? '') === oldSessionId) ?? null;
         if (existing?.running === true || desktopAgentTurnActive) {
-          throw new Error('全局助手当前正在运行；请等当前回合结束后再重建');
+          throw new Error('全局陪伴者当前正在运行；请等当前回合结束后再重建');
         }
         if (existing) {
           await withTimeout(api.stopSessionWork(oldSessionId), DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork');
@@ -5691,8 +6129,8 @@ async function main() {
       saveDesktopAgentState();
       desktopAgentResetting = false;
       const sessionId = await ensureDesktopAgentSession();
-      log(`个人桌面助手已按当前 preset 重建：${oldSessionId || '无旧会话'} -> ${sessionId}`);
-      appendActivity(`个人桌面助手已重建并加载当前 desktop-agent preset（${sessionId}）`);
+      log(`全局陪伴者已按当前 preset 重建：${oldSessionId || '无旧会话'} -> ${sessionId}`);
+      appendActivity(`全局陪伴者已重建并加载当前 desktop-agent preset（${sessionId}）`);
       return { sessionId, archivedSessionId: existing ? oldSessionId : null };
     } finally {
       desktopAgentResetting = false;
@@ -5714,7 +6152,7 @@ async function main() {
     if (!cfg.memory.enabled || !memoryGateway.status().configured) return '';
     try {
       const result = await memoryGateway.search({
-        query: '助手近期的经历、行动和发现；尚未完成的事项；稳定的用户偏好和项目背景',
+        query: '你近期的经历、行动和发现；尚未完成的事项；稳定的用户偏好和项目背景',
         limit: cfg.memory.bootstrapLimit,
         origin: 'assistant',
         mode: 'SEARCH_MODE_HYBRID',
@@ -5734,7 +6172,7 @@ async function main() {
         entries.push(`${title ? `${title}：` : ''}${content}`);
       }
       if (entries.length === 0) return '';
-      const heading = '【长期记忆摘要｜来源为助手自身；用于延续经历与未完成事项，仍需按当前上下文判断】';
+      const heading = '【长期记忆摘要｜来源为自身经历；用于延续经历与未完成事项，仍需按当前上下文判断】';
       let output = heading;
       for (const entry of entries) {
         const line = `\n- ${entry}`;
@@ -5810,8 +6248,8 @@ async function main() {
     desktopAgentPendingWakeReason = '';
     desktopAgentManualPromptPending = 0;
     saveDesktopAgentState();
-    log('WebUI：个人桌面助手已进入持久停止态；不会自动唤醒');
-    appendActivity('个人桌面助手已由 WebUI 停止');
+    log('WebUI：全局陪伴者已进入持久停止态；不会自动唤醒');
+    appendActivity('全局陪伴者已由 WebUI 停止');
   }
 
   function resumeDesktopAgentLifecycle(reason = 'manual WebUI task') {
@@ -5824,7 +6262,7 @@ async function main() {
     desktopAgentRecoveryAt = 0;
     desktopAgentPendingWakeReason = '';
     saveDesktopAgentState();
-    log(`个人桌面助手生命周期恢复为 active（${reason}）`);
+    log(`全局陪伴者生命周期恢复为 active（${reason}）`);
   }
 
   function scheduleDesktopAgentRestCancellation(sessionId, epoch, delayMs = 80, attempt = 0) {
@@ -5860,9 +6298,9 @@ async function main() {
     saveDesktopAgentState();
     armDesktopAgentRestTimer();
     log(desktopAgentRestUntil
-      ? `个人桌面助手进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
-      : '个人桌面助手进入无限期休息；DSH 对话输入、有效 QQ 提醒或人工 WebUI 任务可恢复');
-    appendActivity(desktopAgentRestUntil ? '个人桌面助手进入定时休息' : '个人桌面助手进入无限期休息');
+      ? `全局陪伴者进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
+      : '全局陪伴者进入无限期休息；DSH 对话输入、有效 QQ 提醒或人工 WebUI 任务可恢复');
+    appendActivity(desktopAgentRestUntil ? '全局陪伴者进入定时休息' : '全局陪伴者进入无限期休息');
 
     // Let the MCP result reach DSH before cancelling this turn. The lifecycle epoch
     // prevents a just-submitted manual task or a WebUI stop from being cancelled by
@@ -5899,8 +6337,8 @@ async function main() {
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
     saveDesktopAgentState();
-    log('有效 QQ 提醒提前结束个人桌面助手休息');
-    appendActivity('有效 QQ 提醒提前结束个人桌面助手休息');
+    log('有效 QQ 提醒提前结束全局陪伴者休息');
+    appendActivity('有效 QQ 提醒提前结束全局陪伴者休息');
     scheduleDesktopAttentionFlush(0);
     return true;
   }
@@ -5924,7 +6362,7 @@ async function main() {
     desktopAgentRecoveryAt = 0;
     saveDesktopAgentState();
     scheduleDesktopAttentionFlush(0);
-    log('个人桌面助手休息结束，准备发起一轮恢复');
+    log('全局陪伴者休息结束，准备发起一轮恢复');
   }
 
   function scheduleDesktopAgentRecovery(reason = 'turn ended without agent_rest') {
@@ -5937,7 +6375,7 @@ async function main() {
     desktopAgentRecoveryAttempt += 1;
     desktopAgentRecoveryAt = Date.now() + delayMs;
     saveDesktopAgentState();
-    log(`个人桌面助手未进入休息态（${reason}）；${Math.round(delayMs / 1000)} 秒后重试`);
+    log(`全局陪伴者未进入休息态（${reason}）；${Math.round(delayMs / 1000)} 秒后重试`);
     armDesktopAgentRecoveryTimer();
   }
 
@@ -5974,7 +6412,7 @@ async function main() {
         scheduleDesktopAttentionFlush(0);
       } catch (error) {
         if (epoch !== desktopAgentLifecycleEpoch || desktopAgentLifecycle !== 'recovering') return;
-        log(`个人桌面助手恢复检查失败：${error?.message ?? error}`);
+        log(`全局陪伴者恢复检查失败：${error?.message ?? error}`);
         desktopAgentRecoveryAt = 0;
         scheduleDesktopAgentRecovery('recovery check failed');
       }
@@ -6050,7 +6488,7 @@ async function main() {
         scheduleDesktopAgentRecovery('bridge or DSH restarted before agent_rest');
       }
     } catch (error) {
-      log(`个人桌面助手生命周期恢复检查失败：${error?.message ?? error}`);
+      log(`全局陪伴者生命周期恢复检查失败：${error?.message ?? error}`);
       if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('lifecycle reconciliation failed');
     }
   }
@@ -6179,11 +6617,11 @@ async function main() {
         desktopAgentTurnActive = true;
         if (wakeReason && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
         saveDesktopAgentState();
-        log(`全局桌面会话已接收唤醒提示（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
-        if (batch.length) appendActivity(`QQ 注意信号已提交给个人桌面助手（${batch.length} 个来源，仅元数据）`);
+        log(`全局陪伴者会话已接收唤醒提示（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
+        if (batch.length) appendActivity(`QQ 注意信号已提交给全局陪伴者（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
         requeueDesktopAttentionBatch(batch);
-        log(`桌面助手唤醒提示提交失败，保留待处理提醒：${error?.message ?? error}`);
+        log(`陪伴者唤醒提示提交失败，保留待处理提醒：${error?.message ?? error}`);
         if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('wake prompt failed');
       }
     })();
@@ -7030,7 +7468,7 @@ async function main() {
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
     const roleState = readRoleState();
 
-    // 静默模式只压住群消息提醒；消息仍进入本地缓冲，供全局助手主动读取。
+    // 静默模式只压住群消息提醒；消息仍进入本地缓冲，供全局陪伴者主动读取。
     const suppressGroupAttention = roleState.mode === 'silent' && !isOwner;
 
     // 控制类话语：仅管理员（ownerQQ）可下达；群友触发直接拦截
@@ -7047,7 +7485,7 @@ async function main() {
       }
       if (plainContent === '/status') {
         const rs = readRoleState();
-        await sendToQQ(key, `全局桌面助手：${desktopAgentLifecycle}；DSH ${dshReady ? '已连接' : '未连接'}；角色 ${rs.role ?? '无'}；角色状态 ${rs.mode}`);
+        await sendToQQ(key, `全局陪伴者：${desktopAgentLifecycle}；DSH ${dshReady ? '已连接' : '未连接'}；角色 ${rs.role ?? '无'}；角色状态 ${rs.mode}`);
         return;
       }
       if (plainContent === '/role' || plainContent.startsWith('/role ')) {
@@ -7077,7 +7515,7 @@ async function main() {
         return;
       }
       if (plainContent.startsWith('/')) {
-        await sendToQQ(key, '未知 QQ 管理命令。请在 WebUI 管理全局桌面助手；与助手对话请直接发送消息。');
+        await sendToQQ(key, '未知 QQ 管理命令。请在 WebUI 管理全局陪伴者；与全局会话对话请直接发送消息。');
         return;
       }
     }
@@ -7107,7 +7545,7 @@ async function main() {
           seq: bufferedMessage?.seq
         });
       }
-      appendActivity(`${key} 消息已缓冲${wakeTrigger ? '；仅元数据提醒全局桌面助手' : ''}：${textContent.slice(0, 80)}`);
+      appendActivity(`${key} 消息已缓冲${wakeTrigger ? '；仅元数据提醒全局陪伴者' : ''}：${textContent.slice(0, 80)}`);
       return;
   }
 
@@ -7207,15 +7645,15 @@ async function main() {
                 desktopAgentRecoveryAttempt = 0;
                 desktopAgentPendingWakeReason = '';
                 saveDesktopAgentState();
-                log('DSH 对话中的手动消息提前结束个人桌面助手休息');
-                appendActivity('DSH 对话中的手动消息提前结束个人桌面助手休息');
+                log('DSH 对话中的手动消息提前结束全局陪伴者休息');
+                appendActivity('DSH 对话中的手动消息提前结束全局陪伴者休息');
               } else if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'resting') {
                 const lifecycle = desktopAgentLifecycle;
                 const sessionId = frame.sessionId;
                 setTimeout(() => {
                   if (desktopAgentLifecycle !== lifecycle || desktopAgentSessionId !== sessionId) return;
                   void api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS })
-                    .catch((error) => log('助手处于 ' + lifecycle + ' 状态时 DSH 意外启动 turn，取消失败：' + (error?.message ?? error)));
+                    .catch((error) => log('全局陪伴者处于 ' + lifecycle + ' 状态时 DSH 意外启动 turn，取消失败：' + (error?.message ?? error)));
                 }, 0).unref?.();
               } else if (desktopAgentLifecycle === 'recovering') {
                 clearDesktopAgentRecoveryTimer();
@@ -7234,7 +7672,7 @@ async function main() {
               const callId = event.data?.callId;
               const args = sanitizeToolArgs(event.data?.arguments ?? event.data?.input ?? event.data);
               appendToolLog({ type: 'call', time: new Date().toISOString(), key: 'desktop-agent', sessionId: frame.sessionId, tool: toolName, args });
-              appendActivity('个人桌面助手调用 SnowLuma/桌面工具：' + toolName);
+              appendActivity('全局陪伴者调用 SnowLuma/桌面工具：' + toolName);
               if (callId != null) {
                 let nameMap = toolCallNames.get(frame.sessionId);
                 if (!nameMap) {

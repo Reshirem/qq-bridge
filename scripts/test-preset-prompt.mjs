@@ -20,8 +20,8 @@ const PRESET_PATH = new URL('../dsh/agent-presets/desktop-agent/agent.cordis.yml
 const source = fs.readFileSync(PRESET_PATH, 'utf8');
 const originalPrefix = extractPresetPrefix(source);
 
-// 运行时固定使用 desktop-agent，因此提示词校验只需维护这一套安全不变量。
-test('固定会话预设满足安全不变量', () => {
+// 运行时固定使用 desktop-agent，因此提示词校验只维护必要的渠道背景。
+test('固定会话预设保留 QQ 渠道说明', () => {
   const prefix = extractPresetPrefix(source);
   assert.equal(typeof prefix, 'string', '应能抽出 persona.prefix');
   const blockers = presetPromptBlockers(prefix);
@@ -41,7 +41,7 @@ test('抽出的是 YAML 解析后的真实字符串（折叠标量已展开）',
   assert.equal(typeof originalPrefix, 'string');
   assert.ok(originalPrefix.length > 2000, `提示词应有实质内容，实际 ${originalPrefix.length} 字符`);
   for (const marker of PRESET_REQUIRED_MARKERS) {
-    assert.ok(originalPrefix.includes(marker), `内置提示词应包含安全基线段落：${marker}`);
+    assert.ok(originalPrefix.includes(marker), `内置提示词应包含渠道说明：${marker}`);
   }
   assert.ok(originalPrefix.includes('{{model}}'), '应保留模板变量');
 });
@@ -86,7 +86,7 @@ test('特殊内容可安全往返（空行、缩进、Markdown、模板变量、
     '【中文段落】含全角标点：，。！？——以及 {{model}} / {{cwd}} 变量',
     '结尾不留多余空行',
   ].join('\n');
-  // 必须在保留安全不变量的前提下追加特殊内容，否则会被阻断校验拦下
+  // 必须在保留必要渠道说明的前提下追加特殊内容，否则会被阻断校验拦下
   const next = renderPresetPromptYaml(source, `${originalPrefix}\n\n${tricky}`);
   assert.equal(extractPresetPrefix(next), `${originalPrefix}\n\n${tricky}`);
   const rows = yaml.load(next);
@@ -101,15 +101,15 @@ test('危险输入被拒绝，且不产生半截结果', () => {
   assert.throws(() => renderPresetPromptYaml('- id: other\n  config:\n    prefix: >-\n      x\n', 'x'), /无法定位/);
 });
 
-test('删掉安全不变量或正文过短时阻断保存（保护 AI 效果与自家测试）', () => {
+test('删掉必要的 QQ 渠道说明或正文过短时阻断保存', () => {
   // 正文过短
   assert.throws(() => renderPresetPromptYaml(source, '太短了'), /过短/);
-  // 逐条移除安全不变量，必须被拦住
+  // 逐条移除渠道说明，必须被拦住
   for (const needle of PRESET_BLOCKING_SUBSTRINGS) {
     const tampered = originalPrefix.replace(needle, '（已删除）');
     assert.throws(
       () => renderPresetPromptYaml(source, tampered),
-      new RegExp(`缺少安全不变量「${needle}」`),
+      new RegExp(`缺少 QQ 渠道说明「${needle}」`),
       `删除「${needle}」后仍被允许保存`,
     );
   }
@@ -145,12 +145,12 @@ test('只含空格/Tab 的行也能安全往返（不会被当成空行读丢）
     ' 带前后空格的正文 ',
     '正常一行',
   ].join('\n');
-  // 前 3 行来自原文，因此安全不变量仍然齐全
+  // 前 3 行来自原文，因此 QQ 渠道说明仍然齐全
   const next = renderPresetPromptYaml(source, spaced);
   assert.equal(extractPresetPrefix(next), spaced, '空白行必须原样保留');
 });
 
-test('缺少安全基线段落时给出警告（但不阻断保存）', () => {
+test('缺少 QQ 渠道背景时给出警告（但不阻断保存）', () => {
   assert.deepEqual(presetPromptWarnings(originalPrefix), [], '内置提示词不应有警告');
   const stripped = originalPrefix.replace(PRESET_REQUIRED_MARKERS[0], '');
   const warnings = presetPromptWarnings(stripped);

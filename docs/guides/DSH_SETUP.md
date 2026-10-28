@@ -1,6 +1,6 @@
 # DSH 端安装说明
 
-本文说明如何把唯一的全局 `desktop-agent` preset 与 MCP 工具安装到目标 DSH profile。WebUI 任务和 QQ 注意信号都进入同一个全局桌面助手。这里不配置或切换 DSH 运行模式。
+本文说明如何把唯一的全局 `desktop-agent` preset 与 MCP 工具安装到目标 DSH profile。WebUI 任务和 QQ 注意信号都进入同一个全局陪伴者。这里不配置或切换 DSH 运行模式。
 
 ## 安装
 
@@ -14,18 +14,27 @@ npm install
 
 Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并面向任意合法会话 key 使用完整的当前 SnowLuma MCP 工具集。`ownerQQ` 只供桥接直接执行的管理员 QQ 命令；历史 `qq-mode` 命名空间仍兼容承载该设置，运行模式字段不参与运行。
 
-长期记忆为可选能力。启用前，先按 [A_Memorix 官方说明](https://github.com/A-Dawn/A_memorix) 单独部署其服务和 HTTP/JSON Gateway，在其中创建 namespace（默认 `qq-bridge`）及该 namespace 的 API key。Gateway 默认应仅监听回环地址 `127.0.0.1:8080`。然后在本地 `config.json` 设置：
+长期记忆为可选能力。Windows 上可在仓库根目录运行：
 
-```json
-"memory": {
-  "enabled": true,
-  "baseUrl": "http://127.0.0.1:8080",
-  "namespace": "qq-bridge",
-  "apiKey": "本机保存的 namespace API key"
-}
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 setup
 ```
 
-保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态。A_Memorix 尚未配置时不会阻止桥接启动；WebUI 的“长期记忆”页会显示配置状态，真正连接在检索或保存时发生。A_Memorix 当前仍处于 2.x alpha 阶段，部署和升级时应以其对应版本文档为准。记忆内容由桥接发送到本机 Gateway；Gateway 使用的 Embedding/LLM Provider 及其数据处理方式由 A_Memorix 服务配置决定。
+脚本使用官方 [`v2.0.0a4` 发布](https://github.com/A-Dawn/A_memorix/releases/tag/v2.0.0a4)中的 Python wheel 和 Windows Gateway，并在安装前校验固定的 SHA-256。此部署不需要 Docker 或 Go；需要 Python 3.12+。脚本会建立 namespace `qq-bridge`、生成本机管理员令牌和 namespace API key、设置 `config.json` 并启动服务。发布版本固定在 `scripts/a-memorix.ps1`；运行时文件、虚拟环境、密钥、数据库和日志都位于被忽略的 `state/a-memorix/`。不需要把 A_Memorix 源码 clone 到 qq-bridge，也没有设置 Git submodule。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 status
+powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 start
+powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 stop
+```
+
+初始 namespace 允许 metadata-only 写入并启用 sparse 检索，因此不需要外部模型凭据即可先保存和按关键词检索。语义向量和自动关系抽取尚未启用；需要另行配置 A_Memorix 的 Embedding/LLM Provider 后才能使用。A_Memorix 2.x 当前仍处于 alpha 阶段；若要升级，先核对上游版本与 Gateway 协议，再同步修改脚本中的版本和校验值。记忆内容由桥接发送到本机 Gateway；如配置了 Provider，A_Memorix 会按其服务配置处理相应数据。
+
+Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过 `setup` 安装，启动器会先尝试启动 Gateway 和记忆服务；启动失败会显示警告，但不会阻止桥接运行。直接使用 `npm start` 时，需先单独运行脚本的 `start` 操作。
+
+如果在桥接运行期间首次运行了 `setup`，重启一次 qq-bridge 以读取脚本写入的 namespace 凭据。之后无需改 `config.json`，可直接在 WebUI「长期记忆」页设置启用状态、本机 Gateway 地址、已创建的 namespace、namespace API key、请求超时和首次摘要上限。Gateway 地址只允许本机回环地址；切换 namespace 前需先在 A_Memorix 中创建它。保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态；未配置时桥接仍可正常运行，WebUI 会显示连接状态。
+
+启用后可在 WebUI「长期记忆」页手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机受 ACL 保护的 `state/a-memorix/secrets/`，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
 
 Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接会在**每次启动时**识别由 DeepSeek Harness 进程持有并经 API 确认的本机监听端口，因此应先启动 DSH，再启动桥接。发现的 URL 只用于当前桥接进程，不写回 `config.json`。未发现桌面 API 时使用 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`）作为回退；非 Windows 或固定端口部署可设置 `dsh.autoDetectPort: false`。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会拒绝猜测；将 `dsh.baseUrl` 指向目标实例即可明确选择。DSH Desktop 重启后若换了端口，重启桥接以重新发现。
 
@@ -68,7 +77,7 @@ node scripts/build-agent-preset-patches.mjs
 
 安装完成后，重启 DSH（或重新加载 profile），使 preset 和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。历史 `qq-mode` 命名空间只兼容承载 `ownerQQ` 管理员配置。
 
-个人桌面助手要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
+电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
 ### 图片与动图依赖
 
@@ -81,9 +90,9 @@ $env:FFMPEG_PATH = 'C:\tools\ffmpeg\bin\ffmpeg.exe'
 npm start
 ```
 
-该写法只对当前 PowerShell 窗口及其启动的进程生效。若通过 `start.bat` 启动，脚本会在未设置 `FFMPEG_PATH` 时自动检查仓库旁边的 `..\ffmpeg\bin\ffmpeg.exe`；其它安装位置请在 Windows 用户环境变量中设置 `FFMPEG_PATH`。修改环境变量后重新打开启动窗口并重启桥接。图片工具失败时，助手会收到具体原因；缺少 FFmpeg 时应向用户说明部署依赖未配置。
+该写法只对当前 PowerShell 窗口及其启动的进程生效。若通过 `start.bat` 启动，脚本会在未设置 `FFMPEG_PATH` 时自动检查仓库旁边的 `..\ffmpeg\bin\ffmpeg.exe`；其它安装位置请在 Windows 用户环境变量中设置 `FFMPEG_PATH`。修改环境变量后重新打开启动窗口并重启桥接。图片工具失败时，陪伴者会收到具体原因；缺少 FFmpeg 时应向用户说明部署依赖未配置。
 
-更新 `desktop-agent` preset 并重启 DSH 后，已存在的全局 DSH session 仍保留创建时的 preset。打开桥接 WebUI 的“全局桌面助手”面板，选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
+固定前缀在 WebUI“全局陪伴者”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个模块都可单独编辑；可选模块可切换是否写入提示词，必要的会话、安全和回合收尾模块保持启用。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。保存后需重启 DSH，并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
 
 ## 验证
 
@@ -97,14 +106,14 @@ node scripts/test-preset-local-tools.mjs
 node scripts/test-audit-setup-guards.mjs
 ```
 
-确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局桌面助手应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status`、`mcp__qq-memory__*`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。旧 `qq-chat-v2` preset 已从当前仓库安装包移除；历史 DSH 会话由 DSH 自己保留，桥接不再管理它们。
+确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局陪伴者应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status`、`mcp__qq-memory__*`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。旧 `qq-chat-v2` preset 已从当前仓库安装包移除；历史 DSH 会话由 DSH 自己保留，桥接不再管理它们。
 
 如要验证当前 DSH 版本的协议兼容性，可运行 `npm run verify:adaptation`；其中部分检查需要正在运行且可访问的 DSH。不要把该在线探测与上述离线测试混为一谈。
 
 ## 常见问题
 
 - **QQ 信号没有启动全局会话**：确认 SnowLuma 事件进入桥接，且私聊或群聊原生 @ / 验证回复 / 配置关键词符合注意信号规则；普通群消息只缓冲。再检查 DSH preset 清单是否包含 `desktop-agent`。
-- **桌面助手不可用**：确认 `desktop-agent` 已出现在 DSH preset 清单，且 DSH profile 中的 `dsh-computer-use-win` 已启用；更新 bundle 后重启 DSH，再从 WebUI 提交任务或触发一条 QQ 注意信号。
+- **陪伴者会话不可用**：确认 `desktop-agent` 已出现在 DSH preset 清单，且 DSH profile 中的 `dsh-computer-use-win` 已启用；更新 bundle 后重启 DSH，再从 WebUI 提交任务或触发一条 QQ 注意信号。
 - **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 有 `qq-agent-presets` 和 host 配置 bundle 依赖，然后重启 DSH。
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否有三个 `mcp-*` 条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
 - **preset 未出现**：检查 `qq-agent-presets` bundle 是否注册并安装，再运行 `node scripts/build-agent-preset-patches.mjs --check`；修改源文件后需重新生成 patch 并重启 DSH。
@@ -114,11 +123,11 @@ node scripts/test-audit-setup-guards.mjs
 
 ## 唤醒与消息读取模型
 
-- 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局桌面助手发不含消息正文的提醒；是否处理由 agent 自行判断。
+- 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局陪伴者发不含消息正文的提醒；是否处理由 agent 自行判断。
 - 普通群消息正文保存在桥接侧，不会自动注入模型。全局 agent 可先用 `qq_list_conversations` 发现群/好友，再按需调用消息、历史或成员读取工具。
 - 没有模型心跳或定时轮询，也不靠长等待工具维持在线。每个活动回合必须以 `agent_rest` 作为最后一个工具调用；可设 1 秒至 12 小时的休息，或省略时长进入无限休息。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
 - 回合未调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟递增恢复尝试，之后最长每 30 分钟尝试一次。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。
 - 工具等待、读取和发送都由当前 agent 回合主动决定；回合文本不会自动转发到 QQ。
-- 全局桌面助手通过 SnowLuma MCP 发送需活动回合令牌，任意合法群/私聊 key 均可用；发送仍接受速率限制与审计。若助手通过 QQ 桌面 UI 操作，行为不经过这些桥接 API 检查。
+- 全局陪伴者通过 SnowLuma MCP 发送需活动回合令牌，任意合法群/私聊 key 均可用；发送仍接受速率限制与审计。若陪伴者通过 QQ 桌面界面操作，行为不经过这些桥接 API 检查。
 
 更多权限与安全约束见 [RULES.md](../../RULES.md)。
