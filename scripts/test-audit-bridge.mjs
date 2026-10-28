@@ -36,6 +36,10 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     },
   } });
   try {
+    h.setReady(true);
+    await h.ensureDesktopAgentSession();
+    h.setDesktopAgentLifecycle('active');
+    h.setDesktopAgentTurnActive(true);
     await h.sendStickerV2('group:456', 'fixture-sticker');
     assert.equal(body.message.find((part) => part.type === 'image').data.file, 'base64://' + image.toString('base64'));
     console.log('PASS sticker sending gives OneBot validated bytes, never a URL to refetch');
@@ -70,6 +74,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       ['GET', '/api/roles'], ['GET', '/api/roles/content?name=x'], ['GET', '/api/roles?x=1'],
       ['POST', '/api/roles/create'], ['POST', '/api/roles/update'],
       ['POST', '/api/roles/rename'], ['POST', '/api/roles/delete'],
+      ['GET', '/api/desktop-agent/prompt-templates'], ['POST', '/api/desktop-agent/prompt-templates'],
       ['GET', '/api/preset/desktop-agent-prompt'], ['POST', '/api/preset/desktop-agent-prompt'],
       ['GET', '/api/preset/desktop-agent-prompt/backups'], ['POST', '/api/preset/desktop-agent-prompt/restore'],
       ['GET', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
@@ -91,6 +96,17 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     // 同一批管理端点，管理员（仅控制台令牌）应可正常访问
     const adminOk = await call('/api/dsh/model', 'GET', adminOnly);
     assert.equal(adminOk.status, 200, '管理员应能访问 /api/dsh/model');
+    const templatesRead = await call('/api/desktop-agent/prompt-templates', 'GET', adminOnly);
+    assert.equal(templatesRead.status, 200, '管理员应能读取运行时提示模板');
+    const templates = JSON.parse(templatesRead.body).templates;
+    assert.ok(templates.qqAttention.includes('{sources}'));
+    const updatedTemplates = { ...templates, recovery: '' };
+    const templatesSaved = await call('/api/desktop-agent/prompt-templates', 'POST', adminOnly, { templates: updatedTemplates });
+    assert.equal(templatesSaved.status, 200, '管理员应能保存有效运行时模板');
+    assert.equal(JSON.parse(templatesSaved.body).templates.recovery, '');
+    const invalidTemplates = { ...updatedTemplates, roleCard: '缺少必需占位符' };
+    const templatesRejected = await call('/api/desktop-agent/prompt-templates', 'POST', adminOnly, { templates: invalidTemplates });
+    assert.equal(templatesRejected.status, 400, '缺少必需占位符的模板必须拒绝');
     console.log('PASS agent token cannot reach persona/prompt/effort/whitelist admin endpoints');
   } catch (error) { failures++; console.error('FAIL agent token admin isolation:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }

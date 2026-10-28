@@ -12,6 +12,8 @@ import yaml from 'js-yaml';
 export const PRESET_PERSONA_ID = 'persona';
 export const PRESET_PROMPT_MAX_BYTES = 128 * 1024;
 export const PRESET_PROMPT_MODULES_VERSION = 1;
+export const PRESET_PROMPT_CUSTOM_MODULE_LIMIT = 32;
+export const PRESET_PROMPT_CUSTOM_TITLE_MAX_CHARS = 80;
 
 /**
  * desktop-agent 固定前缀的可维护模块。required 模块负责运行时协议和关键边界，
@@ -120,14 +122,16 @@ export function presetPromptWarnings(content) {
   return warnings;
 }
 
-/** 校验并规范化固定前缀模块文件/API 载荷。模块元数据只从代码定义读取。 */
+/** 校验并规范化固定前缀模块文件/API 载荷。内置模块元数据来自代码定义，自定义模块标题随用户配置保存。 */
 export function normalizePresetPromptModules(value) {
   const inputModules = Array.isArray(value) ? value : value?.modules;
   const version = Array.isArray(value) ? PRESET_PROMPT_MODULES_VERSION : Number(value?.version);
   if (version !== PRESET_PROMPT_MODULES_VERSION) {
     throw new Error(`固定前缀模块版本无效（需要 ${PRESET_PROMPT_MODULES_VERSION}）`);
   }
-  if (!Array.isArray(inputModules) || inputModules.length !== PRESET_PROMPT_MODULE_DEFINITIONS.length) {
+  if (!Array.isArray(inputModules)
+    || inputModules.length < PRESET_PROMPT_MODULE_DEFINITIONS.length
+    || inputModules.length > PRESET_PROMPT_MODULE_DEFINITIONS.length + PRESET_PROMPT_CUSTOM_MODULE_LIMIT) {
     throw new Error('固定前缀模块数量不匹配；请检查模块配置文件');
   }
   const byId = new Map();
@@ -140,6 +144,7 @@ export function normalizePresetPromptModules(value) {
   const modules = PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => {
     const item = byId.get(definition.id);
     if (!item) throw new Error(`缺少固定前缀模块：${definition.id}`);
+    if (item.custom === true) throw new Error(`「${definition.title}」是内置模块，不能标记为自定义模块`);
     if (typeof item.enabled !== 'boolean' || typeof item.content !== 'string') {
       throw new Error(`「${definition.title}」的启用状态或正文格式无效`);
     }
@@ -150,12 +155,36 @@ export function normalizePresetPromptModules(value) {
     if (Buffer.byteLength(content, 'utf8') > 64 * 1024) throw new Error(`「${definition.title}」正文超过 64 KB`);
     return { ...definition, enabled, content };
   });
-  for (const id of byId.keys()) {
-    if (!PRESET_PROMPT_MODULE_DEFINITIONS.some((definition) => definition.id === id)) {
+  const fixedIds = new Set(PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => definition.id));
+  const customModules = [];
+  for (const [id, item] of byId) {
+    if (fixedIds.has(id)) continue;
+    if (item.custom !== true || !/^custom-[a-z0-9][a-z0-9-]{7,63}$/.test(id)) {
       throw new Error(`未知固定前缀模块：${id}`);
     }
+    if (item.required === true) throw new Error('自定义模块不能设置为必要模块');
+    if (typeof item.title !== 'string') throw new Error(`自定义模块 ${id} 缺少名称`);
+    const title = item.title.trim();
+    if (!title || title.length > PRESET_PROMPT_CUSTOM_TITLE_MAX_CHARS || /[\r\n]/.test(title)) {
+      throw new Error(`自定义模块名称必须为 1~${PRESET_PROMPT_CUSTOM_TITLE_MAX_CHARS} 个单行字符`);
+    }
+    if (typeof item.enabled !== 'boolean' || typeof item.content !== 'string') {
+      throw new Error(`「${title}」的启用状态或正文格式无效`);
+    }
+    const content = item.content.replace(/\r\n/g, '\n').trim();
+    if (item.enabled && !content) throw new Error(`「${title}」已启用但正文为空`);
+    if (Buffer.byteLength(content, 'utf8') > 64 * 1024) throw new Error(`「${title}」正文超过 64 KB`);
+    customModules.push({
+      id,
+      title,
+      description: '用户添加的固定前缀模块。',
+      required: false,
+      enabled: item.enabled,
+      content,
+      custom: true,
+    });
   }
-  return { version: PRESET_PROMPT_MODULES_VERSION, modules };
+  return { version: PRESET_PROMPT_MODULES_VERSION, modules: [...modules, ...customModules] };
 }
 
 /** 组合实际写入 persona.prefix 的提示词，模块标题也会显示给模型。 */
@@ -172,7 +201,9 @@ export function serializePresetPromptModules(value) {
   const { modules } = normalizePresetPromptModules(value);
   return {
     version: PRESET_PROMPT_MODULES_VERSION,
-    modules: modules.map(({ id, enabled, content }) => ({ id, enabled, content })),
+    modules: modules.map((module) => module.custom
+      ? { id: module.id, custom: true, title: module.title, enabled: module.enabled, content: module.content }
+      : { id: module.id, enabled: module.enabled, content: module.content }),
   };
 }
 

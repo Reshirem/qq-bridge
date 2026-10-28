@@ -167,13 +167,11 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     client = new Client({ name: 'qq-model-view-test', version: '1.0.0' });
     await client.connect(transport);
     const listed = await client.listTools();
-    for (const name of ['qq_mark_read', 'qq_set_wake_config']) {
-      const schema = listed.tools.find((tool) => tool.name === name).inputSchema;
-      assert.equal(schema.properties.throughSeq.type, 'integer');
-      assert.equal(schema.properties.throughSeq.minimum, 0);
-      assert.equal(schema.properties.throughSeq.maximum, Number.MAX_SAFE_INTEGER);
-      assert.equal(schema.required.includes('throughSeq'), false);
-    }
+    const readSchema = listed.tools.find((tool) => tool.name === 'qq_mark_read').inputSchema;
+    assert.equal(readSchema.properties.throughSeq.type, 'integer');
+    assert.equal(readSchema.properties.throughSeq.minimum, 0);
+    assert.equal(readSchema.properties.throughSeq.maximum, Number.MAX_SAFE_INTEGER);
+    assert.equal(readSchema.required.includes('throughSeq'), false);
     const waitSchema = listed.tools.find((tool) => tool.name === 'qq_wait_for_messages').inputSchema;
     assert.deepEqual(waitSchema.properties.purpose.enum, ['messages', 'reply']);
     assert.equal(waitSchema.required.includes('purpose'), false);
@@ -223,20 +221,10 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     assert.deepEqual(requests.at(-1).body, { key: common.key, throughSeq: 21 });
     assert.equal(requests.at(-1).token, 'f'.repeat(64));
 
-    await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: {
-      infinite: true, batchWindowMs: 3500, mode: 'active', triggers: { anyMessage: true }
-    }, throughSeq: 0 } });
-    assert.equal(requests.at(-1).url, '/api/socialV2/wake-config');
-    assert.deepEqual(requests.at(-1).body, { key: common.key, config: { infinite: true, batchWindowMs: 3500 }, throughSeq: 0 });
-    await client.callTool({ name: 'qq_set_wake_config', arguments: { ...common, config: { infinite: false, sleepMs: 60000 } } });
-    assert.deepEqual(requests.at(-1).body, { key: common.key, config: { infinite: false, sleepMs: 60000 } });
-
     for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '21']) {
       const before = requests.length;
-      for (const name of ['qq_mark_read', 'qq_set_wake_config']) {
-        const invalid = await client.callTool({ name, arguments: { ...common, throughSeq: value, ...(name === 'qq_set_wake_config' ? { config: {} } : {}) } });
-        assert.equal(invalid.isError, true);
-      }
+      const invalid = await client.callTool({ name: 'qq_mark_read', arguments: { ...common, throughSeq: value } });
+      assert.equal(invalid.isError, true);
       assert.equal(requests.length, before, `invalid throughSeq ${value} must not reach the API`);
     }
   } finally {

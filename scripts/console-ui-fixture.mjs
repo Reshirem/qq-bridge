@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { roleCharStats, roleSectionReport } from '../src/role-card.js';
 import { pickBucketMs } from '../src/token-ledger.js';
 import { manualDirCommand } from '../src/state-acl.mjs';
-import { composePresetPromptModules, PRESET_PROMPT_MODULE_DEFINITIONS } from '../src/preset-prompt.js';
+import { composePresetPromptModules, normalizePresetPromptModules, PRESET_PROMPT_MODULE_DEFINITIONS } from '../src/preset-prompt.js';
+import { DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS, normalizeDesktopAgentPromptTemplates } from '../src/desktop-agent-prompt-templates.js';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
@@ -303,6 +304,7 @@ export function makeFixtureState() {
     },
     desktopPrompt: composePresetPromptModules({ version: 1, modules: desktopPromptModules }),
     desktopPromptModules,
+    runtimePromptTemplates: normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS),
     roleInjectMax: 8000,
     dshEffort: 'max',
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
@@ -417,6 +419,9 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             const content = composePresetPromptModules({ version: 1, modules: state.desktopPromptModules });
             return json({ ok: true, modules: state.desktopPromptModules, content, chars: content.length, warnings: [], migrated: false, status: presetStatusFixture() });
           }
+          case '/api/desktop-agent/prompt-templates': {
+            return json({ ok: true, templates: state.runtimePromptTemplates, defaults: DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS });
+          }
           case '/api/preset/desktop-agent-prompt': {
             return json({
               ok: true,
@@ -516,14 +521,18 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           }
           case '/api/roles/limit': state.roleInjectMax = Number(body.maxInjectChars) || state.roleInjectMax; return json({ ok: true, maxInjectChars: state.roleInjectMax, limits: { injectMaxChars: state.roleInjectMax } });
           case '/api/preset/desktop-agent-prompt/modules': {
-            state.desktopPromptModules = PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => {
-              const supplied = (Array.isArray(body.modules) ? body.modules : []).find((module) => module?.id === definition.id) || {};
-              return { ...definition, enabled: supplied.enabled === true, content: String(supplied.content ?? '') };
-            });
+            state.desktopPromptModules = normalizePresetPromptModules({ version: 1, modules: body.modules }).modules;
             const content = composePresetPromptModules({ version: 1, modules: state.desktopPromptModules });
             const unchanged = content === state.desktopPrompt;
             if (!unchanged) state.desktopPrompt = content;
             return json({ ok: true, unchanged, chars: content.length, content, modules: state.desktopPromptModules, warnings: [], synced: true, requiresRestart: !unchanged, status: presetStatusFixture() });
+          }
+          case '/api/desktop-agent/prompt-templates': {
+            if (!body.templates || typeof body.templates !== 'object' || Array.isArray(body.templates)) {
+              return json({ ok: false, error: '请提交完整的运行时提示模板' }, 400);
+            }
+            state.runtimePromptTemplates = normalizeDesktopAgentPromptTemplates(body.templates);
+            return json({ ok: true, templates: state.runtimePromptTemplates, message: '已保存；后续对应的会话提示会使用新模板' });
           }
           case '/api/preset/desktop-agent-prompt': {
             return json({ ok: false, error: 'fixture uses the modular prompt API' }, 409);

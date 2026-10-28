@@ -12,22 +12,22 @@ const prefix = persona?.config?.prefix ?? '';
 
 test('desktop-agent is the only session persona and preserves registered template variables', () => {
   assert.equal(persona?.name, '@deepseek-ai/dsh-persona');
-  assert.match(prefix, /\{\{model\}\}/);
   const used = [...JSON.stringify(persona.config).matchAll(/\{\{([a-z][a-z0-9_]*)\}\}/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(used)].filter((v) => !['provider', 'model'].includes(v)), []);
+  assert.ok(!prefix.includes('{{cwd}}'), 'the removed DSH cwd variable must stay out of the prompt');
   assert.equal(Object.hasOwn(persona.config, 'text'), false);
 });
 
 test('activity turns end through the rest tool', () => {
   assert.match(prefix, /每个活动回合都必须以 `agent_rest` 作为最后一个工具调用/);
-  assert.match(prefix, /调用后本轮结束，不再调用工具/);
+  assert.match(prefix, /调用后结束本轮，不再调用其他工具/);
 });
 
 test('QQ is an on-demand source with metadata-only attention signals', () => {
   assert.match(prefix, /SnowLuma 是 QQ 消息通道/);
-  assert.match(prefix, /使用会话列表工具/);
   assert.match(prefix, /提醒，只表示有消息值得留意，不包含消息正文/);
-  assert.match(prefix, /不要自动读取每段对话/);
+  assert.match(prefix, /不一定代表有新消息/);
+  assert.match(prefix, /不要自动读取每段对话或汇总所有未读/);
   assert.match(prefix, /qq_wait_for_messages/);
 });
 

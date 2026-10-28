@@ -21,9 +21,14 @@ function fixture(name, patch = '') {
   const repo = path.join(base, 'repo');
   const home = path.join(base, 'home');
   fs.mkdirSync(path.join(repo, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.copyFileSync(path.join(root, 'scripts/setup-dsh.mjs'), path.join(repo, 'scripts/setup-dsh.mjs'));
   // setup-dsh.mjs 直接从仓库源生成 bundle patch，生成器必须一起进夹具。
   fs.copyFileSync(path.join(root, 'scripts/build-agent-preset-patches.mjs'), path.join(repo, 'scripts/build-agent-preset-patches.mjs'));
+  // Patch generator validates the source prompt through this pure helper.
+  fs.copyFileSync(path.join(root, 'src/preset-prompt.js'), path.join(repo, 'src/preset-prompt.js'));
+  // setup-dsh.mjs checks ffmpeg availability using this standalone resolver.
+  fs.copyFileSync(path.join(root, 'src/ffmpeg-resolve.js'), path.join(repo, 'src/ffmpeg-resolve.js'));
   fs.cpSync(path.join(root, 'dsh'), path.join(repo, 'dsh'), { recursive: true });
   fs.cpSync(path.join(root, 'plugins'), path.join(repo, 'plugins'), { recursive: true });
   fs.cpSync(parserRoot, path.join(repo, 'node_modules/js-yaml'), { recursive: true });

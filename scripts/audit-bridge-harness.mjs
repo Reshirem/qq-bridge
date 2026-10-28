@@ -18,7 +18,9 @@ import * as forward from '../src/forward.js';
 import * as sticker from '../src/sticker-lib.js';
 import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
+import * as memorixGateway from '../src/a-memorix-gateway.js';
 import * as presetPrompt from '../src/preset-prompt.js';
+import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
 import * as roleCard from '../src/role-card.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
@@ -140,12 +142,14 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    sendStickerV2, startConsoleServer, api,
+    sendStickerV2, startConsoleServer, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
     ensureDesktopAgentSession, recreateDesktopAgentSession,
+    emojiCdnCandidates, getImageDimensions, acceptImageBuffer,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
     setReady(value) { dshReady = value; },
     setDesktopAgentTurnActive(value) { desktopAgentTurnActive = !!value; },
+    setDesktopAgentLifecycle(value) { desktopAgentLifecycle = value; },
   };
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
@@ -165,13 +169,19 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     // The production runtime may discover DSH's randomly allocated Desktop API port.
     // The offline harness has no DSH process, so deterministically retain configured baseUrl.
     discoverDshBaseUrl: async (configuredBaseUrl) => ({ source: 'fallback', baseUrl: configuredBaseUrl }),
+    // Connection recovery must not probe a live SnowLuma instance from an offline fixture.
+    discoverSnowLumaConnection: async () => ({ ok: false, tried: [] }),
+    persistSnowLumaEndpoint: () => ({ updated: false, changed: {} }),
+    persistToken: () => ({ updated: false }),
     patchFileFor: fixturePatchFileFor,
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...safeFetch, ...forward, ...sticker,
-    ...modelPrices, ...tokenLedger, ...roleCard, ...stateAcl, ...presetPrompt,
+    ...modelPrices, ...tokenLedger, ...memorixGateway, ...roleCard, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
+    // The fixture must never probe or spawn a host ffmpeg process during startup.
+    isFfmpegAvailable: () => false,
     sniffImage: mediaNormalize.sniffImage,
     planNormalization: mediaNormalize.planNormalization,
     planAnimation: mediaNormalize.planAnimation,

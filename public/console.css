@@ -1613,6 +1613,17 @@ tr:last-child td {
   flex-wrap:wrap
 }
 .prompt-module-head h4 { margin:0; font-size:14px }
+.prompt-module-title-input {
+  flex:1 1 240px;
+  max-width:560px;
+  min-width:min(100%, 180px);
+  min-height:34px;
+  margin:0
+}
+.prompt-module-title-input[hidden],
+.prompt-module-title-display[hidden],
+.prompt-module-remove[hidden] { display:none }
+.prompt-module-remove { flex:0 0 auto }
 .prompt-module-toggle {
   display:flex;
   align-items:center;
@@ -1644,6 +1655,17 @@ tr:last-child td {
 .prompt-preview { margin-top:12px }
 .prompt-preview summary { cursor:pointer; color:var(--muted); font-size:12px }
 .prompt-preview[open] summary { margin-bottom:6px }
+.runtime-prompt-templates { margin-top:12px }
+.runtime-prompt-template {
+  min-height:64px;
+  max-height:360px;
+  resize:vertical;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font-family:Consolas,"Microsoft YaHei",monospace;
+  font-size:12px;
+  line-height:1.65
+}
 .context-history-controls { align-items:center }
 .context-history {
   display:grid;

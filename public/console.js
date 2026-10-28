@@ -209,6 +209,7 @@ async function refreshRoles() {
 let desktopPromptOriginalModules = [];
 let desktopPromptOriginalContent = '';
 let desktopPromptMigrationPending = false;
+let desktopPromptEditing = false;
 let desktopPromptPreset = 'desktop-agent';
 
 function setSimMsg(text, ok) {
@@ -218,25 +219,45 @@ function setSimMsg(text, ok) {
 }
 
 function setSimEditing(editing) {
+  desktopPromptEditing = editing;
   document.querySelectorAll('#desktopPromptModules .prompt-module-card').forEach((card) => {
     const textarea = card.querySelector('.prompt-module-textarea');
     const toggle = card.querySelector('.prompt-module-toggle input');
+    const titleInput = card.querySelector('.prompt-module-title-input');
+    const titleDisplay = card.querySelector('.prompt-module-title-display');
+    const removeButton = card.querySelector('.prompt-module-remove');
     const required = card.dataset.required === 'true';
     textarea.readOnly = !editing;
     textarea.classList.toggle('editing', editing);
     toggle.disabled = !editing || required;
+    if (titleInput) {
+      titleInput.disabled = !editing;
+      if (titleDisplay) titleDisplay.hidden = editing;
+      titleInput.hidden = !editing;
+    }
+    if (removeButton) removeButton.hidden = !editing;
   });
+  const addButton = document.getElementById('desktopPromptAddModule');
+  addButton.hidden = !editing;
+  addButton.disabled = !editing;
   document.getElementById('desktopPromptEdit').disabled = editing;
   document.getElementById('desktopPromptSave').disabled = !editing;
   document.getElementById('desktopPromptCancel').disabled = !editing;
 }
 
 function collectPromptModules() {
-  return [...document.querySelectorAll('#desktopPromptModules .prompt-module-card')].map((card) => ({
-    id: card.dataset.moduleId,
-    enabled: card.querySelector('.prompt-module-toggle input').checked,
-    content: card.querySelector('.prompt-module-textarea').value,
-  }));
+  return [...document.querySelectorAll('#desktopPromptModules .prompt-module-card')].map((card) => {
+    const module = {
+      id: card.dataset.moduleId,
+      enabled: card.querySelector('.prompt-module-toggle input').checked,
+      content: card.querySelector('.prompt-module-textarea').value,
+    };
+    if (card.dataset.custom === 'true') {
+      module.custom = true;
+      module.title = card.querySelector('.prompt-module-title-input').value;
+    }
+    return module;
+  });
 }
 
 function updatePromptPreview() {
@@ -244,7 +265,7 @@ function updatePromptPreview() {
     .filter((module) => module.enabled)
     .map((module) => {
       const definition = desktopPromptOriginalModules.find((item) => item.id === module.id);
-      return `【${definition?.title || module.id}】\n${module.content.trim()}`;
+      return `【${module.title || definition?.title || module.id}】\n${module.content.trim()}`;
     })
     .join('\n\n');
   document.getElementById('desktopPromptPreview').value = content;
@@ -259,12 +280,36 @@ function renderPromptModules(modules) {
     card.className = 'prompt-module-card';
     card.dataset.moduleId = module.id;
     card.dataset.required = module.required ? 'true' : 'false';
+    card.dataset.custom = module.custom === true ? 'true' : 'false';
 
     const head = document.createElement('div');
     head.className = 'prompt-module-head';
-    const title = document.createElement('h4');
-    title.textContent = module.title;
-    head.appendChild(title);
+    if (module.custom) {
+      const titleDisplay = document.createElement('h4');
+      titleDisplay.className = 'prompt-module-title-display';
+      titleDisplay.textContent = module.title;
+      head.appendChild(titleDisplay);
+
+      const titleInput = document.createElement('input');
+      titleInput.type = 'text';
+      titleInput.className = 'prompt-module-title-input';
+      titleInput.value = module.title;
+      titleInput.maxLength = 80;
+      titleInput.placeholder = '模块名称';
+      titleInput.disabled = !desktopPromptEditing;
+      titleInput.hidden = !desktopPromptEditing;
+      titleInput.setAttribute('aria-label', '自定义模块名称');
+      titleInput.addEventListener('input', () => {
+        titleDisplay.textContent = titleInput.value || '未命名模块';
+        updatePromptPreview();
+      });
+      head.appendChild(titleInput);
+    } else {
+      const title = document.createElement('h4');
+      title.className = 'prompt-module-title-display';
+      title.textContent = module.title;
+      head.appendChild(title);
+    }
 
     const toggleLabel = document.createElement('label');
     toggleLabel.className = 'prompt-module-toggle';
@@ -282,6 +327,18 @@ function renderPromptModules(modules) {
     });
     toggleLabel.append(toggle, toggleText);
     head.appendChild(toggleLabel);
+    if (module.custom) {
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'prompt-module-remove small';
+      removeButton.textContent = '删除模块';
+      removeButton.hidden = !desktopPromptEditing;
+      removeButton.addEventListener('click', () => {
+        card.remove();
+        updatePromptPreview();
+      });
+      head.appendChild(removeButton);
+    }
     card.appendChild(head);
 
     const description = document.createElement('p');
@@ -306,6 +363,39 @@ function renderPromptModules(modules) {
     list.appendChild(card);
   }
   updatePromptPreview();
+}
+
+function newCustomPromptModuleId() {
+  const random = globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `custom-${random.toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
+}
+
+function addCustomPromptModule() {
+  const modules = collectPromptModules();
+  if (modules.filter((module) => module.custom).length >= 32) {
+    setSimMsg('自定义模块最多添加 32 个。', false);
+    return;
+  }
+  const existingTitles = new Set(modules.map((module) => String(module.title || '').trim().toLocaleLowerCase()));
+  let number = 1;
+  while (existingTitles.has(`自定义模块 ${number}`.toLocaleLowerCase())) number += 1;
+  const module = {
+    id: newCustomPromptModuleId(),
+    title: `自定义模块 ${number}`,
+    description: '用户添加的固定前缀模块。',
+    required: false,
+    enabled: true,
+    content: '',
+    custom: true,
+  };
+  renderPromptModules([...modules, module]);
+  setSimEditing(desktopPromptEditing);
+  const card = document.querySelector(`#desktopPromptModules [data-module-id="${module.id}"]`);
+  card?.querySelector('.prompt-module-editor')?.setAttribute('open', '');
+  card?.querySelector('.prompt-module-title-input')?.focus();
+  updatePromptPreview();
+  setSimMsg('已添加自定义模块，请填写正文后保存。');
 }
 
 async function refreshSimPrompt() {
@@ -340,6 +430,75 @@ async function refreshSimPrompt() {
     setSimMsg('读取失败：' + (error?.message ?? error), false);
   }
 }
+
+const runtimePromptTemplateFields = [
+  ['roleCard', 'runtimePromptRoleCard'],
+  ['qqAttention', 'runtimePromptQqAttention'],
+  ['qqSource', 'runtimePromptQqSource'],
+  ['restExpired', 'runtimePromptRestExpired'],
+  ['qqWake', 'runtimePromptQqWake'],
+  ['recovery', 'runtimePromptRecovery'],
+  ['memoryBootstrap', 'runtimePromptMemoryBootstrap'],
+];
+let runtimePromptTemplateDefaults = null;
+
+function setRuntimePromptTemplatesMsg(text, ok) {
+  const el = document.getElementById('runtimePromptTemplatesMsg');
+  el.textContent = text;
+  el.className = ok === undefined ? 'meta' : (ok ? 'meta ok' : 'meta err');
+}
+
+function renderRuntimePromptTemplates(templates) {
+  for (const [key, id] of runtimePromptTemplateFields) {
+    document.getElementById(id).value = templates?.[key] ?? '';
+  }
+}
+
+function collectRuntimePromptTemplates() {
+  return Object.fromEntries(runtimePromptTemplateFields.map(([key, id]) => [
+    key,
+    document.getElementById(id).value,
+  ]));
+}
+
+async function refreshRuntimePromptTemplates() {
+  const saveButton = document.getElementById('runtimePromptTemplatesSave');
+  saveButton.disabled = true;
+  setRuntimePromptTemplatesMsg('读取中…');
+  try {
+    const response = await api('/api/desktop-agent/prompt-templates');
+    if (!response.ok) throw new Error(response.error || '读取失败');
+    runtimePromptTemplateDefaults = response.defaults || {};
+    renderRuntimePromptTemplates(response.templates || {});
+    saveButton.disabled = false;
+    setRuntimePromptTemplatesMsg('');
+  } catch (error) {
+    setRuntimePromptTemplatesMsg(`读取失败：${error?.message ?? error}`, false);
+  }
+}
+
+document.getElementById('runtimePromptTemplatesSave').addEventListener('click', async () => {
+  const templates = collectRuntimePromptTemplates();
+  const saveButton = document.getElementById('runtimePromptTemplatesSave');
+  saveButton.disabled = true;
+  setRuntimePromptTemplatesMsg('保存中…');
+  try {
+    const response = await api('/api/desktop-agent/prompt-templates', 'POST', { templates });
+    if (!response.ok) throw new Error(response.error || '保存失败');
+    renderRuntimePromptTemplates(response.templates || templates);
+    setRuntimePromptTemplatesMsg('已保存；后续对应场景会使用新模板。', true);
+  } catch (error) {
+    setRuntimePromptTemplatesMsg(`保存失败：${error?.message ?? error}`, false);
+  } finally {
+    saveButton.disabled = false;
+  }
+});
+
+document.getElementById('runtimePromptTemplatesDefaults').addEventListener('click', () => {
+  if (!runtimePromptTemplateDefaults) return;
+  renderRuntimePromptTemplates(runtimePromptTemplateDefaults);
+  setRuntimePromptTemplatesMsg('已填入默认内容；点击“保存运行时提示模板”后才会生效。');
+});
 
 // ── DSH 模型与思考强度 ──────────────────────────────────────────────────────
 let dshModelOptions = [];
@@ -759,8 +918,9 @@ document.getElementById('newRoleContent').addEventListener('input', updateRoleEd
 // ── 全局陪伴者提示词 ──────────────────────────────────────────────────────
 document.getElementById('desktopPromptEdit').addEventListener('click', () => {
   setSimEditing(true);
-  setSimMsg('编辑中：可修改模块正文和开关。必要的会话、安全与回合收尾模块保持启用。');
+  setSimMsg('编辑中：可修改模块正文和开关，也可逐个添加自定义模块。必要模块保持启用。');
 });
+document.getElementById('desktopPromptAddModule').addEventListener('click', addCustomPromptModule);
 document.getElementById('desktopPromptCancel').addEventListener('click', () => {
   renderPromptModules(desktopPromptOriginalModules);
   setSimEditing(false);
@@ -768,6 +928,17 @@ document.getElementById('desktopPromptCancel').addEventListener('click', () => {
 });
 document.getElementById('desktopPromptSave').addEventListener('click', async () => {
   const modules = collectPromptModules();
+  const invalidCustom = modules.find((module) => module.custom
+    && (!String(module.title || '').trim() || String(module.title).trim().length > 80
+      || (module.enabled && !String(module.content || '').trim())));
+  if (invalidCustom) {
+    setSimMsg(!String(invalidCustom.title || '').trim()
+      ? '请填写自定义模块名称。'
+      : String(invalidCustom.title).trim().length > 80
+        ? '自定义模块名称不能超过 80 个字符。'
+        : `请填写「${invalidCustom.title}」的正文，或先关闭该模块。`, false);
+    return;
+  }
   const activeContent = updatePromptPreview();
   const changesActivePrompt = desktopPromptMigrationPending || activeContent !== desktopPromptOriginalContent;
   const confirmText = changesActivePrompt
@@ -2274,7 +2445,7 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadSecurity(); refreshSimPrompt(); refreshRuntimePromptTemplates(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => {
   refresh();
   if (currentConsolePage === 'overview') refreshDesktopAgentStatus();

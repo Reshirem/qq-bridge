@@ -101,9 +101,10 @@
         <ol>
           <li><b>DSH 固定前缀</b>：整个全局会话共用，按用途拆成可编辑的模块；部分规则为必要模块，会保持启用。</li>
           <li><b>人格提示词</b>：在全局会话第一次收到任务或提醒时注入一次，用于身份、性格和表达方式。</li>
+          <li><b>运行时提示模板</b>：桥接按场景追加到会话消息里的人格卡、QQ 提醒、休息恢复和记忆摘要文本。</li>
           <li><b>会话事件记录</b>：可按页查看 DSH 持久化的消息、工具调用和回合事件。</li>
         </ol>
-        <p>保存后会更新陪伴者预设；重启 DSH 并重建全局会话后生效。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；DSH 会根据运行状态整理或压缩上下文，推理过程不会在此展示。</p>
+        <p>固定前缀保存后需重启 DSH 并重建全局会话。运行时提示模板保存后会用于后续对应场景；人格卡和记忆开场模板只会在新建或重建会话时再次注入。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；DSH 会根据运行状态整理或压缩上下文，推理过程不会在此展示。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -151,7 +152,8 @@
         <div class="prompt-operation-guide-heading"><span>操作指引</span><span>先编辑，再保存</span></div>
         <ol>
           <li>点击下方的“编辑模块”</li>
-          <li>修改正文；只可关闭未标注“必须启用”的模块</li>
+          <li>修改正文和开关；必要模块保持启用</li>
+          <li>可逐个添加自定义模块，填写名称与正文后决定是否启用</li>
           <li>点击“保存模块”应用，或点击“取消编辑”放弃</li>
         </ol>
         <p>开关只控制固定前缀提示词，不会关闭记忆服务或工具能力。保存后需重启 DSH 并重建全局会话才会生效。</p>
@@ -160,6 +162,7 @@
       <div id="desktopPromptModules" class="prompt-module-list" aria-live="polite"></div>
       <div class="row" style="margin-top:8px">
         <button id="desktopPromptEdit">编辑模块</button>
+        <button id="desktopPromptAddModule" hidden disabled>添加自定义模块</button>
         <button id="desktopPromptSave" disabled>保存模块</button>
         <button id="desktopPromptRestore">还原上次备份</button>
         <button id="desktopPromptCancel" disabled>取消编辑</button>
@@ -170,6 +173,45 @@
         <textarea id="desktopPromptPreview" class="code-area" spellcheck="false" readonly></textarea>
       </details>
       <div class="meta" id="desktopPromptRestart"></div>
+
+      <details class="settings-group runtime-prompt-templates">
+        <summary>运行时提示模板（人格卡、QQ 提醒、休息与记忆）</summary>
+        <div class="settings-content">
+          <p class="meta">这些文本由桥接按场景附加到 DSH 会话消息中，不属于 DSH 固定前缀。保存后立即更新运行配置；人格卡和记忆摘要只在新会话开场时注入，QQ 提醒和恢复说明在后续事件中使用。</p>
+
+          <label for="runtimePromptRoleCard">人格卡开场模板</label>
+          <textarea id="runtimePromptRoleCard" class="runtime-prompt-template" rows="4" spellcheck="false"></textarea>
+          <div class="meta">占位符：{roleName} 人格名（可省略），{roleContent} 人格卡正文（必须保留）。</div>
+
+          <label for="runtimePromptQqAttention">QQ 消息提醒模板</label>
+          <textarea id="runtimePromptQqAttention" class="runtime-prompt-template" rows="5" spellcheck="false"></textarea>
+          <div class="meta">占位符：{sources} 提醒来源列表（必须保留）；模板不包含 QQ 消息正文。</div>
+
+          <label for="runtimePromptQqSource">QQ 来源信息行模板</label>
+          <textarea id="runtimePromptQqSource" class="runtime-prompt-template" rows="2" spellcheck="false"></textarea>
+          <div class="meta">占位符：{key} 会话标识、{kind} 私聊/群聊、{reason} 提醒原因、{sender} 发送者、{senderId} 发送者 QQ、{messageId} 消息 ID、{count} 合并数量。只有 {key} 和 {reason} 必须保留；后三项无对应信息时为空，并自带前置标点。</div>
+
+          <label for="runtimePromptRestExpired">休息到期提示</label>
+          <textarea id="runtimePromptRestExpired" class="runtime-prompt-template" rows="2" spellcheck="false"></textarea>
+
+          <label for="runtimePromptQqWake">QQ 提前结束休息提示</label>
+          <textarea id="runtimePromptQqWake" class="runtime-prompt-template" rows="2" spellcheck="false"></textarea>
+
+          <label for="runtimePromptRecovery">异常回合恢复提示</label>
+          <textarea id="runtimePromptRecovery" class="runtime-prompt-template" rows="3" spellcheck="false"></textarea>
+          <div class="meta">休息到期、QQ 打断和异常恢复提示都可以留空。</div>
+
+          <label for="runtimePromptMemoryBootstrap">长期记忆开场摘要模板</label>
+          <textarea id="runtimePromptMemoryBootstrap" class="runtime-prompt-template" rows="3" spellcheck="false"></textarea>
+          <div class="meta">占位符：{entries} 已检索到的自身经历摘要（必须保留）。</div>
+
+          <div class="row" style="margin-top:10px">
+            <button id="runtimePromptTemplatesSave">保存运行时提示模板</button>
+            <button id="runtimePromptTemplatesDefaults">填入默认模板</button>
+            <span class="meta" id="runtimePromptTemplatesMsg"></span>
+          </div>
+        </div>
+      </details>
 
       <h3 class="layer-heading">当前陪伴者会话记录 <span class="meta" id="desktopAgentHistoryStatus">尚未加载</span></h3>
       <div class="meta">读取当前陪伴者会话的持久事件，包括已保存的消息、工具和回合记录；不会读取其它会话。推理过程、内部尝试详情和流式片段会隐藏。</div>

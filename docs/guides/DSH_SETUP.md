@@ -92,7 +92,9 @@ npm start
 
 该写法只对当前 PowerShell 窗口及其启动的进程生效。若通过 `start.bat` 启动，脚本会在未设置 `FFMPEG_PATH` 时自动检查仓库旁边的 `..\ffmpeg\bin\ffmpeg.exe`；其它安装位置请在 Windows 用户环境变量中设置 `FFMPEG_PATH`。修改环境变量后重新打开启动窗口并重启桥接。图片工具失败时，陪伴者会收到具体原因；缺少 FFmpeg 时应向用户说明部署依赖未配置。
 
-固定前缀在 WebUI“全局陪伴者”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个模块都可单独编辑；可选模块可切换是否写入提示词，必要的会话、安全和回合收尾模块保持启用。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。保存后需重启 DSH，并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
+固定前缀在 WebUI“全局陪伴者”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个内置模块都可单独编辑；可选模块可切换是否写入提示词，必要的会话、安全和回合收尾模块保持启用。编辑时也可以逐个添加自定义模块，为其填写名称和正文、单独启用或删除；自定义模块会追加在固定前缀末尾并持久保存。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。保存后需重启 DSH，并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
+
+同一面板下方的“运行时提示模板”维护桥接在具体事件中追加的文本，包括人格卡首次注入、QQ 来源提醒、休息到期/QQ 打断/异常恢复，以及长期记忆开场摘要。这些模板保存在 `config.json` 的 `desktopAgent.promptTemplates`，保存后立即用于后续对应事件；人格卡与记忆摘要只在新建或重建会话的首次提示中出现。模板里的花括号占位符需要保留，WebUI 会说明每个字段可用的占位符。
 
 ## 验证
 
