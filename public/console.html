@@ -96,7 +96,7 @@
     </section>
 <section id="section-persona" data-page="persona" class="card span-all">
       <h2>陪伴者提示词与人格</h2>
-      <div class="meta">当前人格：<span id="roleText">-</span> ｜ 状态：<span id="roleModeText">-</span></div>
+      <div class="meta">当前人格：<span id="roleText">-</span></div>
 
       <div class="layer-note">
         <strong>全局会话上下文</strong>
@@ -488,9 +488,9 @@
       <input type="text" id="wlGroups" placeholder="123456789, 123456">
       <label>允许的私聊 QQ（逗号分隔）</label>
       <input type="text" id="wlPrivate" placeholder="123456789">
-      <label>管理员 QQ（ownerQQ，最高权限）</label>
+      <label>管理员 QQ（ownerQQ，消息身份标记）</label>
       <input type="text" id="ownerQQ" placeholder="123456789">
-      <div class="meta">管理员 QQ 设置用于本地管理命令。allow/deny 仅限制控制台的测试发送；全局 desktop-agent 的 SnowLuma 工具可访问任意合法 QQ 会话。可留空清除管理员。</div>
+      <div class="meta">用于在 QQ 消息上下文中标记管理员身份，不授予桥接管理接口权限。allow/deny 仅限制控制台的测试发送；全局 desktop-agent 的 SnowLuma 工具可访问任意合法 QQ 会话。可留空清除标记。</div>
       <label>拒绝的群号（黑名单，逗号分隔）</label>
       <input type="text" id="dnGroups" placeholder="">
       <label>拒绝的私聊 QQ（黑名单，逗号分隔）</label>
@@ -499,14 +499,6 @@
         <button id="wlSave">保存白名单</button>
         <span class="meta">保存后立即生效并写入 config.json</span>
       </div>
-    </section>
-<section id="section-silent" data-page="overview" class="card">
-      <h2>静默开关</h2>
-      <div class="row">
-        <button id="silentOn">开启静默</button>
-        <button id="silentOff">恢复正常</button>
-      </div>
-      <div class="meta">静默时群消息仍会缓存在本地，但不会作为提醒发送给陪伴者；陪伴者仍可按需读取。</div>
     </section>
 <section id="section-dsh" data-page="overview" class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>

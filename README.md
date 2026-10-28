@@ -86,7 +86,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
 - **全局陪伴者能力**：WebUI 和符合条件的 QQ 注意信号复用一个持久 `desktop-agent` DSH session。会话可按需使用 `dsh-computer-use-win` 和完整的当前 SnowLuma MCP 工具集。GUI 发送不经过桥接 API 限频和审计。
 - **交互增强**：
   - 全局陪伴者通过 DSH 当前的用户交互流程与管理员沟通
-  - 支持 DSH 斜杠命令（如 `/model`）；旧 QQ `/reset` 映射命令已停用，会提示在 WebUI 管理全局会话
+  - DSH 自带的斜杠命令（如 `/model`）仍由 DSH 界面处理；QQ 聊天消息不由桥接解析为管理命令，全局会话在 WebUI 管理
   - 群聊引用/回复会解析成「被引用人 + 原文」注入 DSH，让 AI 判断这句话是对谁说的，不会把群友之间引用第三方的对话误当成指向自己；只有被明确引用/回复到机器人时才会触发群聊唤醒，但唤醒不代表必须发言
   - **图片/表情（含动图 GIF）**：表情包优先走 QQ 的 CDN 直链，`get_image` 失败时用 `emoji_id` 推出 CDN 地址兜底；媒体元数据保留 `emoji_id`/`summary`/`sub_type` 等字段。下载走同一套 SSRF 防护传输，并修掉了「DNS 先返回 IPv6、本机没有 IPv6 出口 → 每次白等 20 秒」的根因（改为 **IPv4 优先 + 逐地址故障切换**），动图表情不再时好时坏。单条消息上限默认 8MB / 64MP / 5 张（`socialV2.media`）
   - MCP 发送工具支持可选 `replyToMessageId`，并提供专用 `qq_reply` 工具：AI 可以先用 `qq_get_recent_messages` 或 `qq_get_conversation_history` 拿到真实消息 id，再引用/回复某条消息（桥接会检测发送类工具调用并自动跳过该回合的重复自动转发）
@@ -130,7 +130,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `webSearch.baseURL` / `model` / `maxUses` / `maxResults` | 搜索端点（默认 `https://api.deepseek.com/anthropic/v1`，必须 https 且解析到公网）、模型（默认 `deepseek-v4-flash`）、单次搜索最多用几次工具、返回条数上限 |
 | `allow.private` / `allow.groups` | 控制台直接测试发送的目标白名单；全局陪伴者会话的 SnowLuma 工具不受其限制 |
 | `socialV2.attentionKeywords` | 可选关键词数组。匹配群聊正文时只给全局 agent 发元数据提醒，不把正文注入提示词；空数组关闭关键词提醒 |
-| `ownerQQ` | 兼容 QQ 管理命令的可选管理员 QQ；也可由 DSH 的 `qq-agent-presets.ownerQQ` 设置提供 |
+| `ownerQQ` | 可选的管理员身份标记，用于在 QQ 消息上下文中标出管理者；也可由 DSH 的 `qq-agent-presets.ownerQQ` 设置提供 |
 | `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
 | `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | 可选 A_Memorix 长期记忆。默认关闭；部署本机 HTTP/JSON Gateway 并创建 namespace 后，可在 WebUI 配置连接地址、namespace、密钥和使用上限；API key 只保存在不入库的 `config.json`。 |
 | `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | A_Memorix 请求超时与新会话首次注入摘要的条数/字符上限；默认 `45000` ms、`6` 条、`2500` 字符。配置与维护说明见 [长期记忆方案](docs/guides/MEMORY_ARCHITECTURE.md) |
@@ -149,7 +149,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 node scripts/setup-dsh.mjs
 ```
 
-> `setup-dsh.mjs` 安装 `desktop-agent`、管理员 `ownerQQ` 设置和当前 MCP 工具；不再设置 DSH 运行模式或创建 `state/mode.json`。设置命名空间为 `qq-agent-presets.ownerQQ`。
+> `setup-dsh.mjs` 安装 `desktop-agent`、`ownerQQ` 管理者身份标记设置和当前 MCP 工具；不再设置 DSH 运行模式或创建 `state/mode.json`。设置命名空间为 `qq-agent-presets.ownerQQ`。
 
 详细步骤见 **[docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md)**。
 
@@ -264,7 +264,7 @@ qq-bridge/
     FOLDER_MAP.md       # 目录结构与 scripts/ 命名约定
     guides/             # 当前架构、安装、安全、隐私、控制台与兼容性指南
   dsh/agent-presets/    # 全局 desktop-agent preset 源文件
-  plugins/qq-agent-presets/ # DSH 全局 preset、工具守卫及 ownerQQ 管理员设置
+  plugins/qq-agent-presets/ # DSH 全局 preset、工具守卫及 ownerQQ 身份标记设置
   src/
     bridge.js           # 主程序
     autonomy-policy.js  # 纯唤醒策略

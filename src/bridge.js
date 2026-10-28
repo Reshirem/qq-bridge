@@ -733,12 +733,24 @@ function appendActivity(line) {
   appendActivityLog(`[${localClock()}] ${redactSensitiveText(String(line).replace(/[\r\n]+/g, ' '))}\n`);
 }
 
-// 读取角色/模式状态：{"role": "傲娇角色", "mode": "active"|"silent"}
+let legacyRoleModeCleanupAttempted = false;
+// 当前选中的人格卡只保存在 role 字段。
 function readRoleState() {
-  return readJsonSafe(ROLE_STATE_FILE, { role: null, mode: 'active' });
+  const stored = readJsonSafe(ROLE_STATE_FILE, { role: null });
+  const state = {
+    role: stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored.role ?? null) : null
+  };
+  // 首次读取时清除旧状态文件中已经废弃的 mode 字段。
+  if (!legacyRoleModeCleanupAttempted) {
+    legacyRoleModeCleanupAttempted = true;
+    if (stored && typeof stored === 'object' && !Array.isArray(stored) && Object.hasOwn(stored, 'mode')) {
+      try { atomicWriteJson(ROLE_STATE_FILE, state); } catch {}
+    }
+  }
+  return state;
 }
-function writeRoleState(role, mode) {
-  atomicWriteJson(ROLE_STATE_FILE, { role: role ?? null, mode: mode ?? 'active' });
+function writeRoleState(role) {
+  atomicWriteJson(ROLE_STATE_FILE, { role: role ?? null });
 }
 function sanitizeRoleName(name) {
   return String(name ?? '').replace(/[^\w\u4e00-\u9fff-]/g, '');
@@ -1573,10 +1585,6 @@ async function main() {
     // 否则这是一个「静默无响应」陷阱：消息全被丢弃，用户只看到 QQ 上毫无反应。
     log(`⚠️  白名单为空且 allowAllWhenEmpty=false：不会响应任何 QQ 消息。请在 config.json 填 allow.private / allow.groups，或在控制台 http://127.0.0.1:${cfg.consolePort} 填写白名单`);
   }
-      // 未配置管理员 QQ 时，管理命令会被拒绝；这里在启动日志里说明。
-  if (!cfg.ownerQQ) {
-    log('⚠️  未配置 ownerQQ：审批/管理命令/封闭 agent 模式将全部不可用。请在 config.json 或控制台「访问与安全」页填写管理员 QQ');
-  }
   // DSH 侧
   const api = new NodeApiClient(cfg.dsh.baseUrl, undefined, {
     token: cfg.dsh.authToken,
@@ -2312,7 +2320,6 @@ async function main() {
             sendJson({
               runtime: 'autonomous',
               role: rs.role ?? null,
-              roleMode: rs.mode ?? 'active',
               dshReady,
               socialV2Paused: socialV2.paused,
             });
@@ -2321,7 +2328,6 @@ async function main() {
           sendJson({
             runtime: 'autonomous',
             role: rs.role ?? null,
-            roleMode: rs.mode ?? 'active',
             dshReady,
             ownerQQ: cfg.ownerQQ ?? null,
             allowGroups: cfg.allow?.groups ?? [],
@@ -2575,30 +2581,20 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/role') {
           const body = await readBody();
-          const rs = readRoleState();
           if (body.role && typeof body.role === 'string') {
             const name = sanitizeRoleName(body.role);
             if (!fs.existsSync(path.join(ROOT, 'roles', name + '.md'))) {
               sendJson({ ok: false, error: `角色「${name}」不存在（roles/${name}.md）` }, 400);
               return;
             }
-            writeRoleState(name, rs.mode);
+            writeRoleState(name);
             log(`控制台：角色已设置为 ${name}`);
             sendJson({ ok: true, role: name });
           } else {
-            writeRoleState(null, rs.mode);
+            writeRoleState(null);
             log('控制台：角色已清除');
             sendJson({ ok: true, role: null });
           }
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/role-mode') {
-          const body = await readBody();
-          const rs = readRoleState();
-          const mode = body.mode === 'silent' ? 'silent' : 'active';
-          writeRoleState(rs.role, mode);
-          log(`控制台：静默模式 ${mode === 'silent' ? '开启' : '关闭'}`);
-          sendJson({ ok: true, roleMode: mode });
           return;
         }
         // ── 人格管理 ──────────────────────────────────────────────────────────
@@ -2714,7 +2710,7 @@ async function main() {
           fs.renameSync(roleFilePath(from), roleFilePath(to));
           const rs = readRoleState();
           const switched = rs.role === from;
-          if (switched) writeRoleState(to, rs.mode);
+          if (switched) writeRoleState(to);
           log(`控制台：人格重命名「${from}」→「${to}」${switched ? '（当前启用中，已跟随切换）' : ''}`);
           sendJson({ ok: true, role: to, renamed: true, currentFollowed: switched });
           return;
@@ -2727,7 +2723,7 @@ async function main() {
           fs.rmSync(roleFilePath(name));
           const rs = readRoleState();
           const cleared = rs.role === name;
-          if (cleared) writeRoleState(null, rs.mode);
+          if (cleared) writeRoleState(null);
           log(`控制台：删除人格「${name}」${cleared ? '（该人格正在启用，已同时清除当前人格）' : ''}`);
           sendJson({ ok: true, deleted: name, clearedCurrent: cleared });
           return;
@@ -3877,10 +3873,6 @@ async function main() {
             sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403);
             return;
           }
-          if (shouldBlockSilentReply(key)) {
-            sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403);
-            return;
-          }
           const sendCfg = cfg.socialV2?.send ?? {};
           const maxMsgs = Math.max(1, Number(sendCfg.burstMaxMessages) || 8);
           const maxChars = Math.max(1, Number(sendCfg.maxMessageChars) || 500);
@@ -4001,10 +3993,6 @@ async function main() {
             sendJson({ ok: false, error: '私聊不需要 @' }, 400);
             return;
           }
-          if (shouldBlockSilentReply(key)) {
-            sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403);
-            return;
-          }
           if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
             sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
             return;
@@ -4106,7 +4094,6 @@ async function main() {
             sendJson({ ok: false, error: '该会话未通过白名单/拒绝名单策略，不能操作' }, 403);
             return;
           }
-          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许拍一拍' }, 403); return; }
           if (kind === 'group' && !targetUserId) {
             sendJson({ ok: false, error: '群聊拍一拍必须指定 targetUserId（要拍的群友 QQ 号）' }, 400);
             return;
@@ -4137,11 +4124,6 @@ async function main() {
           const sendGuard = captureSendGuard(key);
           try {
             sendGuard();
-            if (shouldBlockSilentReply(key)) {
-              const blocked = new Error('静默模式已开启，当前不允许拍一拍');
-              blocked.statusCode = 403;
-              throw blocked;
-            }
             if (kind === 'group') {
               await bot.raw('group_poke', { group_id: id, user_id: Number(targetUserId) });
             } else {
@@ -4272,7 +4254,6 @@ async function main() {
             return;
           }
           if (kind === 'private' && atUserId) { sendJson({ ok: false, error: '私聊不需要 @' }, 400); return; }
-          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403); return; }
           if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
             sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
             return;
@@ -5108,10 +5089,6 @@ async function main() {
           if (!token) { sendJson({ ok: false, error: '发送必须携带会话令牌' }, 403); return; }
           if (token && !agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           const flag = isPrivate ? 'sendPrivate' : (isReply ? 'reply' : 'sendGroup');
-          if (shouldBlockSilentReply(key)) {
-            sendJson({ ok: false, error: '静默模式已开启，当前不允许发送' }, 403);
-            return;
-          }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式无效' }, 400); return; }
           const kind = keyMatch[1];
@@ -6030,12 +6007,6 @@ async function main() {
         throw new Error('发送已取消：QQ 目标或全局陪伴者会话已变化');
       }
     };
-  }
-
-  // 静默模式：除 owner 私聊外，不发送任何在途 AI 回复。
-  function shouldBlockSilentReply(key) {
-    const roleState = readRoleState();
-    return roleState.mode === 'silent' && key !== `private:${String(cfg.ownerQQ ?? '')}`;
   }
 
   // 统一出站消息：先完整文本审计，再发送。返回是否真的发出。
@@ -7688,7 +7659,7 @@ async function main() {
     };
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
-    // plainContent 只保留当前消息自己的文字，用于命令/指向性判断，避免被引用原文干扰。
+    // plainContent 只保留当前消息自己的文字，避免把引用原文用于唤醒关键词判断。
     const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
@@ -7698,67 +7669,14 @@ async function main() {
     const wakeTrigger = evaluateWakeTriggerV2(key, null, event, kind, textContent, plainContent, quoteTargetIsSelf);
     if (!plainContent && !quoteTargetIsSelf && !wakeTrigger) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
-    const roleState = readRoleState();
-
-    // 静默模式只压住群消息提醒；消息仍进入本地缓冲，供全局陪伴者主动读取。
-    const suppressGroupAttention = roleState.mode === 'silent' && !isOwner;
-
-    // 控制类话语：仅管理员（ownerQQ）可下达；群友触发直接拦截
-    if (!isOwner && /进入角色扮演|退出角色扮演|切换角色|设置角色|改角色|换角色|关闭角色扮演|开启角色扮演/.test(plainContent)) {
-      await sendToQQ(key, '角色切换仅管理员可在管理端操作，群内不支持。');
-      return;
-    }
-
-    // 管理命令：仅管理员（ownerQQ）可用，且由桥接直接执行（硬性，不经过模型）
-    if (plainContent.startsWith('/')) {
-      if (!isOwner) {
-        await sendToQQ(key, '管理命令仅管理员可用。');
-        return;
-      }
-      if (plainContent === '/status') {
-        const rs = readRoleState();
-        await sendToQQ(key, `全局陪伴者：${desktopAgentLifecycle}；DSH ${dshReady ? '已连接' : '未连接'}；角色 ${rs.role ?? '无'}；角色状态 ${rs.mode}`);
-        return;
-      }
-      if (plainContent === '/role' || plainContent.startsWith('/role ')) {
-        const name = sanitizeRoleName(plainContent.slice(5).trim());
-        if (!name || name === 'off' || name === 'clear') {
-          writeRoleState(null, roleState.mode);
-          await sendToQQ(key, '已清除角色卡选择；已开始的全局会话保留原有上下文，新会话不再注入人格卡。');
-        } else {
-          const roleFile = path.join(ROOT, 'roles', name + '.md');
-          if (!fs.existsSync(roleFile)) {
-            await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
-          } else {
-            writeRoleState(name, roleState.mode);
-            await sendToQQ(key, `已选择角色卡：${name}。会话首次收到任务或提醒时载入；已开始的会话需重建后更新。`);
-          }
-        }
-        return;
-      }
-      if (plainContent === '/silent' || plainContent === '/quiet') {
-        writeRoleState(roleState.role, 'silent');
-        await sendToQQ(key, '已进入静默模式：群友消息不再回复，仅管理员可对话。');
-        return;
-      }
-      if (plainContent === '/active' || plainContent === '/speak') {
-        writeRoleState(roleState.role, 'active');
-        await sendToQQ(key, '已退出静默模式，恢复正常回复。');
-        return;
-      }
-      if (plainContent.startsWith('/')) {
-        await sendToQQ(key, '未知 QQ 管理命令。请在 WebUI 管理全局陪伴者；与全局会话对话请直接发送消息。');
-        return;
-      }
-    }
 
     // Buffer every readable message locally. Only direct attention signals reach
     // the global DSH session, and the prompt contains metadata rather than body.
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
       const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
-      // The old pause switch still suppresses QQ-derived activity. Ordinary group
-      // messages remain buffered without creating a DSH session or model turn.
-      if (socialV2.paused || cfg.socialV2?.enabled === false || suppressGroupAttention) {
+      // The QQ reminder pause switch and configuration can suppress wake signals.
+      // Ordinary group messages remain buffered without creating a DSH session or model turn.
+      if (socialV2.paused || cfg.socialV2?.enabled === false) {
         appendActivity(`${key} QQ 提醒已暂停，消息仅缓冲不唤醒：${textContent.slice(0, 80)}`);
         return;
       }

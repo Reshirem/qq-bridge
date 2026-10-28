@@ -28,7 +28,7 @@
 | --- | --- |
 | 全局陪伴者（技术 preset ID `desktop-agent`） | 使用 DSH profile 中已注册的 computer-use、SnowLuma QQ 工具及（启用时）A_Memorix 记忆工具；QQ 工具可访问任意格式有效的群/私聊 key，记忆工具只访问配置的单一 namespace。 |
 | 桥接控制台 | 使用独立的 `consoleToken` 管理全局会话、提示词、角色卡、配置和诊断信息。 |
-| `ownerQQ` | 仅用于桥接直接执行的本地管理员 QQ 命令。可在 DSH 的 `qq-agent-presets.ownerQQ` 中配置；DSH 运行模式字段不参与当前运行时。 |
+| `ownerQQ` | 可选的管理员身份标记，用于在 QQ 消息上下文中标出管理者；不授予桥接管理接口权限。可在 DSH 的 `qq-agent-presets.ownerQQ` 中配置。 |
 
 DSH profile 还会隐藏 shell、通用文件、子代理和 Harness 管理工具。computer-use 是明确开放的本机桌面能力；这不会等同于暴露这些通用执行工具。SnowLuma MCP 提供的是本项目注册的 QQ 消息/媒体工具，不是 OneBot 的全部群管理 API。
 
@@ -38,19 +38,7 @@ DSH profile 还会隐藏 shell、通用文件、子代理和 Harness 管理工�
 
 QQ key 仍用于消息缓存、读取来源和选择发送目标；它不是 DSH session id。WebUI 中的缓存清理只清除桥接本地 QQ 消息缓存和读取水位，不会删除 DSH 会话。
 
-## 管理员命令
-
-桥接直接处理的命令包括：
-
-```text
-/role <角色名>    设置全局人格卡
-/role off         清除全局人格卡
-/silent           开启群消息静默
-/active           恢复群消息提醒
-/status           查看全局陪伴者、DSH 和人格卡状态
-```
-
-所有持久配置通过受保护的 WebUI 或受信任的本机管理流程修改。若要关闭桥接，请停止桥接进程；桥接不会代替管理员启动或停止 SnowLuma。
+桥接不解析 QQ 聊天中的管理命令或角色控制短语。人格卡、会话和桥接配置通过受保护的 WebUI 管理；若要关闭桥接，请停止桥接进程。桥接不会代替管理员启动或停止 SnowLuma。
 
 ## 风险说明
 

@@ -5,7 +5,7 @@ export const inject = ['settings'];
 
 export const Config = z.object({
   ownerQQ: z.string()
-    .description('管理员 QQ（ownerQQ）；留空表示不覆盖 config.json')
+    .description('管理员身份标记 QQ（ownerQQ）；留空表示不覆盖 config.json')
     .extra('volatile', true),
 });
 

@@ -78,7 +78,6 @@ async function refresh() {
   try {
     const s = await api('/api/status');
     document.getElementById('roleText').textContent = s.role || '无';
-    document.getElementById('roleModeText').textContent = s.roleMode === 'silent' ? '静默' : '正常';
     updateOverview(s);
     document.getElementById('activity').textContent = s.activity || '（空）';
   } catch (e) { document.getElementById('statusText').textContent = '连接中断 · 请检查桥接服务'; setConnectionError(e); }
@@ -1073,8 +1072,6 @@ document.getElementById('dshEffortSave').addEventListener('click', async () => {
     msg.className = 'meta err';
   }
 });
-document.getElementById('silentOn').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'silent' }); refresh(); });
-document.getElementById('silentOff').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'active' }); refresh(); });
 document.getElementById('wlSave').addEventListener('click', async () => {
   const parse = (s) => s.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
   const r = await api('/api/whitelist', 'POST', {
@@ -2016,12 +2013,6 @@ function updateOverview(status) {
   document.getElementById('accessSummary').textContent = '管理员 ' + (status.ownerQQ || '未设置') + ' · ' + (status.allowGroups || []).length + ' 个白名单群 · ' + (status.allowPrivate || []).length + ' 位白名单好友';
   document.getElementById('lastUpdated').textContent = '状态同步于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   document.getElementById('connectionAlert').hidden = true;
-  const silent = status.roleMode === 'silent';
-  for (const [id, active] of [['silentOn', silent], ['silentOff', !silent]]) {
-    const button = document.getElementById(id);
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', String(active));
-  }
 }
 function setConnectionError(error) {
   document.getElementById('statusText').className = 'status-badge offline';

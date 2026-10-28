@@ -36,7 +36,7 @@
 | 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通消息留在桥接缓冲；正文由全局 agent 主动读，无周期模型心跳 |
 | 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 12 小时）或无限休息；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态。旧 `wakeAt` 迁移为休息截止时间，旧定时开关字段不再读取 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
-| 管理员识别 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')`；未配置 `ownerQQ` 时启动日志告警，桥接直接执行的管理员 QQ 命令不可用 |
+| 管理者身份标记 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')` 时在消息上下文中标记管理者身份；这不授权管理操作。桥接不解析 QQ 管理命令，管理 API 由控制台令牌保护 |
 
 ### 2. 工具面（agent 能做什么）
 

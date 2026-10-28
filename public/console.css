@@ -690,27 +690,6 @@ pre {
   grid-column:1/-1;
   order:3
 }
-#section-silent {
-  grid-column:1/-1;
-  order:2;
-  display:grid;
-  grid-template-columns:1fr auto;
-  gap:8px 20px;
-  padding-top:20px;
-  padding-bottom:20px
-}
-#section-silent h2 {
-  margin:0;
-  align-self:center
-}
-#section-silent .meta {
-  grid-column:1/-1;
-  margin:0
-}
-#section-silent .row {
-  grid-column:2;
-  grid-row:1
-}
 .tag {
   display:inline-block;
   background:var(--surface-chip);
@@ -1236,15 +1215,6 @@ tr:last-child td {
   .active .mode-indicator {
     border-width:3px
   }
-  #section-silent {
-    display:block
-  }
-  #section-silent h2 {
-    margin-bottom:14px
-  }
-  #section-silent .meta {
-    margin-top:10px
-  }
   .row {
     gap:8px
   }
@@ -1707,10 +1677,6 @@ tr:last-child td {
   overflow-wrap:anywhere
 }
 .context-record-note { display:block; padding:0 12px 9px; color:var(--muted); font-size:11px }
-#section-silent {
-  grid-column:1/-1
-}
-
 /* ================= 主题切换控件 ================= */
 #themeToggle {
   font-size:16px

@@ -12,7 +12,7 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并面向任意合法会话 key 使用完整的当前 SnowLuma MCP 工具集。`ownerQQ` 只供桥接直接执行的管理员 QQ 命令；也可在 DSH 设置的 `qq-agent-presets.ownerQQ` 中填写。DSH 运行模式字段不参与运行。
+Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并面向任意合法会话 key 使用完整的当前 SnowLuma MCP 工具集。`ownerQQ` 是可选的管理者身份标记，用于在 QQ 消息上下文中区分管理者；桥接不解析 QQ 管理命令。也可在 DSH 设置的 `qq-agent-presets.ownerQQ` 中填写。DSH 运行模式字段不参与运行。
 
 长期记忆为可选能力。Windows 上可在仓库根目录运行：
 
@@ -62,7 +62,7 @@ DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
 
 脚本会：
 
-1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
+1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将用于管理者身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
 2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe`、`mcp-qq-memory` 四个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
 3. 从目标 profile 移除旧的 `qq-mode-console` bundle 及安装脚本创建的链接，并注册合并后的 `qq-agent-presets`。
 4. 尝试执行 `dsh plugin --profile <profile> install` 安装 bundle 依赖；如 DSH CLI 不可用，会提示手动执行命令。
@@ -77,7 +77,7 @@ node scripts/build-agent-preset-patches.mjs
 
 > DSH 0.1.7 起不再读取旧的 `~/.dsh/.agent-presets/<name>/` 目录。安装脚本只报告并保留该旧目录，不会删除或迁移其中的手工修改；如有自定义内容，请自行合并到仓库源文件。
 
-安装完成后，重启 DSH（或重新加载 profile），使 preset、管理员设置和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。管理员 QQ 设置现在位于 `qq-agent-presets.ownerQQ`；旧 `qq-mode.ownerQQ` 值不会自动迁移，需要在新命名空间重新填写。
+安装完成后，重启 DSH（或重新加载 profile），使 preset、管理者身份标记设置和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置现在位于 `qq-agent-presets.ownerQQ`；旧 `qq-mode.ownerQQ` 值不会自动迁移，需要在新命名空间重新填写。
 
 电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 

@@ -295,7 +295,7 @@ export function makeFixtureState() {
     content: promptContent[definition.id] || `离线演示模块：${definition.title}。`,
   }));
   return {
-    role: '小鲸鱼', roleMode: 'active', activityPaused: false, desktopAgentStopped: false,
+    role: '小鲸鱼', activityPaused: false, desktopAgentStopped: false,
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
     roleContents: {
       小鲸鱼: '# 小鲸鱼\n\n- 性格：好奇、爱接梗，遇到不懂的会直接问\n- 说话风格：简短，偶尔用 emoji',
@@ -373,7 +373,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       }
       if (method === 'GET') {
         switch (path) {
-          case '/api/status': return json({ ok: true, dshReady: true, role: state.role, roleMode: state.roleMode, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
+          case '/api/status': return json({ ok: true, dshReady: true, role: state.role, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
           case '/api/roles': return json({
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {
@@ -541,7 +541,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return json({ ok: true, restoredFrom: 'desktop-agent.agent.cordis.yml.fixture', requiresRestart: true });
           }
           case '/api/dsh/effort': state.dshEffort = body.reasoningEffort; return json({ ok: true, reasoningEffort: body.reasoningEffort });
-          case '/api/role-mode': state.roleMode = body.mode; return json({ ok: true });
           case '/api/whitelist': state.whitelist = body; return json({ ok: true });
           case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
           case '/api/socialV2/activity': state.activityPaused = body.paused; return json({ ok: true });
