@@ -7597,6 +7597,22 @@ async function main() {
     return text;
   }
 
+  function selectedRoleCardNamesForWake() {
+    try {
+      const selected = readRoleState()?.role;
+      if (typeof selected !== 'string' || !selected.trim()) return [];
+      const name = selected.trim();
+      const safeName = sanitizeRoleName(name);
+      if (!safeName || safeName !== name || safeName.includes('..')) return [];
+      const rolesRoot = path.resolve(ROLES_DIR);
+      const roleFile = path.resolve(rolesRoot, safeName + '.md');
+      if (!roleFile.startsWith(rolesRoot + path.sep) || !fs.existsSync(roleFile)) return [];
+      return [safeName];
+    } catch {
+      return [];
+    }
+  }
+
   function evaluateWakeTriggerV2(_key, _st, event, kind, _textContent, plainContent, quoteTargetIsSelf) {
     return classifyIncomingWake({
       kind,
@@ -7605,7 +7621,7 @@ async function main() {
       replyTargetIsSelf: quoteTargetIsSelf,
       text: plainContent,
       attentionKeywords: cfg.socialV2?.attentionKeywords,
-      roleCardNames: kind === 'group' ? listRoles() : []
+      roleCardNames: kind === 'group' ? selectedRoleCardNamesForWake() : []
     });
   }
 

@@ -17,7 +17,7 @@
 ## 当前运行行为
 
 - SnowLuma 提供 OneBot 事件流。桥接按 QQ 来源缓存收到的消息；普通群消息正文不会自动进入模型上下文。
-- 私聊、真正发给机器人的原生 @、已验证的回复/引用、群消息中提到已有的人格卡名称，以及配置的 `socialV2.attentionKeywords` 命中会向同一全局会话发送元数据提醒。提醒不含正文，也不强迫陪伴者读取或响应。
+- 私聊、真正发给机器人的原生 @、已验证的回复/引用、群消息中提到当前选中的人格卡名称，以及配置的 `socialV2.attentionKeywords` 命中会向同一全局会话发送元数据提醒。提醒不含正文，也不强迫陪伴者读取或响应。
 - 全局陪伴者使用 `mcp-snowluma-safe.js` 当前注册的完整 QQ 工具集，可按需枚举群/好友、读取消息及主动发送。MCP 自动从 `state/desktop-agent.json` 读取桥接内部凭证并附加到请求，模型不用处理令牌；不会检查发起调用的 DSH session，MCP profile 中可用该工具的会话共享相同权限。`agent_rest` 只结束当前模型回合，不限制之后的工具调用；QQ API 发送仍执行限频与审计。直接通过 QQ 桌面 UI 发送不经过桥接 API 检查。
 - 可选 A_Memorix 记忆的写入、相关度检索、单条读取和删除由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 的常规记忆操作访问同一 namespace。DSH 记忆工具只校验全局 agent token，不受 `agent_rest` 生命周期限制。为支持全量原始记录浏览，已登录的本机 WebUI 还可通过独立适配器只读分页查询该 namespace 的 metadata SQLite `paragraphs` 表；该读取仅供控制台使用，agent-call 白名单不开放此路由。桥接不直接写入 SQLite，也不读取向量库或图文件；调用参数中的记忆正文和搜索词不会进入工具参数日志。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - `dsh-computer-use-win` 提供本机桌面操作能力。用户开始使用电脑时，陪伴者应让出界面控制权；ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
