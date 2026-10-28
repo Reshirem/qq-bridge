@@ -13,7 +13,6 @@
 | `roles/` | 可由管理员管理的人格卡；格式见 `roles/README.md` |
 | `scripts/` | 回归脚本、DSH 安装/核验脚本、协议探针和辅助工具 |
 | `docs/` | 使用指南、运行架构和目录说明；见 `docs/README.md` |
-| `assets/` | 仓库使用的静态资源 |
 | `node_modules/` | 本地依赖，忽略并由 npm 管理 |
 
 根目录的 `config.example.json` 是脱敏配置模板。真实 `config.json`、运行时 `state/` 等数据不属于版本控制内容；不要把它们当作可随意清理的源码目录。

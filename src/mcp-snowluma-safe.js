@@ -844,33 +844,6 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectStic
   );
 }
 
-if (cfg.socialV2?.tools?.getSelfImage !== false) {
-  server.tool(
-    'qq_get_self_image',
-    '查看你自己的默认 Q 版形象图片（DeepSeek 小鲸鱼形象）。当你被问“你长什么样/发张自拍/你是什么形象”时，可以调用这个工具看自己的样子；返回的图片会直接进入你的视觉上下文。',
-    {
-      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-    },
-    async ({ key }) => {
-      try {
-        const q = new URLSearchParams({ key });
-        const data = await agentApi(`/api/socialV2/self-image?${q.toString()}`);
-        if (!data?.image?.data || !data?.image?.mimeType) {
-          return { content: [{ type: 'text', text: `没有可返回的形象图片：${errorText(data?.error, '未知')}` }], isError: true };
-        }
-        return {
-          content: [
-            { type: 'text', text: '这是你的默认 Q 版形象：' },
-            { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
-          ]
-        };
-      } catch (error) {
-        return { content: [{ type: 'text', text: `获取形象图片失败：${error?.message ?? error}` }], isError: true };
-      }
-    }
-  );
-}
-
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerRemark !== false) {
   server.tool(
     'qq_set_sticker_remark',

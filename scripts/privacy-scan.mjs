@@ -142,7 +142,7 @@ function listFiles() {
 // 见 denyFiles，不需要进去扫内容）。少跳一个目录就可能让扫描去读几十万行依赖代码。
 const SKIP_DIRS = new Set([
   '.git', 'node_modules', '.npm-cache', '.cache', 'dist', 'build', 'coverage',
-  'state', 'audio', 'assets/vendor',
+  'state', 'audio',
 ]);
 
 /** 把 .gitignore 里"简单形态"的规则转成正则（够用即可：目录名、文件名、*.ext、/path）。 */
