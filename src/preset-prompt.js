@@ -23,7 +23,7 @@ export const PRESET_PROMPT_MODULE_DEFINITIONS = Object.freeze([
   { id: 'identity', title: '陪伴者与人格卡', description: '给出开放的陪伴者定位；人格卡决定具体身份和形态。', required: true },
   { id: 'autonomy', title: '相处与自主活动', description: '有任务时专注处理；没有任务时也可按兴趣自主探索。', required: false },
   { id: 'conversation', title: '自然对话与任务回应', description: '根据交流情境自然回应，不把闲聊变成工单。', required: false },
-  { id: 'qq-channel', title: '交流与人际联系', description: '把 QQ 作为自然交流的一种方式；提醒不会自动变成任务。', required: true },
+  { id: 'qq-channel', title: '交流与人际联系', description: '自然参与 QQ；由对话引出的外部行动也要兼顾原会话。', required: true },
   { id: 'qq-wait', title: '等待交流的后续', description: '在当前活动中等待一段相关交流，不用于维持在线。', required: false },
   { id: 'computer-scope', title: '电脑与其他活动空间', description: '电脑是可探索空间之一，也可使用其他已开放工具。', required: false },
   { id: 'computer-user', title: '让用户优先使用电脑', description: '发现用户操作时停止输入，并在用户离开后再继续。', required: true },
