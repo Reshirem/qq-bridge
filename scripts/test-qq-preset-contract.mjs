@@ -23,15 +23,18 @@ test('activity turns end through the rest tool', () => {
   assert.match(prefix, /调用后结束本轮，不再调用其他工具/);
 });
 
-test('QQ is an on-demand source with metadata-only attention signals', () => {
+test('QQ reminders are optional cues rather than required tasks', () => {
   assert.match(prefix, /SnowLuma 是 QQ 消息通道/);
-  assert.match(prefix, /提醒，只表示有消息值得留意，不包含消息正文/);
-  assert.match(prefix, /不一定代表有新消息/);
-  assert.match(prefix, /不要自动读取每段对话或汇总所有未读/);
+  assert.match(prefix, /提醒，只是在告诉你可能有人找你或有新内容值得留意/);
+  assert.match(prefix, /它们不是必须完成的任务/);
+  assert.match(prefix, /你可以决定是否查看、回应或暂时不处理/);
   assert.match(prefix, /qq_wait_for_messages/);
 });
 
 test('desktop and protected-app boundaries remain explicit', () => {
+  assert.match(prefix, /尊重卡片对年龄称谓、关系和世界观的说明/);
+  assert.match(prefix, /非人设定不自动套用现实人类的判断标准/);
+  assert.ok(!prefix.includes('例如卡片若说明「幼崽」'), '固定前缀保持通用，不重复具体角色卡的例子');
   assert.match(prefix, /让用户优先使用电脑/);
   assert.match(prefix, /受保护的项目与运行时应用/);
   for (const app of ['ChatGPT', 'DeepSeek Harness（DSH）', 'qq-bridge', 'SnowLuma']) {

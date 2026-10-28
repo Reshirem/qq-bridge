@@ -183,6 +183,7 @@ test('自定义固定前缀模块规范化、预览和序列化一致', () => {
 
 test('运行时提示模板保留必需占位符并只替换一次', () => {
   const defaults = normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS);
+  assert.equal(defaults.roleCard, '【当前角色卡：{roleName}】\n{roleContent}', '固定前缀已统一定义人格卡解读原则，开场模板只负责带入卡片');
   assert.equal(renderDesktopAgentPromptTemplate(defaults.roleCard, {
     roleName: '测试角色', roleContent: '正文包含 {roleName} 字面量',
   }), defaults.roleCard.replace('{roleName}', '测试角色').replace('{roleContent}', '正文包含 {roleName} 字面量'));
