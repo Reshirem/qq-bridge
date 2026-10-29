@@ -83,7 +83,7 @@ server.tool(
     query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；仅按时间检索时可省略'),
     limit: z.number().int().min(1).max(20).optional().describe('最多返回条数，默认 8'),
     origin: z.enum(['qq', 'assistant']).optional().describe('按来源筛选；省略时搜索两类来源'),
-    mode: z.enum(['SEARCH_MODE_SEARCH', 'SEARCH_MODE_TIME', 'SEARCH_MODE_HYBRID']).optional().describe('检索方式；默认混合检索，按时间范围检索可选 SEARCH_MODE_TIME'),
+    mode: z.enum(['SEARCH_MODE_SEARCH', 'SEARCH_MODE_TIME', 'SEARCH_MODE_HYBRID']).optional().describe('检索方式：无时间范围的普通内容检索默认 SEARCH_MODE_SEARCH；SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 必须至少提供 timeStart 或 timeEnd，前者按时间检索，后者结合关键词与时间范围'),
     timeStart: z.string().optional().describe('可选 ISO 起始时间'),
     timeEnd: z.string().optional().describe('可选 ISO 结束时间')
   },

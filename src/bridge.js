@@ -6039,7 +6039,7 @@ async function main() {
         query: '你近期的经历、行动和发现；尚未完成的事项；稳定的用户偏好和项目背景',
         limit: cfg.memory.bootstrapLimit,
         origin: 'assistant',
-        mode: 'SEARCH_MODE_HYBRID',
+        mode: 'SEARCH_MODE_SEARCH',
         requestTimeoutMs: 8000
       });
       const seen = new Set();

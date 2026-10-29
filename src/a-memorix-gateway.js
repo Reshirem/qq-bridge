@@ -38,7 +38,7 @@ function memoryOrigin(value, fallback = 'assistant') {
 }
 
 function memorySearchMode(value) {
-  const mode = String(value || 'SEARCH_MODE_HYBRID').trim().toUpperCase();
+  const mode = String(value || 'SEARCH_MODE_SEARCH').trim().toUpperCase();
   if (!SEARCH_MODES.has(mode)) throw new Error('记忆检索模式只能是 SEARCH_MODE_SEARCH、SEARCH_MODE_TIME 或 SEARCH_MODE_HYBRID');
   return mode;
 }
@@ -112,14 +112,18 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     };
   }
 
-  async function search({ query = '', limit, origin, mode = 'SEARCH_MODE_HYBRID', timeStart, timeEnd, requestTimeoutMs } = {}) {
+  async function search({ query = '', limit, origin, mode = 'SEARCH_MODE_SEARCH', timeStart, timeEnd, requestTimeoutMs } = {}) {
     const requestedLimit = normalizeLimit(limit, 8, 50);
     const filterOrigin = origin ? memoryOrigin(origin) : '';
+    const searchMode = memorySearchMode(mode);
+    if (searchMode !== 'SEARCH_MODE_SEARCH' && !timeStart && !timeEnd) {
+      throw new Error('SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 至少需要 timeStart 或 timeEnd；普通内容检索请使用 SEARCH_MODE_SEARCH');
+    }
     const payload = await request('search', {
       context: context(),
       query: String(query || '').trim().slice(0, 2000),
       limit: filterOrigin ? Math.min(50, requestedLimit * 4) : requestedLimit,
-      mode: memorySearchMode(mode),
+      mode: searchMode,
       ...(timeStart ? { timeStart: new Date(timeStart).toISOString() } : {}),
       ...(timeEnd ? { timeEnd: new Date(timeEnd).toISOString() } : {}),
       respectFilter: true
