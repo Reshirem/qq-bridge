@@ -227,6 +227,19 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     }
     await client.callTool({ name: 'qq_send_message', arguments: { ...common, messages: '收到', replyToMessageId: 'seq:55' } });
     assert.equal(requests.at(-1).body.replyToMessageId, 'seq:55');
+    const mixedMessages = ['先说一句', { text: '这条带引用', replyToMessageId: 'id:-55' }, { text: '另一条', replyToMessageId: 'seq:56' }];
+    for (const messages of [mixedMessages, JSON.stringify(mixedMessages)]) {
+      const sent = await client.callTool({ name: 'qq_send_message', arguments: { ...common, messages } });
+      assert.notEqual(sent.isError, true);
+      assert.deepEqual(requests.at(-1).body.messages, mixedMessages);
+    }
+    const beforeInvalidSend = requests.length;
+    const invalidSend = await client.callTool({ name: 'qq_send_message', arguments: { ...common, messages: [{ replyToMessageId: 'id:-55' }] } });
+    assert.equal(invalidSend.isError, true);
+    assert.equal(requests.length, beforeInvalidSend);
+    await client.callTool({ name: 'qq_reply', arguments: { groupId: '123', message: '收到', replyToMessageId: 'id:-55' } });
+    assert.equal(requests.at(-1).url, '/api/send/reply');
+    assert.equal(requests.at(-1).body.replyToMessageId, 'id:-55');
     const bufferedReference = 'seq:55@12345678-1234-4567-89ab-123456789abc';
     await client.callTool({ name: 'qq_collect_sticker', arguments: { ...common, messageId: bufferedReference } });
     assert.equal(requests.at(-1).body.messageId, bufferedReference);

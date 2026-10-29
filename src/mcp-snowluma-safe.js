@@ -342,7 +342,7 @@ server.tool(
 
 server.tool(
   'qq_reply',
-  '在指定 QQ 群里引用/回复某条消息，并发送一条文本。适合群消息很多、需要明确“我回的是哪条”时使用；replyToMessageId 使用 id:QQ消息ID 或 seq:本地序号，可先用 qq_get_recent_messages / qq_get_unread_messages / qq_get_message_detail 查到具体消息。发送前桥接会校验该消息存在且属于目标会话。只有以下情况才需要引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
+  '在指定 QQ 群里引用/回复某条消息，并发送一条文本。replyToMessageId 使用 id:QQ消息ID 或 seq:本地序号，可先用 qq_get_recent_messages / qq_get_unread_messages / qq_get_message_detail 查到具体消息。发送前桥接会校验该消息存在且属于目标会话。引用可以明确回应的是哪条消息，也可以按聊天氛围和上下文自然使用。',
   {
     groupId: z.union([z.number(), z.string()]).describe('目标群号'),
     replyToMessageId: z.union([z.number(), z.string()]).describe('被引用消息：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）'),
@@ -538,11 +538,17 @@ server.tool(
 
 server.tool(
   'qq_send_message',
-  '统一发送工具：可发一条或多条，可引用某条消息，可自定义/按字数计算条间时间差。注意：字符串=一条消息，数组=多条消息；每个字符串内部不要用空格分隔中文短句，需要多条请用数组元素；每条消息要读起来完整，不要把同一句话拆到两条里。只有以下情况才需要传 replyToMessageId 引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
+  '统一发送工具：可发一条或多条，可引用某条消息，可自定义/按字数计算条间时间差。字符串=一条消息，数组=多条消息；每条消息要读起来完整，不要用空格分隔中文短句或把同一句话拆到两条里。分多条时可将需要引用的那条写成 {text, replyToMessageId}，其余仍可用字符串；每条可引用不同的消息。可以按聊天氛围和上下文自然选择是否引用。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-    messages: z.union([z.string(), z.array(z.string()).min(1)]).describe('要发送的内容：字符串=一条；数组=分多条'),
-    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；可选'),
+    messages: z.union([z.string(), z.array(z.union([
+      z.string(),
+      z.object({
+        text: z.string().min(1).describe('这条消息的文本'),
+        replyToMessageId: z.union([z.number(), z.string()]).optional().describe('这条消息引用的目标：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）')
+      })
+    ])).min(1)]).describe('要发送的内容：字符串=一条；数组=分多条。需要引用的数组项可写为 {text, replyToMessageId}'),
+    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('可选的引用目标：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）。用于单条或多条的第一条；第一条自身指定引用时以其为准'),
     atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中用于点名某个人；与引用二选一即可，不要滥用）'),
     gapMode: z.enum(['auto', 'fixed', 'byLength']).optional().describe('auto=桥接随机；fixed=固定间隔；byLength=按字数计算'),
     gapMs: z.number().optional().describe('fixed 模式下的统一间隔（毫秒）'),
@@ -557,14 +563,14 @@ server.tool(
         if (trimmed.startsWith('[')) {
           try {
             const parsed = JSON.parse(trimmed);
-            if (Array.isArray(parsed)) finalMessages = parsed.map(String);
+            if (Array.isArray(parsed)) finalMessages = parsed;
           } catch {}
         } else if (trimmed.startsWith('"')) {
           // 兼容模型把单条消息序列化成 JSON 字符串的情况，例如 "\"你好\"" → "你好"。
           try {
             const parsed = JSON.parse(trimmed);
             if (typeof parsed === 'string') finalMessages = parsed;
-            else if (Array.isArray(parsed)) finalMessages = parsed.map(String);
+            else if (Array.isArray(parsed)) finalMessages = parsed;
           } catch {}
         }
       }

@@ -162,6 +162,112 @@ test('an unsafe numeric QQ ID uses the local sequence instead of a rounded ID', 
   } finally { await close(); }
 });
 
+test('group reply and private send both pass the resolved quote to OneBot', async () => {
+  const { h, call, close } = await fixture();
+  try {
+    const groupReply = await call('/api/send/reply', {
+      method: 'POST', body: { groupId: '456', message: '收到', replyToMessageId: 'seq:55' },
+    });
+    assert.equal(groupReply.status, 200);
+    const groupSend = h.calls.http.find((entry) => entry.url.endsWith('/send_group_msg'));
+    assert.equal(groupSend.body.message[0].type, 'reply');
+    assert.equal(groupSend.body.message[0].data.id, '999');
+
+    const grouped = await call('/api/socialV2/send-message', {
+      method: 'POST', body: { key: 'group:456', messages: ['第一条', '第二条'], replyToMessageId: 'id:999', gapMode: 'fixed', gapMs: 100 },
+    });
+    assert.equal(grouped.status, 200);
+    const parts = h.calls.http.filter((entry) => entry.url.endsWith('/send_group_msg')).slice(-2);
+    assert.equal(parts[0].body.message[0].type, 'reply');
+    assert.equal(parts[0].body.message[0].data.id, '999');
+    assert.equal(parts[1].body.message.some((part) => part.type === 'reply'), false);
+
+    await h.handleIncomingForTest('private', 789, {
+      self_id: 42, user_id: 789, message_id: -77, sender: { nickname: '好友' },
+      message: [{ type: 'text', data: { text: '私聊消息' } }],
+    });
+    const privateReply = await call('/api/socialV2/send-message', {
+      method: 'POST', body: { key: 'private:789', messages: '收到', replyToMessageId: 'id:-77' },
+    });
+    assert.equal(privateReply.status, 200);
+    const privateSend = h.calls.http.find((entry) => entry.url.endsWith('/send_private_msg'));
+    assert.equal(privateSend.body.message[0].type, 'reply');
+    assert.equal(privateSend.body.message[0].data.id, '-77');
+  } finally { await close(); }
+});
+
+test('batch messages can independently select which messages to quote', async () => {
+  const { h, call, close } = await fixture();
+  try {
+    await h.handleIncomingForTest('group', 456, {
+      self_id: 42, user_id: 12, message_id: 55, sender: { card: '后来的人' },
+      message: [{ type: 'text', data: { text: 'QQ ID 55 的消息' } }],
+    });
+    const messages = [
+      '第一条',
+      { text: '第二条', replyToMessageId: 'seq:55' },
+      '第三条',
+      { text: '第四条', replyToMessageId: 'id:55' },
+    ];
+    const result = await call('/api/socialV2/send-message', {
+      method: 'POST', body: { key: 'group:456', messages: JSON.stringify(messages), gapMode: 'fixed', gapMs: 100 },
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.data.quotes.map(({ messageIndex, quoted }) => [messageIndex, quoted.messageId]), [[2, '999'], [4, '55']]);
+    const sends = h.calls.http.filter((entry) => entry.url.endsWith('/send_group_msg'));
+    assert.equal(sends.length, 4);
+    assert.deepEqual(sends.map(({ body }) => ({
+      text: body.message.find((part) => part.type === 'text').data.text,
+      reply: body.message.find((part) => part.type === 'reply')?.data.id ?? null,
+    })), [
+      { text: '第一条', reply: null },
+      { text: '第二条', reply: '999' },
+      { text: '第三条', reply: null },
+      { text: '第四条', reply: '55' },
+    ]);
+
+    const invalid = await call('/api/socialV2/send-message', {
+      method: 'POST', body: { key: 'group:456', messages: ['不应发送', { text: '也不发送', replyToMessageId: 'id:404' }] },
+    });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.data.error, /第 2 条消息的引用目标/);
+    assert.equal(h.calls.http.filter((entry) => entry.url.endsWith('/send_group_msg')).length, 4);
+    const saved = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'social-v2.json'), 'utf8'));
+    assert.equal(saved.conversations['group:456'].sendTimes.length, 4, 'invalid later quote must roll back the whole batch quota');
+
+    const sensitive = await call('/api/socialV2/send-message', {
+      method: 'POST', body: { key: 'group:456', messages: [{ text: 'C:\\Users\\Example\\secret.txt', replyToMessageId: 'id:999' }] },
+    });
+    assert.equal(sensitive.status, 403);
+    assert.equal(h.calls.http.filter((entry) => entry.url.endsWith('/send_group_msg')).length, 4);
+  } finally { await close(); }
+});
+
+test('per-message quotes work in private chat and take precedence over the legacy first-message quote', async () => {
+  const { h, call, close } = await fixture();
+  try {
+    await h.handleIncomingForTest('private', 789, {
+      self_id: 42, user_id: 789, message_id: -77, sender: { nickname: '好友' },
+      message: [{ type: 'text', data: { text: '私聊消息' } }],
+    });
+    const result = await call('/api/socialV2/send-message', {
+      method: 'POST', body: {
+        key: 'private:789',
+        messages: [{ text: '第一条', replyToMessageId: 'id:-77' }, '第二条', { text: '第三条', replyToMessageId: 'id:-77' }],
+        replyToMessageId: 'id:404', gapMode: 'fixed', gapMs: 100,
+      },
+    });
+    assert.equal(result.status, 200);
+    const sends = h.calls.http.filter((entry) => entry.url.endsWith('/send_private_msg'));
+    assert.deepEqual(sends.map(({ body }) => body.message.find((part) => part.type === 'reply')?.data.id ?? null), ['-77', null, '-77']);
+    const invalidText = await call('/api/socialV2/send-message', {
+      method: 'POST', body: { key: 'private:789', messages: ['不应发送', { text: ' ', replyToMessageId: 'id:-77' }] },
+    });
+    assert.equal(invalidText.status, 400);
+    assert.equal(h.calls.http.filter((entry) => entry.url.endsWith('/send_private_msg')).length, 3);
+  } finally { await close(); }
+});
+
 test('a gateway response with a conflicting message ID is not treated as the requested message', async () => {
   const { h, call, close } = await fixture();
   try {

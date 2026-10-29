@@ -269,7 +269,8 @@ function renderAMemorixProviderConfig(toml, settings, keyConfigured) {
     if (!skipSection) kept.push(line);
   }
   const lines = [kept.join('\n').trimEnd(), '', '[providers.embedding]', 'provider = "openai-compatible"',
-    `endpoint = ${tomlString(settings.embedding.endpoint)}`, `model = ${tomlString(settings.embedding.model)}`];
+    `endpoint = ${tomlString(settings.embedding.endpoint)}`, `model = ${tomlString(settings.embedding.model)}`,
+    'batch_size = 16'];
   if (keyConfigured.embedding) lines.push('api_key_file = "./secrets/embedding-api-key"');
   lines.push(`dimension = ${settings.embedding.dimension}`, 'dimension_request_mode = "explicit"', '', '[providers.llm]',
     'provider = "openai-compatible"', `endpoint = ${tomlString(settings.llm.endpoint)}`, `model = ${tomlString(settings.llm.model)}`);
@@ -3853,22 +3854,37 @@ async function main() {
             if (trimmed.startsWith('[')) {
               try {
                 const parsed = JSON.parse(trimmed);
-                if (Array.isArray(parsed)) rawMessages = parsed.map(String);
+                if (Array.isArray(parsed)) rawMessages = parsed;
               } catch {}
             } else if (trimmed.startsWith('"')) {
               // 兼容模型把单条消息序列化成 JSON 字符串的情况，例如 "\"你好\"" → "你好"。
               try {
                 const parsed = JSON.parse(trimmed);
                 if (typeof parsed === 'string') rawMessages = parsed;
-                else if (Array.isArray(parsed)) rawMessages = parsed.map(String);
+                else if (Array.isArray(parsed)) rawMessages = parsed;
               } catch {}
             }
           }
           const isRawString = typeof rawMessages === 'string';
-          const messages = Array.isArray(rawMessages)
-            ? rawMessages.map((m) => String(m ?? '').trim()).filter(Boolean)
-            : (isRawString ? [String(rawMessages).trim()].filter(Boolean) : []);
+          const messageEntries = Array.isArray(rawMessages)
+            ? rawMessages.map((item) => {
+              if (item && typeof item === 'object' && !Array.isArray(item)) {
+                return { text: typeof item.text === 'string' ? item.text.trim() : '', replyToMessageId: item.replyToMessageId, isObject: true };
+              }
+              return { text: String(item ?? '').trim() };
+            })
+            : (isRawString ? [{ text: String(rawMessages).trim() }] : []);
+          if (messageEntries.some((entry) => entry.isObject && !entry.text)) {
+            sendJson({ ok: false, error: '消息对象必须包含非空的 text' }, 400);
+            return;
+          }
+          const entries = messageEntries.filter((entry) => entry.text);
+          const messages = entries.map((entry) => entry.text);
           const replyToMessageId = body.replyToMessageId;
+          const hasReply = (value) => value !== undefined && value !== null && String(value).trim() !== '';
+          const replyReferences = entries.map((entry, index) => hasReply(entry.replyToMessageId)
+            ? entry.replyToMessageId
+            : (index === 0 ? replyToMessageId : null));
           const atUserId = body.atUserId ?? null;
           // 二代不再按空格自动分条：字符串就是一条消息，数组模式原样使用调用方间隔。
           // 旧写法是 `(isRawString && messages.length > 1) ? 'auto' : ...` —— 上面 messages 的构造
@@ -3901,8 +3917,8 @@ async function main() {
             sendJson({ ok: false, error: '私聊不需要 @' }, 400);
             return;
           }
-          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
-            parseQQMessageReference(replyToMessageId);
+          for (const reference of replyReferences) {
+            if (hasReply(reference)) parseQQMessageReference(reference);
           }
           const sendCfg = cfg.socialV2?.send ?? {};
           const maxMsgs = Math.max(1, Number(sendCfg.burstMaxMessages) || 8);
@@ -3936,35 +3952,39 @@ async function main() {
           // 先预占发送额度，避免并发绕过限频
           for (let i = 0; i < messages.length; i++) st.sendTimes.push(now);
           if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
-          let quotedInfo = null;
-          let actualReplyToMessageId = replyToMessageId;
-          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
-            let resolved;
-            try {
-              resolved = await resolveReplyTargetV2(st, kind, id, String(replyToMessageId).trim());
-            } catch (error) {
-              for (let i = 0; i < messages.length; i++) {
-                const idx = st.sendTimes.indexOf(now);
-                if (idx >= 0) st.sendTimes.splice(idx, 1);
-              }
-              saveSocialV2State();
-              throw error;
+          const actualReplyToMessageIds = Array(messages.length).fill(null);
+          const quotes = [];
+          const resolvedReplies = new Map();
+          const rollbackSendQuota = () => {
+            for (let i = 0; i < messages.length; i++) {
+              const idx = st.sendTimes.indexOf(now);
+              if (idx >= 0) st.sendTimes.splice(idx, 1);
             }
-            if (!resolved) {
-              // 引用解析失败：回滚已预占的发送额度
-              for (let i = 0; i < messages.length; i++) {
-                const idx = st.sendTimes.indexOf(now);
-                if (idx >= 0) st.sendTimes.splice(idx, 1);
+            saveSocialV2State();
+          };
+          try {
+            for (let i = 0; i < replyReferences.length; i++) {
+              if (!hasReply(replyReferences[i])) continue;
+              const reference = String(replyReferences[i]).trim();
+              let resolved = resolvedReplies.get(reference);
+              if (!resolved) {
+                resolved = await resolveReplyTargetV2(st, kind, id, reference);
+                if (resolved) resolvedReplies.set(reference, resolved);
               }
-              saveSocialV2State();
-              sendJson({ ok: false, error: '无法解析被引用消息，请确认 message id 正确且属于当前会话（可用 qq_get_message_detail 查看）' }, 400);
-              return;
+              if (!resolved) {
+                rollbackSendQuota();
+                sendJson({ ok: false, error: `无法解析第 ${i + 1} 条消息的引用目标，请确认 message id 正确且属于当前会话（可用 qq_get_message_detail 查看）` }, 400);
+                return;
+              }
+              actualReplyToMessageIds[i] = resolved.messageId;
+              quotes.push({ messageIndex: i + 1, quoted: resolved.info });
             }
-            quotedInfo = resolved.info;
-            actualReplyToMessageId = resolved.messageId;
+          } catch (error) {
+            rollbackSendQuota();
+            throw error;
           }
           try {
-            const sentMessages = await sendMessagesV2(key, messages, delays, actualReplyToMessageId, atUserId);
+            const sentMessages = await sendMessagesV2(key, messages, delays, actualReplyToMessageIds, atUserId);
             recordSentMessagesV2(key, sentMessages);
             st.lastAiReplyAt = now;
             st.lastActionAt = now;
@@ -3975,7 +3995,7 @@ async function main() {
             const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
             const spaceWarn = findCjkSpaceWarning(messages);
             const splitWarn = findSplitBoundaryWarning(messages);
-            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: quotedInfo, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
+            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: quotes[0]?.quoted ?? null, quotes, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
           } catch (error) {
             if (error?.sent?.length) {
               recordSentMessagesV2(key, error.sent);
@@ -5844,14 +5864,14 @@ async function main() {
     return delays;
   }
 
-  function sendMessagesV2(key, messages, delays, replyToMessageId, atUserId = null) {
+  function sendMessagesV2(key, messages, delays, replyToMessageIds, atUserId = null) {
     const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
     const sent = [];
     const failed = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const useReply = i === 0 ? replyToMessageId : null;
+      const useReply = Array.isArray(replyToMessageIds) ? replyToMessageIds[i] : (i === 0 ? replyToMessageIds : null);
       const useAt = i === 0 ? atUserId : null;
       sendChain = sendChain
         .then(async () => {

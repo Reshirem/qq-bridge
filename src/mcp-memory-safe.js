@@ -101,7 +101,7 @@ server.tool(
     tags: z.array(z.string().max(80)).max(20).optional().describe('可选检索标签'),
     participants: z.array(z.string().max(120)).max(20).optional().describe('可选涉及的人或主体'),
     observedAt: z.string().optional().describe('可选 ISO 观察时间'),
-    sourceContext: z.string().max(2000).optional().describe('可选来源上下文，例如 QQ 群/私聊、任务、说话人；不要加入无关的敏感信息'),
+    sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
     confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
     evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('可选证据引用，例如消息 ID、会话 ID、任务记录标题')
   },

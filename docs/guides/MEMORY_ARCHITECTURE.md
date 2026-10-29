@@ -1,6 +1,6 @@
 # 长期记忆方案
 
-本文记录 qq-bridge 长期记忆的已对齐目标、首期实现和运行边界。
+本文记录 qq-bridge 长期记忆的已对齐目标、首期实现和运行边界。关于陪伴者提示、记忆整理与摘要模板的后续讨论，见 [陪伴者提示、隐私与长期记忆改进计划](COMPANION_PROMPT_MEMORY_PLAN.md)。
 
 ## 目标
 
@@ -11,7 +11,7 @@ qq-bridge 使用一个跨电脑活动与 QQ 的共享长期记忆空间。QQ 是
 - `qq`：陪伴者实际读取过的 QQ 内容，且陪伴者判断值得保存后主动调用记忆工具。
 - `assistant`：陪伴者对自身经历、行动、发现、问题和结果的记录，由陪伴者自行判断是否保存。该值是现有数据格式中的来源标记，不限定人格形态。
 
-来源类别用于说明信息从哪里来，不等同于事实可信度。记录可保留说话人、QQ 群/私聊、任务、时间、消息或会话引用等证据元数据；引用他人说法时仍要明确归属，不能把转述自动写成已确认事实。QQ 正文不会仅因收到、被提及或缓存在桥接中就自动进入长期记忆。
+来源类别用于说明信息从哪里来，不等同于事实可信度。固定前缀引导陪伴者记录涉及 QQ 的内容时，在正文和 `sourceContext` 中尽量注明具体群或私聊及相关说话人；引用他人说法时仍要明确归属，不能把转述自动写成已确认事实。`qq` 来源类别本身不区分不同的群或私聊，旧记录也不会自动补上来源；当前检索和共享上下文没有按群隔离。QQ 正文不会仅因收到、被提及或缓存在桥接中就自动进入长期记忆。
 
 ## 存储与运行架构
 
@@ -31,7 +31,7 @@ WebUI      ── qq-bridge 管理 API   ── 浏览、编辑、取代或删�
 
 运行时按本机 A_Memorix HTTP/JSON Gateway 接口访问服务。DSH 的 `mcp-memory-safe.js` 工具经桥接 API 转发到 Gateway；会话启动摘要和 WebUI 的搜索、读取、写入、替代与删除也由桥接访问同一个 namespace。WebUI 的“浏览全部”专用读取器按 namespace 映射定位 metadata SQLite，以只读连接分页读取活动原始段落；它不修改数据、不接触向量库或图文件，也不提供给 DSH agent-call。
 
-A_Memorix 的独立服务单独运行，Gateway 与 gRPC 服务只监听本机回环。Windows 部署脚本固定使用官方 `v2.0.0a4` wheel 和 Gateway 发布文件，并校验 SHA-256；运行文件、Python 虚拟环境、密钥、数据和日志保存在 qq-bridge 的 `state/a-memorix/`，不需要 clone 上游源码或添加 submodule。默认 namespace 开启 metadata-only 写入和 sparse 检索；没有配置 Provider 时不会产生外部模型调用，但也没有语义向量和自动关系抽取。项目不得为了工具进程和 WebUI 分别启动两个共享数据目录的 A_Memorix 写入者。
+A_Memorix 的独立服务单独运行，Gateway 与 gRPC 服务只监听本机回环。Windows 部署脚本固定使用官方 `v2.0.0a4` wheel 和 Gateway 发布文件，并校验 SHA-256；运行文件、Python 虚拟环境、密钥、数据和日志保存在 qq-bridge 的 `state/a-memorix/`，不需要 clone 上游源码或添加 submodule。部署脚本安装 `[rpc,observability,vector]`，其中 `vector` 提供 Windows 可用的 `faiss-cpu`；Embedding 配置使用每批 16 条以符合当前服务每批最多 20 条的限制。默认 namespace 开启 metadata-only 写入和 sparse 检索；没有配置 Provider 时不会产生外部模型调用，但也没有语义向量和自动关系抽取。项目不得为了工具进程和 WebUI 分别启动两个共享数据目录的 A_Memorix 写入者。
 
 上游 A_Memorix 2.x 目前仍标为 alpha。部署版本及发行文件校验值记录在 `scripts/a-memorix.ps1`；升级前应核对上游版本与 Gateway 协议并一并更新固定校验值。本项目只依赖 HTTP/JSON 公共接口，不捆绑或复制 A_Memorix 服务端源码。桥接侧的 namespace API key 只从不入库的 `config.json` 读取，不传给模型，也不写入工具调用参数日志。
 
@@ -95,7 +95,7 @@ qq-bridge 现有客户端只调用记忆写入、批量写入、读取、删除�
 
 桥接首期已接入 Gateway 客户端、四个 DSH 工具（搜索、保存、读取、删除）、全局会话令牌校验、记忆参数日志省略、首次会话自身经历摘要，以及 WebUI 搜索/查看/新建/编辑/删除。`agent_rest` 不限制记忆工具调用。WebUI 可配置本机 Gateway 地址、已创建的 namespace、桥接启用状态、namespace API key、请求超时和启动摘要上限；Gateway 地址仅允许本机回环地址。Embedding/LLM Provider 由用户在 WebUI 手动配置 OpenAI 兼容服务地址、模型和密钥。A_Memorix 目前使用 OpenAI Chat Completions；请确保配置的服务兼容该协议。Provider 密钥只写入本机 `state/a-memorix/secrets/`，不回显，保存 Provider 变更会重启 A_Memorix。Windows 部署入口为 `scripts/a-memorix.ps1 setup|start|stop|status`；未启用时桥接照常工作，WebUI 会说明当前状态，记忆工具返回明确的配置错误。
 
-Windows 部署脚本已将 A_Memorix `v2.0.0a4` 启动在 `127.0.0.1:8080`，创建 `qq-bridge` namespace 和 namespace API key，并启用本地 `config.json`。本机 Gateway 健康检查已通过，qq-bridge 已重启并确认读取到已配置的 namespace。当前 namespace 尚未配置 Embedding/LLM Provider；WebUI 已提供设置入口，但需要用户填写服务地址、模型和可选密钥后，语义向量及自动关系抽取才能实际运行。已用桥接 Gateway 客户端做过只读检索核验：`SEARCH` 请求可成功返回，带时间边界的 `TIME` 请求可返回记录；`HYBRID` 不带时间边界会被 Gateway 拒绝。记忆写入/删除、WebUI 页面和 DSH 工具的完整链路仍待核验。使用 `start.bat` 时会在桥接启动前尝试启动已安装的 A_Memorix 服务；直接运行 `npm start` 时需先手动运行部署脚本的 `start`。部署步骤见 [DSH_SETUP.md](DSH_SETUP.md)。桥接管理 API 只供带控制台令牌的 WebUI 使用；DSH MCP 工具只通过受全局会话令牌保护的 agent API 使用，`agent_rest` 不限制工具调用。记忆内容会经本机 Gateway 交给 A_Memorix；配置 Embedding/LLM Provider 后，记忆内容会按配置发送到相应服务。
+Windows 部署脚本已将 A_Memorix `v2.0.0a4` 启动在 `127.0.0.1:8080`，创建 `qq-bridge` namespace 和 namespace API key，并启用本地 `config.json`。Embedding/LLM Provider 可在 WebUI 设置，配置之后仍需检查模型服务实际可用性：Gateway 的 `/healthz` 通过只说明服务可访问，不代表 namespace 的向量检索或模型调用正常。2026-10-30 本机检查发现原部署缺少 `faiss-cpu`，导致搜索使用 `sparse_graph`；补装 Faiss 并为已有 385 条段落/实体/关系记录重建向量后，双向量池 manifest 报告 15 条段落向量和 370 条图向量。首次重启时，A_Memorix 会先跳过实际 Embedding 自检，并因当前指纹尚未观测到而暂时禁用向量通道；本机观察到后台默认 180 秒探测后恢复，搜索切换为 `hybrid`，命中来源为 `dual_vector_pool`。具体观察及排查方向见 [改进计划](COMPANION_PROMPT_MEMORY_PLAN.md#2026-10-30-faiss-向量通道恢复)。带时间边界的 `TIME` 请求可返回记录；`HYBRID` 不带时间边界会被 Gateway 拒绝。记忆写入/删除、WebUI 页面和 DSH 工具的完整链路仍待核验。使用 `start.bat` 时会在桥接启动前尝试启动已安装的 A_Memorix 服务；直接运行 `npm start` 时需先手动运行部署脚本的 `start`。部署步骤见 [DSH_SETUP.md](DSH_SETUP.md)。桥接管理 API 只供带控制台令牌的 WebUI 使用；DSH MCP 工具只通过受全局会话令牌保护的 agent API 使用，`agent_rest` 不限制工具调用。记忆内容会经本机 Gateway 交给 A_Memorix；配置 Embedding/LLM Provider 后，记忆内容会按配置发送到相应服务。
 
 `memory.timeoutMs` 默认 45 秒；新会话摘要有独立的 8 秒请求上限，超时后继续提交首次提示。`bootstrapLimit` 默认最多检索 6 条自身经历来源记录，`bootstrapMaxChars` 默认最多注入 2500 字符，均可在 `config.json` 调整。
 

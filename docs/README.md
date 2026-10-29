@@ -19,6 +19,7 @@
 | --- | --- |
 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md) | 当前会话运行模型、代码结构评估与渐进式重构原则 |
 | [guides/MEMORY_ARCHITECTURE.md](guides/MEMORY_ARCHITECTURE.md) | 长期记忆目标、MaiBot/A_Memorix 对齐方式、调用与上下文职责 |
+| [guides/COMPANION_PROMPT_MEMORY_PLAN.md](guides/COMPANION_PROMPT_MEMORY_PLAN.md) | 陪伴者聊天、隐私、记忆和上下文压缩改进计划与讨论稿 |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | 将唯一的 `desktop-agent` preset 和 MCP 工具安装到 DSH |
 | [../roles/README.md](../roles/README.md) | 人格卡格式与编辑说明 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | 安全机制、残余风险与安全相关改动的工程基线 |
@@ -32,6 +33,7 @@
 | --- | --- |
 | 了解当前架构，决定怎么整理代码 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md) |
 | 了解长期记忆设计与实施边界 | [guides/MEMORY_ARCHITECTURE.md](guides/MEMORY_ARCHITECTURE.md) |
+| 讨论陪伴者提示、跨聊天隐私与记忆后续计划 | [guides/COMPANION_PROMPT_MEMORY_PLAN.md](guides/COMPANION_PROMPT_MEMORY_PLAN.md) |
 | 安装或重装 DSH 侧配置 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) |
 | 修改安全边界或做安全审查 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) 和 [../RULES.md](../RULES.md) |
 | 核对仓库内某个目录或脚本的用途 | [FOLDER_MAP.md](FOLDER_MAP.md) |

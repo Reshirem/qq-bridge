@@ -20,7 +20,7 @@ Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。�
 powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 setup
 ```
 
-脚本使用官方 [`v2.0.0a4` 发布](https://github.com/A-Dawn/A_memorix/releases/tag/v2.0.0a4)中的 Python wheel 和 Windows Gateway，并在安装前校验固定的 SHA-256。此部署不需要 Docker 或 Go；需要 Python 3.12+。脚本会建立 namespace `qq-bridge`、生成本机管理员令牌和 namespace API key、设置 `config.json` 并启动服务。发布版本固定在 `scripts/a-memorix.ps1`；运行时文件、虚拟环境、密钥、数据库和日志都位于被忽略的 `state/a-memorix/`。不需要把 A_Memorix 源码 clone 到 qq-bridge，也没有设置 Git submodule。
+脚本使用官方 [`v2.0.0a4` 发布](https://github.com/A-Dawn/A_memorix/releases/tag/v2.0.0a4)中的 Python wheel 和 Windows Gateway，并在安装前校验固定的 SHA-256。此部署不需要 Docker 或 Go；需要 Python 3.12+。脚本会在独立虚拟环境安装 `[rpc,observability,vector]` 依赖并检查 `faiss` 可导入；重复运行 `setup` 也会把向量依赖补进已有环境。之后脚本会建立 namespace `qq-bridge`、生成本机管理员令牌和 namespace API key、设置 `config.json` 并启动服务。发布版本固定在 `scripts/a-memorix.ps1`；运行时文件、虚拟环境、密钥、数据库和日志都位于被忽略的 `state/a-memorix/`。不需要把 A_Memorix 源码 clone 到 qq-bridge，也没有设置 Git submodule。
 
 WebUI 的“浏览全部”由桥接自动调用仓库内的只读 Python 脚本，并复用上述 `state/a-memorix/venv/`，不需另装 Python 包或手动运行脚本。它只能浏览本项目 `state/a-memorix/data/` 中的 namespace 原始记录。若虚拟环境缺失或损坏，可重新运行 `setup`；若预期账本数据缺失，应检查 `config.toml` 中的数据目录并从备份恢复，重新 `setup` 不会恢复已丢失的记录。单独配置另一个 Gateway 不会把它的数据库带到这个本机读取路径；Gateway 相关度检索和常规记忆操作仍使用设置页里的连接。详细范围见 [长期记忆方案](MEMORY_ARCHITECTURE.md)。
 
@@ -30,7 +30,7 @@ powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 start
 powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 stop
 ```
 
-初始 namespace 允许 metadata-only 写入并启用 sparse 检索，因此不需要外部模型凭据即可先保存和按关键词检索。语义向量和自动关系抽取尚未启用；需要另行配置 A_Memorix 的 Embedding/LLM Provider 后才能使用。A_Memorix 2.x 当前仍处于 alpha 阶段；若要升级，先核对上游版本与 Gateway 协议，再同步修改脚本中的版本和校验值。记忆内容由桥接发送到本机 Gateway；如配置了 Provider，A_Memorix 会按其服务配置处理相应数据。
+初始 namespace 允许 metadata-only 写入并启用 sparse 检索，因此不需要外部模型凭据即可先保存和按关键词检索。语义向量检索需要同时配置可用的 Embedding Provider 和 `faiss-cpu`；Windows 部署脚本会安装向量 extra。桥接为本机 Embedding Provider 生成的配置将批量固定为 16，避免超过当前服务每批 20 条的限制。已有记忆不会因安装 Faiss 自动生成向量；本机首次启用后已为 15 条段落、219 个实体和 151 条关系补建向量。已有向量池的服务冷启动后，A_Memorix 会先跳过真实 Embedding 自检，后台探测确认模型指纹前搜索可能暂时使用 `sparse_graph`；本机观察到约 180 秒后切换为 `hybrid`。上游 `v2.0.0a4` 没有公开的 Gateway 全量重建接口，因此若其他部署的历史向量库为空，应先查阅本项目记录并确认可用的维护流程。A_Memorix 的 LLM Provider 用于关系抽取、画像、导入和摘要等生成任务，普通记忆搜索不会每次调用它。A_Memorix 2.x 当前仍处于 alpha 阶段；若要升级，先核对上游版本与 Gateway 协议，再同步修改脚本中的版本和校验值。记忆内容由桥接发送到本机 Gateway；如配置了 Provider，A_Memorix 会按其服务配置处理相应数据。
 
 Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过 `setup` 安装，启动器会先尝试启动 Gateway 和记忆服务；启动失败会显示警告，但不会阻止桥接运行。直接使用 `npm start` 时，需先单独运行脚本的 `start` 操作。
 

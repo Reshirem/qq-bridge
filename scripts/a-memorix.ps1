@@ -68,16 +68,16 @@ function Find-Python {
 }
 
 function Ensure-PythonEnvironment {
-  if (-not (Test-Path -LiteralPath $CliPath)) {
+  if (-not (Test-Path -LiteralPath $PythonVenvExe)) {
     $python = Find-Python
-    if (-not (Test-Path -LiteralPath $PythonVenvExe)) {
-      & $python -m venv $PythonVenv
-      if ($LASTEXITCODE -ne 0) { throw '创建 A_Memorix Python 环境失败' }
-    }
-    & $PythonVenvExe -m pip install --disable-pip-version-check "${WheelPath}[rpc,observability]"
-    if ($LASTEXITCODE -ne 0) { throw '安装 A_Memorix Python 运行依赖失败' }
+    & $python -m venv $PythonVenv
+    if ($LASTEXITCODE -ne 0) { throw '创建 A_Memorix Python 环境失败' }
   }
+  & $PythonVenvExe -m pip install --disable-pip-version-check "${WheelPath}[rpc,observability,vector]"
+  if ($LASTEXITCODE -ne 0) { throw '安装 A_Memorix Python 运行依赖失败' }
   if (-not (Test-Path -LiteralPath $CliPath)) { throw 'A_Memorix CLI 安装后仍不存在' }
+  & $PythonVenvExe -c 'import faiss' 2>$null
+  if ($LASTEXITCODE -ne 0) { throw 'A_Memorix Faiss 向量依赖未能导入' }
 }
 
 function Ensure-ServiceConfig {
