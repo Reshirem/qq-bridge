@@ -43,12 +43,6 @@
   config:
     search: false
     fetch: false
-- id: tool-ask-user
-  name: '@deepseek-ai/dsh-tool-ask-user'
-- id: tool-todo
-  name: '@deepseek-ai/dsh-tool-todo'
-  config:
-    allowParallelInProgress: true
 - id: qq-tool-restrict
   name: './qq-tool-restrict.mjs'
 - id: compaction

@@ -48,6 +48,8 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
   - MCP 发送工具支持可选 `replyToMessageId`，并提供专用 `qq_reply` 工具：AI 可以先用 `qq_get_recent_messages` 或 `qq_get_conversation_history` 拿到真实消息 id，再引用/回复某条消息（桥接会检测发送类工具调用并自动跳过该回合的重复自动转发）
   - `qq_send_message` 可用字符串发送一条，或用数组分开发送多条；引用回复用 `qq_reply` 或 `replyToMessageId`，工具调用是唯一的 QQ 发送路径
 
+- **DSH 内置网页工具**：`@deepseek-ai/dsh-tool-web` 提供 `web_search`（搜索并返回来源）和 `web_fetch`（抓取指定网页正文），分别调用 DSH 当前选择的 `ctx.web` 搜索/抓取提供方。设置位置是 DSH 的 `desktop-agent` 预设 → `tool-web` 插件配置：`search` 和 `fetch` 分别控制工具注册。当前 preset 默认将两项设为关闭；启用后，DSH 也会向模型加入相应用法提示，并标注网页内容为不可信数据。此配置与桥接的 `webSearch` / `web-search-safe` 能力分开；若 DSH 选择随附的 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。修改 preset 配置后，重载 DSH 并重建全局会话。
+
 ## 前置条件
 
 1. 运行中的 DeepSeek Harness Desktop 或 Web API。Windows 桌面版端口由桥接启动时自动发现；固定端口部署默认使用 `http://127.0.0.1:3080`

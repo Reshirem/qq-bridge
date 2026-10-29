@@ -44,8 +44,9 @@ test('desktop and protected-app boundaries remain explicit', () => {
 
 test('preset keeps the global tool guard and compaction settings', () => {
   assert.deepEqual(preset.map((row) => row.id), [
-    'persona', 'tool-web', 'tool-ask-user', 'tool-todo', 'qq-tool-restrict', 'compaction',
+    'persona', 'tool-web', 'qq-tool-restrict', 'compaction',
   ]);
+  assert.equal(preset.some((row) => ['tool-ask-user', 'tool-todo'].includes(row.id)), false);
   assert.deepEqual(preset.find((row) => row.id === 'tool-web').config, { search: false, fetch: false });
   assert.equal(preset.find((row) => row.id === 'qq-tool-restrict').name, './qq-tool-restrict.mjs');
   const compaction = preset.find((row) => row.id === 'compaction');

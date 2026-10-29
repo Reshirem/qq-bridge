@@ -52,7 +52,7 @@ for (const name of PRESETS) {
   const expected = structuredClone(source);
   for (const r of expected) if (r.name === './qq-tool-restrict.mjs') r.name = GUARD_SPECIFIER;
   assert.deepEqual(row.config.plugins, expected, `${name}: config.plugins 必须与 agent.cordis.yml 完全一致（守卫名除外）`);
-  ok(true, `${name}: config.plugins 与 agent.cordis.yml 逐字一致（${expected.length} 行）`);
+  ok(true, `${name}: config.plugins 与 preset 源逐字一致（守卫名除外，共 ${expected.length} 行）`);
 
   // 人格正文是产品本体：单独再钉一次，防止「顺手改写/截断」。
   const srcPersona = source.find((r) => r.id === 'persona');
@@ -100,10 +100,16 @@ console.log('## 4. bundle 声明与安全边界');
   const restricted = [];
   canonicalMod.apply({ tools: { restrict: ({ deny }) => restricted.push(...deny), guard: (fn) => { guardFn = fn; } } });
   ok(restricted.includes('pwsh') && restricted.includes('dev_install_package'), 'restrict 名单含本地执行面与开发注入器工具');
-  for (const name of ['ask_user_question', 'todo_write', 'mcp__wincu__computer_use', 'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
+  for (const name of ['mcp__wincu__computer_use', 'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
     assert.equal(guardFn({ name }), undefined, `白名单应放行 ${name}`);
   }
-  ok(true, '白名单放行 QQ MCP 与无害模型侧工具');
+  for (const name of ['ask_user_question', 'todo_write']) {
+    assert.ok(typeof guardFn({ name }) === 'string', `已移除的 DSH 工具应拒绝 ${name}`);
+  }
+  for (const name of ['web_search', 'web_fetch']) {
+    assert.equal(guardFn({ name }), undefined, `DSH 原生网页工具应由守卫放行 ${name}`);
+  }
+  ok(true, '白名单放行 QQ MCP 与由 DSH 配置控制的原生网页工具');
   let deniedAll = true;
   for (const name of ['bash', 'read', 'write', 'dev_future_unknown_tool', 'mcp__other__x', '', null, undefined, 123]) {
     if (typeof guardFn({ name }) !== 'string') deniedAll = false;

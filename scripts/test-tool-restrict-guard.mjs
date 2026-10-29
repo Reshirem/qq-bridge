@@ -98,17 +98,17 @@ await test('restrict 一次成功时不写诊断文件（不制造噪声）', as
   assert.equal(fs.existsSync(diag), false, '全部成功时不该产生诊断文件');
 });
 
-await test('执行期 guard 照旧：QQ MCP 放行、dev_* 与本地工具拒绝', async () => {
+await test('执行期 guard：QQ MCP 与 DSH 网页工具放行，其他未知工具和本地工具拒绝', async () => {
   const diag = path.join(tmpDir, 'diag-guard.log');
   const mod = await loadPlugin(diag);
   const { ctx, calls } = makeCtx({ restrictImpl: () => undefined });
   mod.apply(ctx);
   assert.equal(typeof calls.guard, 'function', '必须注册执行期 guard');
   const guard = calls.guard;
-  for (const name of ['mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status', 'mcp__web-search-safe__web_search', 'ask_user_question', 'todo_write']) {
+  for (const name of ['mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status', 'web_search', 'web_fetch']) {
     assert.equal(guard({ name }), undefined, `${name} 应放行`);
   }
-  for (const name of ['dev_inject_plugin', 'dev_plugin_status', 'pwsh', 'read', 'write', 'dsh_snapshot', 'skill']) {
+  for (const name of ['ask_user_question', 'todo_write', 'dev_inject_plugin', 'dev_plugin_status', 'pwsh', 'read', 'write', 'dsh_snapshot', 'skill']) {
     assert.match(String(guard({ name })), /不在 QQ 桥接白名单内/, `${name} 必须拒绝`);
   }
   assert.match(String(guard({ name: '' })), /工具名无效/);

@@ -88,7 +88,7 @@ test('模拟会话的 preset 都挂了工具守卫（否则 L7 没有任何载�
   }
 });
 
-test('desktop-agent 不得挂载 tool-web 的 search/fetch', () => {
+test('desktop-agent 源 preset 默认关闭 tool-web 的 search/fetch', () => {
   for (const id of GLOBAL_AGENT_PRESETS) {
     const { yml } = readPreset(id);
     const webRow = /id:\s*tool-web[\s\S]{0,200}/.exec(yml);
@@ -124,7 +124,7 @@ test('守卫拒绝每一个已知本地执行工具', async () => {
   }
 });
 
-test('restrict 实际下发的名字与守卫导出的危险全局工具名单一致', async () => {
+test('restrict 实际下发的名字与守卫导出的隐藏全局工具名单一致', async () => {
   for (const id of GLOBAL_AGENT_PRESETS) {
     const mod = await import(pathToFileURL(GUARD_PATH).href);
     assert.ok(
@@ -135,11 +135,6 @@ test('restrict 实际下发的名字与守卫导出的危险全局工具名单�
     mod.apply({ tools: { restrict: ({ deny }) => deny.forEach(name => restricted.add(name)), guard() {} } });
     assert.deepEqual([...restricted].sort(), [...mod.RESTRICTED_TOOL_NAMES].sort(),
       `${id}: 实际 restrict 名单必须与权威导出一致`);
-    // 反向：名单里不该混入"允许的无害工具"。
-    for (const allowed of ['ask_user_question', 'todo_write']) {
-      assert.ok(!mod.RESTRICTED_TOOL_NAMES.includes(allowed),
-        `${id}: ${allowed} 是无害模型侧工具，不应出现在 restrict 名单里（会与 SAFE_EXACT 自相矛盾）`);
-    }
   }
 });
 
@@ -163,7 +158,7 @@ test('守卫名单里的每个名字都是 DSH 真实注册的工具（防拼错
   }
 });
 
-test('守卫仍放行全局陪伴者 MCP 命名空间与无害模型侧工具', async () => {
+test('守卫放行全局陪伴者 MCP 命名空间与 DSH 网页工具', async () => {
   for (const id of GLOBAL_AGENT_PRESETS) {
     const guardPath = GUARD_PATH;
     const fakeTools = { restrict() {}, guard(fn) { this._guard = fn; } };
@@ -177,7 +172,10 @@ test('守卫仍放行全局陪伴者 MCP 命名空间与无害模型侧工具', 
       );
     }
     for (const name of ['ask_user_question', 'todo_write']) {
-      assert.equal(fakeTools._guard({ name }), undefined, `${id}: ${name} 应放行`);
+      assert.ok(typeof fakeTools._guard({ name }) === 'string', `${id}: 已移除的工具应拒绝 ${name}`);
+    }
+    for (const name of ['web_search', 'web_fetch']) {
+      assert.equal(fakeTools._guard({ name }), undefined, `${id}: DSH 配置启用的工具应放行 ${name}`);
     }
     // 未知工具名必须 fail-closed。
     for (const name of ['', null, undefined, 'mcp__unknown__x', 'totally_new_tool']) {

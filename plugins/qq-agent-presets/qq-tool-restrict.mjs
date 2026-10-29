@@ -31,8 +31,6 @@ const LOCAL_EXECUTION_TOOLS = [
   // 本机文件 + 进程：plugin-guard 会改写配置并 spawn pnpm
   'dsh_snapshot', 'dsh_rollback', 'incident_resolved',
   // 会话/交付/任务面
-  // 注意：`todo_write` 与 `ask_user_question` **故意不在**此名单——它们是下面
-  // SAFE_EXACT 允许的无害模型侧工具，两边不能自相矛盾。
   'job_list', 'job_output', 'job_kill', 'skill', 'present',
   'get_goal', 'create_goal', 'update_goal',
   // MCP resource access
@@ -92,12 +90,9 @@ const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
 // 供 test-preset-local-tools.mjs 导入并与 DSH 真实工具名对账，避免两份名单漂移。
 export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TOOLS])
 
-// 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
-// todo_write 仅维护任务列表。若后续 preset 不再挂载这些工具，保留无害。
-const SAFE_EXACT = new Set([
-  'ask_user_question',
-  'todo_write',
-])
+// DSH's tool-web config controls registration; this allowlist only lets those
+// native tools pass the desktop-agent execution guard when DSH has enabled them.
+const SAFE_EXACT = new Set(['web_search', 'web_fetch'])
 
 // Record bounded diagnostics for failed restrictions and retry after the tool registry loads.
 const DIAG_FILE = (() => {
@@ -179,6 +174,6 @@ export function apply(ctx) {
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
     if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__', 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
-    return `工具 "${name}" 不在桌面 agent 工具范围内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具、A_Memorix 记忆工具与无害模型侧工具）`
+    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具和 A_Memorix 记忆工具）`
   })
 }

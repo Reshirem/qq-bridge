@@ -84,7 +84,9 @@ const guardCode = guard
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 check('守卫：非法工具名 fail-closed（不接受裸 return 放行）', !/typeof name !== 'string'[^\n]*\)\s*return\s*$/m.test(guardCode));
-check('守卫：不额外放行 web_search/web_fetch', !/'(?:web_search|web_fetch)'/.test(guardCode));
+check('守卫：允许由 DSH tool-web 配置控制注册的 web_search/web_fetch',
+  /SAFE_EXACT\s*=\s*new Set\(\[['"]web_search['"],\s*['"]web_fetch['"]\]\)/.test(guardCode)
+  && /SAFE_EXACT\.has\(name\)/.test(guardCode));
 // Tool families that must stay blocked:
 //   ① 全局层默认启用、desktop-agent 会继承的 MCP 资源工具
 //   ② 派生 agent / 执行外部代码

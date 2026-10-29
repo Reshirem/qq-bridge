@@ -42,7 +42,8 @@
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具、只读 `mcp__snowluma-host__snowluma_status` 与 `mcp__qq-memory__*` 记忆工具；隐藏 shell、通用文件、子代理和 Harness 管理工具。 |
+| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具、只读 `mcp__snowluma-host__snowluma_status` 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
+| DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `search` / `fetch` 是 DSH `@deepseek-ai/dsh-tool-web` 原生配置项，desktop-agent preset 默认设为 `false`；可在 DSH 自己的 preset/plugin 配置中调整。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容审计、限频和工具调用审计 |
 | 动态 ACL | sticker / image media helpers | 贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |

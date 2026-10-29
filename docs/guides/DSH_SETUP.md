@@ -96,6 +96,8 @@ npm start
 
 同一面板下方的“运行时提示模板”维护桥接在具体事件中追加的文本，包括人格卡首次注入、QQ 来源提醒、休息到期/QQ 打断/异常恢复，以及长期记忆开场摘要。这些模板保存在 `config.json` 的 `desktopAgent.promptTemplates`，保存后立即用于后续对应事件；人格卡与记忆摘要只在新建或重建会话的首次提示中出现。模板里的花括号占位符需要保留，WebUI 会说明每个字段可用的占位符。
 
+在 DSH 的 `desktop-agent` 预设 → `tool-web` 插件配置中，`search` 与 `fetch` 分别控制 `web_search` 和 `web_fetch` 是否注册；本仓库的 preset 源默认将两项设为 `false`。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。启用工具后，DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。修改后重载 DSH 并重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
+
 ## 验证
 
 可以先运行不依赖在线 DSH 的回归：
@@ -108,7 +110,7 @@ node scripts/test-preset-local-tools.mjs
 node scripts/test-audit-setup-guards.mjs
 ```
 
-确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局陪伴者应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status`、`mcp__qq-memory__*`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
+确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局陪伴者应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status` 和 `mcp__qq-memory__*`。`web_search` 与 `web_fetch` 由 DSH `tool-web` 行的 `search` / `fetch` 配置控制，本仓库 preset 默认关闭；启用后是否提供给当前模型步骤还取决于 DSH 当前提供方的就绪状态。`ask_user_question` 和 `todo_write` 不再由 `desktop-agent` 挂载。shell、通用文件工具、子代理或 Harness 管理工具也不应出现。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
 如要核验 DSH 在线 API，可运行 `npm run verify:dsh`（默认 `web` profile），或通过 `DSH_PROFILE` 指定 profile；也可直接运行 `node scripts/verify-dsh-current.mjs <profile>`。其中部分检查需要正在运行且可访问的 DSH。不要把该在线核验与上述离线检查混为一谈。
 

@@ -22,6 +22,7 @@
 - 全局陪伴者使用 `mcp-snowluma-safe.js` 当前注册的完整 QQ 工具集，可按需枚举群/好友、读取消息及主动发送。MCP 自动从 `state/desktop-agent.json` 读取桥接内部凭证并附加到请求，模型不用处理令牌；不会检查发起调用的 DSH session，MCP profile 中可用该工具的会话共享相同权限。`agent_rest` 只结束当前模型回合，不限制之后的工具调用；QQ API 发送仍执行限频与审计。直接通过 QQ 桌面 UI 发送不经过桥接 API 检查。
 - 可选 A_Memorix 记忆的写入、相关度检索、单条读取和删除由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 的常规记忆操作访问同一 namespace。DSH 记忆工具只校验全局 agent token，不受 `agent_rest` 生命周期限制。为支持全量原始记录浏览，已登录的本机 WebUI 还可通过独立适配器只读分页查询该 namespace 的 metadata SQLite `paragraphs` 表；该读取仅供控制台使用，agent-call 白名单不开放此路由。桥接不直接写入 SQLite，也不读取向量库或图文件；调用参数中的记忆正文和搜索词不会进入工具参数日志。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - `dsh-computer-use-win` 提供本机桌面操作能力。用户开始使用电脑时，陪伴者应让出界面控制权；ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
+- DSH 原生 `web_search` / `web_fetch` 由 `@deepseek-ai/dsh-tool-web` 注册，分别调用当前 DSH profile 选择的 `ctx.web` 搜索/抓取提供方；DSH 的 `tool-web` 插件配置 `search` / `fetch` 控制注册，desktop-agent preset 默认都关闭。`qq-tool-restrict` 允许这两个 DSH 工具名通过执行守卫，实际是否可调用由 DSH 工具注册和每步提供方就绪状态决定。它与桥接的 `webSearch` / `web-search-safe` 不同；随附的 DSH `http` 抓取提供方允许访问本机和内网地址，不经过桥接 SSRF 防护。
 - 全局会话生命周期为 `idle`、`active`、`resting`、`recovering` 和 `stopped`。活动回合最后调用 `agent_rest`；有限休息为 1 秒至 12 小时，到期后恢复一轮；用户在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束有限或无限休息。休息期间异常回合的指数恢复重试暂停。
 - 如果活动回合刚通过 QQ 回复某个来源，陪伴者会在休息前用最近一次 `readThroughSeq` 检查该来源是否有新未读；桥接会清掉已被读取水位覆盖的排队提醒，只保留尚未展示的新提醒，避免同一消息重复唤醒。
 - 桥接运行期间，首次提交的 QQ 提醒会保留到对应消息被 `readThroughSeq` 确认。若它仍未读，会话进入休息后由单一全局计时器每分钟检查一次，并最多补发一次；异常回合处于指数退避 `recovering` 时不运行这类提醒检查。
