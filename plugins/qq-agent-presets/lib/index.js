@@ -6,9 +6,6 @@ import z from '@deepseek-ai/schemastery';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const ROLE_STATE_FILE = path.join(PROJECT_ROOT, 'state', 'current-role.json');
 const ROLES_DIR = path.join(PROJECT_ROOT, 'roles');
-const DEFAULT_ROLE_MAX_CHARS = 8000;
-const MAX_ROLE_CHARS = 20000;
-const MAX_ROLE_BYTES = 64 * 1024;
 const DEFAULT_ROLE_CARD_TEMPLATE = '【当前角色卡：{roleName}】\n{roleContent}';
 const ROLE_NAME_RE = /^[\w\u4e00-\u9fff-]{1,40}$/;
 
@@ -42,29 +39,21 @@ function activeRoleCardForPrompt() {
     const relative = path.relative(rolesRoot, roleFile);
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('role file escaped roles directory');
     const stat = fs.statSync(roleFile);
-    if (!stat.isFile() || stat.size > MAX_ROLE_BYTES) throw new Error('role file is missing or oversized');
+    if (!stat.isFile()) throw new Error('role file is missing or unreadable');
     content = fs.readFileSync(roleFile, 'utf8');
   } catch {
     return `【人格卡加载提示】当前选择了「${roleName}」，但没有安全可读的人格卡正文。请按通用陪伴者定位继续，不要臆造卡片内容。`;
   }
 
-  const configuredLimit = state.maxInjectChars;
-  const maxChars = Number.isFinite(configuredLimit)
-    ? Math.min(MAX_ROLE_CHARS, Math.max(1000, Math.round(configuredLimit)))
-    : DEFAULT_ROLE_MAX_CHARS;
-  const truncated = content.length > maxChars;
-  const promptContent = truncated ? content.slice(0, maxChars) : content;
   const template = typeof state.roleCardTemplate === 'string' && state.roleCardTemplate.includes('{roleContent}')
     ? state.roleCardTemplate
     : DEFAULT_ROLE_CARD_TEMPLATE;
   const formatted = template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (placeholder, token) => {
     if (token === 'roleName') return roleName;
-    if (token === 'roleContent') return promptContent;
+    if (token === 'roleContent') return content;
     return placeholder;
   });
-  return truncated
-    ? `${formatted}\n\n【人格卡长度提醒】仅提供了前 ${maxChars} 个字符；不要臆测被省略的内容。`
-    : formatted;
+  return formatted;
 }
 
 export function apply(ctx) {

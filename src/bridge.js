@@ -435,18 +435,7 @@ function listRoles() {
 // 当前人格卡由 qq-agent-presets 的 system-prompt 变量提供到 DSH persona 固定前缀。
 const ROLES_DIR = path.join(ROOT, 'roles');
 const ROLE_NAME_MAX = 40;
-const ROLE_CONTENT_MAX_BYTES = 64 * 1024;
-// 固定 persona 前缀中的人格卡上限：避免过长卡片挤占模型上下文。
-// 默认 8000（2026-10 起：小鲸鱼卡补了形象/圈层/白饭-token/开发事件梗，6000 会把
-// 末尾「你的样子」整段截掉——截断点落在卡尾而不是卡中，比调大预算更危险）。
-// 可用 config.json 的 role.maxInjectChars 调整（1000~20000）；超限时 DSH 提示词会标明截断。
-const ROLE_INJECT_MAX_CHARS_DEFAULT = 8000;
-let roleInjectMaxChars = ROLE_INJECT_MAX_CHARS_DEFAULT;
-function applyRoleInjectLimit(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return ROLE_INJECT_MAX_CHARS_DEFAULT;
-  return Math.min(20000, Math.max(1000, Math.round(n)));
-}
+const ROLE_SOFT_RECOMMENDED_CHARS = 6000;
 const ROLE_RESERVED_NAMES = new Set(['README']);
 // Windows 保留设备名：roles/CON.md 这类路径会被系统当成设备而不是文件，
 // 写入会失败甚至挂起，因此在人格名层面直接拒绝。
@@ -468,11 +457,39 @@ function firstMeaningfulLine(content) {
   return '';
 }
 
+function roleCharCount(content) {
+  return Array.from(String(content ?? '')).length;
+}
+
+function estimateRoleTokens(content) {
+  let cjkChars = 0;
+  let otherChars = 0;
+  for (const character of String(content ?? '')) {
+    const code = character.codePointAt(0);
+    const isCjk =
+      (code >= 0x1100 && code <= 0x11ff) ||
+      (code >= 0x2e80 && code <= 0x2fff) ||
+      (code >= 0x3000 && code <= 0x30ff) ||
+      (code >= 0x3100 && code <= 0x312f) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xff00 && code <= 0xffef) ||
+      (code >= 0x20000 && code <= 0x2fa1f);
+    if (isCjk) cjkChars += 1;
+    else otherChars += 1;
+  }
+  // DeepSeek 的公开粗略换算：中文字符约 0.6 token，其他字符按 0.3 token 粗估。
+  return Math.ceil(cjkChars * 0.6 + otherChars * 0.3);
+}
+
 function roleWarnings(content) {
   const text = String(content ?? '');
   const warnings = [];
-  if (text.length > roleInjectMaxChars) {
-    warnings.push(`超过人格卡前缀上限：当前有 ${text.length} 字符，DSH persona 前缀每次最多加入前 ${roleInjectMaxChars} 字符（可调 role.maxInjectChars）`);
+  const chars = roleCharCount(text);
+  if (chars > ROLE_SOFT_RECOMMENDED_CHARS) {
+    warnings.push(`当前 ${chars} 字符，约 ${estimateRoleTokens(text)} tokens，超过建议的 ${ROLE_SOFT_RECOMMENDED_CHARS} 字符；仍会完整保存并加入 DSH persona 前缀`);
   }
   return warnings;
 }
@@ -486,17 +503,16 @@ function roleSummaries() {
       return {
         name,
         bytes: stat.size,
-        chars: content.length,
+        chars: roleCharCount(content),
+        estimatedTokens: estimateRoleTokens(content),
         lines: content.split('\n').length,
         mtime: stat.mtimeMs,
         excerpt: firstMeaningfulLine(content),
-        prefixChars: Math.min(content.length, roleInjectMaxChars),
-        injectedChars: Math.min(content.length, roleInjectMaxChars), // 兼容旧版控制台调用方
-        truncated: content.length > roleInjectMaxChars,
+        recommendedLengthExceeded: roleCharCount(content) > ROLE_SOFT_RECOMMENDED_CHARS,
         warnings: roleWarnings(content).length,
       };
     } catch {
-      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', prefixChars: 0, injectedChars: 0, truncated: false, warnings: 0 };
+      return { name, bytes: 0, chars: 0, estimatedTokens: 0, lines: 0, mtime: 0, excerpt: '', recommendedLengthExceeded: false, warnings: 0 };
     }
   });
 }
@@ -513,10 +529,6 @@ function validateRoleName(raw) {
 function validateRoleContent(raw) {
   const content = String(raw ?? '').replace(/\r\n/g, '\n');
   if (!content.trim()) throw new Error('人格内容不能为空');
-  const bytes = Buffer.byteLength(content, 'utf8');
-  if (bytes > ROLE_CONTENT_MAX_BYTES) {
-    throw new Error(`人格内容过长（${(bytes / 1024).toFixed(1)} KB，上限 ${ROLE_CONTENT_MAX_BYTES / 1024} KB）`);
-  }
   return content;
 }
 
@@ -722,7 +734,6 @@ function readRoleState() {
 function writeRoleState(role) {
   atomicWriteJson(ROLE_STATE_FILE, {
     role: role ?? null,
-    maxInjectChars: roleInjectMaxChars,
     roleCardTemplate: roleCardPromptTemplate,
   });
 }
@@ -906,13 +917,6 @@ function loadConfig() {
   } catch (error) {
     log(`⚠️ config.json 的 dsh.reasoningEffort「${cfg.dsh.reasoningEffort}」非法，已回退 ${REASONING_EFFORT_DEFAULT}（${error?.message ?? error}）`);
     cfg.dsh.reasoningEffort = REASONING_EFFORT_DEFAULT;
-  }
-
-  // 人格卡进入 persona 固定前缀的字符上限；保留旧配置键名以兼容 config.json。
-  cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, ...(file.role ?? {}) };
-  roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
-  if (roleInjectMaxChars !== cfg.role.maxInjectChars) {
-    log(`人格卡 persona 前缀上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
   }
 
   return cfg;
@@ -2509,12 +2513,7 @@ async function main() {
             roles: summaries.map((role) => role.name),
             summaries,
             current: rs.role ?? null,
-            limits: {
-              nameMax: ROLE_NAME_MAX,
-              contentMaxBytes: ROLE_CONTENT_MAX_BYTES,
-              injectMaxChars: roleInjectMaxChars,
-              personaPrefixMaxChars: roleInjectMaxChars,
-            },
+            limits: { nameMax: ROLE_NAME_MAX, recommendedChars: ROLE_SOFT_RECOMMENDED_CHARS },
           });
           return;
         }
@@ -2527,25 +2526,12 @@ async function main() {
             ok: true,
             name,
             content,
-            chars: content.length,
+            chars: roleCharCount(content),
+            estimatedTokens: estimateRoleTokens(content),
             bytes: Buffer.byteLength(content, 'utf8'),
             warnings: roleWarnings(content),
-            limits: { injectMaxChars: roleInjectMaxChars, personaPrefixMaxChars: roleInjectMaxChars },
+            recommendedChars: ROLE_SOFT_RECOMMENDED_CHARS,
           });
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/roles/limit') {
-          const body = await readBody();
-          const next = applyRoleInjectLimit(body.maxInjectChars);
-          const configFile = path.join(ROOT, 'config.json');
-          const file = readConfigObject(configFile);
-          file.role = { ...(file.role ?? {}), maxInjectChars: next };
-          atomicWriteJson(configFile, file);
-          cfg.role = { ...(cfg.role ?? {}), maxInjectChars: next };
-          roleInjectMaxChars = next;
-          writeRoleState(readRoleState().role);
-          log(`控制台：人格卡 persona 前缀上限已设为 ${next} 字符（后续 DSH 提示词组装时生效）`);
-          sendJson({ ok: true, maxInjectChars: next, personaPrefixMaxChars: next, limits: { injectMaxChars: next, personaPrefixMaxChars: next } });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/desktop-agent/prompt-templates') {
@@ -2591,8 +2577,14 @@ async function main() {
           catch (error) { sendJson({ ok: false, error: error.message }, 400); return; }
           if (fs.existsSync(roleFilePath(name))) { sendJson({ ok: false, error: `人格「${name}」已存在` }, 400); return; }
           writeRoleContent(name, content);
-          log(`控制台：创建人格「${name}」（${content.length} 字符）`);
-          sendJson({ ok: true, role: name, warnings: roleWarnings(content) });
+          log(`控制台：创建人格「${name}」（${roleCharCount(content)} 字符，约 ${estimateRoleTokens(content)} tokens）`);
+          sendJson({
+            ok: true,
+            role: name,
+            chars: roleCharCount(content),
+            estimatedTokens: estimateRoleTokens(content),
+            warnings: roleWarnings(content),
+          });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/roles/update') {
@@ -2602,8 +2594,14 @@ async function main() {
           catch (error) { sendJson({ ok: false, error: error.message }, 400); return; }
           if (!fs.existsSync(roleFilePath(name))) { sendJson({ ok: false, error: `人格「${name}」不存在` }, 404); return; }
           writeRoleContent(name, content);
-          log(`控制台：更新人格「${name}」（${content.length} 字符）`);
-          sendJson({ ok: true, role: name, chars: content.length, warnings: roleWarnings(content) });
+          log(`控制台：更新人格「${name}」（${roleCharCount(content)} 字符，约 ${estimateRoleTokens(content)} tokens）`);
+          sendJson({
+            ok: true,
+            role: name,
+            chars: roleCharCount(content),
+            estimatedTokens: estimateRoleTokens(content),
+            warnings: roleWarnings(content),
+          });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/roles/rename') {

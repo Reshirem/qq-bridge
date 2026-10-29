@@ -73,7 +73,33 @@ async function refresh() {
 // 当前人格卡由 DSH 每次提示词组装时动态放入 persona 固定前缀。
 let roleEditorState = { mode: 'new', name: '' };
 let roleCache = [];
-let roleInjectMax = 8000;
+let roleRecommendedChars = 6000;
+
+function roleCharCount(text) {
+  return Array.from(String(text ?? '')).length;
+}
+
+function estimateRoleTokens(text) {
+  let cjkChars = 0;
+  let otherChars = 0;
+  for (const character of String(text ?? '')) {
+    const code = character.codePointAt(0);
+    const isCjk =
+      (code >= 0x1100 && code <= 0x11ff) ||
+      (code >= 0x2e80 && code <= 0x2fff) ||
+      (code >= 0x3000 && code <= 0x30ff) ||
+      (code >= 0x3100 && code <= 0x312f) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xff00 && code <= 0xffef) ||
+      (code >= 0x20000 && code <= 0x2fa1f);
+    if (isCjk) cjkChars += 1;
+    else otherChars += 1;
+  }
+  return Math.ceil(cjkChars * 0.6 + otherChars * 0.3);
+}
 
 function setRoleMsg(text, ok) {
   const el = document.getElementById('roleCreateMsg');
@@ -87,18 +113,22 @@ function renderRoleEditor() {
     ? `正在编辑「${roleEditorState.name}」：改完点「保存修改」；改名字会同时重命名文件。`
     : '当前是「新建」模式：填好名称与内容后点「新建人格」；名称与已有的人格同名则会改为保存修改。';
   document.getElementById('roleCreate').textContent = editing ? '保存修改' : '新建人格';
+  updateRoleEditorWarnings();
 }
 
 function roleEditorWarnings(text) {
-  const value = String(text ?? '');
-  const warns = [];
-  if (value.length > roleInjectMax) warns.push(`超过 persona 前缀上限：当前 ${value.length} 字符，只有前 ${roleInjectMax} 字符会进入 DSH 固定前缀（多余 ${value.length - roleInjectMax} 字符不会生效）`);
-  return warns;
+  const chars = roleCharCount(text);
+  return chars > roleRecommendedChars
+    ? `⚠️ 超过建议的 ${roleRecommendedChars} 字符（约 ${estimateRoleTokens(text)} tokens）；保存后仍会完整加入 persona 固定前缀。`
+    : '';
 }
 
 function updateRoleEditorWarnings() {
-  const warns = roleEditorWarnings(document.getElementById('newRoleContent').value);
-  document.getElementById('roleEditorWarnings').textContent = warns.length ? '⚠️ ' + warns.join('；') : '';
+  const content = document.getElementById('newRoleContent').value;
+  const chars = roleCharCount(content);
+  const tokens = estimateRoleTokens(content);
+  document.getElementById('roleEditorStats').textContent = `${chars.toLocaleString()} 字符 · 约 ${tokens.toLocaleString()} tokens`;
+  document.getElementById('roleEditorWarnings').textContent = roleEditorWarnings(content);
 }
 
 async function openRoleForEdit(name) {
@@ -110,7 +140,7 @@ async function openRoleForEdit(name) {
   roleEditorState = { mode: 'edit', name };
   renderRoleEditor();
   updateRoleEditorWarnings();
-  setRoleMsg(`已载入「${name}」（${res.chars} 字符）`, true);
+  setRoleMsg(`已载入「${name}」（${res.chars.toLocaleString()} 字符，约 ${Number(res.estimatedTokens ?? estimateRoleTokens(res.content)).toLocaleString()} tokens）`, true);
 }
 
 function resetRoleForm() {
@@ -125,15 +155,11 @@ function resetRoleForm() {
 async function refreshRoles() {
   try {
     const r = await api('/api/roles');
-    if (r.limits?.personaPrefixMaxChars || r.limits?.injectMaxChars) {
-      roleInjectMax = Number(r.limits.personaPrefixMaxChars ?? r.limits.injectMaxChars) || roleInjectMax;
-      const input = document.getElementById('roleInjectMax');
-      if (input && document.activeElement !== input) input.value = String(roleInjectMax);
-    }
+    if (Number.isFinite(Number(r.limits?.recommendedChars))) roleRecommendedChars = Number(r.limits.recommendedChars);
     const names = Array.isArray(r.roles) ? r.roles : [];
     roleCache = Array.isArray(r.summaries) && r.summaries.length === names.length
       ? r.summaries
-      : names.map((name) => ({ name, chars: 0, bytes: 0, excerpt: '', truncated: false }));
+      : names.map((name) => ({ name, chars: 0, estimatedTokens: 0, bytes: 0, excerpt: '', recommendedLengthExceeded: false }));
     const box = document.getElementById('roleList');
     box.replaceChildren();
     if (!roleCache.length) {
@@ -158,16 +184,15 @@ async function refreshRoles() {
         badge.textContent = '启用中';
         head.appendChild(badge);
       }
-      if (role.truncated) {
+      if (role.recommendedLengthExceeded) {
         const badge = document.createElement('span');
         badge.className = 'persona-badge warn';
-        badge.textContent = `超出上限`;
-        badge.title = `当前人格卡有 ${role.chars} 字符，超过 ${roleInjectMax} 字符 persona 前缀上限`;
+        badge.textContent = '较长';
+        badge.title = `超过建议的 ${roleRecommendedChars} 字符；人格卡仍会完整载入`;
         head.appendChild(badge);
       }
       const meta = document.createElement('small');
-      const injection = `persona 前缀载入 ${role.prefixChars ?? role.injectedChars ?? role.chars} 字符`;
-      meta.textContent = `共 ${role.chars} 字符 · ${injection}${role.excerpt ? ' · ' + role.excerpt : ''}`;
+      meta.textContent = `${role.chars.toLocaleString()} 字符 · 约 ${Number(role.estimatedTokens ?? 0).toLocaleString()} tokens · 完整载入${role.excerpt ? ' · ' + role.excerpt : ''}`;
       item.append(head, meta);
       item.addEventListener('click', () => openRoleForEdit(role.name));
       box.appendChild(item);
@@ -854,10 +879,12 @@ document.getElementById('roleCreate').addEventListener('click', async () => {
   }
   const endpoint = editing || exists ? '/api/roles/update' : '/api/roles/create';
   const r = await api(endpoint, 'POST', { name, content });
-  setRoleMsg(r.ok ? `✅ 已保存「${name}」。如果它是当前人格卡，下一次模型请求组装提示词时会载入更新后的内容。` : ('❌ ' + (r.error || '失败')), r.ok);
+  const stats = `${Number(r.chars ?? roleCharCount(content)).toLocaleString()} 字符，约 ${Number(r.estimatedTokens ?? estimateRoleTokens(content)).toLocaleString()} tokens`;
+  const softNote = (r.warnings || []).length ? ` ${r.warnings.join('；')}` : '';
+  setRoleMsg(r.ok ? `✅ 已完整保存「${name}」（${stats}）。如果是当前人格卡，下一次模型请求会载入更新后的内容。${softNote}` : ('❌ ' + (r.error || '失败')), r.ok);
   if (r.ok) {
     roleEditorState = { mode: 'edit', name };
-    document.getElementById('roleEditorWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
+    updateRoleEditorWarnings();
     await refreshRoles();
   }
 });
@@ -871,7 +898,10 @@ document.getElementById('roleDuplicate').addEventListener('click', async () => {
   document.getElementById('newRoleName').value = target;
   roleEditorState = { mode: 'edit', name: target };
   renderRoleEditor();
-  setRoleMsg(`✅ 已另存为「${target}」`, true);
+  const stats = `${Number(r.chars ?? roleCharCount(content)).toLocaleString()} 字符，约 ${Number(r.estimatedTokens ?? estimateRoleTokens(content)).toLocaleString()} tokens`;
+  const softNote = (r.warnings || []).length ? ` ${r.warnings.join('；')}` : '';
+  setRoleMsg(`✅ 已完整另存为「${target}」（${stats}）。${softNote}`, true);
+  updateRoleEditorWarnings();
   refreshRoles();
 });
 document.getElementById('roleDelete').addEventListener('click', async () => {
@@ -945,17 +975,6 @@ document.getElementById('desktopPromptRestore').addEventListener('click', async 
 });
 document.getElementById('desktopAgentHistoryRefresh').addEventListener('click', () => loadDesktopAgentHistory(false));
 document.getElementById('desktopAgentHistoryOlder').addEventListener('click', () => loadDesktopAgentHistory(true));
-
-// ── 人格卡 persona 前缀上限 ─────────────────────────────────────────────────
-document.getElementById('roleInjectMaxSave').addEventListener('click', async () => {
-  const msg = document.getElementById('roleInjectMaxMsg');
-  const value = Number(document.getElementById('roleInjectMax').value);
-  if (!Number.isFinite(value) || value < 1000 || value > 20000) { msg.textContent = '请输入 1000~20000 之间的整数'; msg.className = 'meta err'; return; }
-  const r = await api('/api/roles/limit', 'POST', { maxInjectChars: value });
-  msg.textContent = r.ok ? `✅ 已设为 ${r.personaPrefixMaxChars ?? r.maxInjectChars} 字符，下一次 DSH 提示词组装时生效` : ('❌ ' + (r.error || '保存失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) refreshRoles();
-});
 
 // ── DSH 思考强度 ────────────────────────────────────────────────────────────
 async function saveDshModel(provider, model, reasoningEffort, msg) {

@@ -11,6 +11,40 @@ import { DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS, normalizeDesktopAgentPromptTemp
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
+const ROLE_SOFT_RECOMMENDED_CHARS = 6000;
+
+function roleCharCount(content) {
+  return Array.from(String(content ?? '')).length;
+}
+
+function estimateRoleTokens(content) {
+  let cjkChars = 0;
+  let otherChars = 0;
+  for (const character of String(content ?? '')) {
+    const code = character.codePointAt(0);
+    const isCjk =
+      (code >= 0x1100 && code <= 0x11ff) ||
+      (code >= 0x2e80 && code <= 0x2fff) ||
+      (code >= 0x3000 && code <= 0x30ff) ||
+      (code >= 0x3100 && code <= 0x312f) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xff00 && code <= 0xffef) ||
+      (code >= 0x20000 && code <= 0x2fa1f);
+    if (isCjk) cjkChars += 1;
+    else otherChars += 1;
+  }
+  return Math.ceil(cjkChars * 0.6 + otherChars * 0.3);
+}
+
+function roleWarnings(content) {
+  const chars = roleCharCount(content);
+  return chars > ROLE_SOFT_RECOMMENDED_CHARS
+    ? [`当前 ${chars} 字符，约 ${estimateRoleTokens(content)} tokens，超过建议的 ${ROLE_SOFT_RECOMMENDED_CHARS} 字符；仍会完整保存并加入 DSH persona 前缀`]
+    : [];
+}
 
 // 预设状态：离线 UI 只模拟唯一的全局 desktop-agent。
 function presetStatusFixture() {
@@ -304,7 +338,6 @@ export function makeFixtureState() {
     desktopPrompt: composePresetPromptModules({ version: 1, modules: desktopPromptModules }),
     desktopPromptModules,
     runtimePromptTemplates: normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS),
-    roleInjectMax: 8000,
     dshEffort: 'max',
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
     v2: {
@@ -377,21 +410,20 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {
               const content = state.roleContents[name] ?? '';
-              const injectMax = state.roleInjectMax;
               return {
                 name,
                 bytes: Buffer.byteLength(content, 'utf8'),
-                chars: content.length,
+                chars: roleCharCount(content),
+                estimatedTokens: estimateRoleTokens(content),
                 lines: content.split('\n').length,
                 mtime: Date.parse(timestamp),
                 excerpt: content.split('\n').find((line) => line.trim() && !line.trim().startsWith('#')) ?? '',
-                injectedChars: Math.min(content.length, injectMax),
-                truncated: content.length > injectMax,
-                warnings: 0,
+                recommendedLengthExceeded: roleCharCount(content) > ROLE_SOFT_RECOMMENDED_CHARS,
+                warnings: roleWarnings(content).length,
               };
             }),
             current: state.role,
-            limits: { nameMax: 40, contentMaxBytes: 65536, injectMaxChars: state.roleInjectMax },
+            limits: { nameMax: 40, recommendedChars: ROLE_SOFT_RECOMMENDED_CHARS },
           });
           case '/api/roles/content': {
             const name = url.searchParams.get('name') ?? '';
@@ -401,10 +433,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               ok: true,
               name,
               content,
-              chars: content.length,
+              chars: roleCharCount(content),
+              estimatedTokens: estimateRoleTokens(content),
               bytes: Buffer.byteLength(content, 'utf8'),
-              warnings: [],
-              limits: { injectMaxChars: state.roleInjectMax },
+              warnings: roleWarnings(content),
+              recommendedChars: ROLE_SOFT_RECOMMENDED_CHARS,
             });
           }
           case '/api/preset/desktop-agent-prompt/modules': {
@@ -493,8 +526,17 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       if (method === 'POST') {
         switch (path) {
           case '/api/role': state.role = body.role; return json({ ok: true });
-          case '/api/roles/create': state.roles.push(body.name); state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, warnings: [] });
-          case '/api/roles/update': state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, chars: String(body.content ?? '').length, warnings: [] });
+          case '/api/roles/create': {
+            const content = body.content ?? '';
+            state.roles.push(body.name);
+            state.roleContents[body.name] = content;
+            return json({ ok: true, role: body.name, chars: roleCharCount(content), estimatedTokens: estimateRoleTokens(content), warnings: roleWarnings(content) });
+          }
+          case '/api/roles/update': {
+            const content = body.content ?? '';
+            state.roleContents[body.name] = content;
+            return json({ ok: true, role: body.name, chars: roleCharCount(content), estimatedTokens: estimateRoleTokens(content), warnings: roleWarnings(content) });
+          }
           case '/api/roles/rename': {
             const idx = state.roles.indexOf(body.from);
             if (idx >= 0) state.roles[idx] = body.to;
@@ -511,7 +553,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             if (cleared) state.role = null;
             return json({ ok: true, deleted: body.name, clearedCurrent: cleared });
           }
-          case '/api/roles/limit': state.roleInjectMax = Number(body.maxInjectChars) || state.roleInjectMax; return json({ ok: true, maxInjectChars: state.roleInjectMax, limits: { injectMaxChars: state.roleInjectMax } });
           case '/api/preset/desktop-agent-prompt/modules': {
             state.desktopPromptModules = normalizePresetPromptModules({ version: 1, modules: body.modules }).modules;
             const content = composePresetPromptModules({ version: 1, modules: state.desktopPromptModules });

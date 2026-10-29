@@ -10,9 +10,6 @@
     "authPrefix": "Bearer",
     "allowRemote": false
   },
-  "role": {
-    "maxInjectChars": 6000
-  },
   "desktopAgent": {
     "promptTemplates": {
       "roleCard": "【当前角色卡：{roleName}】\n{roleContent}",

@@ -106,7 +106,7 @@
           <li><b>运行时提示模板</b>：人格卡模板格式化 persona 前缀中的当前卡片；QQ 提醒、休息恢复和记忆摘要仍按场景进入会话消息。</li>
           <li><b>会话事件记录</b>：可按页查看 DSH 持久化的消息、工具调用和回合事件。</li>
         </ol>
-        <p>固定前缀保存或首次安装新版人格卡变量后，需重启 DSH 并重建全局会话。之后切换、编辑、清除或删除人格卡，以及修改人格卡模板或长度上限，都会在下一次模型请求时生效；人格卡保留在 persona 固定前缀中，不随普通历史压缩丢失。记忆开场摘要仍只在新会话首次提示时附加。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；推理过程不会在此展示。</p>
+        <p>固定前缀保存或首次安装新版人格卡变量后，需重启 DSH 并重建全局会话。之后切换、编辑、清除或删除人格卡，以及修改人格卡模板，都会在下一次模型请求时生效；人格卡保留在 persona 固定前缀中，不随普通历史压缩丢失。记忆开场摘要仍只在新会话首次提示时附加。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；推理过程不会在此展示。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -116,16 +116,12 @@
         <summary>编辑人格提示词</summary>
         <div class="settings-content">
           <div class="meta" id="roleEditorMeta">当前是「新建」模式：填好名称与内容后点「新建人格」。</div>
-          <div class="row">
-            <label style="flex:0 0 auto">前缀上限（字符）</label>
-            <input type="number" id="roleInjectMax" min="1000" max="20000" step="500" style="flex:0 1 140px">
-            <button id="roleInjectMaxSave" class="small">保存上限</button>
-            <span class="meta" id="roleInjectMaxMsg">限制当前人格卡加入 DSH persona 固定前缀的字符数；每次模型请求组装时更新。</span>
-          </div>
+          <div class="meta">建议人格卡不超过 6000 字符（以中文为主约 3600 tokens）。这是软建议；超出时只提醒，仍会完整保存并加入 DSH persona 固定前缀。Token 数只粗估卡片正文，不含其他固定前缀；实际值以模型用量为准。</div>
           <label>人格名（中文 / 字母 / 数字 / 横线）</label>
           <input type="text" id="newRoleName" placeholder="如：猫娘">
           <label>人格提示词（Markdown）</label>
           <textarea id="newRoleContent" class="role-editor" placeholder="- 性格：…&#10;- 说话风格：…&#10;- 背景设定：…"></textarea>
+          <div class="meta" id="roleEditorStats" aria-live="polite"></div>
           <div class="row" style="margin-top:8px">
             <button id="roleCreate">新建人格</button>
             <button id="roleDuplicate">另存为副本</button>
@@ -133,7 +129,7 @@
             <button id="roleFormReset">清空表单</button>
             <span class="meta" id="roleCreateMsg"></span>
           </div>
-          <div class="meta err" id="roleEditorWarnings"></div>
+          <div class="meta" id="roleEditorWarnings" aria-live="polite"></div>
         </div>
       </details>
 
