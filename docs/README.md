@@ -11,6 +11,7 @@
 | [RULES.md](../RULES.md) | 全局陪伴者会话、电脑操作与 QQ 工具的权限边界 |
 | [AGENTS.md](../AGENTS.md) | 给代码代理的仓库级约束，指导其渐进式修改 |
 | [FOLDER_MAP.md](FOLDER_MAP.md) | 当前仓库目录与脚本类别说明 |
+| [guides/PROJECT_AUDIT.md](guides/PROJECT_AUDIT.md) | fork 来源、当前功能清单、离线核验结果与未覆盖风险 |
 
 ## 当前使用与维护指南
 
@@ -34,5 +35,6 @@
 | 安装或重装 DSH 侧配置 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) |
 | 修改安全边界或做安全审查 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) 和 [../RULES.md](../RULES.md) |
 | 核对仓库内某个目录或脚本的用途 | [FOLDER_MAP.md](FOLDER_MAP.md) |
+| 区分 fork 前原作者与后续新增功能，查看尚未验证的风险 | [guides/PROJECT_AUDIT.md](guides/PROJECT_AUDIT.md) |
 | 查看 token 消耗与计价方式 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) |
 | 修改控制台并了解 UI 回归 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) |

@@ -14,8 +14,18 @@ export function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 }
 
-// 这些脚本需要加载的包，任意一个能解析成功即可反推出 node_modules 位置。
-const PROBE_SPECIFIERS = ['@deepseek-ai/dsh-persona', 'js-yaml'];
+export function dshProfileDir(profile = process.env.DSH_PROFILE || 'web') {
+  const name = String(profile || 'web');
+  if (name === '.' || name === '..' || name === 'node_modules'
+      || /[\\/\x00-\x1f<>:"|?*]/.test(name) || /[. ]$/.test(name)) {
+    throw new Error(`DSH profile 名称无效：${JSON.stringify(name)}`);
+  }
+  return path.join(dshHome(), 'profiles', name);
+}
+
+// 用 DSH 自己的 persona 包定位 profile；只找到通用 js-yaml 不足以证明
+// 这是完整的 DSH 安装，不能据此把缺失的 DSH 包误报成 preset 配置错误。
+const PROBE_SPECIFIERS = ['@deepseek-ai/dsh-persona'];
 
 function findNodeModules(resolvedFile) {
   let dir = path.dirname(resolvedFile);
@@ -59,7 +69,7 @@ export function dshModulesDir() {
   }
 
   throw new Error(
-    '无法定位 DSH 安装目录下的 node_modules。\n'
+    '无法定位含 @deepseek-ai/dsh-persona 的 DSH profile node_modules。\n'
     + '  请设置 DSH_INSTALL_MODULES=<DSH 安装目录>/node_modules 后重试；\n'
     + `  或设置 DSH_HOME 指向 DSH 根目录（当前解析为 ${home}）。`
   );

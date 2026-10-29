@@ -47,8 +47,13 @@ const OPTIONAL_BUNDLE_TOOLS = new Set(['subagent_codex', 'subagent_claude_code']
 
 /** Read installed DSH names through the shared scanner. */
 function collectDshToolNames() {
-  const { names } = collectDshToolNamesShared();
-  return names.size === 0 ? null : new Set(names.keys());
+  try {
+    const { names } = collectDshToolNamesShared();
+    return names.size === 0 ? null : new Set(names.keys());
+  } catch (error) {
+    if (/无法定位含 @deepseek-ai\/dsh-persona/.test(String(error?.message ?? error))) return null;
+    throw error;
+  }
 }
 /** 允许出现在名单里、但不属于"本地执行"语义的名字（开发/注入器）。 */
 const DEV_TOOL_PREFIX = /^dev_/;

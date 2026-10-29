@@ -201,7 +201,12 @@ test('session retirement times out while reading projections and still attempts 
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
   };
-  await assert.rejects(api.stopSessionWork('session-a', { timeoutMs: 30 }), (error) => error.name === 'TimeoutError');
+  const keepAlive = setTimeout(() => {}, 250);
+  try {
+    await assert.rejects(api.stopSessionWork('session-a', { timeoutMs: 30 }), (error) => error.name === 'TimeoutError');
+  } finally {
+    clearTimeout(keepAlive);
+  }
   assert.deepEqual(calls, ['session/projections', 'session/cancel']);
 });
 

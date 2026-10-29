@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import http from 'node:http';
 
@@ -79,6 +81,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       ['GET', '/api/preset/desktop-agent-prompt/backups'], ['POST', '/api/preset/desktop-agent-prompt/restore'],
       ['GET', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
       ['GET', '/api/whitelist'], ['POST', '/api/whitelist'], ['POST', '/api/restart'],
+      ['POST', '/api/memory/records/list'],
       ['POST', '/api/console/token'], ['GET', '/api/role'], ['POST', '/api/role'],
     ];
     for (const [method, path] of mustDeny) {
@@ -111,8 +114,59 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
   } catch (error) { failures++; console.error('FAIL agent token admin isolation:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
 }
-// ── 控制台入口的传输层防护：Host 头 + 令牌定长比较 + /api/authorize/read 鉴权 ──
-// 这三条都是「审计发现 → 加固」的结果，钉住它们以防以后被无意改回去。
+// The raw A_Memorix record browser is a console-only endpoint. Exercise the
+// real route and agent allowlist while replacing only the local SQLite adapter.
+{
+  let readRequest = null;
+  const h = await bridgeHarness({
+    config: { memory: { enabled: true, namespace: 'fixture-space', apiKey: 'fixture-only' } },
+    globals: {
+      listAMemorixParagraphs: async (options) => {
+        readRequest = options;
+        return { hits: [{ memoryId: 'fixture-record' }], total: 1, nextCursor: '' };
+      },
+    },
+  });
+  const server = h.startConsoleServer();
+  try {
+    h.setReady(true);
+    await h.ensureDesktopAgentSession();
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    const call = (headers, body) => new Promise((resolve, reject) => {
+      const request = http.request({
+        host: '127.0.0.1', port, path: '/api/memory/records/list', method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+      }, (response) => {
+        let data = '';
+        response.on('data', (chunk) => { data += chunk; });
+        response.on('end', () => resolve({ status: response.statusCode, body: data }));
+      });
+      request.on('error', reject);
+      request.setTimeout(3000, () => request.destroy(new Error('request hung')));
+      request.end(JSON.stringify(body));
+    });
+
+    const admin = { 'x-console-token': 'fixture-console-token' };
+    const listed = await call(admin, { query: '群聊', origin: 'qq', limit: 10 });
+    assert.equal(listed.status, 200);
+    assert.equal(JSON.parse(listed.body).result.hits[0].memoryId, 'fixture-record');
+    assert.equal(readRequest.namespace, 'fixture-space');
+    assert.equal(readRequest.query, '群聊');
+    assert.equal(readRequest.origin, 'qq');
+    assert.equal(readRequest.limit, 10);
+
+    const agentToken = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'desktop-agent.json'), 'utf8')).agentToken;
+    const denied = await call({ ...admin, 'x-agent-token': agentToken, 'x-agent-call': '1' }, {});
+    assert.equal(denied.status, 403, 'a valid agent credential must not open the console-only raw record browser');
+    assert.equal(readRequest.query, '群聊', 'agent denial must happen before touching the local reader');
+    console.log('PASS memory record browsing is console-only and forwards filters to the read-only adapter');
+  } catch (error) { failures++; console.error('FAIL memory record browser authorization:', error.message); }
+  finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
+}
+
+// ── 控制台入口的传输层防护：Host 头 + 令牌定长比较 ──
+// 这两条都是「审计发现 → 加固」的结果，钉住它们以防以后被无意改回去。
 {
   const h = await bridgeHarness();
   const server = h.startConsoleServer();
@@ -155,10 +209,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     const noHeader = await call('/api/status', 'GET');
     assert.equal(noHeader.status, 401, '不带令牌必须被拒绝');
 
-    // ③ /api/authorize/read 不再接受空令牌（它曾对 agent 流量开放 ⇒ 成为免鉴权入口）。
-    const noToken = await call('/api/authorize/read', 'POST', { ...admin, 'x-agent-token': 'x' }, { key: 'group:456' });
-    assert.equal(noToken.status, 403, '空会话令牌必须被拒绝');
-    console.log('PASS console rejects foreign Host headers, non-exact tokens and token-less authorize/read');
+    console.log('PASS console rejects foreign Host headers and non-exact tokens');
   } catch (error) { failures++; console.error('FAIL console transport guards:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
 }

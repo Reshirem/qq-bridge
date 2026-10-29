@@ -110,7 +110,7 @@ node scripts/test-audit-setup-guards.mjs
 
 确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局陪伴者应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status`、`mcp__qq-memory__*`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
-如要核验 DSH 在线 API，可运行 `npm run verify:dsh`；其中部分检查需要正在运行且可访问的 DSH。不要把该在线核验与上述离线检查混为一谈。
+如要核验 DSH 在线 API，可运行 `npm run verify:dsh`（默认 `web` profile），或通过 `DSH_PROFILE` 指定 profile；也可直接运行 `node scripts/verify-dsh-current.mjs <profile>`。其中部分检查需要正在运行且可访问的 DSH。不要把该在线核验与上述离线检查混为一谈。
 
 ## 常见问题
 

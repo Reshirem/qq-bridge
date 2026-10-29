@@ -6,14 +6,20 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { dshModulesDir } from './dsh-modules.mjs';
+import { dshProfileDir } from './dsh-modules.mjs';
 import { PRESETS } from './build-agent-preset-patches.mjs';
 import { discoverDshSessionCookie, NodeApiClient, unwrap } from '../src/dsh-client.js';
 
 const ROOT = process.cwd();
-const DSH_MODULES = dshModulesDir();
-const DSH_HOME = path.join(os.homedir(), '.dsh');
+const PROFILE = process.argv[2] || process.env.DSH_PROFILE || 'web';
+const PROFILE_DIR = dshProfileDir(PROFILE);
+const DSH_MODULES = process.env.DSH_INSTALL_MODULES || process.env.DSH_MODULES || path.join(PROFILE_DIR, 'node_modules');
 const BASE = process.env.DSH_BASE_URL || 'http://127.0.0.1:3080';
+
+const PERSONA_MODULE = path.join(DSH_MODULES, '@deepseek-ai', 'dsh-persona', 'lib', 'index.js');
+if (!fs.existsSync(PERSONA_MODULE)) {
+  throw new Error(`DSH profile「${PROFILE}」中找不到 @deepseek-ai/dsh-persona：${PERSONA_MODULE}`);
+}
 
 let pass = 0, fail = 0;
 const results = [];
@@ -29,7 +35,7 @@ function skip(label, why) {
 }
 
 // ── 1. 仓库侧：preset persona schema ────────────────────────────────────────
-const persona = await import(pathToFileURL(path.join(DSH_MODULES, '@deepseek-ai/dsh-persona/lib/index.js')).href);
+const persona = await import(pathToFileURL(PERSONA_MODULE).href);
 const YAML = await import(pathToFileURL(path.join(DSH_MODULES, 'js-yaml/index.js')).href);
 const yaml = YAML.default ?? YAML;
 
@@ -121,7 +127,7 @@ if (scanned.names.size === 0) {
   check('守卫名单无拼错的假名（restrict 不会静默失效）', fabricated.length === 0, fabricated.join(', ') || `扫过 ${scanned.packages.length} 个包`);
 }
 
-const patch = fs.readFileSync(path.join(DSH_HOME, 'profiles/web/cordis.patch.yml'), 'utf8');
+const patch = fs.readFileSync(path.join(PROFILE_DIR, 'cordis.patch.yml'), 'utf8');
 const patchDoc = yaml.load(patch);
 const mcpIds = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert.map((x) => x.id));
 check('profile patch 含 3 个 MCP 且无重复', mcpIds.length === 3 && new Set(mcpIds).size === 3, mcpIds.join(', '));
@@ -132,10 +138,10 @@ check('mcp 路径指向本仓库', mcpIds.every((id) => {
   return String(e.config.args[0]).includes('qq-bridge');
 }));
 
-const pkg = JSON.parse(fs.readFileSync(path.join(DSH_HOME, 'profiles/web/package.json'), 'utf8'));
+const pkg = JSON.parse(fs.readFileSync(path.join(PROFILE_DIR, 'package.json'), 'utf8'));
 check('profile bundles 含 qq-agent-presets', pkg.dsh.profile.bundles.includes('qq-agent-presets'));
 check('qq-agent-presets link 依赖已注册', String(pkg.dependencies['qq-agent-presets'] ?? '').startsWith('link:'));
-check('qq-agent-presets 已 link 进 node_modules', fs.existsSync(path.join(DSH_HOME, 'profiles/web/node_modules/qq-agent-presets')));
+check('qq-agent-presets 已 link 进 node_modules', fs.existsSync(path.join(PROFILE_DIR, 'node_modules/qq-agent-presets')));
 
 // ── 3. 仓库配置：模型 ───────────────────────────────────────────────────────
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));

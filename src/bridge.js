@@ -2087,8 +2087,9 @@ async function main() {
       // **头缺失时整条跳过** —— 而头缺失恰恰是模型没传 token 时的自然结果
       // 于是「漏传令牌」不是被拒绝，而是**升级成控制台全权**：典型的 confused deputy。
       //
-      // 现在 MCP 端一律带上 x-agent-call: 1；带了令牌就必须命中某个活跃会话，
-      // 端点自己漏写校验也不会退回管理端。
+      // 现在 MCP 端一律带上 x-agent-call: 1；令牌必须对应持久的全局 desktop-agent，
+      // 但不绑定调用它的 DSH session，也不受 active/resting/recovering 生命周期限制。
+      // 端点白名单和各自的参数/动作校验仍然生效。
       //
       // 全局陪伴者调用都必须携带令牌；唯一无令牌例外是脱敏后的 /api/status 探活。
       //
@@ -2154,8 +2155,7 @@ async function main() {
             || url.pathname.startsWith('/api/desktop-agent/memory/')
             || url.pathname.startsWith('/api/socialV2/')
             || url.pathname.startsWith('/api/send/')
-            || url.pathname.startsWith('/api/images/')
-            || url.pathname === '/api/authorize/read';
+            || url.pathname.startsWith('/api/images/');
           if (!agentAllowed) {
             sendJson({ ok: false, error: '该接口仅控制台可用' }, 403);
             return;
@@ -2202,8 +2202,8 @@ async function main() {
           // 带 agent token 的调用来自 QQ 群里的 AI：只能拿到它自己该知道的运行状态。
           // activity 是**全局**收发摘要（含其它群的发言片段与告警），ownerQQ/白名单属于管理信息，
           // 都不能给到会话级主体，否则 A 群的 AI 能读到 B 群的内容。
-          // 判定「是不是智能体调用」必须同时看 x-agent-call：无令牌的智能体调用
-          // （旧只读工具的模式探测）不带 x-agent-token，但它同样**绝不能**拿到管理端字段
+          // 判定「是不是智能体调用」必须同时看 x-agent-call：无令牌的状态探测
+          // 不带 x-agent-token，但它同样**绝不能**拿到管理端字段
           // —— ownerQQ / 白名单 / activity（含其它群的发言片段）是跨群管理信息。
           // 只认 token 会让这类请求落到下面的完整对象上，等于把 A 群的 AI 变成管理端。
           if (req.headers['x-agent-token'] || req.headers['x-agent-call'] !== undefined) {
@@ -4868,28 +4868,6 @@ async function main() {
             log(`QQ 会话目录读取失败: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `读取 QQ 会话目录失败：${error?.message ?? error}` }, 502);
           }
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/authorize/read') {
-          const body = await readBody();
-          const key = String(body.key ?? '').trim();
-          const token = String(body.token ?? '').trim();
-          const keyMatch = /^(group|private):(\d+)$/.exec(key);
-          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
-          if (!token || !agentTokenOk(key, token)) {
-            // 空 token 一律拒绝：该端点对 agent 流量开放（见 startConsoleServer 里的
-            // agent 白名单），而 MCP 的 agentApi 总是带着真实控制台令牌，
-            // 所以「不传 token 就跳过校验」等于把它变成免鉴权端点。
-            sendJson({ ok: false, error: token ? 'agent token 无效' : '缺少会话令牌；旧只读工具在需要令牌的模式下不可用，请改用带会话令牌的 v2 读工具' }, 403);
-            return;
-          }
-          const kind = keyMatch[1];
-          const id = Number(keyMatch[2]);
-          if (!Number.isFinite(id) || id <= 0 || !sessionAllowed(kind, id, req.headers["x-agent-token"])) {
-            sendJson({ ok: false, error: '该会话未通过白名单/拒绝名单策略，不能读取' }, 403);
-            return;
-          }
-          sendJson({ ok: true, key });
           return;
         }
         // ── 图片/表情查询端点（MCP qq_get_message_images 走这里） ────────────

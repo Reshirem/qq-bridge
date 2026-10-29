@@ -254,7 +254,7 @@ const server = new McpServer({ name: 'snowluma-safe', version: '0.2.1-r1' });
 
 // DSH profile 会共享这个 MCP provider，故无法按 agent preset 隐藏不同工具。
 // The global desktop-agent receives the complete SnowLuma tool surface. The bridge
-// still enforces active-turn checks, rate limits, and audit logging for sends.
+// still enforces the global agent credential, rate limits, and audit logging for sends.
 // MCP provider 在 DSH profile 共享，不能按 agent preset 为不同 agent 注册不同 schema。
 // 全局 desktop-agent 使用完整 SnowLuma 工具集，MCP 从桥接持久状态自动获取当前凭证。
 cfg.socialV2 ??= {};

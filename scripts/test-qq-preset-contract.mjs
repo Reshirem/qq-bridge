@@ -26,8 +26,8 @@ test('activity turns end through the rest tool', () => {
 test('QQ reminders are optional cues rather than required tasks', () => {
   assert.match(prefix, /SnowLuma 是 QQ 消息通道/);
   assert.match(prefix, /提醒，只是在告诉你可能有人找你或有新内容值得留意/);
-  assert.match(prefix, /它们不是必须完成的任务/);
-  assert.match(prefix, /你可以决定是否查看、回应或暂时不处理/);
+  assert.match(prefix, /它们不要求你逐条回应/);
+  assert.match(prefix, /你可以根据内容和时机判断是否查看、回应或暂时不处理/);
   assert.match(prefix, /qq_wait_for_messages/);
 });
 

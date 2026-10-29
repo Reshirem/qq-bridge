@@ -22,6 +22,15 @@ assert.equal(classifyIncomingWake({
 assert.equal(classifyIncomingWake({ kind: 'group', selfId, message: [], replyTargetIsSelf: true }), 'atMention', 'verified reply-to-self wakes');
 assert.equal(classifyIncomingWake({ kind: 'group', selfId, message: [], replyTargetIsSelf: false }), null, 'ordinary group messages do not wake');
 assert.equal(classifyIncomingWake({ kind: 'unknown', selfId, message: [] }), null, 'unknown channels fail closed');
+assert.equal(classifyIncomingWake({
+  kind: 'group', selfId, message: [], text: '刚才聊到小鲸了', roleCardNames: ['小鲸']
+}), 'roleCardName:小鲸', 'the supplied selected persona-card name wakes');
+assert.equal(classifyIncomingWake({
+  kind: 'group', selfId, message: [], text: '刚才聊到旧卡了', roleCardNames: ['当前卡']
+}), null, 'a non-selected persona-card name does not wake');
+assert.equal(classifyIncomingWake({
+  kind: 'group', selfId, message: [], text: '小鲸', roleCardNames: []
+}), null, 'persona-card names do not wake when there is no selected role');
 
 assert.equal(wakeReasonBase('bootstrap:atMention@seq12'), 'atMention', 'bootstrap reason retains its direct trigger');
 assert.equal(wakeReasonBase('timeout'), 'timeout');

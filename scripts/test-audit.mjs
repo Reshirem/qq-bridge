@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
-  'test-autonomy-policy.mjs', 'test-audit-bridge.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
+  'test-autonomy-policy.mjs', 'test-dsh-modules.mjs', 'test-audit-bridge.mjs', 'test-a-memorix-readonly.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
   // DSH inbox 投影解析用于停止唯一全局 desktop-agent 前清理其排队工作。
