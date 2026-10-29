@@ -92,9 +92,11 @@ npm start
 
 该写法只对当前 PowerShell 窗口及其启动的进程生效。若通过 `start.bat` 启动，脚本会在未设置 `FFMPEG_PATH` 时自动检查仓库旁边的 `..\ffmpeg\bin\ffmpeg.exe`；其它安装位置请在 Windows 用户环境变量中设置 `FFMPEG_PATH`。修改环境变量后重新打开启动窗口并重启桥接。图片工具失败时，陪伴者会收到具体原因；缺少 FFmpeg 时应向用户说明部署依赖未配置。
 
-固定前缀在 WebUI“全局陪伴者”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个内置模块都可单独编辑；可选模块可切换是否写入提示词，必要的会话、安全和回合收尾模块保持启用。编辑时也可以逐个添加自定义模块，为其填写名称和正文、单独启用或删除；自定义模块会追加在固定前缀末尾并持久保存。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。保存后需重启 DSH，并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
+固定前缀在 WebUI“全局陪伴者”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个内置模块都可单独编辑；可选模块可切换是否写入提示词，必要的会话、安全和回合收尾模块保持启用。编辑时也可以逐个添加自定义模块，为其填写名称和正文、单独启用或删除；自定义模块会追加在固定前缀末尾并持久保存。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。保存固定前缀或首次安装新版 `qq-agent-presets` 后，需重启 DSH 并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
 
-同一面板下方的“运行时提示模板”维护桥接在具体事件中追加的文本，包括人格卡首次注入、QQ 来源提醒、休息到期/QQ 打断/异常恢复，以及长期记忆开场摘要。这些模板保存在 `config.json` 的 `desktopAgent.promptTemplates`，保存后立即用于后续对应事件；人格卡与记忆摘要只在新建或重建会话的首次提示中出现。模板里的花括号占位符需要保留，WebUI 会说明每个字段可用的占位符。
+当前选中的 `roles/<名称>.md` 人格卡通过 `qq-agent-presets` 注册的 `{{qq_bridge_active_role_card}}` 运行时变量加入 DSH `persona.prefix`。变量在每次提示词组装时读取当前选择和卡片内容，因此切换、清除、改名、删除或编辑后，下一次模型请求使用新状态；persona 固定前缀不会随普通对话历史压缩而摘要掉。人格卡会占用每次请求的 system prompt token，`role.maxInjectChars` 限制注入字符数，超长时前缀中包含截断提醒。没有选中卡片时变量为空，陪伴者继续使用固定前缀中的通用定位。
+
+同一面板下方的“运行时提示模板”维护桥接侧具体事件使用的文本：人格卡模板只负责格式化 persona 固定前缀内的动态卡片；QQ 来源提醒、休息到期/QQ 打断/异常恢复仍附加在对应会话消息中；长期记忆摘要只在新建或重建会话的首次提示中出现。这些模板保存在 `config.json` 的 `desktopAgent.promptTemplates`，保存后下一次提示词组装或对应事件即使用新内容。固定前缀变量标记必须保留；若 DSH 报 `unknown prompt variable`，确认 preset 和新版 `qq-agent-presets` 已安装并重启 DSH。
 
 在 DSH 的 `desktop-agent` 预设 → `tool-web` 插件配置中，`search` 与 `fetch` 分别控制 `web_search` 和 `web_fetch` 是否注册；本仓库的 preset 源默认将两项设为 `false`。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。启用工具后，DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。修改后重载 DSH 并重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
 

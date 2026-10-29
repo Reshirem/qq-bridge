@@ -102,11 +102,11 @@
         <strong>全局会话上下文</strong>
         <ol>
           <li><b>DSH 固定前缀</b>：整个全局会话共用，按用途拆成可编辑的模块；部分规则为必要模块，会保持启用。</li>
-          <li><b>人格提示词</b>：在全局会话第一次收到任务或提醒时注入一次，用于身份、性格和表达方式。</li>
-          <li><b>运行时提示模板</b>：桥接按场景追加到会话消息里的人格卡、QQ 提醒、休息恢复和记忆摘要文本。</li>
+          <li><b>当前人格卡</b>：由 DSH 的 persona 固定前缀在每次提示词组装时动态载入，定义身份、性格和表达方式。</li>
+          <li><b>运行时提示模板</b>：人格卡模板格式化 persona 前缀中的当前卡片；QQ 提醒、休息恢复和记忆摘要仍按场景进入会话消息。</li>
           <li><b>会话事件记录</b>：可按页查看 DSH 持久化的消息、工具调用和回合事件。</li>
         </ol>
-        <p>固定前缀保存后需重启 DSH 并重建全局会话。运行时提示模板保存后会用于后续对应场景；人格卡和记忆开场模板只会在新建或重建会话时再次注入。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；DSH 会根据运行状态整理或压缩上下文，推理过程不会在此展示。</p>
+        <p>固定前缀保存或首次安装新版人格卡变量后，需重启 DSH 并重建全局会话。之后切换、编辑、清除或删除人格卡，以及修改人格卡模板或长度上限，都会在下一次模型请求时生效；人格卡保留在 persona 固定前缀中，不随普通历史压缩丢失。记忆开场摘要仍只在新会话首次提示时附加。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；推理过程不会在此展示。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -117,10 +117,10 @@
         <div class="settings-content">
           <div class="meta" id="roleEditorMeta">当前是「新建」模式：填好名称与内容后点「新建人格」。</div>
           <div class="row">
-            <label style="flex:0 0 auto">注入上限（字符）</label>
+            <label style="flex:0 0 auto">前缀上限（字符）</label>
             <input type="number" id="roleInjectMax" min="1000" max="20000" step="500" style="flex:0 1 140px">
             <button id="roleInjectMaxSave" class="small">保存上限</button>
-            <span class="meta" id="roleInjectMaxMsg">限制角色卡首次加入全局会话的字符数；只在开场提示注入一次。</span>
+            <span class="meta" id="roleInjectMaxMsg">限制当前人格卡加入 DSH persona 固定前缀的字符数；每次模型请求组装时更新。</span>
           </div>
           <label>人格名（中文 / 字母 / 数字 / 横线）</label>
           <input type="text" id="newRoleName" placeholder="如：猫娘">
@@ -145,7 +145,7 @@
             <button id="roleSet">设置</button>
             <button id="roleClear">清除</button>
           </div>
-          <div class="meta">角色卡只在全局会话首次收到任务或提醒时注入一次。编辑或切换后，新角色会在新建或重建会话时生效。</div>
+          <div class="meta">当前人格卡会在每次 DSH 提示词组装时放入 persona 固定前缀。切换、编辑或清除后，下一次模型请求使用新状态；人格卡不会随普通历史压缩移除。</div>
         </div>
       </details>
 
@@ -179,9 +179,9 @@
       <details class="settings-group runtime-prompt-templates">
         <summary>运行时提示模板（人格卡、QQ 提醒、休息与记忆）</summary>
         <div class="settings-content">
-          <p class="meta">这些文本由桥接按场景附加到 DSH 会话消息中，不属于 DSH 固定前缀。保存后立即更新运行配置；人格卡和记忆摘要只在新会话开场时注入，QQ 提醒和恢复说明在后续事件中使用。</p>
+          <p class="meta">人格卡模板用于格式化每次放入 DSH persona 固定前缀的当前卡片；切换或编辑后下一次模型请求生效。QQ 提醒和恢复说明按后续事件附加到会话消息中，记忆摘要只在新会话开场时附加。保存模板后立即更新桥接运行配置。</p>
 
-          <label for="runtimePromptRoleCard">人格卡开场模板</label>
+          <label for="runtimePromptRoleCard">persona 前缀人格卡模板</label>
           <textarea id="runtimePromptRoleCard" class="runtime-prompt-template" rows="4" spellcheck="false"></textarea>
           <div class="meta">占位符：{roleName} 人格名（可省略），{roleContent} 人格卡正文（必须保留）。</div>
 

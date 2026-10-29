@@ -13,8 +13,8 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
 
 export const DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS = Object.freeze({
   roleCard: {
-    label: '人格卡开场模板',
-    description: '只在新会话第一次收到任务或提醒时使用。必须保留 {roleContent}；{roleName} 可按需省略。',
+    label: 'persona 前缀人格卡模板',
+    description: '用于格式化动态加入 DSH persona 固定前缀的当前人格卡。必须保留 {roleContent}；{roleName} 可按需省略。修改后在下一次 DSH 提示词组装时生效。',
     tokens: ['roleName', 'roleContent'],
     requiredTokens: ['roleContent'],
   },

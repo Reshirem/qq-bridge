@@ -3,8 +3,8 @@
 // 边界说明：
 //   预设提示词 = 按用途维护于 dsh/agent-presets/desktop-agent/prompt-modules.json，
 //                组合后写入 agent.cordis.yml 的 persona.prefix；改完需重启 DSH 生效。
-//   人格提示词 = roles/<名称>.md，规定 AI 是谁、什么性格（人设与语气）；
-//                由桥接在全局 DSH 会话首次收到提示时注入一次，新会话加载更新后的内容。
+//   人格卡 = roles/<名称>.md，由 qq-agent-presets 插件通过运行时变量动态注入
+//            persona.prefix；每次提示词组装都会读取当前卡片，普通历史压缩不会压缩固定前缀。
 //
 // 本模块只做纯文本/YAML 处理，不碰文件系统以外的任何状态，便于单测。
 import yaml from 'js-yaml';
@@ -14,13 +14,14 @@ export const PRESET_PROMPT_MAX_BYTES = 128 * 1024;
 export const PRESET_PROMPT_MODULES_VERSION = 1;
 export const PRESET_PROMPT_CUSTOM_MODULE_LIMIT = 32;
 export const PRESET_PROMPT_CUSTOM_TITLE_MAX_CHARS = 80;
+export const PRESET_ROLE_CARD_VARIABLE = '{{qq_bridge_active_role_card}}';
 
 /**
  * desktop-agent 固定前缀的可维护模块。required 模块负责运行时协议和关键边界，
  * 只能编辑正文，不能关闭；其它模块开关仅控制提示词文本，不改变 DSH 工具权限。
  */
 export const PRESET_PROMPT_MODULE_DEFINITIONS = Object.freeze([
-  { id: 'identity', title: '陪伴者与人格卡', description: '给出开放的陪伴者定位；人格卡决定具体身份和形态。', required: true },
+  { id: 'identity', title: '陪伴者与人格卡', description: '给出陪伴者定位，并在 persona 固定前缀中动态载入当前人格卡。', required: true },
   { id: 'autonomy', title: '相处与自主活动', description: '有任务时专注处理；没有任务时也可按兴趣自主探索。', required: false },
   { id: 'conversation', title: '自然对话与任务回应', description: '根据交流情境自然回应，不把闲聊变成工单。', required: false },
   { id: 'qq-channel', title: '交流与人际联系', description: '会话运行期间，无论当前在做什么，都可自然兼顾 QQ 交流。', required: true },
@@ -62,6 +63,9 @@ export function presetPromptBlockers(content) {
     if (!text.includes(needle)) {
       blockers.push(`缺少 QQ 渠道说明「${needle}」：请说明 SnowLuma 与 QQ 的关系`);
     }
+  }
+  if (!text.includes(PRESET_ROLE_CARD_VARIABLE)) {
+    blockers.push(`缺少运行时人格卡变量「${PRESET_ROLE_CARD_VARIABLE}」：当前人格卡无法进入 persona 固定前缀`);
   }
   if (text.trim().length < PRESET_MIN_BODY_CHARS) {
     blockers.push(`正文过短（${text.trim().length} 字符 < ${PRESET_MIN_BODY_CHARS}）：疑似内容被误删`);

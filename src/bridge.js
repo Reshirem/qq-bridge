@@ -72,6 +72,7 @@ const DESKTOP_AGENT_RECOVERY_BASE_MS = 60_000;
 const DESKTOP_AGENT_RECOVERY_MAX_MS = 30 * 60_000;
 const DESKTOP_AGENT_REST_MAX_MS = 12 * 60 * 60_000;
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
+let roleCardPromptTemplate = DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.roleCard;
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
 const FEEDBACK_FILE = path.join(STATE_DIR, 'feedback.json');
@@ -431,15 +432,14 @@ function listRoles() {
 }
 
 // ── 人格文件读写 ────────────────────────────────────────────────────────────
-// 人格提示词 = roles/<名称>.md，由桥接在全局 DSH 会话首次收到提示时注入一次。
+// 当前人格卡由 qq-agent-presets 的 system-prompt 变量提供到 DSH persona 固定前缀。
 const ROLES_DIR = path.join(ROOT, 'roles');
 const ROLE_NAME_MAX = 40;
 const ROLE_CONTENT_MAX_BYTES = 64 * 1024;
-// 注入上限：**按历史标签筛完小节之后**再截断，避免不适用的旧内容占用开场上下文。
+// 固定 persona 前缀中的人格卡上限：避免过长卡片挤占模型上下文。
 // 默认 8000（2026-10 起：小鲸鱼卡补了形象/圈层/白饭-token/开发事件梗，6000 会把
-// 末尾「你的样子」整段截掉——截断点落在卡尾而不是卡中，比调大预算更危险），
-// 限制首次注入的人格卡体积；可用 config.json 的 role.maxInjectChars 调整
-// （1000~20000）；启动时由 applyRoleInjectLimit() 写入。
+// 末尾「你的样子」整段截掉——截断点落在卡尾而不是卡中，比调大预算更危险）。
+// 可用 config.json 的 role.maxInjectChars 调整（1000~20000）；超限时 DSH 提示词会标明截断。
 const ROLE_INJECT_MAX_CHARS_DEFAULT = 8000;
 let roleInjectMaxChars = ROLE_INJECT_MAX_CHARS_DEFAULT;
 function applyRoleInjectLimit(value) {
@@ -472,7 +472,7 @@ function roleWarnings(content) {
   const text = String(content ?? '');
   const warnings = [];
   if (text.length > roleInjectMaxChars) {
-    warnings.push(`超出首次注入上限：当前角色卡有 ${text.length} 字符，只有前 ${roleInjectMaxChars} 字符会进入全局会话开场提示（可在配置里调 role.maxInjectChars）`);
+    warnings.push(`超过人格卡前缀上限：当前有 ${text.length} 字符，DSH persona 前缀每次最多加入前 ${roleInjectMaxChars} 字符（可调 role.maxInjectChars）`);
   }
   return warnings;
 }
@@ -490,12 +490,13 @@ function roleSummaries() {
         lines: content.split('\n').length,
         mtime: stat.mtimeMs,
         excerpt: firstMeaningfulLine(content),
-        injectedChars: Math.min(content.length, roleInjectMaxChars),
+        prefixChars: Math.min(content.length, roleInjectMaxChars),
+        injectedChars: Math.min(content.length, roleInjectMaxChars), // 兼容旧版控制台调用方
         truncated: content.length > roleInjectMaxChars,
         warnings: roleWarnings(content).length,
       };
     } catch {
-      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', injectedChars: 0, truncated: false, warnings: 0 };
+      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', prefixChars: 0, injectedChars: 0, truncated: false, warnings: 0 };
     }
   });
 }
@@ -713,13 +714,17 @@ function appendActivity(line) {
   appendActivityLog(`[${localClock()}] ${redactSensitiveText(String(line).replace(/[\r\n]+/g, ' '))}\n`);
 }
 
-// 当前选中的人格卡只保存在 role 字段。
+// 保存当前人格选择与 DSH persona 前缀动态区块所需的非敏感配置。
 function readRoleState() {
   const stored = readJsonSafe(ROLE_STATE_FILE, { role: null });
   return { role: stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored.role ?? null) : null };
 }
 function writeRoleState(role) {
-  atomicWriteJson(ROLE_STATE_FILE, { role: role ?? null });
+  atomicWriteJson(ROLE_STATE_FILE, {
+    role: role ?? null,
+    maxInjectChars: roleInjectMaxChars,
+    roleCardTemplate: roleCardPromptTemplate,
+  });
 }
 function sanitizeRoleName(name) {
   return String(name ?? '').replace(/[^\w\u4e00-\u9fff-]/g, '');
@@ -754,6 +759,7 @@ function loadConfig() {
     log(`⚠️ desktopAgent.promptTemplates 配置无效，运行时改用内置默认值：${error?.message ?? error}`);
     promptTemplates = normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS);
   }
+  roleCardPromptTemplate = promptTemplates.roleCard;
   const cfg = {
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
@@ -902,11 +908,11 @@ function loadConfig() {
     cfg.dsh.reasoningEffort = REASONING_EFFORT_DEFAULT;
   }
 
-  // 人格卡首次注入上限（字符）。历史硬编码 6000，现在可配：限制全局会话的开场上下文体积。
+  // 人格卡进入 persona 固定前缀的字符上限；保留旧配置键名以兼容 config.json。
   cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, ...(file.role ?? {}) };
   roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
   if (roleInjectMaxChars !== cfg.role.maxInjectChars) {
-    log(`人格卡首次注入上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
+    log(`人格卡 persona 前缀上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
   }
 
   return cfg;
@@ -1268,6 +1274,12 @@ async function main() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
+  // 只向 DSH 提示词 provider 同步当前选择和前缀格式元数据，不写入卡片正文或凭证。
+  try {
+    writeRoleState(readRoleState().role);
+  } catch (error) {
+    log(`⚠️ 无法更新 DSH 人格卡前缀元数据：${error?.message ?? error}`);
+  }
 
   const feedbackTimes = new Map(); // key -> [timestamp]：AI 反馈限频（内存态）
 
@@ -2478,11 +2490,11 @@ async function main() {
               return;
             }
             writeRoleState(name);
-            log(`控制台：角色已设置为 ${name}`);
+            log(`控制台：当前人格卡已设为 ${name}，后续 DSH 提示词组装时生效`);
             sendJson({ ok: true, role: name });
           } else {
             writeRoleState(null);
-            log('控制台：角色已清除');
+            log('控制台：当前人格卡已清除，后续 DSH 提示词组装时生效');
             sendJson({ ok: true, role: null });
           }
           return;
@@ -2497,7 +2509,12 @@ async function main() {
             roles: summaries.map((role) => role.name),
             summaries,
             current: rs.role ?? null,
-            limits: { nameMax: ROLE_NAME_MAX, contentMaxBytes: ROLE_CONTENT_MAX_BYTES, injectMaxChars: roleInjectMaxChars },
+            limits: {
+              nameMax: ROLE_NAME_MAX,
+              contentMaxBytes: ROLE_CONTENT_MAX_BYTES,
+              injectMaxChars: roleInjectMaxChars,
+              personaPrefixMaxChars: roleInjectMaxChars,
+            },
           });
           return;
         }
@@ -2513,7 +2530,7 @@ async function main() {
             chars: content.length,
             bytes: Buffer.byteLength(content, 'utf8'),
             warnings: roleWarnings(content),
-            limits: { injectMaxChars: roleInjectMaxChars },
+            limits: { injectMaxChars: roleInjectMaxChars, personaPrefixMaxChars: roleInjectMaxChars },
           });
           return;
         }
@@ -2526,8 +2543,9 @@ async function main() {
           atomicWriteJson(configFile, file);
           cfg.role = { ...(cfg.role ?? {}), maxInjectChars: next };
           roleInjectMaxChars = next;
-          log(`控制台：人格卡首次注入上限已设为 ${next} 字符（新建或重建会话时生效）`);
-          sendJson({ ok: true, maxInjectChars: next, limits: { injectMaxChars: next } });
+          writeRoleState(readRoleState().role);
+          log(`控制台：人格卡 persona 前缀上限已设为 ${next} 字符（后续 DSH 提示词组装时生效）`);
+          sendJson({ ok: true, maxInjectChars: next, personaPrefixMaxChars: next, limits: { injectMaxChars: next, personaPrefixMaxChars: next } });
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/desktop-agent/prompt-templates') {
@@ -2556,6 +2574,8 @@ async function main() {
             file.desktopAgent = { ...desktopAgent, promptTemplates: next };
             atomicWriteJson(configFile, file);
             cfg.desktopAgent.promptTemplates = next;
+            roleCardPromptTemplate = next.roleCard;
+            writeRoleState(readRoleState().role);
           } catch (error) {
             sendJson({ ok: false, error: `写入 config.json 失败：${error?.message ?? error}` }, 500);
             return;
@@ -6009,16 +6029,8 @@ async function main() {
     }
   }
 
-  function desktopAgentPromptText(text, { includeRoleCard = false, memoryContext = '' } = {}) {
-    const roleState = readRoleState();
-    const roleHint = includeRoleCard && roleState.role ? currentRoleHint() : '';
-    const rolePrefix = roleHint
-      ? `${renderDesktopAgentPromptTemplate(cfg.desktopAgent.promptTemplates.roleCard, {
-        roleName: roleState.role,
-        roleContent: roleHint,
-      })}\n\n`
-      : '';
-    return `${rolePrefix}${memoryContext}${String(text ?? '')}`;
+  function desktopAgentPromptText(text, { memoryContext = '' } = {}) {
+    return `${memoryContext}${String(text ?? '')}`;
   }
 
   let memoryBootstrapWarningLogged = false;
@@ -6068,12 +6080,12 @@ async function main() {
 
   async function submitDesktopAgentPrompt(sessionId, text) {
     // Serialize the first prompt so overlapping WebUI/QQ submissions cannot both
-    // append the opening role card to the same persistent DSH session.
+    // append the memory bootstrap to the same persistent DSH session.
     if (desktopAgentInitialContextPrompt) {
       await desktopAgentInitialContextPrompt.catch(() => {});
     }
-    const includeRoleCard = desktopAgentInitialContextSessionId !== sessionId;
-    if (!includeRoleCard) {
+    const includeMemoryBootstrap = desktopAgentInitialContextSessionId !== sessionId;
+    if (!includeMemoryBootstrap) {
       return api.sessions.prompt({
         sessionId,
         mode: 'queue',
@@ -6086,7 +6098,7 @@ async function main() {
       const accepted = await api.sessions.prompt({
         sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: desktopAgentPromptText(text, { includeRoleCard, memoryContext }) }]
+        content: [{ type: 'text', text: desktopAgentPromptText(text, { memoryContext }) }]
       });
       if (accepted?.result?.ok) {
         desktopAgentInitialContextSessionId = sessionId;
@@ -6827,46 +6839,6 @@ async function main() {
 
   loadSocialV2State();
 
-  // 当前角色卡：读 state/current-role.json + roles/<角色>.md，
-  // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。
-  // 缓存 key 为两个文件的 mtime，mtime 未变时直接返回，避免每次同步读文件。
-  let roleHintCache = { key: '', raw: '' };
-  // 原始人格卡（按 mtime 缓存，不截断）。
-  function roleRawContent() {
-    try {
-      const rs = readRoleState();
-      if (!rs.role) return '';
-      // 读取点也必须校验人格名：写入点（控制台 /role 命令）都过 sanitizeRoleName，
-      // 但 state/current-role.json 是**用户可直接编辑**的文件。没有这道校验时，
-      // {"role":"../../../../Users/Public/x"} 会让 roles/ 之外的文件被读进新会话的开场上下文。
-      const safeName = sanitizeRoleName(rs.role);
-      if (!safeName || safeName.includes('..')) return '';
-      const roleFile = path.join(ROLES_DIR, safeName + '.md');
-      const resolved = path.resolve(roleFile);
-      if (!resolved.startsWith(path.resolve(ROLES_DIR) + path.sep)) return '';
-      if (!fs.existsSync(resolved)) return '';
-      const stateStat = fs.statSync(ROLE_STATE_FILE);
-      const roleStat = fs.statSync(roleFile);
-      // 缓存 key 必须带上**文件名与文件大小**，不能只看 mtime：
-      // ① 有些文件系统 mtime 只有秒级粒度（或时钟回拨），同一 tick 内把角色卡重写成新人格，
-      //    两个 mtime 完全相同 → 缓存命中 → 新会话首次注入的还是旧人格；
-      //    带上名字后，切换角色（例如 a.md → b.md）永远不会误命中。
-      // ② 同名的原地重写若长度变了（大多数编辑都会变），size 变化也能击穿缓存。
-      // 代价只是多几次 stat，比"重建后还载入旧人格"划算得多。
-      const cacheKey = `${safeName}:${stateStat.mtimeMs}:${stateStat.size}:${roleStat.mtimeMs}:${roleStat.size}`;
-      if (roleHintCache.key === cacheKey) return roleHintCache.raw;
-      const raw = fs.readFileSync(roleFile, 'utf8');
-      roleHintCache = { key: cacheKey, raw };
-      return raw;
-    } catch {
-      return '';
-    }
-  }
-  function roleHintForCurrentRuntime() {
-    const content = roleRawContent();
-    if (!content) return '';
-    return content.length > roleInjectMaxChars ? truncateText(content, roleInjectMaxChars) : content;
-  }
   function isCjkLikeChar(ch) {
     if (!ch) return false;
     const code = ch.codePointAt(0);
@@ -6923,10 +6895,6 @@ async function main() {
     }
     if (!bad.length) return null;
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
-  }
-
-  function currentRoleHint() {
-    return roleHintForCurrentRuntime();
   }
 
   // QQ 群成员名片/昵称缓存：@ 段解析用，避免每条消息都调一次 OneBot API。

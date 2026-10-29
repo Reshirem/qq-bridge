@@ -70,7 +70,7 @@ async function refresh() {
 }
 
 // ── 人格管理 ────────────────────────────────────────────────────────────────
-// 人格卡只在全局会话首次收到提示时注入；修改后用于新建或重建的会话。
+// 当前人格卡由 DSH 每次提示词组装时动态放入 persona 固定前缀。
 let roleEditorState = { mode: 'new', name: '' };
 let roleCache = [];
 let roleInjectMax = 8000;
@@ -92,7 +92,7 @@ function renderRoleEditor() {
 function roleEditorWarnings(text) {
   const value = String(text ?? '');
   const warns = [];
-  if (value.length > roleInjectMax) warns.push(`超出注入上限：当前 ${value.length} 字符，只有前 ${roleInjectMax} 字符会进入提示词（多余 ${value.length - roleInjectMax} 字符不会生效）`);
+  if (value.length > roleInjectMax) warns.push(`超过 persona 前缀上限：当前 ${value.length} 字符，只有前 ${roleInjectMax} 字符会进入 DSH 固定前缀（多余 ${value.length - roleInjectMax} 字符不会生效）`);
   return warns;
 }
 
@@ -125,8 +125,8 @@ function resetRoleForm() {
 async function refreshRoles() {
   try {
     const r = await api('/api/roles');
-    if (r.limits?.injectMaxChars) {
-      roleInjectMax = Number(r.limits.injectMaxChars) || roleInjectMax;
+    if (r.limits?.personaPrefixMaxChars || r.limits?.injectMaxChars) {
+      roleInjectMax = Number(r.limits.personaPrefixMaxChars ?? r.limits.injectMaxChars) || roleInjectMax;
       const input = document.getElementById('roleInjectMax');
       if (input && document.activeElement !== input) input.value = String(roleInjectMax);
     }
@@ -162,11 +162,11 @@ async function refreshRoles() {
         const badge = document.createElement('span');
         badge.className = 'persona-badge warn';
         badge.textContent = `超出上限`;
-        badge.title = `新会话首次注入 ${role.injectedChars ?? role.chars} 字符，超过 ${roleInjectMax} 字符上限`;
+        badge.title = `当前人格卡有 ${role.chars} 字符，超过 ${roleInjectMax} 字符 persona 前缀上限`;
         head.appendChild(badge);
       }
       const meta = document.createElement('small');
-      const injection = `当前 desktop-agent runtime 注入 ${role.injectedChars ?? role.chars} 字符`;
+      const injection = `persona 前缀载入 ${role.prefixChars ?? role.injectedChars ?? role.chars} 字符`;
       meta.textContent = `共 ${role.chars} 字符 · ${injection}${role.excerpt ? ' · ' + role.excerpt : ''}`;
       item.append(head, meta);
       item.addEventListener('click', () => openRoleForEdit(role.name));
@@ -459,7 +459,7 @@ document.getElementById('runtimePromptTemplatesSave').addEventListener('click', 
     const response = await api('/api/desktop-agent/prompt-templates', 'POST', { templates });
     if (!response.ok) throw new Error(response.error || '保存失败');
     renderRuntimePromptTemplates(response.templates || templates);
-    setRuntimePromptTemplatesMsg('已保存；后续对应场景会使用新模板。', true);
+    setRuntimePromptTemplatesMsg('已保存；人格卡模板会在下一次 DSH 提示词组装时生效，其他模板用于后续对应事件。', true);
   } catch (error) {
     setRuntimePromptTemplatesMsg(`保存失败：${error?.message ?? error}`, false);
   } finally {
@@ -830,14 +830,14 @@ document.getElementById('roleSet').addEventListener('click', async () => {
   const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim() });
   if (r.ok) {
     setRoleMsg(r.role
-      ? `已选择「${r.role}」。人格卡会在全局会话首次收到任务或提醒时注入；已开始的会话需重建后更新。`
-      : '已清除角色卡选择；新会话不再注入人格卡，已开始的会话保留现有上下文。', true);
+      ? `已选择「${r.role}」。当前人格卡会放入 DSH persona 固定前缀，下次模型请求时更新。`
+      : '已清除人格卡选择；下次模型请求时 persona 前缀恢复为通用陪伴者定位。', true);
     refreshRoles();
   } else alert(r.error || '设置失败');
 });
 document.getElementById('roleClear').addEventListener('click', async () => {
   const r = await api('/api/role', 'POST', { role: null });
-  setRoleMsg(r.ok ? '已清除角色卡选择；新会话不再注入人格卡，已开始的会话保留现有上下文。' : (r.error || '清除失败'), r.ok);
+  setRoleMsg(r.ok ? '已清除人格卡选择；下次模型请求时 persona 前缀恢复为通用陪伴者定位。' : (r.error || '清除失败'), r.ok);
   refreshRoles();
   refresh();
 });
@@ -854,7 +854,7 @@ document.getElementById('roleCreate').addEventListener('click', async () => {
   }
   const endpoint = editing || exists ? '/api/roles/update' : '/api/roles/create';
   const r = await api(endpoint, 'POST', { name, content });
-  setRoleMsg(r.ok ? `✅ 已保存「${name}」。已开始的会话不会重复注入人格卡，新建或重建会话时加载当前选择。` : ('❌ ' + (r.error || '失败')), r.ok);
+  setRoleMsg(r.ok ? `✅ 已保存「${name}」。如果它是当前人格卡，下一次模型请求组装提示词时会载入更新后的内容。` : ('❌ ' + (r.error || '失败')), r.ok);
   if (r.ok) {
     roleEditorState = { mode: 'edit', name };
     document.getElementById('roleEditorWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
@@ -946,13 +946,13 @@ document.getElementById('desktopPromptRestore').addEventListener('click', async 
 document.getElementById('desktopAgentHistoryRefresh').addEventListener('click', () => loadDesktopAgentHistory(false));
 document.getElementById('desktopAgentHistoryOlder').addEventListener('click', () => loadDesktopAgentHistory(true));
 
-// ── 人格注入上限 ────────────────────────────────────────────────────────────
+// ── 人格卡 persona 前缀上限 ─────────────────────────────────────────────────
 document.getElementById('roleInjectMaxSave').addEventListener('click', async () => {
   const msg = document.getElementById('roleInjectMaxMsg');
   const value = Number(document.getElementById('roleInjectMax').value);
   if (!Number.isFinite(value) || value < 1000 || value > 20000) { msg.textContent = '请输入 1000~20000 之间的整数'; msg.className = 'meta err'; return; }
   const r = await api('/api/roles/limit', 'POST', { maxInjectChars: value });
-  msg.textContent = r.ok ? `✅ 已设为 ${r.maxInjectChars} 字符，新建或重建会话时生效` : ('❌ ' + (r.error || '保存失败'));
+  msg.textContent = r.ok ? `✅ 已设为 ${r.personaPrefixMaxChars ?? r.maxInjectChars} 字符，下一次 DSH 提示词组装时生效` : ('❌ ' + (r.error || '保存失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) refreshRoles();
 });
