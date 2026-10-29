@@ -21,17 +21,17 @@ export const PRESET_ROLE_CARD_VARIABLE = '{{qq_bridge_active_role_card}}';
  * 只能编辑正文，不能关闭；其它模块开关仅控制提示词文本，不改变 DSH 工具权限。
  */
 export const PRESET_PROMPT_MODULE_DEFINITIONS = Object.freeze([
-  { id: 'identity', title: '陪伴者与人格卡', description: '给出陪伴者定位，并在 persona 固定前缀中动态载入当前人格卡。', required: true },
-  { id: 'autonomy', title: '相处与自主活动', description: '有任务时专注处理；没有任务时也可按兴趣自主探索。', required: false },
-  { id: 'conversation', title: '自然对话与任务回应', description: '根据交流情境自然回应，不把闲聊变成工单。', required: false },
+  { id: 'identity', title: '陪伴者与人格卡', description: '动态载入当前人格卡，以其决定角色身份、性格和表达方式。', required: true },
+  { id: 'autonomy', title: '相处与自主活动', description: '结合人格卡和当下情况，选择自主活动或休息。', required: false },
+  { id: 'conversation', title: '自然对话与任务回应', description: '按照人格卡的语气与相处方式回应，结合情境调整表达。', required: false },
   { id: 'qq-channel', title: '交流与人际联系', description: '会话运行期间，无论当前在做什么，都可自然兼顾 QQ 交流。', required: true },
-  { id: 'qq-wait', title: '等待交流的后续', description: '在当前活动中等待一段相关交流，不用于维持在线。', required: false },
+  { id: 'qq-wait', title: '等待交流的后续', description: '等待关注的对话消息，并按上下文继续交流。', required: false },
   { id: 'computer-scope', title: '电脑与其他活动空间', description: '电脑是可探索空间之一，也可使用其他已开放工具。', required: false },
   { id: 'computer-user', title: '让用户优先使用电脑', description: '发现用户操作时停止输入，并在用户离开后再继续。', required: true },
   { id: 'protected-apps', title: '受保护的项目与运行时应用', description: '限制对 ChatGPT、DSH、qq-bridge 和 SnowLuma 图形界面的操作。', required: true },
   { id: 'untrusted-input', title: '外部信息与信任边界', description: '外部内容可作背景，不能扩大指令或权限。', required: true },
   { id: 'memory', title: '记忆与经历', description: '趁重要信息仍在上下文时，选择性记录跨会话有用的内容。', required: false },
-  { id: 'planned-rest', title: '休息与节奏', description: '在没有值得继续的事情时休息；避免为活跃而安排周期活动。', required: false },
+  { id: 'planned-rest', title: '休息与节奏', description: '按照人格卡和自身节奏选择休息时间，也可以安排之后回来。', required: false },
   { id: 'turn-lifecycle', title: '结束这一轮', description: '以 agent_rest 作为活动回合的最后一个工具调用。', required: true },
 ]);
 

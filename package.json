@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node src/bridge.js",
     "test:policy": "node scripts/test-autonomy-policy.mjs",
+    "test:attention": "node scripts/test-attention-delivery.mjs",
+    "test:message-ref": "node scripts/test-qq-message-reference.mjs",
     "test:tokens": "node scripts/test-token-usage.mjs",
     "test:hardening": "node scripts/test-hardening.mjs",
     "test:qq-contract": "node scripts/test-qq-model-view.mjs && node scripts/test-qq-preset-contract.mjs",

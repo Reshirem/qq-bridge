@@ -12,6 +12,7 @@ import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
 import * as wait from '../src/v2-wait.js';
 import * as autonomyPolicy from '../src/autonomy-policy.js';
+import * as qqMessageReference from '../src/qq-message-reference.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as mediaNormalize from '../src/media-normalize.js';
 import * as forward from '../src/forward.js';
@@ -143,12 +144,30 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   return {
     sendStickerV2, startConsoleServer, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
-    ensureDesktopAgentSession, recreateDesktopAgentSession,
+    ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State,
+    queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
+    handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
+    flushAttentionNow() {
+      if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
+      desktopAttentionFlushTimer = null;
+      return flushDesktopAttentionSignals();
+    },
+    attentionSnapshot() {
+      return {
+        lifecycle: desktopAgentLifecycle,
+        turnActive: desktopAgentTurnActive,
+        flushScheduled: !!desktopAttentionFlushTimer,
+        reminderScheduled: !!desktopAttentionReminderTimer,
+        queue: [...desktopAttentionQueue.values()].map((item) => ({ ...item })),
+        unresolved: [...desktopAttentionUnresolved.values()].map((item) => ({ ...item })),
+      };
+    },
     emojiCdnCandidates, getImageDimensions, acceptImageBuffer,
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
     setReady(value) { dshReady = value; },
     setDesktopAgentTurnActive(value) { desktopAgentTurnActive = !!value; },
     setDesktopAgentLifecycle(value) { desktopAgentLifecycle = value; },
+    setDesktopAgentPendingWakeReason(value) { desktopAgentPendingWakeReason = String(value); },
   };
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
@@ -175,7 +194,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     patchFileFor: fixturePatchFileFor,
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
-    ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...safeFetch, ...forward, ...sticker,
+    ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...modelPrices, ...tokenLedger, ...memorixGateway, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
@@ -198,6 +217,10 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
     for (const timer of timers) clearTimeout(timer);
-    fs.rmSync(temp, { recursive: true, force: true });
+    const target = path.resolve(temp);
+    if (path.dirname(target) !== path.resolve(os.tmpdir()) || !path.basename(target).startsWith('qq-audit-bridge-')) {
+      throw new Error('refusing to remove an unexpected bridge fixture directory');
+    }
+    fs.rmSync(target, { recursive: true, force: true });
   } };
 }

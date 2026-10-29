@@ -221,6 +221,16 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     assert.deepEqual(requests.at(-1).body, { key: common.key, throughSeq: 21 });
     assert.equal(requests.at(-1).token, 'f'.repeat(64));
 
+    for (const name of ['qq_get_message_detail', 'qq_get_message_images', 'qq_get_conversation_history']) {
+      await client.callTool({ name, arguments: { ...common, messageId: 'id:-55' } });
+      assert.equal(new URL(requests.at(-1).url, 'http://fixture').searchParams.get('messageId'), 'id:-55');
+    }
+    await client.callTool({ name: 'qq_send_message', arguments: { ...common, messages: '收到', replyToMessageId: 'seq:55' } });
+    assert.equal(requests.at(-1).body.replyToMessageId, 'seq:55');
+    const bufferedReference = 'seq:55@12345678-1234-4567-89ab-123456789abc';
+    await client.callTool({ name: 'qq_collect_sticker', arguments: { ...common, messageId: bufferedReference } });
+    assert.equal(requests.at(-1).body.messageId, bufferedReference);
+
     for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '21']) {
       const before = requests.length;
       const invalid = await client.callTool({ name: 'qq_mark_read', arguments: { ...common, throughSeq: value } });

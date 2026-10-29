@@ -320,11 +320,11 @@ server.tool(
 
 server.tool(
   'qq_send_group_message',
-  '向指定 QQ 群发送一条纯文本消息；如需引用某条消息，可传 replyToMessageId（非零整数，可为负数），可先用 qq_get_recent_messages / qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message。不要在发送后输出“已发送”类汇报。',
+  '向指定 QQ 群发送一条纯文本消息；如需引用，可传 replyToMessageId（id:QQ消息ID 或 seq:本地序号），可先用 qq_get_recent_messages / qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message。不要在发送后输出“已发送”类汇报。',
   {
     groupId: z.union([z.number(), z.string()]).describe('目标群号'),
     message: z.string().describe('消息文本，纯文本，不要用 Markdown 或 CQ 码'),
-    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
+    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；可选'),
   },
   async ({ groupId, message, replyToMessageId }) => {
     try {
@@ -342,10 +342,10 @@ server.tool(
 
 server.tool(
   'qq_reply',
-  '在指定 QQ 群里引用/回复某条消息，并发送一条文本。适合群消息很多、需要明确“我回的是哪条”时使用；replyToMessageId 是被引用消息的 id（非零整数，QQ 消息 id 可能为负数），可先用 qq_get_recent_messages / qq_get_unread_messages / qq_get_message_detail 查到具体消息内容和 id。发送前桥接会校验该 id 存在且属于目标会话。只有以下情况才需要引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
+  '在指定 QQ 群里引用/回复某条消息，并发送一条文本。适合群消息很多、需要明确“我回的是哪条”时使用；replyToMessageId 使用 id:QQ消息ID 或 seq:本地序号，可先用 qq_get_recent_messages / qq_get_unread_messages / qq_get_message_detail 查到具体消息。发送前桥接会校验该消息存在且属于目标会话。只有以下情况才需要引用：① 你这条消息指向的人或消息并非最新一条别人的消息（也就是你在回更早的某条）；② 你连续几句话里不同消息指代的是不同的消息或不同的人。其他情况（上下文唯一、刚在接同一条最新消息）不要引用，别让对方猜，也别为了用工具而用。',
   {
     groupId: z.union([z.number(), z.string()]).describe('目标群号'),
-    replyToMessageId: z.union([z.number(), z.string()]).describe('被引用/回复的消息 id（非零整数，可为负数）'),
+    replyToMessageId: z.union([z.number(), z.string()]).describe('被引用消息：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）'),
     message: z.string().describe('要发送的文本，纯文本，不要用 Markdown 或 CQ 码'),
   },
   async ({ groupId, replyToMessageId, message }) => {
@@ -364,11 +364,11 @@ server.tool(
 
 server.tool(
   'qq_send_private_message',
-  '向指定 QQ 好友发送一条私聊消息。若提供 replyToMessageId，会以 QQ 引用/回复形式发出（引用条 + 文本）。replyToMessageId 必须是非零整数消息 id（QQ 消息 id 可能为负数），可先用 qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message。不要在发送后输出“已发送”类汇报。',
+  '向指定 QQ 好友发送一条私聊消息。若提供 replyToMessageId，会以 QQ 引用/回复形式发出（引用条 + 文本）。消息定位使用 id:QQ消息ID 或 seq:本地序号，可先用 qq_get_message_detail 查询。兼容发送入口，优先使用 qq_send_message。不要在发送后输出“已发送”类汇报。',
   {
     userId: z.union([z.number(), z.string()]).describe('目标好友 QQ 号'),
     message: z.string().describe('消息文本，纯文本，不要用 Markdown 或 CQ 码'),
-    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
+    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；可选'),
   },
   async ({ userId, message, replyToMessageId }) => {
     try {
@@ -426,7 +426,7 @@ server.tool(
   '按需读取目标会话的 SnowLuma 消息历史（只读）。默认获取最新记录；传 messageId 可从该消息附近继续读取。不自动标记本地未读水位；需要收尾时仍用 qq_get_unread_messages / qq_get_recent_messages 返回的 readThroughSeq。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-    messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点消息 id；省略时从最新记录开始'),
+    messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
     count: z.number().int().min(1).max(100).optional().describe('最多返回多少条，默认 20，最大 100'),
     reverseOrder: z.boolean().optional().describe('是否按逆序读取，默认 false')
   },
@@ -462,7 +462,7 @@ server.tool(
 
 server.tool(
   'qq_mark_read',
-  '将指定会话已查看的未读消息标记为已读。throughSeq 使用最近读取结果的 readThroughSeq，避免清除读取后才到达的新消息；省略 throughSeq 会按旧行为清空当前全部未读，因此推荐始终带上水位。群聊下一次自动唤醒固定只来自真实 @ 你或验证过的回复你，私聊消息仍会唤醒。',
+  '将指定会话已查看的未读消息标记为已读。throughSeq 使用最近读取结果的 readThroughSeq，避免清除读取后才到达的新消息；省略 throughSeq 会按旧行为清空当前全部未读，因此推荐始终带上水位。普通群消息会保留在缓冲中，可以主动查看；私聊，以及群里 @ 你、回复或引用你的消息、提到当前人格卡名称或配置关键词，也可能触发 QQ 提醒。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('本次确认已读的消息水位，使用已查看结果中的 readThroughSeq；不会清除更晚到达的消息')
@@ -479,9 +479,9 @@ server.tool(
 
 server.tool(
   'agent_rest',
-  '结束当前全局陪伴者活动回合。完成本轮有意义的工作后，必须将此工具作为最后一个工具调用；调用后桥接会结束当前 DSH 回合。durationMs 可设为 1 秒至 12 小时，安排到期后启动新回合；省略表示无限期休息。休息期间不会运行异常回合的指数恢复重试。',
+  '结束当前全局陪伴者活动回合。每个活动回合必须将此工具作为最后一个工具调用；调用后桥接会结束当前 DSH 回合。durationMs 可设为 1 秒至 12 小时，安排到期后启动新回合；省略表示无限期休息。可以根据自己的节奏安排之后回来，不需要事先确定具体任务。休息期间不会运行异常回合的指数恢复重试。',
   {
-    durationMs: z.number().int().min(1000).max(12 * 60 * 60_000).optional().describe('休息时长，单位毫秒；省略表示无限期休息，最长 12 小时')
+    durationMs: z.number().int().min(1000).max(12 * 60 * 60_000).optional().describe('有限休息时长，单位毫秒（1 秒至 12 小时）；省略表示无限期休息')
   },
   async ({ durationMs }) => {
     try {
@@ -542,7 +542,7 @@ server.tool(
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messages: z.union([z.string(), z.array(z.string()).min(1)]).describe('要发送的内容：字符串=一条；数组=分多条'),
-    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
+    replyToMessageId: z.union([z.number(), z.string()]).optional().describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；可选'),
     atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中用于点名某个人；与引用二选一即可，不要滥用）'),
     gapMode: z.enum(['auto', 'fixed', 'byLength']).optional().describe('auto=桥接随机；fixed=固定间隔；byLength=按字数计算'),
     gapMs: z.number().optional().describe('fixed 模式下的统一间隔（毫秒）'),
@@ -668,10 +668,10 @@ server.tool(
 
 server.tool(
   'qq_get_message_detail',
-  '按 message_id / 本地 seq 查看单条消息的发送者、引用信息与正文（只读）。注意：正文最多返回 200 字符，textTruncated=true 表示被截断，这里不是读取长消息全文的入口。',
+  '按 QQ 消息 ID 或本地 seq 查看单条消息的发送者、引用信息与正文（只读）。使用 id:QQ消息ID 或 seq:本地序号来区分两者。正文最多返回 200 字符，textTruncated=true 表示被截断。单条详情不推进未读水位，需要确认已读时请读取未读消息。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-    messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可能为负数）')
+    messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数')
   },
   async ({ key, messageId }) => {
     try {
@@ -707,7 +707,7 @@ if (cfg.socialV2?.tools?.getImages !== false) {
     '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情。**动图（GIF/动态表情）会被桥接抽帧拼成多格图再给你**：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」——按格子顺序理解动作即可，不要把它当成一张九宫格照片；没有这类说明就是静态图。体积过大的图会被自动缩放/重编码，说明里会给出原始尺寸与体积；如果错误提示缺少 FFmpeg，明确告诉用户这是桥接部署依赖未配置，建议设置 FFMPEG_PATH 并重启桥接；如果图确实无法提供，如实说明，不要编造画面。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-      messageId: z.union([z.number(), z.string()]).describe('要查看的消息 id（QQ 消息 id 可为负数；二代也可用本地 seq）'),
+      messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数'),
     },
     async ({ key, messageId }) => {
       try {
@@ -802,7 +802,7 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       stickerId: z.string().describe('表情标识：emoji_id / md5 / 图片 URL（来自 qq_list_stickers）'),
-      replyToMessageId: z.union([z.number(), z.string()]).optional().describe('要引用/回复的消息 id（非零整数，可为负数，可选）'),
+      replyToMessageId: z.union([z.number(), z.string()]).optional().describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；可选'),
       atUserId: z.union([z.number(), z.string()]).optional().describe('要 @ 的群成员 QQ 号（群聊中可选，私聊不可用）')
     },
     async ({ key, stickerId, replyToMessageId, atUserId }) => {
@@ -823,10 +823,10 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.sendSticker
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.collectSticker !== false) {
   server.tool(
     'qq_collect_sticker',
-    '收藏当前会话里别人发的一张表情/图片到你的 QQ 收藏表情。messageId 用 qq_get_unread_messages / qq_get_recent_messages 返回的 messageId 或 seq。注意：不要频繁收藏，只在真的觉得有意思/好用/戳中你时才收藏；收藏后你可以在 qq_list_stickers 里看到并继续使用。',
+    '收藏当前会话里别人发的一张表情/图片到你的 QQ 收藏表情。messageId 使用 id:QQ消息ID 或 seq:本地序号，值可从 qq_get_unread_messages / qq_get_recent_messages 获取。注意：不要频繁收藏，只在真的觉得有意思/好用/戳中你时才收藏；收藏后你可以在 qq_list_stickers 里看到并继续使用。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-      messageId: z.string().describe('要收藏的那条消息的 messageId 或 seq（来自 qq_get_unread_messages / qq_get_recent_messages）')
+      messageId: z.string().describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）')
     },
     async ({ key, messageId }) => {
       try {

@@ -1406,7 +1406,7 @@ document.getElementById('v2ResumeBtn').addEventListener('click', async () => {
   refreshV2Activity();
 });
 document.getElementById('v2ResetBtn').addEventListener('click', async () => {
-  if (!confirm('确定清空本地 QQ 消息缓存与读取水位？全局陪伴者会话和运行状态不会改变。')) return;
+  if (!confirm('确定清空本地 QQ 消息缓存、读取水位和待处理 QQ 提醒？全局陪伴者会话和运行状态不会改变。')) return;
   const r = await api('/api/socialV2/reset', 'POST', {});
   const msg = document.getElementById('v2ConfigMsg');
   msg.textContent = r.ok ? '✅ 已清空 QQ 消息缓存' : ('❌ ' + (r.error || '失败'));

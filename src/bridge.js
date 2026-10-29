@@ -33,6 +33,7 @@ import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-p
 import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
 import { classifyIncomingWake } from './autonomy-policy.js';
+import { findQQMessageReference, parseQQMessageReference } from './qq-message-reference.js';
 import { compactModelMessage, describeAge } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel } from './media-normalize.js';
@@ -1505,7 +1506,7 @@ async function main() {
   async function collectStickerV2(key, messageRef) {
     const assertSendAllowed = captureSendGuard(key);
     const st = getSocialV2State(key);
-    const found = (st.recentMessages || []).find((m) => m && (String(m.seq) === String(messageRef) || (m.messageId && String(m.messageId) === String(messageRef))));
+    const { message: found } = findQQMessageReference(st, messageRef);
     if (!found) throw new Error('找不到这条消息，请确认 messageId/seq 有效且属于当前会话');
     if (found.isSelf) throw new Error('不能收藏自己发的表情，只能收藏群友发的');
     const mediaList = Array.isArray(found.media) ? found.media : [];
@@ -1678,6 +1679,7 @@ async function main() {
   let desktopAttentionFlushPromise = null;
   const desktopAttentionQueue = new Map(); // conversation key -> aggregated metadata-only signal
   const desktopAttentionUnresolved = new Map(); // key -> last unread signal that may receive one rest-time reminder
+  let desktopAttentionGeneration = 0; // Invalidates batches when the QQ message buffer is cleared.
   const DESKTOP_ATTENTION_BATCH_MS = 5000;
   const DESKTOP_ATTENTION_MAX_SOURCES = 50;
   const DESKTOP_ATTENTION_REMINDER_CHECK_MS = 60_000;
@@ -3466,11 +3468,22 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/reset') {
           socialV2.conversations.clear();
+          socialV2.bufferId = crypto.randomUUID();
           seenForwardIds.clear();
           lastSendFailed.clear();
           feedbackTimes.clear();
+          desktopAttentionGeneration += 1;
+          desktopAttentionQueue.clear();
+          desktopAttentionUnresolved.clear();
+          clearDesktopAttentionReminderTimer();
+          if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
+          desktopAttentionFlushTimer = null;
+          if (desktopAgentPendingWakeReason === 'qq-attention') {
+            desktopAgentPendingWakeReason = '';
+            saveDesktopAgentState();
+          }
           saveSocialV2State();
-          log('控制台：已清空 QQ 消息缓冲和读取水位；全局陪伴者会话与运行状态保持不变');
+          log('控制台：已清空 QQ 消息缓冲、读取水位和待处理 QQ 提醒；全局陪伴者会话与运行状态保持不变');
           sendJson({ ok: true });
           return;
         }
@@ -3547,11 +3560,21 @@ async function main() {
             ? { group_id: id, count, reverse_order: reverseOrder }
             : { user_id: id, count, reverse_order: reverseOrder };
           if (messageId) {
-            if (!/^-?\d+$/.test(messageId) || messageId.length > 20) {
+            const reference = findQQMessageReference(getSocialV2State(key), messageId);
+            if (reference.kind === 'seq' && !reference.message) {
+              sendJson({ ok: false, error: '本地缓存中未找到该消息，请重新读取未读或最近消息' }, 400);
+              return;
+            }
+            const anchorId = reference.kind === 'seq' ? String(reference.message?.messageId ?? '') : reference.value;
+            if (reference.kind === 'seq' && !anchorId) {
+              sendJson({ ok: false, error: '该本地序号没有可用的 QQ 消息 ID，请改用未读或最近消息查看上下文' }, 400);
+              return;
+            }
+            if (!/^-?[1-9]\d*$/.test(anchorId) || anchorId.length > 20) {
               sendJson({ ok: false, error: 'messageId 必须是安全的 QQ 消息整数' }, 400);
               return;
             }
-            params.message_id = messageId;
+            params.message_id = anchorId;
           }
           try {
             const data = await onebotReadAction(action, params);
@@ -3878,9 +3901,8 @@ async function main() {
             sendJson({ ok: false, error: '私聊不需要 @' }, 400);
             return;
           }
-          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
-            sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
-            return;
+          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
+            parseQQMessageReference(replyToMessageId);
           }
           const sendCfg = cfg.socialV2?.send ?? {};
           const maxMsgs = Math.max(1, Number(sendCfg.burstMaxMessages) || 8);
@@ -3917,7 +3939,17 @@ async function main() {
           let quotedInfo = null;
           let actualReplyToMessageId = replyToMessageId;
           if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
-            const resolved = await resolveReplyTargetV2(st, kind, id, String(replyToMessageId).trim());
+            let resolved;
+            try {
+              resolved = await resolveReplyTargetV2(st, kind, id, String(replyToMessageId).trim());
+            } catch (error) {
+              for (let i = 0; i < messages.length; i++) {
+                const idx = st.sendTimes.indexOf(now);
+                if (idx >= 0) st.sendTimes.splice(idx, 1);
+              }
+              saveSocialV2State();
+              throw error;
+            }
             if (!resolved) {
               // 引用解析失败：回滚已预占的发送额度
               for (let i = 0; i < messages.length; i++) {
@@ -4139,9 +4171,8 @@ async function main() {
             return;
           }
           if (kind === 'private' && atUserId) { sendJson({ ok: false, error: '私聊不需要 @' }, 400); return; }
-          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
-            sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
-            return;
+          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
+            parseQQMessageReference(replyToMessageId);
           }
           let quotedInfo = null;
           let actualReplyToMessageId = replyToMessageId;
@@ -4219,7 +4250,7 @@ async function main() {
           if (!stickerEnabled()) { sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
           const body = await readBody();
           const key = String(body.key ?? '').trim();
-          const messageRef = String(body.messageId ?? body.seq ?? '').trim();
+          const messageRef = String(body.messageId ?? (body.seq == null ? '' : `seq:${body.seq}`)).trim();
           if (!key || !messageRef) { sendJson({ ok: false, error: 'key 和 messageId/seq 不能为空' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
@@ -4253,7 +4284,7 @@ async function main() {
             if (st.stickerCollectTimes.length > 500) st.stickerCollectTimes = st.stickerCollectTimes.slice(-500);
             saveSocialV2State();
             log(`[sticker] AI 收藏表情失败 ${key}: ${error?.message ?? error}`);
-            sendJson({ ok: false, error: `收藏表情失败：${error?.message ?? error}` }, 500);
+            sendJson({ ok: false, error: `收藏表情失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
           }
           return;
         }
@@ -4647,32 +4678,26 @@ async function main() {
           const id = Number(keyMatch[2]);
           try {
             const st = getSocialV2State(key);
-            const found = (st.recentMessages || []).find((m) => m && (String(m.seq) === messageId || (m.messageId && String(m.messageId) === messageId)));
+            const reference = findQQMessageReference(st, messageId);
+            const found = reference.message;
             const forwardFields = found ? {
               forwardIds: Array.isArray(found.forwardIds) ? found.forwardIds : [],
               hasForward: !!found.hasForward
             } : {};
-            let info = null;
-            // 如果入参命中本地 seq 且本地存有真实 messageId，优先按 seq 展示，避免与真实 id 冲突。
-            if (found && found.messageId && String(found.messageId) !== messageId) {
+            let info;
+            if (found) {
               info = {
                 sender: String(found.sender || ''),
                 text: String(found.text || found.plain || '').slice(0, 200),
                 userId: found.userId ? String(found.userId) : null,
-                messageId: String(found.messageId),
+                messageId: found.messageId != null ? String(found.messageId) : null,
                 seq: found.seq
               };
+            } else if (reference.kind === 'id') {
+              const remote = await resolveReplyInfo(kind, id, reference.value);
+              info = remote ? { ...remote, messageId: reference.value } : null;
             } else {
-              info = await resolveReplyInfo(kind, id, messageId);
-              if (!info && found) {
-                info = {
-                  sender: String(found.sender || ''),
-                  text: String(found.text || found.plain || '').slice(0, 200),
-                  userId: found.userId ? String(found.userId) : null,
-                  messageId: found.messageId ? String(found.messageId) : null,
-                  seq: found.seq
-                };
-              }
+              info = null;
             }
             // 无论 info 来自本地还是 OneBot，只要本地有 found 就补充转发字段，避免提示词与实现不一致。
             if (info && found) Object.assign(info, forwardFields);
@@ -4680,7 +4705,7 @@ async function main() {
             if (info) info.textTruncated = String(info.text ?? '').length >= 200;
             sendJson({ ok: true, key, messageId, info });
           } catch (error) {
-            sendJson({ ok: false, error: `获取消息详情失败：${error?.message ?? error}` }, 500);
+            sendJson({ ok: false, error: `获取消息详情失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
           }
           return;
         }
@@ -4911,6 +4936,10 @@ async function main() {
             return;
           }
           const media = findMessageMedia(key, messageId);
+          if (!media) {
+            sendJson({ ok: true, messageId, media: [], images: [], note: '本地缓存中未找到该消息，无法确定是否包含图片/表情' });
+            return;
+          }
           if (!media.length) {
             sendJson({ ok: true, messageId, media: [], images: [], note: '该消息没有可读取的图片/表情元数据' });
             return;
@@ -4960,9 +4989,8 @@ async function main() {
             sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403);
             return;
           }
-          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '' && !/^-?[1-9]\d*$/.test(String(replyToMessageId).trim())) {
-            sendJson({ ok: false, error: 'replyToMessageId 必须是非零整数（消息 id 可能为负数）' }, 400);
-            return;
+          if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
+            parseQQMessageReference(replyToMessageId);
           }
           let quotedInfo = null;
           let actualReplyToMessageId = replyToMessageId;
@@ -5774,15 +5802,10 @@ async function main() {
 
   function findMessageMedia(key, ref) {
     const refStr = String(ref ?? '').trim();
-    if (!refStr) return [];
-    try {
-      const st = getSocialV2State(key);
-      for (const messages of [st.recentMessages, st.unread]) {
-        const found = (Array.isArray(messages) ? messages : []).find((m) => m && (String(m.messageId || '') === refStr || String(m.seq || '') === refStr));
-        if (found && Array.isArray(found.media) && found.media.length) return found.media;
-      }
-    } catch {}
-    return [];
+    if (!refStr) return null;
+    const { message: found } = findQQMessageReference(getSocialV2State(key), refStr);
+    if (!found) return null;
+    return Array.isArray(found?.media) ? found.media : [];
   }
 
   function clampGapV2(ms, sendCfg) {
@@ -6076,7 +6099,7 @@ async function main() {
     }
   }
 
-  async function submitDesktopAgentPrompt(sessionId, text) {
+  async function submitDesktopAgentPrompt(sessionId, text, { mode = 'queue' } = {}) {
     // Serialize the first prompt so overlapping WebUI/QQ submissions cannot both
     // append the memory bootstrap to the same persistent DSH session.
     if (desktopAgentInitialContextPrompt) {
@@ -6086,7 +6109,7 @@ async function main() {
     if (!includeMemoryBootstrap) {
       return api.sessions.prompt({
         sessionId,
-        mode: 'queue',
+        mode,
         content: [{ type: 'text', text: desktopAgentPromptText(text) }]
       });
     }
@@ -6095,7 +6118,7 @@ async function main() {
       const memoryContext = await desktopAgentMemoryBootstrap();
       const accepted = await api.sessions.prompt({
         sessionId,
-        mode: 'queue',
+        mode,
         content: [{ type: 'text', text: desktopAgentPromptText(text, { memoryContext }) }]
       });
       if (accepted?.result?.ok) {
@@ -6469,7 +6492,10 @@ async function main() {
   }
 
   function scheduleDesktopAttentionFlush(delayMs = DESKTOP_ATTENTION_BATCH_MS) {
-    if (desktopAttentionFlushTimer || desktopAgentLifecycle !== 'active' || desktopAgentTurnActive) return;
+    if (desktopAttentionFlushTimer || desktopAgentLifecycle !== 'active') return;
+    // A running turn can receive QQ signals as steering, but timer/recovery
+    // wake prompts alone must wait until there is no active turn.
+    if (desktopAgentTurnActive && desktopAttentionQueue.size === 0) return;
     if (desktopAttentionQueue.size === 0 && !desktopAgentPendingWakeReason) return;
     desktopAttentionFlushTimer = setTimeout(() => {
       desktopAttentionFlushTimer = null;
@@ -6514,13 +6540,13 @@ async function main() {
     const existing = desktopAttentionQueue.get(key);
     if (existing) {
       existing.count += 1;
-      existing.reason = reason;
-      existing.sender = sender;
-      existing.senderId = senderId;
-      existing.messageId = messageId;
-      if (Number.isSafeInteger(seq) && seq > 0) existing.seq = seq;
+      const hasIncomingSeq = Number.isSafeInteger(seq) && seq > 0;
+      const hasExistingSeq = Number.isSafeInteger(existing.seq) && existing.seq > 0;
+      if ((hasIncomingSeq && (!hasExistingSeq || seq >= existing.seq)) || (!hasIncomingSeq && !hasExistingSeq)) {
+        Object.assign(existing, { kind, id, reason, sender, senderId, messageId, seq: hasIncomingSeq ? seq : null });
+        existing.reminder = false;
+      }
       existing.lastAt = now;
-      existing.reminder = false;
     } else {
       if (desktopAttentionQueue.size >= DESKTOP_ATTENTION_MAX_SOURCES) {
         const oldestKey = desktopAttentionQueue.keys().next().value;
@@ -6588,39 +6614,57 @@ async function main() {
       const newer = desktopAttentionQueue.get(key);
       if (newer) {
         newer.count += item.count;
-        if (Number.isSafeInteger(item.seq) && item.seq > (newer.seq || 0)) newer.seq = item.seq;
+        if (Number.isSafeInteger(item.seq) && item.seq > (newer.seq || 0)) {
+          Object.assign(newer, {
+            kind: item.kind, id: item.id, reason: item.reason, sender: item.sender,
+            senderId: item.senderId, messageId: item.messageId, seq: item.seq, reminder: item.reminder
+          });
+        }
         if (item.reminder === true && newer.seq === item.seq) newer.reminder = true;
       }
       else desktopAttentionQueue.set(key, item);
+    }
+    // A turn may have entered rest while an unaccepted batch was in flight.
+    // Treat those newly requeued signals as attention that can interrupt rest.
+    if (!accepted && desktopAgentLifecycle === 'resting' && desktopAttentionQueue.size > 0) {
+      desktopAgentPendingWakeReason = 'qq-attention';
+      saveDesktopAgentState();
+      resumeDesktopAgentRestForAttention();
     }
   }
 
   async function flushDesktopAttentionSignals() {
     if (desktopAttentionFlushPromise) return desktopAttentionFlushPromise;
-    if (!dshReady || desktopAgentResetting || desktopAgentLifecycle !== 'active' || desktopAgentTurnActive) return;
+    if (!dshReady || desktopAgentResetting || desktopAgentLifecycle !== 'active') return;
     const batch = [...desktopAttentionQueue.entries()]
       .sort((a, b) => a[1].lastAt - b[1].lastAt)
       .slice(-20);
     const wakeReason = desktopAgentPendingWakeReason;
-    if (batch.length === 0 && !wakeReason) return;
+    if (batch.length === 0 && (!wakeReason || desktopAgentTurnActive)) return;
     const epoch = desktopAgentLifecycleEpoch;
+    const attentionGeneration = desktopAttentionGeneration;
     for (const [key] of batch) desktopAttentionQueue.delete(key);
     const promise = (async () => {
       try {
         const sessionId = await ensureDesktopAgentSession();
+        if (attentionGeneration !== desktopAttentionGeneration) return;
         if (desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch) {
           requeueDesktopAttentionBatch(batch);
           return;
         }
-        if (desktopAgentTurnActive) {
+        if (desktopAgentTurnActive && batch.length === 0) {
           requeueDesktopAttentionBatch(batch);
           return;
         }
+        const turnWasActive = desktopAgentTurnActive;
         const lines = batch.map(([, item]) => {
           const cue = truncateText(String(item.reason ?? 'attention'), 80).replace(/[\r\n]/g, ' ');
           const sender = truncateText(String(item.sender ?? '未知'), 64).replace(/[\r\n]/g, ' ');
           const senderId = item.senderId ? `，发送者 QQ ${String(item.senderId)}` : '';
-          const messageId = item.messageId ? `，消息 ID ${String(item.messageId)}` : '';
+          const rawMessageId = String(item.messageId ?? '').trim().replace(/[\r\n]/g, ' ');
+          const messageId = /^-?[1-9]\d*$/.test(rawMessageId)
+            ? `，消息 id:${rawMessageId}`
+            : (Number.isSafeInteger(item.seq) && item.seq > 0 ? `，消息 seq:${item.seq}@${socialV2.bufferId}` : '');
           const count = item.count > 1 ? `，合并 ${item.count} 条提醒` : '';
           return renderDesktopAgentPromptTemplate(cfg.desktopAgent.promptTemplates.qqSource, {
             key: item.key,
@@ -6637,40 +6681,61 @@ async function main() {
           'qq-attention': cfg.desktopAgent.promptTemplates.qqWake,
           recovery: cfg.desktopAgent.promptTemplates.recovery,
         };
-        const wakeInstruction = wakeInstructionByReason[wakeReason] ?? '';
+        const wakeInstruction = turnWasActive ? '' : (wakeInstructionByReason[wakeReason] ?? '');
+        // A persisted QQ wake can outlive its in-memory batch across a bridge
+        // restart. Make the missing source explicit instead of inventing one.
+        const attentionText = batch.length || (wakeReason === 'qq-attention' && !wakeInstruction)
+          ? renderDesktopAgentPromptTemplate(cfg.desktopAgent.promptTemplates.qqAttention, { sources: batch.length ? lines.join('\n') : '- 来源未保留' }).trim() || '【QQ 提醒】'
+          : '';
         const prompt = [
           wakeInstruction,
-          batch.length ? renderDesktopAgentPromptTemplate(cfg.desktopAgent.promptTemplates.qqAttention, { sources: lines.join('\n') }) : '',
+          attentionText,
         ].filter(Boolean).join('\n');
-        const accepted = await submitDesktopAgentPrompt(sessionId, prompt);
+        // DSH steer is admitted at the next step of an active turn and starts a
+        // turn when idle, so QQ signals survive a race with turn startup.
+        const accepted = await submitDesktopAgentPrompt(sessionId, prompt, { mode: batch.length ? 'steer' : 'queue' });
         if (!accepted?.result?.ok) {
           const error = accepted?.result?.error;
           throw new Error(`${error?.code ?? 'prompt_rejected'}: ${error?.message ?? 'DSH 未接受提醒'}`);
         }
+        if (attentionGeneration !== desktopAttentionGeneration) return;
         recordDesktopAttentionBatchAccepted(batch);
         if (desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch) {
           if (desktopAgentLifecycle === 'stopped' && dshReady) {
             try { await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }); } catch {}
           }
-          requeueDesktopAttentionBatch(batch, { accepted: true });
+          // An accepted signal is tracked until the message is read. If a turn
+          // entered rest meanwhile, the single rest-time reminder handles it.
+          // A replaced session needs the signal queued for the new session.
+          if (desktopAgentSessionId !== sessionId) requeueDesktopAttentionBatch(batch, { accepted: true });
           return;
         }
         desktopAgentTurnActive = true;
-        if (wakeReason && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
+        if (wakeReason && (!turnWasActive || wakeReason === 'qq-attention')
+          && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
         saveDesktopAgentState();
-        log(`全局陪伴者会话已接收唤醒提示（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
+        log(`全局陪伴者会话已接收注意提醒（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
         if (batch.length) appendActivity(`QQ 注意信号已提交给全局陪伴者（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
+        if (attentionGeneration !== desktopAttentionGeneration) return;
+        const activeOnFailure = desktopAgentLifecycle === 'active';
         requeueDesktopAttentionBatch(batch);
         log(`陪伴者唤醒提示提交失败，保留待处理提醒：${error?.message ?? error}`);
-        if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('wake prompt failed');
+        if (activeOnFailure && desktopAgentLifecycle === 'active') {
+          if (desktopAgentTurnActive) scheduleDesktopAttentionFlush(DESKTOP_AGENT_RECOVERY_BASE_MS);
+          else scheduleDesktopAgentRecovery('wake prompt failed');
+        }
       }
     })();
     desktopAttentionFlushPromise = promise;
     try {
       await promise;
     } finally {
-      if (desktopAttentionFlushPromise === promise) desktopAttentionFlushPromise = null;
+      if (desktopAttentionFlushPromise === promise) {
+        desktopAttentionFlushPromise = null;
+        // New signals may arrive while the prior RPC is still in flight.
+        if (desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush();
+      }
     }
   }
 
@@ -6689,6 +6754,7 @@ async function main() {
   const socialV2 = {
     conversations: new Map(), // QQ source key -> local message buffer and read watermark
     paused: false, // 控制台可暂停 QQ 提醒，不改变全局 DSH 会话的停止状态
+    bufferId: crypto.randomUUID(), // Changes when the message buffer is cleared.
   };
 
   // 会话见过的 forward id（有界，避免 recentMessages 滚动淘汰后无法读取刚见过的转发）
@@ -6706,6 +6772,7 @@ async function main() {
     let st = socialV2.conversations.get(key);
     if (!st) {
       st = {
+        bufferId: socialV2.bufferId,
         recentMessages: [],
         unread: [],
         lastAiReplyAt: 0,
@@ -6738,6 +6805,10 @@ async function main() {
       })();
       const raw = readJsonSafe(SOCIAL_V2_FILE, null);
       socialV2.paused = raw?.paused === true;
+      if (typeof raw?.bufferId === 'string'
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw.bufferId)) {
+        socialV2.bufferId = raw.bufferId.toLowerCase();
+      }
       if (raw && typeof raw.conversations === 'object') {
         for (const [key, val] of Object.entries(raw.conversations)) {
           if (!val || typeof val !== 'object') continue;
@@ -6746,6 +6817,7 @@ async function main() {
             ...[...(Array.isArray(val.unread) ? val.unread : []), ...(Array.isArray(val.recentMessages) ? val.recentMessages : [])]
               .map((message) => Number.isSafeInteger(message?.seq) && message.seq > 0 ? message.seq : 0));
           const st = {
+            bufferId: socialV2.bufferId,
             recentMessages: Array.isArray(val.recentMessages) ? val.recentMessages : [],
             unread: Array.isArray(val.unread) ? val.unread : [],
             lastAiReplyAt: Number(val.lastAiReplyAt) || 0,
@@ -6801,7 +6873,7 @@ async function main() {
 
   function saveSocialV2State() {
     try {
-      const obj = { paused: socialV2.paused, conversations: Object.create(null) };
+      const obj = { paused: socialV2.paused, bufferId: socialV2.bufferId, conversations: Object.create(null) };
       for (const [key, st] of socialV2.conversations) {
         obj.conversations[key] = {
           recentMessages: st.recentMessages.slice(-200),
@@ -7003,6 +7075,13 @@ async function main() {
         replyInfoCache.set(cacheKey, { info: null, ts: Date.now() });
         return null;
       }
+      // Some gateways omit the returned ID, but a conflicting ID can never be
+      // the requested message even if it belongs to the same conversation.
+      const returnedMessageId = raw.message_id ?? raw.messageId;
+      if (returnedMessageId != null && String(returnedMessageId) !== String(messageId)) {
+        replyInfoCache.set(cacheKey, { info: null, ts: Date.now() });
+        return null;
+      }
       // 消息归属校验：防止跨会话读取其他群/私聊消息。
       // 若网关返回的 raw 对象连归属字段都缺失，则视为无法确认归属，拒绝返回内容。
       if (kind === 'group') {
@@ -7052,33 +7131,19 @@ async function main() {
     }
   }
 
-  // 发送引用时解析目标：支持真实 QQ message_id，也支持 recentMessages 里的 seq（自动映射到真实 messageId）。
+  // Resolve an explicit QQ ID or local seq to the real QQ message ID before sending a quote.
   async function resolveReplyTargetV2(st, kind, convId, ref) {
     const refStr = String(ref ?? '').trim();
     if (!refStr) return null;
-    const found = Array.isArray(st?.recentMessages) ? st.recentMessages.find((m) => m && String(m.seq) === refStr) : null;
-    // 若 ref 命中本地 seq，且本地存有真实 messageId，优先按 seq 映射，避免与真实 id 冲突。
-    if (found && found.messageId && String(found.messageId) !== refStr) {
-      const realId = String(found.messageId);
-      const realInfo = await resolveReplyInfo(kind, convId, realId);
+    const reference = findQQMessageReference(st, refStr);
+    const found = reference.message;
+    const realId = reference.kind === 'seq' ? String(found?.messageId ?? '').trim() : reference.value;
+    if (!/^-?[1-9]\d*$/.test(realId)) return null;
+    const realInfo = await resolveReplyInfo(kind, convId, realId);
+    if (realInfo) return { info: realInfo, messageId: realId };
+    if (found && String(found.messageId ?? '') === realId) {
       return {
-        info: realInfo || {
-          sender: String(found.sender || ''),
-          text: String(found.text || found.plain || '').slice(0, 200),
-          userId: null,
-          messageId: realId,
-          seq: found.seq
-        },
-        messageId: realId
-      };
-    }
-    let info = await resolveReplyInfo(kind, convId, refStr);
-    if (info) return { info, messageId: refStr };
-    if (found && found.messageId) {
-      const realId = String(found.messageId);
-      const realInfo = await resolveReplyInfo(kind, convId, realId);
-      return {
-        info: realInfo || {
+        info: {
           sender: String(found.sender || ''),
           text: String(found.text || found.plain || '').slice(0, 200),
           userId: null,
@@ -7448,7 +7513,14 @@ async function main() {
     // Buffer every readable message locally. Only direct attention signals reach
     // the global DSH session, and the prompt contains metadata rather than body.
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
-      const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
+      // Unsafe JSON numbers have already lost precision; keep a local reference
+      // rather than telling the model that the rounded value is a QQ message ID.
+      const messageId = [event.message_id, event.msg_id].map((value) => {
+        if (typeof value !== 'string' && (typeof value !== 'number' || !Number.isSafeInteger(value))) return null;
+        const text = String(value).trim();
+        return /^-?[1-9]\d*$/.test(text) ? text : null;
+      }).find(Boolean) ?? null;
+      const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, mediaList, event.user_id ?? null, extractForwardIds(event.message ?? []));
       // The QQ reminder pause switch and configuration can suppress wake signals.
       // Ordinary group messages remain buffered without creating a DSH session or model turn.
       if (socialV2.paused || cfg.socialV2?.enabled === false) {
@@ -7466,7 +7538,7 @@ async function main() {
           reason: wakeTrigger,
           sender: senderName,
           senderId: event.user_id != null ? String(event.user_id) : '',
-          messageId: event.message_id ?? event.msg_id ?? null,
+          messageId,
           seq: bufferedMessage?.seq
         });
       }

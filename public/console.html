@@ -187,7 +187,7 @@
 
           <label for="runtimePromptQqSource">QQ 来源信息行模板</label>
           <textarea id="runtimePromptQqSource" class="runtime-prompt-template" rows="2" spellcheck="false"></textarea>
-          <div class="meta">占位符：{key} 会话标识、{kind} 私聊/群聊、{reason} 提醒原因、{sender} 发送者、{senderId} 发送者 QQ、{messageId} 消息 ID、{count} 合并数量。只有 {key} 和 {reason} 必须保留；后三项无对应信息时为空，并自带前置标点。</div>
+          <div class="meta">占位符：{key} 会话标识、{kind} 私聊/群聊、{reason} 提醒原因、{sender} 发送者、{senderId} 发送者 QQ、{messageId} 消息定位（id:QQ消息ID 或 seq:本地序号@缓存标识）、{count} 合并数量。{key} 必须保留；后三项无对应信息时为空，并自带前置标点。</div>
 
           <label for="runtimePromptRestExpired">休息到期提示</label>
           <textarea id="runtimePromptRestExpired" class="runtime-prompt-template" rows="2" spellcheck="false"></textarea>

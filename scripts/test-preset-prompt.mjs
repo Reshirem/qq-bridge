@@ -191,3 +191,20 @@ test('运行时提示模板保留必需占位符并只替换一次', () => {
   assert.throws(() => normalizeDesktopAgentPromptTemplates({ ...defaults, qqAttention: '提醒 {key}' }), /未知占位符/);
   assert.throws(() => normalizeDesktopAgentPromptTemplates({ ...defaults, roleCard: '{roleName}' }), /必须保留/);
 });
+
+test('旧版内置 QQ 提醒模板升级，自定义模板保留', () => {
+  const oldAttention = '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以结合正在做的事，决定是否查看、回应或稍后再看。\n{sources}';
+  const recentAttention = '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以查看相关对话和上下文，再决定如何参与。\n{sources}';
+  const oldSource = '- {key}（{kind}，提醒原因：{reason}，发送者：{sender}{senderId}{messageId}{count}）';
+  const oldWake = '【休息被 QQ 提醒提前结束】';
+  for (const qqAttention of [oldAttention, recentAttention]) {
+    const upgraded = normalizeDesktopAgentPromptTemplates({ qqAttention, qqSource: oldSource, qqWake: oldWake });
+    assert.equal(upgraded.qqAttention, DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.qqAttention);
+    assert.equal(upgraded.qqSource, DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.qqSource);
+    assert.equal(upgraded.qqWake, '');
+  }
+  const custom = { qqAttention: '有消息了：\n{sources}', qqSource: '{key}：{reason}', qqWake: '休息结束' };
+  const normalized = normalizeDesktopAgentPromptTemplates(custom);
+  for (const [key, value] of Object.entries(custom)) assert.equal(normalized[key], value);
+  assert.equal(normalizeDesktopAgentPromptTemplates({ qqSource: '{key}{messageId}' }).qqSource, '{key}{messageId}');
+});
