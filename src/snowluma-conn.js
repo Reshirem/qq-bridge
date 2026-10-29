@@ -73,7 +73,7 @@ export function readOneBotTokens(homeDir) {
   return out.sort((a, b) => a.uin.localeCompare(b.uin));
 }
 
-/** 兼容旧调用：只取 HTTP token 的扁平列表。 */
+/** Return HTTP token candidates in a flat shape for shared utilities. */
 export function readOneBotHttpTokens(homeDir) {
   return readOneBotTokens(homeDir)
     .filter((a) => a.http)
@@ -172,15 +172,7 @@ export async function discoverSnowLumaConnection({
   };
 }
 
-/**
- * 把当前有效的 token 写回 config.json（可选动作，供 qq-bridge 这类"必须持久化 token"的组件用）。
- * 只在真的换过账号时才写，避免无谓改动。
- * 返回 { updated, from, to }。
- */
-/**
- * 只写 accessToken（兼容旧调用）。返回 { updated, from, to } —— 保留 from/to 是因为
- * 既有调用方与测试按这个形状断言（重构时改成 changed 曾把测试打红）。
- */
+/** Persist a confirmed access token and report whether its value changed. */
 export function persistToken(cfgPath, newToken) {
   let text = fs.readFileSync(cfgPath, 'utf8');
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);

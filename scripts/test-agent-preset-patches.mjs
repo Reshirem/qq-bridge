@@ -1,11 +1,10 @@
-// 钉住 DSH 0.1.7 preset 装配的「防漂移」契约（纯离线，不需要 DSH 在跑）：
-//   1. bundle patch（plugins/qq-agent-presets/presets/*.patch.yml）与仓库权威源
+// Verify the current preset bundle patch contract (offline; DSH does not need to be running):
+//   1. Bundle patches (plugins/qq-agent-presets/presets/*.patch.yml) match their sources
 //      （dsh/agent-presets/<preset>/{preset.yml,agent.cordis.yml}）逐字一致；
-//   2. patch 的形状符合新机制：insert 一条 @deepseek-ai/dsh-agent-preset 行，
+//   2. Each patch inserts an @deepseek-ai/dsh-agent-preset row,
 //      config 里带 id/name/description/order/plugins；
-//   3. 守卫行只能用「从 profile 目录可解析」的引用方式（裸说明符），
-//      不允许任何相对/绝对路径子行名 —— 那正是 0.1.7 下静默装不上的坑；
-//   4. 唯一 desktop-agent preset 使用插件包内的共享 fail-closed 工具守卫。
+//   3. The guard uses a profile-resolvable package specifier;
+//   4. desktop-agent uses the shared fail-closed tool guard.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,7 +32,7 @@ console.log('## 1. 产物与源不漂移（--check 语义）');
   }
 }
 
-console.log('## 2. patch 形状符合 DSH 0.1.7 的 preset 机制');
+console.log('## 2. Current preset patch shape');
 for (const name of PRESETS) {
   const file = patchFileFor(name);
   ok(fs.existsSync(file), `${path.relative(REPO_ROOT, file)} 存在`);
@@ -69,7 +68,7 @@ for (const name of PRESETS) {
   ok(guard !== undefined, `${name}: 有 qq-tool-restrict 守卫行`);
   ok(guard?.name === GUARD_SPECIFIER, `${name}: 守卫行 name = ${GUARD_SPECIFIER}`);
   const bad = row.config.plugins.filter((r) => typeof r.name === 'string' && (r.name.startsWith('.') || path.isAbsolute(r.name)));
-  ok(bad.length === 0, `${name}: 没有任何相对/绝对路径子行名（0.1.7 下会按 profile 目录解析而装不上）${bad.length ? `：${bad.map((r) => r.name).join(', ')}` : ''}`);
+  ok(bad.length === 0, `${name}: no relative/absolute child paths${bad.length ? `: ${bad.map((r) => r.name).join(', ')}` : ''}`);
   const guardFile = path.join(BUNDLE_DIR, GUARD_SPECIFIER.slice('qq-agent-presets/'.length));
   ok(fs.existsSync(guardFile), `${name}: 守卫实现存在（${path.relative(REPO_ROOT, guardFile)}）`);
 }

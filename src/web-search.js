@@ -314,7 +314,7 @@ export async function deepseekSearch(query, config = defaultConfig) {
       'anthropic-version': DEFAULT_API_VERSION,
       'content-type': 'application/json',
       accept: 'application/json',
-      'user-agent': 'qq-bridge-web-search/0.2.0'
+      'user-agent': 'qq-bridge-web-search/0.2.1-r1'
     },
     body,
     timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS

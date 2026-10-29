@@ -1,8 +1,6 @@
 // 验证 workspace/session RPC 参数形状与返回值结构（对照 bridge.js 实际用法）。
 import { probeCookie, probeRpc, probeWorkspaceDir } from './probe-auth.mjs';
 
-// 鉴权与 RPC 引导统一走 probe-auth.mjs（旧的「读 guard 日志抓 launch token」在
-// DSH 0.1.7 起已失效，会让探针一律 401 —— 见该文件头部说明）。
 const rpc = probeRpc(probeCookie());
 const sh = (r, n = 400) => r.ok ? JSON.stringify(r.value).slice(0, n) : `${r.error.code}: ${r.error.message}`;
 

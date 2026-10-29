@@ -31,9 +31,9 @@
 | `sticker-lib.js` | QQ 收藏表情数据读取与发送辅助 |
 | `state-acl.mjs` / `sensitive.js` | 本地状态目录 ACL 与敏感内容判断 |
 | `token-ledger.js` / `model-prices.js` | token 用量统计与价格换算 |
-| `role-card.js` / `preset-prompt.js` / `qq-model-view.js` | 角色卡、preset 提示词和 QQ 消息视图处理 |
+| `preset-prompt.js` / `qq-model-view.js` | preset 提示词和 QQ 消息视图处理 |
 
-`voice-core.js` 仍留有旧语音实现，但当前桥接运行时不注册或调用它；不要据此推断语音能力仍受支持。语音功能如需恢复，应按新的需求单独设计。
+`voice-core.js` 与 `voice-tool-*` 脚本供仓库外的独立语音工具共用，不属于当前桥接运行时。修改前先确认该外部工具的调用关系。
 
 ## `scripts/` 类别
 
@@ -42,14 +42,14 @@
 | `test-*.mjs` | 离线回归、契约和边界检查 | 是否纳入总审计清单以 `scripts/test-audit.mjs` 为准 |
 | `test-dsh-*.mjs` | DSH 协议与全局会话队列投影检查 | 部分脚本需要正在运行的 DSH；执行前查看脚本说明 |
 | `setup-*.mjs` | 安装或更新 DSH profile 配置 | 可能写入用户 DSH profile，先核对目标 profile |
-| `verify-*.mjs` | 配置、preset 或 DSH 版本适配核验 | 在线核验可能访问真实 DSH |
+| `verify-*.mjs` | 配置、preset 和 DSH 运行环境核验 | 在线核验可能访问真实 DSH |
 | `probe-*.mjs` | 查询 DSH 或 SnowLuma 的实际协议与能力 | 按需执行；读取配置或连入运行服务前检查脚本行为 |
 | `patch-*.mjs` | 构建或应用补丁 | `patch-snowluma-sdk.mjs` 是 `postinstall` 依赖，不要随意删除 |
 
-`scripts/` 下仍有 `voice-tool-locator.mjs`、`test-voice-*` 等旧语音工具兼容脚本。它们面向仓库外曾有的独立工具，不代表当前全局 desktop-agent 支持语音；后续清理或重写前不要把它们当作运行入口。
+`scripts/voice-tool-locator.mjs` 与 `test-voice-*` 面向仓库外的独立语音工具，不是桥接的运行入口。
 
 ## 运行数据与文档
 
 - `config.json`、`state/` 和日志由本地运行创建或维护，不要提交真实凭据、消息历史或令牌。
-- 只信任当前存在的文档链接。被 `.gitignore` 排除的旧设计、审计笔记不在仓库文档索引中。
+- 文档索引只链接当前仓库实际维护的文档。
 - 新会话/代码代理先读 `AGENTS.md`；安全变更再读 `RULES.md` 与 `docs/guides/SECURITY_BASELINE.md`。

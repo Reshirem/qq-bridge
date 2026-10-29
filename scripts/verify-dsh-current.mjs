@@ -1,37 +1,5 @@
-// DSH 适配总验证（0.2.1 版）。
-//
-// 沿革：0.1.5 建立（verify-dsh-015-adaptation.mjs）→ 0.2.0 改名
-// （verify-dsh-020-adaptation.mjs）→ 0.2.1 改名到本文件名。文件名里的版本号
-// 是**它验的 DSH 版本**，不是仓库版本；一个自称 015 却在验 0.2.0 的脚本只会误导人。
-// `npm run verify:adaptation` 的入口名保持不变，所以既有调用不受影响。
-//
-// 0.2.1 实测结论（2026-10-22）：§5 的活 DSH 契约**逐项未漂移**——铸造 Cookie 鉴权、
-// settings/describe + settings/update、agentPresets/list、session/create+selectModel、
-// session/projections、control baseline 的 projections 形状、stopSessionWork、
-// $events ready 帧、session/modelCatalog、斜杠式 endpoint 全部照旧。
-// 唯一漂移在**工具面**：0.2.1 新增 `working_directory`（dsh-base 默认挂载，全局层继承）
-// 以及 terminal / session-query / plugin_market 一族，守卫名单已同轮补齐。
-//
-// 覆盖：
-//   §1 仓库侧 preset persona schema
-//   §2 部署侧 bundle patch / 守卫实现（preset 与 provider 行）
-//   §3 版本身份一致性
-//   §4 语法检查
-//   §5 **运行中的 DSH 0.2.0 实测**（本文件的核心）：
-//        · 鉴权：本机签名密钥离线铸造 Cookie
-//        · settings/describe 可用，`qq-agent-presets` 命名空间在列
-//          （0.2.0 删除了 ctx.settings.register()，命名空间改由 entry id + Config 推导）
-//        · agentPresets/list 含固定 preset desktop-agent
-//        · session/create 挂 preset + selectModel(deepseek-flash)
-//        · session/projections 一元 RPC 可用（读队列的主路径）
-//        · session/control 开场 baseline 是 value.projections[<id>].values.inbox
-//          （**不再是** 0.1.7 的 value.queues[<id>] —— 认错形状会让每次退役会话都抛错）
-//        · stopSessionWork 在真实会话上成功返回（这条是本次适配的核心回归）
-//        · $events ready 帧
-//        · session/modelCatalog 形状
-//        · 点号 endpoint 仍不可用（协议确为斜杠式）
-//
-// 不依赖 SnowLuma；不改动任何用户状态（探测会话会被 archive，探测工作区建在系统临时目录）。
+// Verify the current DSH integration against repository files and an optional live DSH API.
+// Live checks create temporary workspaces/sessions, then archive them. SnowLuma is not required.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,11 +33,7 @@ const persona = await import(pathToFileURL(path.join(DSH_MODULES, '@deepseek-ai/
 const YAML = await import(pathToFileURL(path.join(DSH_MODULES, 'js-yaml/index.js')).href);
 const yaml = YAML.default ?? YAML;
 
-let oldRejected = false;
-try { persona.Config({ text: 'x' }); } catch { oldRejected = true; }
-check('dsh-persona 仍拒绝旧字段 text（故障前提成立）', oldRejected);
-
-/** DSH 0.2.1 的 agent loop 只注册这两个提示词变量（0.2.0 还有 `cwd`）。 */
+/** Current agent loop prompt variables. */
 const DSH_PROMPT_VARIABLES = new Set(['provider', 'model']);
 
 for (const p of ['desktop-agent']) {
@@ -87,14 +51,7 @@ for (const p of ['desktop-agent']) {
     unknownVars.length ? `未知变量: ${unknownVars.join(', ')}` : usedVars.join(', '));
 }
 
-// ── 2. 部署侧：DSH 0.1.7 的 preset 机制 ──────────────────────────────────────
-// 0.1.5 时这一节比的是 ~/.dsh/.agent-presets/<p>/ 下的安装副本；0.1.7 起该目录
-// **完全不再被读取**（注册表既不扫目录也不接受 preset 路径），preset 变成 bundle
-// patch 插入的一条 @deepseek-ai/dsh-agent-preset 行。因此这里改成核对：
-//   ① bundle patch 与仓库权威源一致（生成器 --check，防手改/忘重新生成）；
-//   ② bundle 已注册进 profile（link: 依赖 + bundles + node_modules junction，
-//      守卫行的裸说明符就靠这个 junction 解析）；
-//   ③ 守卫实现只有一份且 fail-closed。
+// ── 2. Deployment bundle and tool guard ────────────────────────────────────
 const norm = (s) => s.replace(/\r\n/g, '\n');
 const presetPatches = await import(pathToFileURL(path.join(ROOT, 'scripts/build-agent-preset-patches.mjs')).href);
 for (const { file, changed } of presetPatches.buildPatches({ check: true, log: () => {} })) {
@@ -116,33 +73,25 @@ for (const p of ['desktop-agent']) {
 // 守卫脚本必须是 fail-closed 的：非法工具名要被拒绝，而不是放行（权威实现只有一份）。
 const canonicalGuardPath = path.join(ROOT, 'plugins', 'qq-agent-presets', 'qq-tool-restrict.mjs');
 const guard = fs.readFileSync(canonicalGuardPath, 'utf8');
-// 断言只看**可执行代码**：守卫的注释里会写「cordis_define/… 在 0.1.7 已被删除」做历史说明，
-// 直接扫原文会把这段说明误判成「还在使用旧工具名」（实测误报）。必须**先剥块注释**
-// （/∗ … ∗/ 与 JSDoc 的 ` * ` 行）**再剥行注释**，否则块注释里的旧名仍会被扫到。
-// 剥行注释必须按 /\r?\n/ 切行：JS 的 `.` 不匹配 \r，CRLF 下 split('\n') 会让行尾留 \r，
-// /\/\/.*$/ 的 `$` 够不到行尾。
+// Check executable guard code without treating comments as policy rules.
 const guardCode = guard
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 check('守卫：非法工具名 fail-closed（不接受裸 return 放行）', !/typeof name !== 'string'[^\n]*\)\s*return\s*$/m.test(guardCode));
 check('守卫：不额外放行 web_search/web_fetch', !/'(?:web_search|web_fetch)'/.test(guardCode));
-check('守卫：拒绝 0.1.7 已删除的 cordis 旧工具名（避免静默失效）', !/cordis_(?:define|undefine|run|stop)/.test(guardCode));
-
-// 0.2.0 工具面重新对账的结果（扫描器与守卫必须一致）。
-// 三类必须覆盖，来源见 plugins/qq-agent-presets/qq-tool-restrict.mjs 的长注释：
+// Tool families that must stay blocked:
 //   ① 全局层默认启用、desktop-agent 会继承的 MCP 资源工具
 //   ② 派生 agent / 执行外部代码
 //   ③ 插件装载权（= 任意代码执行）与无人值守的自我调度
-const GUARD_020_NAMES = [
+const REQUIRED_RESTRICTED_TOOL_NAMES = [
   'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource',
   'subagent_codex', 'subagent_claude_code',
   'spawn_teammate', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
   'plugin_manager',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete',
 ];
-/** 0.2.1 对账新增的名字（见守卫长注释里 2026-10-22 那段）。 */
-const GUARD_021_NAMES = [
-  // dsh-base 0.2.1 默认挂载 ⇒ 全局层继承
+const MORE_RESTRICTED_TOOL_NAMES = [
+  // dsh-base tools inherited at the global layer
   'working_directory',
   // dsh-tool-terminal：终端 = shell
   'terminal_open', 'terminal_send', 'terminal_read', 'terminal_signal', 'terminal_close', 'terminal_list',
@@ -154,10 +103,9 @@ const GUARD_021_NAMES = [
 const guardMod = await import(pathToFileURL(canonicalGuardPath).href);
 const guardNames = new Set(guardMod.RESTRICTED_TOOL_NAMES ?? []);
 const optionalNames = new Set(guardMod.OPTIONAL_BUNDLE_TOOL_NAMES ?? []);
-const missingFromGuard = GUARD_020_NAMES.filter((n) => !guardNames.has(n));
-check('守卫已覆盖 0.2.0 新增的危险工具名', missingFromGuard.length === 0, missingFromGuard.join(', ') || `${guardNames.size} 个名字`);
-const missingFromGuard021 = GUARD_021_NAMES.filter((n) => !guardNames.has(n));
-check('守卫已覆盖 0.2.1 新增的危险工具名', missingFromGuard021.length === 0, missingFromGuard021.join(', ') || `${GUARD_021_NAMES.length} 个名字`);
+const missingFromGuard = [...REQUIRED_RESTRICTED_TOOL_NAMES, ...MORE_RESTRICTED_TOOL_NAMES]
+  .filter((name) => !guardNames.has(name));
+check('守卫覆盖必须限制的工具', missingFromGuard.length === 0, missingFromGuard.join(', ') || `${guardNames.size} 个名字`);
 
 // 守卫名单里的每个名字都必须是 DSH 真实注册的工具：`tools.restrict()` 对未知名字会抛错，
 // 而守卫逐个 try/catch 只打日志 ⇒ 拼错的名字 = 静默 no-op。
@@ -194,14 +142,12 @@ const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
 check('config.json dsh.model = deepseek-flash', cfg.dsh?.model === 'deepseek-flash', `当前 ${cfg.dsh?.model}`);
 check('preset bundle 只构建 desktop-agent', PRESETS.length === 1 && PRESETS[0] === 'desktop-agent', PRESETS.join(', '));
 const bridgeSrc = fs.readFileSync(path.join(ROOT, 'src/bridge.js'), 'utf8');
-// 只看可执行代码，忽略注释（注释里会提到旧名做历史说明）。
-// 注意必须按 /\r?\n/ 切行：JS 的 `.` 不匹配 \r，CRLF 文件直接 split('\n') 会让行尾留 \r，
-// 导致 /\/\/.*$/ 的 `$` 够不到行尾、注释根本剥不掉（曾因此误报）。
+// Inspect executable code without treating comments as requirements.
+// Split on CRLF or LF so trailing carriage returns do not affect comment stripping.
 const stripComments = (src) => src.split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 const bridgeCode = stripComments(bridgeSrc);
 check('bridge.js 可执行代码无 deepseek-v4-flash-vision-exp 残留', !bridgeCode.includes('deepseek-v4-flash-vision-exp'));
 check('bridge.js 可执行代码无 router-standard 残留', !bridgeCode.includes('router-standard'));
-// setup-dsh.mjs 曾被漏改：0.1.5 适配只清了 bridge.js，脚本里仍在写死已下线的 preset 名。
 const setupCode = stripComments(fs.readFileSync(path.join(ROOT, 'scripts/setup-dsh.mjs'), 'utf8'));
 check('setup-dsh.mjs 可执行代码无 router-standard 残留', !setupCode.includes('router-standard'));
 check('setup-dsh.mjs 安装 desktop-agent preset bundle', setupCode.includes('buildPatches') && setupCode.includes('PRESETS'));
@@ -213,10 +159,7 @@ check('bridge.js 会刷新 DSH preset 清单', bridgeCode.includes('refreshPrese
 check('全局会话创建要求 desktop-agent preset', /dshPresetIds\.includes\('desktop-agent'\)/.test(bridgeCode));
 check('bridge.js 不回退到 standard preset', !/agentPreset:\s*['"]standard['"]/.test(bridgeCode));
 
-// ── 3b. 版本身份一致性 ──────────────────────────────────────────────────────
-// v0.1.5 曾带着自称 0.1.2-alpha.1 的 package-lock.json 发布出去（package.json 却是
-// 0.1.5），三个 MCP server 的 serverInfo.version 也停在 0.1.0。版本漂移没有防线就会
-// 复发，这里把「所有对外自称的版本号必须等于 package.json」固定下来。
+// ── 3b. Package version consistency ─────────────────────────────────────────
 const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const lockJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'));
 const pluginPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugins/qq-agent-presets/package.json'), 'utf8'));
@@ -245,12 +188,8 @@ const SYNTAX_FILES = ['src/bridge.js', 'src/dsh-client.js', 'src/mcp-snowluma-sa
   }
 }
 
-// ── 5. 运行中的 DSH 0.2.0 ───────────────────────────────────────────────────
-// 鉴权走与桥接生产代码同一条路：用 ~/.dsh 里持久化的签名密钥离线铸造会话 Cookie。
-// 旧写法（从 ~/.dsh/guard/logs/server-*.out.log 里抓 `?token=`）在 0.1.7 已经死了：
-//   · 进程启动 token 是现生成的 32 字节随机数，只存在内存 WeakMap 里，不落盘；
-//   · guard 插件退役后也没有启动器再把 `dsh web` 的 stdout 重定向到那个目录，
-//     日志里剩下的是**上一个进程**的陈旧 token，换 Cookie 只会得到 401。
+// ── 5. Live DSH contract ─────────────────────────────────────────────────────
+// Authenticate through the same persisted signing key used by the bridge.
 const cookie = discoverDshSessionCookie(BASE);
 check('本机签名密钥 → 铸造会话 Cookie 成功', Boolean(cookie), cookie ? `${cookie.length} 字节` : '读不到 browser-session 密钥');
 async function rpc(e, a) {
@@ -264,9 +203,7 @@ check('DSH 全局默认模型 = deepseek-flash', dm?.value?.model === 'deepseek-
 const ap = await rpc('agentPresets/list', {});
 const presetIds = ap.value?.presets?.map((p) => p.id) ?? [];
 check('agentPresets/list 含固定 preset desktop-agent', presetIds.includes('desktop-agent'), presetIds.join(', '));
-// 0.1.7 把设置命名空间从 `agent-presets` 改名为 `agent-preset-registry`，而且「用户默认」
-// 是易失字段 selectedDefault，不会出现在 describe 的 value 里。桥接固定要求 desktop-agent，
-// 不读取 DSH 默认 preset；这里断言注册表已装载并且 desktop-agent 已注册。
+// The bridge requires its fixed desktop-agent preset and does not depend on a DSH default.
 const registryNs = st.value?.namespaces?.find((n) => n.ns === 'agent-preset-registry');
 check('preset 注册表命名空间已装载', registryNs !== undefined, st.value?.namespaces?.map((n) => n.ns).filter((n) => n.includes('preset')).join(', '));
 check('DSH 提供唯一 desktop-agent preset', presetIds.includes('desktop-agent'), presetIds.join(', '));
@@ -282,7 +219,7 @@ if (ownerSettings) {
 }
 
 // ── 5b. session/projections：读会话队列的主路径 ──────────────────────────────
-const probeDir = path.join(os.tmpdir(), 'qq-bridge-verify-020');
+const probeDir = path.join(os.tmpdir(), 'qq-bridge-verify-current');
 fs.rmSync(probeDir, { recursive: true, force: true });
 fs.mkdirSync(probeDir, { recursive: true });
 const api = new NodeApiClient(BASE, undefined, {});
@@ -306,43 +243,14 @@ try {
     values?.inbox !== undefined && Array.isArray(values.inbox['next-turn']) && Array.isArray(values.inbox['next-step']),
     Object.keys(values ?? {}).slice(0, 6).join(','));
 
-  // ── 5c. control baseline 形状（0.2.0 的核心断裂点）────────────────────────
   const url = new URL('/api/remote.mux', BASE);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  const baseline = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { headers: { cookie: api.cookie } });
-    const streamId = randomUUID();
-    const timer = setTimeout(() => { try { socket.close(); } catch {} reject(new Error('control baseline 超时')); }, 15_000);
-    const finish = (err, value) => { clearTimeout(timer); try { socket.close(); } catch {} err ? reject(err) : resolve(value); };
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'open', streamId, endpoint: 'session/control', payload: { args: {} } })));
-    socket.addEventListener('message', (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.streamId !== streamId) return;
-      if (m.type === 'item' && m.value?.type === 'baseline') finish(null, m.value);
-      else if (m.type === 'error' || m.type === 'end') finish(new Error(`control ${m.type}${m.error?.code ? ` (${m.error.code})` : ''}`));
-    });
-    socket.addEventListener('error', () => finish(new Error('control socket error')));
-  }).catch((error) => { skip('session/control 开场 baseline 形状', error.message); return null; });
-  if (baseline) {
-    const bv = baseline.value;
-    check('control baseline 是 value.projections（0.2.0 形状）',
-      bv !== null && typeof bv?.projections === 'object' && bv.projections !== null);
-    check('control baseline 不再有 value.queues（0.1.7 形状已废弃）',
-      bv !== null && !Object.hasOwn(bv ?? {}, 'queues'));
-    const sample = bv?.projections?.[probeSessionId]?.values;
-    check('baseline 里探测会话的投影带 inbox', sample?.inbox !== undefined,
-      Object.keys(sample ?? {}).slice(0, 6).join(','));
-  }
-
-  // ── 5d. 核心回归：退役会话不再抛 baseline 结构错 ─────────────────────────
-  // 0.2.0 之前这段代码读 `value.queues[<id>]`，形状一变就**每次**退役都抛
-  // "invalid session/control baseline"，队列清不掉、旧任务继续在 DSH 里跑，
-  // 而桥接日志里只有一行警告。这条断言就是那次断裂的回归网。
+  // ── 5c. Retire work in the current DSH session ───────────────────────────
   let retireError = null;
   let retired = null;
   try { retired = await api.stopSessionWork(probeSessionId); }
   catch (error) { retireError = error; }
-  check('stopSessionWork 在真实会话上成功返回（不再抛 baseline 结构错）',
+  check('stopSessionWork 在真实会话上成功返回',
     retireError === null, retireError?.message ?? `removed=${retired?.removed}`);
 
   // ── 5e. $events ready 帧 ─────────────────────────────────────────────────
@@ -368,11 +276,7 @@ try {
   check('session/modelCatalog 可用且给出模型分组', catalog.result?.ok === true && Array.isArray(catalog.result?.value?.groups),
     catalog.result?.ok ? `${catalog.result.value.groups.length} 组` : `${catalog.result?.error?.code}`);
 
-  // ── 5g. preset 真跑一个回合：提示词变量可解析（0.2.1 断裂点回归网）──────────
-  // 0.2.1 把 `cwd` 从 agent loop 的提示词变量表里删掉了（只剩 provider / model）。
-  // system prompt 对未知变量是 fail loud ⇒ 回合在 turn/start 后立刻 error，
-  // 模型一次都不跑，QQ 上表现为「完全不回」。静态断言只能看出"写了什么变量"，
-  // 只有真跑一回合才能证明它**可解析**。
+  // ── 5e. Run a prompt turn to confirm current prompt variables resolve ─────
   let turnSessionId = null;
   try {
     const turnSession = unwrap(await api.sessions.create({ cwd: probeDir, agentPreset: 'desktop-agent' }), 'session.create(turn)');
@@ -421,14 +325,6 @@ try {
   }
   try { fs.rmSync(probeDir, { recursive: true, force: true }); } catch {}
 }
-
-// 点号 endpoint（旧协议）应返回纯文本 404（不是 JSON 信封）——证明协议确为斜杠式
-const dotRes = await fetch(`${BASE}/api/session.list`, {
-  method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-  body: JSON.stringify({ type: 'client-request', rpcId: 'v-dot', method: 'session.list', payload: { args: { _request: {} } } }),
-});
-const dotBody = await dotRes.text();
-check('点号 endpoint /api/session.list 不可用（旧协议已废弃）', dotRes.status === 404 && /not found/i.test(dotBody), `HTTP ${dotRes.status}`);
 
 // ── 汇总 ────────────────────────────────────────────────────────────────────
 console.log(results.join('\n'));

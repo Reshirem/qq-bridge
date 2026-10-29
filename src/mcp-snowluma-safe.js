@@ -253,13 +253,12 @@ function agentApiLongPoll(path, init = {}) {
 const server = new McpServer({ name: 'snowluma-safe', version: '0.2.1-r1' });
 
 // DSH profile 会共享这个 MCP provider，故无法按 agent preset 隐藏不同工具。
-// 全局 desktop-agent 的目标是完整使用这里提供的 SnowLuma QQ 工具集，注册时不按旧版
-// socialV2.tools 开关裁剪；桥接仍校验活动发送回合、限频和审计。
+// The global desktop-agent receives the complete SnowLuma tool surface. The bridge
+// still enforces active-turn checks, rate limits, and audit logging for sends.
 // MCP provider 在 DSH profile 共享，不能按 agent preset 为不同 agent 注册不同 schema。
 // 全局 desktop-agent 使用完整 SnowLuma 工具集，MCP 从桥接持久状态自动获取当前凭证。
 cfg.socialV2 ??= {};
 cfg.socialV2.sticker = { ...(cfg.socialV2.sticker ?? {}), enabled: true };
-delete cfg.socialV2.tools;
 server.tool(
   'qq_status',
   '查询 QQ 机器人登录状态与账号信息（只读）。',

@@ -1,17 +1,5 @@
-// DSH 工具名抽取：**唯一实现**，供
-//   · `scripts/scan-dsh-tool-names.mjs`（人工/升级时对账，打印清单）
-//   · `scripts/test-preset-local-tools.mjs`（登记期断言，防拼错假名）
-// 共同使用。
-//
-// 为什么要抽成模块：这两处过去各有一份实现，而测试那份是**模糊**的
-// （`\bname:\s*['"]x['"]` 全文件乱扫 + 只认少数包名前缀 + 只读包根目录的
-// cordis.patch.yml）。结果 0.2.0 对账时把 10 个**真实存在**的工具名误判成
-// 「假名」——`dsh-mcp-resources` 与 `dsh-experimental-tool-agent-team` 不匹配它
-// 的包名白名单，`subagent_codex` 写在 `dsh-web-app/presets/*.patch.yml` 而不是
-// 包根。误判方向是危险的：它会逼人把真名字从守卫名单里删掉。
-//
-// 抽取规则（都要求**就近锚定**，不把 `systemPrompt.section({ name: 'tool:read' })`
-// 这类非工具名当工具）：
+// DSH tool-name extraction shared by the scanner and preset guard audit.
+// Extract recognized declaration forms without treating unrelated strings as tools:
 //   ① `.register(defineTool({ … name: "X" … }))` —— DSH 所有工具包的注册形状
 //   ② `toolName: "X"` / `toolName: z.string().default("X")` —— 配置化工具名
 //      （dsh-tool-subagent 的 subagent / subagent_fork 就是这样声明的）

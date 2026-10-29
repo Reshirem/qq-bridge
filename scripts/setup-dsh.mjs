@@ -3,8 +3,7 @@
 //
 // 功能：
 //   1. 安装唯一的全局 desktop-agent preset
-//      （DSH 0.1.7 机制：作为 qq-agent-presets bundle 的 patch 层插入
-//        @deepseek-ai/dsh-agent-preset 行；~/.dsh/.agent-presets/ 目录已不再被读取）
+//      （通过 qq-agent-presets bundle 的 patch 层插入 @deepseek-ai/dsh-agent-preset 行）
 //   2. 在 DSH profile 的 cordis.patch.yml 中挂载四个 MCP server：
 //      mcp-snowluma / mcp-snowluma-host / mcp-web-search-safe / mcp-qq-memory
 //   3. 在 profile package.json 中注册 qq-agent-presets bundle
@@ -75,17 +74,9 @@ function backupBeforeOverwrite(file, keep = 5) {
   return dest;
 }
 
-// ── agent preset：DSH 0.1.7 机制 ─────────────────────────────────────────────
-//
-// 0.1.5：preset 是 ~/.dsh/.agent-presets/<preset>/ 下的目录，DSH 启动时扫目录装载。
-// 0.1.7：注册表既不扫目录也不接受 preset 路径；preset 是一条普通 loader 行
-//        （@deepseek-ai/dsh-agent-preset，config.plugins 内联子行列表），
-//        由 bundle 的 patch 文件插入。因此这里做两件事：
-//          ① 把 qq-agent-presets bundle 注册进 profile（link: 依赖 + bundles + junction）；
-//          ② 从仓库权威源（dsh/agent-presets/<preset>/）重新生成 patch 文件。
-//        旧目录不再写入、也不删除（见 reportLegacyPresetDir）。
+// ── agent preset ────────────────────────────────────────────────────────────
+// 把 qq-agent-presets bundle 注册进 profile，并从仓库权威源重新生成 patch。
 const BUNDLE_NAMES = ['qq-agent-presets'];
-const LEGACY_BUNDLE_NAMES = ['qq-mode-console'];
 
 /** 从仓库源重新生成 bundle 里的 patch 文件（人格正文/工具面改了就必须重跑）。 */
 function regeneratePresetPatches() {
@@ -96,27 +87,6 @@ function regeneratePresetPatches() {
   for (const name of PRESETS) {
     const file = patchFileFor(name);
     if (!fs.existsSync(file)) fatal(`preset patch 未生成：${file}`);
-  }
-}
-
-/**
- * 旧机制的安装目录：0.1.7 起 DSH 完全不再读它。
- *
- * 这里**只报告、不删除**——里面可能是用户手改过的人设（仓库源文件救不回来）。
- * 顺带对比仓库源：一致说明没丢东西，不一致说明用户改的那份已不再生效，需要人工合并。
- */
-function reportLegacyPresetDir() {
-  const legacy = path.join(DSH_HOME, '.agent-presets');
-  if (!fs.existsSync(legacy)) return;
-  log(`注意：${legacy} 是 DSH 0.1.5 的 preset 安装目录，0.1.7 起不再被读取（保留未删，可自行备份后清理）`);
-  for (const name of PRESETS) {
-    const installed = path.join(legacy, name, 'agent.cordis.yml');
-    if (!fs.existsSync(installed)) continue;
-    const source = path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'agent.cordis.yml');
-    const same = fs.existsSync(source) && fs.readFileSync(installed, 'utf8') === fs.readFileSync(source, 'utf8');
-    log(same
-      ? `  · ${name}：旧目录副本与仓库源一致（无内容丢失）`
-      : `  ⚠️ ${name}：旧目录副本与仓库源**不一致**——那份手改内容不会再生效，请人工合并到 dsh/agent-presets/${name}/agent.cordis.yml`);
   }
 }
 
@@ -159,13 +129,6 @@ function prepareCordisPatch() {
   const patchFile = path.join(profileDir, 'cordis.patch.yml');
   const original = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : '';
   const lines = original.replace(/^\uFEFF/, '').split(/\r?\n/);
-  // Repair only the historical invalid *root* [] followed by block operations.
-  // A nested [] or a line inside a literal scalar is user data and must survive.
-  const first = lines.findIndex((line) => line.trim() && !line.trimStart().startsWith('#'));
-  if (first >= 0 && lines[first].trim() === '[]'
-      && lines.slice(first + 1).some((line) => /^-\s/.test(line))) {
-    lines.splice(first, 1);
-  }
   let doc;
   try { doc = yaml.load(lines.join('\n')) ?? []; }
   catch (error) { fatal(`failed to parse ${patchFile}; file unchanged: ${error.message}`); }
@@ -272,57 +235,6 @@ function ensureBundle(name) {
   return linkDir;
 }
 
-function removeOwnedBundleLink(linkPath, expectedTarget, label) {
-  let stat;
-  try { stat = fs.lstatSync(linkPath); }
-  catch (error) {
-    if (error?.code === 'ENOENT') return;
-    fatal(`failed to inspect legacy ${label}: ${error?.message ?? error}`);
-  }
-  if (!stat.isSymbolicLink()) {
-    log(`legacy ${label} 不是托管目录链接，保留: ${linkPath}`);
-    return;
-  }
-
-  let rawTarget;
-  try { rawTarget = fs.readlinkSync(linkPath); }
-  catch (error) {
-    log(`legacy ${label} 目标不可读，保留: ${linkPath} (${error?.message ?? error})`);
-    return;
-  }
-  const actualTarget = path.isAbsolute(rawTarget)
-    ? path.resolve(rawTarget)
-    : path.resolve(path.dirname(linkPath), rawTarget);
-  const expected = path.resolve(expectedTarget);
-  const sameTarget = process.platform === 'win32'
-    ? actualTarget.toLowerCase() === expected.toLowerCase()
-    : actualTarget === expected;
-  if (!sameTarget) {
-    log(`legacy ${label} 指向其他位置，保留: ${linkPath}`);
-    return;
-  }
-
-  try {
-    if (process.platform === 'win32') fs.rmdirSync(linkPath);
-    else fs.unlinkSync(linkPath);
-    log(`legacy ${label} 已移除: ${linkPath}`);
-  } catch (error) {
-    fatal(`failed to remove managed legacy ${label}: ${error?.message ?? error}`);
-  }
-}
-
-function removeLegacyBundleLinks() {
-  for (const name of LEGACY_BUNDLE_NAMES) {
-    const installedLink = path.join(DSH_HOME, 'plugins', name);
-    removeOwnedBundleLink(
-      path.join(DSH_HOME, 'profiles', PROFILE, 'node_modules', name),
-      installedLink,
-      `${name} profile link`
-    );
-    removeOwnedBundleLink(installedLink, path.join(REPO_ROOT, 'plugins', name), `${name} install link`);
-  }
-}
-
 function patchProfilePackage(links) {
   const profileDir = path.join(DSH_HOME, 'profiles', PROFILE);
   const pkgFile = path.join(profileDir, 'package.json');
@@ -341,22 +253,6 @@ function patchProfilePackage(links) {
   pkg.dsh = pkg.dsh || {};
   pkg.dsh.profile = pkg.dsh.profile || {};
   if (!Array.isArray(pkg.dsh.profile.bundles)) pkg.dsh.profile.bundles = [];
-  for (const name of LEGACY_BUNDLE_NAMES) {
-    const before = pkg.dsh.profile.bundles.length;
-    pkg.dsh.profile.bundles = pkg.dsh.profile.bundles.filter((bundle) => bundle !== name);
-    if (pkg.dsh.profile.bundles.length !== before) {
-      log(`legacy package.json bundle removed: ${name}`);
-    }
-    if (Object.hasOwn(pkg.dependencies, name)) {
-      const value = String(pkg.dependencies[name] ?? '');
-      if (value.startsWith('link:')) {
-        delete pkg.dependencies[name];
-        log(`legacy package.json link dependency removed: ${name}`);
-      } else {
-        log(`legacy dependency ${name} is not a link; keeping dependency value`);
-      }
-    }
-  }
   for (const [name, linkDir] of Object.entries(links)) {
     const linkVal = `link:${linkDir.replace(/\\/g, '/')}`;
     if (pkg.dependencies[name] !== linkVal) {
@@ -414,8 +310,6 @@ patchCordis(cordisPatch);
 const links = {};
 for (const name of BUNDLE_NAMES) links[name] = ensureBundle(name);
 patchProfilePackage(links);
-removeLegacyBundleLinks();
-reportLegacyPresetDir();
 autoInstallProfileBundles();
 if (isFfmpegAvailable({ ffmpegPath: process.env.FFMPEG_PATH || null })) {
   log('FFmpeg detected; image resizing and animated-sticker previews are available.');

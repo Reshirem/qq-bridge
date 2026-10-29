@@ -31,7 +31,7 @@ npm run test:console-ui
 
 - 页面提供唯一全局 `desktop-agent` 的启动、任务提交和停止控制。
 - 页面不再显示逐 QQ DSH 会话映射、逐来源通知或审批转发控件。
-- 提示词编辑区固定对应 `desktop-agent`，没有旧 preset 选择器。
+- 提示词编辑区固定对应 `desktop-agent`。
 - QQ 通道面板保留提醒配置、消息缓存状态和清空缓存操作；清空缓存不会重置全局 DSH 会话。
 - 浏览器没有 JavaScript 错误、未实现的 fixture API 请求或外部网络请求。
 

@@ -64,7 +64,7 @@ DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
 
 1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将用于管理者身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
 2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe`、`mcp-qq-memory` 四个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
-3. 从目标 profile 移除旧的 `qq-mode-console` bundle 及安装脚本创建的链接，并注册合并后的 `qq-agent-presets`。
+3. 从目标 profile 清理不再使用的 bundle，并注册合并后的 `qq-agent-presets`。
 4. 尝试执行 `dsh plugin --profile <profile> install` 安装 bundle 依赖；如 DSH CLI 不可用，会提示手动执行命令。
 
 脚本可重复运行；修改 MCP 配置前会备份目标文件，解析失败时不会覆盖它。preset patch 是生成文件，修改 preset 时请编辑 `dsh/agent-presets/<preset>/` 下的源文件，然后运行：
@@ -75,9 +75,7 @@ node scripts/build-agent-preset-patches.mjs
 
 如果把仓库移动或重新 clone 到新路径，请再次运行 `setup-dsh.mjs`，以更新 profile 中的 MCP 路径和 bundle 链接。`QQ_BRIDGE_SKIP_DSH_INSTALL=1` 可跳过脚本调用 DSH CLI，之后需手动安装依赖。
 
-> DSH 0.1.7 起不再读取旧的 `~/.dsh/.agent-presets/<name>/` 目录。安装脚本只报告并保留该旧目录，不会删除或迁移其中的手工修改；如有自定义内容，请自行合并到仓库源文件。
-
-安装完成后，重启 DSH（或重新加载 profile），使 preset、管理者身份标记设置和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置现在位于 `qq-agent-presets.ownerQQ`；旧 `qq-mode.ownerQQ` 值不会自动迁移，需要在新命名空间重新填写。
+安装完成后，重启 DSH（或重新加载 profile），使 preset、管理者身份标记设置和 MCP 工具生效。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置位于 `qq-agent-presets.ownerQQ`。
 
 电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具；它能按需列出账号的群和好友、读写任意合法会话 key。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
@@ -110,9 +108,9 @@ node scripts/test-preset-local-tools.mjs
 node scripts/test-audit-setup-guards.mjs
 ```
 
-确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局陪伴者应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status`、`mcp__qq-memory__*`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。旧 `qq-chat-v2` preset 已从当前仓库安装包移除；历史 DSH 会话由 DSH 自己保留，桥接不再管理它们。
+确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局陪伴者应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status`、`mcp__qq-memory__*`、`ask_user_question` 和 `todo_write`，不应出现 shell、通用文件工具、子代理或 Harness 管理工具。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
-如要验证当前 DSH 版本的协议兼容性，可运行 `npm run verify:adaptation`；其中部分检查需要正在运行且可访问的 DSH。不要把该在线探测与上述离线测试混为一谈。
+如要核验 DSH 在线 API，可运行 `npm run verify:dsh`；其中部分检查需要正在运行且可访问的 DSH。不要把该在线核验与上述离线检查混为一谈。
 
 ## 常见问题
 

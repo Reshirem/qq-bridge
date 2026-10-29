@@ -21,7 +21,6 @@ import * as tokenLedger from '../src/token-ledger.js';
 import * as memorixGateway from '../src/a-memorix-gateway.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
-import * as roleCard from '../src/role-card.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
@@ -40,7 +39,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
     consoleToken: 'fixture-console-token', ...config,
   }));
-  // 额外状态文件（用于测试"启动时读到损坏/旧版文件"这类路径）。
+  // Extra state files let fixtures cover malformed persisted data.
   for (const [rel, content] of Object.entries(files)) {
     const target = path.join(temp, rel);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -177,7 +176,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...safeFetch, ...forward, ...sticker,
-    ...modelPrices, ...tokenLedger, ...memorixGateway, ...roleCard, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
+    ...modelPrices, ...tokenLedger, ...memorixGateway, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     // The fixture must never probe or spawn a host ffmpeg process during startup.

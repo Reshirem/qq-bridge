@@ -208,60 +208,6 @@ export function serializePresetPromptModules(value) {
 }
 
 /**
- * 从模块化改造前的固定前缀恢复编辑模块。仅接受当前旧版的 11 段布局，
- * 避免把未知格式的备份悄悄拆错；调用方可把迁移结果写回模块文件。
- */
-export function migrateLegacyPresetPromptModules(content) {
-  const paragraphs = String(content ?? '').replace(/\r\n/g, '\n').trim().split(/\n\s*\n/);
-  if (paragraphs.length !== 11) throw new Error('该旧版备份不是已知的 11 段固定前缀格式，无法安全迁移为模块');
-  const rest = paragraphs[3];
-  const finiteAt = rest.indexOf('有具体且值得继续的后续时，可设置一次有限的');
-  const replyAt = rest.indexOf('如果你在本回合向某个 QQ 来源发过回复');
-  const recoveryAt = rest.indexOf('如果回合结束时没有调用 `agent_rest`');
-  if (finiteAt < 0 || replyAt < finiteAt || recoveryAt < replyAt) {
-    throw new Error('旧版备份中的休息段落结构未知，无法安全迁移为模块');
-  }
-  const plannedRest = rest.slice(finiteAt, replyAt)
-    .replace('有效 QQ 提醒也可以提前结束休息并启动一轮。', '')
-    .replace('QQ 提醒只提供来源元数据，不要求你必须读取、回复或采取行动。', '')
-    .trim();
-  const qqWait = paragraphs[4]
-    .replace('交流结束后，调用 `agent_rest` 作为最后一个工具调用；之后不要再调用其他工具。', '')
-    .trim();
-  const computerUser = paragraphs[5]
-    .replace(/^【让用户优先使用电脑】\s*/, '')
-    .replace('若需要等待，可调用 `agent_rest` 休息数分钟后在新回合重新检查。', '')
-    .replace('，或休息一段时间后再检查', '');
-  const qqReplyCheck = rest.slice(replyAt, recoveryAt)
-    .replace('调用 `agent_rest` 前要', '结束该来源处理前要')
-    .replace('；确认没有新消息且没有其他具体后续后，再休息。', '；确认没有新消息后，结束该来源处理。')
-    .trim();
-  const qqChannel = [
-    paragraphs[7],
-    '符合条件的 QQ 提醒可以结束当前休息并启动新回合；这与在活动回合内调用 `qq_wait_for_messages` 等待消息是两种不同机制。',
-    qqReplyCheck,
-  ].filter(Boolean).join('\n\n');
-  const contents = {
-    identity: paragraphs[0],
-    autonomy: paragraphs[1].replace(/^【人格与节奏】\s*/, ''),
-    conversation: paragraphs[2],
-    'turn-lifecycle': [rest.slice(0, finiteAt).trim(), rest.slice(recoveryAt).trim()].filter(Boolean).join('\n\n'),
-    'planned-rest': plannedRest,
-    'qq-wait': qqWait,
-    'computer-user': computerUser.trim(),
-    'protected-apps': paragraphs[6].replace(/^【受保护的项目与运行时应用】\s*/, ''),
-    'qq-channel': qqChannel,
-    'untrusted-input': paragraphs[8],
-    memory: paragraphs[9].replace(/^【长期记忆】\s*/, ''),
-    'computer-scope': paragraphs[10],
-  };
-  return normalizePresetPromptModules({
-    version: PRESET_PROMPT_MODULES_VERSION,
-    modules: PRESET_PROMPT_MODULE_DEFINITIONS.map(({ id }) => ({ id, enabled: true, content: contents[id] ?? '' })),
-  });
-}
-
-/**
  * 用字面量块（|-）把新提示词写回 YAML 文本。
  * 关键保证：读出来的是 YAML 解析后的真实字符串，写回后重新解析必须逐字一致，
  * 否则抛错拒绝写入——这样无论原文用的是 >- 还是 |，都不会改变提示词的实际语义。

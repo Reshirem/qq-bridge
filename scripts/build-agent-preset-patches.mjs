@@ -1,16 +1,6 @@
 #!/usr/bin/env node
-// build-agent-preset-patches.mjs — 把 dsh/agent-presets/<preset>/ 的 preset 源文件
-// 渲染成 DSH 0.1.7 的 bundle patch 文件（plugins/qq-agent-presets/presets/<preset>.patch.yml）。
-//
-// 背景（为什么需要「生成」这一步）：
-//   0.1.5：preset = ~/.dsh/.agent-presets/<preset>/{preset.yml,agent.cordis.yml} 目录，DSH 扫目录。
-//   0.1.7：注册表既不扫目录也不接受 preset 路径，preset 变成一条普通 loader 行
-//          （@deepseek-ai/dsh-agent-preset），它的 config.plugins 必须是**内联的行列表**，
-//          只能由 bundle 的 patch 文件插入。提示词模块源会组合到 preset row，再生成 patch：
-//            源（人写/控制台改）：dsh/agent-presets/<preset>/{preset.yml,agent.cordis.yml,prompt-modules.json}
-//            装（DSH 读）：      plugins/qq-agent-presets/presets/<preset>.patch.yml
-//          本脚本是两者之间**唯一**的转换器：源是唯一权威，产物是纯生成物（文件头写明「请勿手工编辑」）。
-//          setup-dsh.mjs 在安装时会重新生成；test-agent-preset-patches.mjs 用 --check 钉住不漂移。
+// Render preset sources and prompt modules as generated bundle patches.
+// The repository preset files are authoritative; setup regenerates these output files.
 //
 // 用法：
 //   node scripts/build-agent-preset-patches.mjs           # 生成/刷新 patch 文件
@@ -110,8 +100,8 @@ function normalizeRows(rows, preset) {
     if (next.name.startsWith('.') || path.isAbsolute(next.name)) {
       const rewrite = RELATIVE_ROW_REWRITES.get(next.name);
       if (rewrite === undefined) {
-        throw new Error(`${label}: 相对/绝对插件名 ${JSON.stringify(next.name)} 在 0.1.7 下会按 profile 目录解析，`
-          + '必须改写为「bundle 包名/子路径」或去掉；请在 build-agent-preset-patches.mjs 里显式登记改写规则');
+        throw new Error(`${label}: relative or absolute plugin name ${JSON.stringify(next.name)} cannot be resolved from the profile; `
+          + 'register an explicit package specifier rewrite in build-agent-preset-patches.mjs');
       }
       next.name = rewrite;
     }
@@ -153,7 +143,7 @@ export function renderPatch(name) {
   const header = [
     `# 本文件由 scripts/build-agent-preset-patches.mjs 生成，请勿手工编辑。`,
     `# 源：dsh/agent-presets/${name}/preset.yml + agent.cordis.yml + prompt-modules.json（模块配置由 WebUI 生成到 persona.prefix）。`,
-    `# 作用：把 ${name} 作为一条 @deepseek-ai/dsh-agent-preset 行插入 profile（DSH 0.1.7+ 的 preset 机制）。`,
+    `# 作用：把 ${name} 作为一条 @deepseek-ai/dsh-agent-preset 行插入 profile。`,
     `# 守卫行 qq-tool-restrict 用裸说明符 ${GUARD_SPECIFIER}：子行 name 按 profile 目录解析，`,
     `# 该包以 link: 依赖注册在 profile package.json（node_modules junction 由 setup-dsh.mjs 维护）。`,
     '',

@@ -200,8 +200,8 @@ test('a bridge 200 with ok:false is reported to the model as a failure', async (
 
 test('single-runtime MCP tools hide internal credentials and expose bounded session reads', async () => {
   const callTool = loadSnowlumaTools(async () => Response.json({ ok: false, error: '目标不在当前模式允许范围内' }, { status: 403 }));
-  assert.equal(callTool.has('qq_list_groups'), false, 'legacy global group listing must stay removed');
-  assert.equal(callTool.has('qq_get_group_history'), false, 'legacy direct history tool must stay removed');
+  assert.equal(callTool.has('qq_list_groups'), false, 'group listing tool must stay absent');
+  assert.equal(callTool.has('qq_get_group_history'), false, 'direct group history tool must stay absent');
   assert.equal(callTool.has('qq_get_group_members'), true, 'bounded group members must be registered');
   assert.equal(callTool.has('qq_get_conversation_history'), true, 'bounded conversation history must be registered');
   assert.equal(Object.hasOwn(callTool.schema('qq_get_group_members'), 'token'), false, 'bridge token must stay out of the model-facing schema');

@@ -37,8 +37,8 @@ function fixture(name, patch = '') {
   fs.writeFileSync(patchFile, patch);
   fs.writeFileSync(path.join(home, 'profiles/web/package.json'), JSON.stringify({
     name: 'fixture-profile',
-    dependencies: { existing: '1.0.0', 'qq-mode-console': 'link:/legacy/plugins/qq-mode-console' },
-    dsh: { profile: { bundles: ['existing', 'qq-mode-console'] } },
+    dependencies: { existing: '1.0.0' },
+    dsh: { profile: { bundles: ['existing'] } },
   }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
   Object.assign(env, { PATH: path.dirname(process.execPath), DSH_HOME: home, HOME: home, USERPROFILE: home, QQ_BRIDGE_SKIP_DSH_INSTALL: '1' });
@@ -55,7 +55,7 @@ function test(name, fn) {
 
 try {
   test('shared inserts, quoted IDs, flow YAML and unrelated nested arrays survive repeat setup', () => {
-    const source = `# user patch\n- insert:\n    - id: mcp-snowluma\n      name: old\n    - id: custom\n      name: custom-plugin\n      config:\n        empty:\n          []\n        nested:\n          - id: mcp-snowluma-host\n            value: keep\n- insert:\n    - id: 'mcp-snowluma-host' # previous setup\n      name: old\n- {insert: [{id: mcp-web-search-safe, name: old}]}\n`;
+    const source = `# user patch\n- insert:\n    - id: mcp-snowluma\n      name: old\n    - id: custom\n      name: custom-plugin\n      config:\n        empty:\n          []\n        nested:\n          - id: mcp-snowluma-host\n            value: keep\n- insert:\n    - id: 'mcp-snowluma-host' # managed entry\n      name: old\n- {insert: [{id: mcp-web-search-safe, name: old}]}\n`;
     const f = fixture('structured', source);
     const originalCustom = yaml.load(source)[0].insert[1];
     for (let i = 0; i < 2; i++) {
@@ -72,14 +72,6 @@ try {
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
     assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'qq-agent-presets']);
-    assert.equal(Object.hasOwn(pkg.dependencies, 'qq-mode-console'), false);
-  });
-
-  test('legacy root [] is repaired without altering literal strings', () => {
-    const f = fixture('legacy', `[]\n- insert:\n    - id: custom\n      name: custom\n      config:\n        text: |\n          []\n          keep me\n`);
-    const result = f.run();
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(yaml.load(fs.readFileSync(f.patchFile, 'utf8'))[0].insert[0].config.text, '[]\nkeep me\n');
   });
 
   test('malformed patch fails before replacing user configuration or presets', () => {
@@ -88,7 +80,6 @@ try {
     const result = f.run();
     assert.notEqual(result.status, 0);
     assert.equal(fs.readFileSync(f.patchFile, 'utf8'), source);
-    assert.equal(fs.existsSync(path.join(f.home, '.agent-presets')), false);
   });
 
   test('profile traversal is rejected before filesystem changes', () => {
@@ -96,7 +87,6 @@ try {
     const result = f.run('../../escape');
     assert.notEqual(result.status, 0);
     assert.equal(fs.existsSync(path.join(f.home, 'escape')), false);
-    assert.equal(fs.existsSync(path.join(f.home, '.agent-presets')), false);
   });
 
   test('existing unrelated state, DSH settings and non-link plugin directory remain untouched', () => {

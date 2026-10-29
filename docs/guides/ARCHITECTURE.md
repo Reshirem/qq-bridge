@@ -27,7 +27,7 @@
 - 桥接运行期间，首次提交的 QQ 提醒会保留到对应消息被 `readThroughSeq` 确认。若它仍未读，会话进入休息后由单一全局计时器每分钟检查一次，并最多补发一次；异常回合处于指数退避 `recovering` 时不运行这类提醒检查。
 - 回合没有调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟尝试恢复，之后间隔最长 30 分钟。WebUI 停止会取消当前和排队中的 DSH 工作并持久进入 `stopped`；只有 WebUI 手动启动或提交任务才解除停止态。
 - 桥接不运行周期性模型心跳，也不靠无目的的长等待工具维持在线。`qq_wait_for_messages` 可用于活动回合内等待某个具体相关交流。
-- `state/desktop-agent.json` 保存全局会话 ID、令牌和生命周期。旧的逐 QQ 会话映射、映射令牌、映射控制接口和 `qq-chat-v2` preset 已从当前代码与 bundle 移除。历史 DSH 会话由 DSH 自行保留，桥接不再枚举、修改或归档它们。
+- `state/desktop-agent.json` 保存桥接管理的全局会话 ID、令牌和生命周期。DSH 负责保留会话历史；桥接仅管理当前配置指向的全局会话。
 - 读取本地 NTQQ 数据库仍是延期的技术尝试。当前消息来源仍是 SnowLuma；不要自行开始数据库读取实验，等用户再次提出后再评估。
 
 当前权限约定见 [RULES.md](../../RULES.md)，安装过程见 [DSH_SETUP.md](DSH_SETUP.md)。长期记忆目标与实施边界见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。

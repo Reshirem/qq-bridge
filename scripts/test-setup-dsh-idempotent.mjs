@@ -15,37 +15,11 @@ const tmpHome = path.join(os.tmpdir(), 'qq-bridge-setup-test-home');
 fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, 'profiles', 'web'), { recursive: true });
 fs.mkdirSync(path.join(tmpHome, 'plugins'), { recursive: true });
-// 预置一个「历史版本」patch：无 BEGIN/END 标记、含空的 [] 根节点、只挂了 2 个 MCP
-const legacyPatch = `# legacy profile patch
-[]
-- insert:
-    - id: mcp-snowluma
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: snowluma
-        transport: stdio
-        command: node
-        args:
-          - 'old/path/mcp-snowluma-safe.js'
-
-- insert:
-    - id: mcp-snowluma-host
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: snowluma-host
-        transport: stdio
-        command: node
-        args:
-          - 'old/path/mcp-host-server.js'
-`;
-fs.writeFileSync(path.join(tmpHome, 'profiles', 'web', 'cordis.patch.yml'), legacyPatch, 'utf8');
+fs.writeFileSync(path.join(tmpHome, 'profiles', 'web', 'cordis.patch.yml'), '# profile patch\n', 'utf8');
 fs.writeFileSync(path.join(tmpHome, 'profiles', 'web', 'package.json'), JSON.stringify({
   name: 'dsh-profile-web', private: true,
-  dependencies: {
-    'dsh-approval-toast': 'file:C:/x/dsh-approval-toast',
-    'qq-mode-console': `link:${path.join(tmpHome, 'plugins', 'qq-mode-console').replace(/\\/g, '/')}`,
-  },
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-approval-toast', 'qq-mode-console'] } },
+  dependencies: { 'dsh-approval-toast': 'file:C:/x/dsh-approval-toast' },
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-approval-toast'] } },
 }, null, 2), 'utf8');
 
 function runSetup(label) {
@@ -75,17 +49,7 @@ for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
   console.log(`${ok ? '✅' : '❌'} id ${id} 出现 ${n} 次（期望 1）`);
 }
 
-// 断言 2：旧路径已被替换为本仓库路径
-const hasOldPath = finalPatch.includes('old/path/');
-console.log(`${hasOldPath ? '❌' : '✅'} 旧脚本路径已清除（old/path 出现=${hasOldPath}）`);
-if (hasOldPath) failed += 1;
-
-// 断言 3：独立成行的 [] 已被剥离
-const hasBareArray = /^[ \t]*\[\][ \t]*$/m.test(finalPatch);
-console.log(`${hasBareArray ? '❌' : '✅'} 无独立成行的空数组 []`);
-if (hasBareArray) failed += 1;
-
-// 断言 4：YAML 可解析且顶层是数组
+// YAML 可解析且顶层是数组
 const YAML = await import(pathToFileURL(path.join(dshModulesDir(), 'js-yaml/index.js')).href);
 const yaml = YAML.default ?? YAML;
 let doc;
@@ -100,19 +64,18 @@ if (doc) {
   console.log(`   解析出的 MCP id: ${ids.join(', ')}`);
 }
 
-// 断言 5：profile package.json 已移除独立 qq-mode-console，且未破坏其他 bundle
+// profile package.json 含当前 bundle，且保留其他 bundle
 const pkg = JSON.parse(fs.readFileSync(path.join(tmpHome, 'profiles', 'web', 'package.json'), 'utf8'));
 const bundles = pkg.dsh.profile.bundles;
-const okBundle = !bundles.includes('qq-mode-console') && bundles.includes('qq-agent-presets') && bundles.includes('dsh-approval-toast');
+const okBundle = bundles.includes('qq-agent-presets') && bundles.includes('dsh-approval-toast');
 console.log(`${okBundle ? '✅' : '❌'} profile bundles 正确: ${bundles.join(', ')}`);
 if (!okBundle) failed += 1;
 const depOk = String(pkg.dependencies['qq-agent-presets'] ?? '').startsWith('link:')
-  && !Object.hasOwn(pkg.dependencies, 'qq-mode-console');
-console.log(`${depOk ? '✅' : '❌'} 单个 qq-agent-presets link: 依赖已登记（旧独立依赖已移除）`);
+  && String(pkg.dependencies['dsh-approval-toast']).startsWith('file:');
+console.log(`${depOk ? '✅' : '❌'} qq-agent-presets link 依赖已登记`);
 if (!depOk) failed += 1;
 
-// 断言 6：DSH 0.1.7 机制 —— preset 由 qq-agent-presets bundle 的 patch 层装配，
-// 旧目录 ~/.dsh/.agent-presets 不再写入（也不删除用户数据）。
+// Preset is installed through the current bundle patch.
 for (const p of ['desktop-agent']) {
   const patchFile = path.join(ROOT, 'plugins', 'qq-agent-presets', 'presets', `${p}.patch.yml`);
   const text = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : '';
@@ -120,9 +83,5 @@ for (const p of ['desktop-agent']) {
   console.log(`${ok ? '✅' : '❌'} preset ${p} 的 patch 层就绪（含 @deepseek-ai/dsh-agent-preset 行 + config.id）`);
   if (!ok) failed += 1;
 }
-const legacyDir = path.join(tmpHome, '.agent-presets');
-console.log(`${legacyDir && !fs.existsSync(legacyDir) ? '✅' : '❌'} 未创建 0.1.7 已废弃的 ~/.dsh/.agent-presets`);
-if (fs.existsSync(legacyDir)) failed += 1;
-
 console.log(failed === 0 ? '\n✅ setup-dsh.mjs 幂等性测试通过' : `\n❌ ${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

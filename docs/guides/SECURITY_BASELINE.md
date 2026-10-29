@@ -34,7 +34,7 @@
 | 管理端目标白名单 | `src/bridge.js` `allowed()` | 控制台直接操作 QQ 目标时使用 allow/deny 配置；全局 desktop-agent 的合法 QQ key 不受该列表限制 |
 | 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | MCP 从 `state/desktop-agent.json` 自动读取并附加桥接内部凭证，模型无需传递；不检查调用方 DSH session，桥接将凭证与全局自主运行时状态比对；QQ key 仍须匹配 `^(group\|private):\d+$` |
 | 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通消息留在桥接缓冲；正文由全局 agent 主动读，无周期模型心跳 |
-| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 12 小时）或无限休息；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态。旧 `wakeAt` 迁移为休息截止时间，旧定时开关字段不再读取 |
+| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 12 小时）或无限休息；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
 | 管理者身份标记 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')` 时在消息上下文中标记管理者身份；这不授权管理操作。桥接不解析 QQ 管理命令，管理 API 由控制台令牌保护 |
 
@@ -46,7 +46,7 @@
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带桥接令牌；桥接还要求当前 DSH 回合有效。所有 bridge API 发送仍受敏感内容审计、限频和工具调用审计 |
 | 动态 ACL | sticker / image media helpers | 贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
-| **只探测、不部署** | `mcp-host-server.js` | 该 MCP server **只提供 `snowluma_status`（只读探活 `get_login_info`）**。⚠️ **v0.1.5 起删除了 `start_snowluma` / `stop_snowluma` 与 `snowluma.allowProcessControl`**：SnowLuma EULA §5.4 规定「将其并入第三方安装包或 Docker 镜像、**通过自动化脚本部署**」须事先书面授权，原生组件属**专有组件**。⇒ 本程序不安装、不复制、不打包、不程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
+| **只探测、不部署** | `mcp-host-server.js` | 该 MCP server **只提供 `snowluma_status`（只读探活 `get_login_info`）**。SnowLuma EULA §5.4 要求将其并入第三方安装包或 Docker 镜像、通过自动化脚本部署时事先取得书面授权；原生组件属专有组件。本程序不安装、不复制、不打包或程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
 
 ### 2.1 桌面应用范围（提示词边界）
 
@@ -100,7 +100,7 @@
 | 路径校验（读点） | `roleRawContent()` 等 | 人格名在**读取点**也做 `sanitizeRoleName` + `path.resolve` 包含性校验（`state/current-role.json` 是用户可直接编辑的文件） |
 | 原型污染 | audit-log redaction | 日志脱敏跳过 `__proto__` / `constructor` / `prototype` 键，并使用无原型对象 |
 
-### 6. 与 DSH 沙箱的 ACL 交互（DSH 0.2.0 起；**这是有意的取舍，不是缺陷**）
+### 6. 与 DSH 沙箱的 ACL 交互
 
 DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化工作区路径)` 派生
 （形如 `S-1-4-<a>-<b>`；同一个工作区路径每次会话派生出同一个 SID，**重命名工作区会换一个**），
@@ -127,8 +127,8 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 > `BUILTIN\Users: ReadAndExecute` —— 那正是收紧时要摘掉的两条，等于把控制台令牌、
 > SnowLuma OneBot 令牌与全部 QQ 聊天记录重新开放给本机任何已登录用户。
 
-> ⚠️ 已知的**非预期**收紧（2026-09-29 实测）：`plugins/qq-agent-presets/**` 与
-> `plugins/qq-mode-console/**` 的内容也被切断了继承（`plugins/` 自身没有）。
+> ⚠️ 已知的**非预期**收紧（2026-09-29 实测）：`plugins/qq-agent-presets/**` 的内容
+> 也被切断了继承（`plugins/` 自身没有）。
 > **本仓库没有任何脚本这么做**，来源不明（手工 icacls 或仓库外工具）。
 > 它的副作用是沙箱会话里改不动 L7 守卫（`qq-tool-restrict.mjs`）。
 > 这两处不含凭据，恢复继承不涉及泄密风险 —— 是否恢复由使用者决定（`npm run diagnose:acl`
@@ -153,7 +153,7 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 | --- | --- | --- | --- |
 | R1 | **敏感信息审计是启发式的** | 能抓"带赋值关系的凭据"和本机路径；抓不到任意形态的秘密 | 通用秘密检测无法在没有密钥的情况下做对；硬边界在白名单与工具面，审计是兜底 |
 | R2 | **`state/` 里的令牌是明文** | Windows 已用 ACL 收紧；Linux 用 `0700` | 凭据库/DPAPI 尚未实现；如未来提出该需求，应单独评估部署复杂度和恢复流程 |
-| R3 | **远程停止不是原子的** | `session/control` + `updateQueue` + `cancel` 是尽力而为，已执行的工具副作用无法回滚 | DSH 协议没有事务语义 |
+| R3 | **远程停止不是原子的** | 清空待处理队列后请求取消当前回合，已执行的工具副作用无法回滚 | DSH 协议没有事务语义 |
 | R4 | **离线队列不保证送达** | 每会话最多 50 条，进程退出即丢 | 一致性代价过高；README 已写明 |
 | R5 | **预设不变量检查是子串存在性** | 防误删，不防恶意 | 能改这个文件的人本来就是管理员，真正的硬边界在工具守卫与白名单 |
 | R6 | **`self-test.js` 只证明链路通** | 不做断言 | 它是连通性探针，不是回归套件（离线回归由 `node scripts/test-audit.mjs` 运行） |
@@ -168,7 +168,7 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 
 ```bash
 node scripts/test-audit.mjs # 纯 mock/fixture 离线回归，必须全绿
-npm run verify:adaptation   # DSH 适配一致性（preset/工具守卫/MCP 挂载/活 DSH 实测）
+npm run verify:dsh          # DSH 当前 preset/工具守卫/MCP 挂载与在线 API
 npm run verify:persona      # 人格配置一致性
 npm run diagnose:acl        # ACL 收紧路径盘点（只读；需在**无沙箱**终端跑，见 §2.6）
 npm run scan:tool-names     # 守卫名单 vs 已安装 DSH 的真实工具名（每次升级 DSH 后跑）

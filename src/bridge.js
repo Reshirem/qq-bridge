@@ -15,7 +15,6 @@ import yaml from 'js-yaml';
 import {
   composePresetPromptModules,
   extractPresetPrefix,
-  migrateLegacyPresetPromptModules,
   normalizePresetPromptModules,
   presetPromptBlockers,
   presetPromptWarnings,
@@ -27,7 +26,6 @@ import {
   normalizeDesktopAgentPromptTemplates,
   renderDesktopAgentPromptTemplate,
 } from './desktop-agent-prompt-templates.js';
-import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, discoverDshLaunchToken, discoverDshBaseUrl } from './dsh-client.js';
@@ -85,7 +83,7 @@ const BRIDGE_LOG = path.join(STATE_DIR, 'bridge.log');
 
 /**
  * 从 DSH settings 命名空间读取明确设置，user 层优先、value 回退。
- * DSH 0.2.0 写入 user 层，所以 ownerQQ 热更新时必须优先读取该层。
+ * User overrides take precedence over the namespace defaults.
  */
 function settingFromDshNamespace(ns, key) {
   if (!ns || typeof ns !== 'object') return undefined;
@@ -470,21 +468,11 @@ function firstMeaningfulLine(content) {
   return '';
 }
 
-function roleWarnings(content, sectionView = 'v2') {
+function roleWarnings(content) {
   const text = String(content ?? '');
   const warnings = [];
-  const stats = roleCharStats(text);
-  const injected = sectionView === 'v1' ? stats.v1 : stats.v2;
-  if (injected > roleInjectMaxChars) {
-    warnings.push(`超出首次注入上限：当前角色卡有 ${injected} 字符，只有前 ${roleInjectMaxChars} 字符会进入全局会话开场提示（可在配置里调 role.maxInjectChars）`);
-  }
-  // 只在未标记的通用小节上提示历史指令过滤，避免对已标注内容误报。
-  const untagged = parseRoleSections(text)
-    .filter((section) => section.mode === 'all')
-    .map((section) => section.lines.join('\n'))
-    .join('\n');
-  if (GEN1_ROLE_LINE_RE.test(untagged)) {
-    warnings.push('未标记的小节里含历史 QQ persona 指令（[SILENT] / 空格分句 / 自动转发…），当前 desktop-agent 会兜底过滤这些行；可将其移到 〔v1〕 历史小节');
+  if (text.length > roleInjectMaxChars) {
+    warnings.push(`超出首次注入上限：当前角色卡有 ${text.length} 字符，只有前 ${roleInjectMaxChars} 字符会进入全局会话开场提示（可在配置里调 role.maxInjectChars）`);
   }
   return warnings;
 }
@@ -495,7 +483,6 @@ function roleSummaries() {
     try {
       const stat = fs.statSync(file);
       const content = fs.readFileSync(file, 'utf8');
-      const stats = roleCharStats(content);
       return {
         name,
         bytes: stat.size,
@@ -503,17 +490,12 @@ function roleSummaries() {
         lines: content.split('\n').length,
         mtime: stat.mtimeMs,
         excerpt: firstMeaningfulLine(content),
-        // 旧标题标签的兼容统计；生产 runtime 固定使用 v2 内容。
-        injectedV1: Math.min(stats.v1, roleInjectMaxChars),
-        injectedV2: Math.min(stats.v2, roleInjectMaxChars),
-        charsV1: stats.v1,
-        charsV2: stats.v2,
-        hasModeTags: stats.v1Only > 0 || stats.v2Only > 0,
-        truncated: stats.v1 > roleInjectMaxChars || stats.v2 > roleInjectMaxChars,
+        injectedChars: Math.min(content.length, roleInjectMaxChars),
+        truncated: content.length > roleInjectMaxChars,
         warnings: roleWarnings(content).length,
       };
     } catch {
-      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', injectedV1: 0, injectedV2: 0, charsV1: 0, charsV2: 0, hasModeTags: false, truncated: false, warnings: 0 };
+      return { name, bytes: 0, chars: 0, lines: 0, mtime: 0, excerpt: '', injectedChars: 0, truncated: false, warnings: 0 };
     }
   });
 }
@@ -592,15 +574,13 @@ function readPresetPromptText(name) {
 function readPresetPromptModules(name) {
   const { prefix: sourcePrefix } = readPresetPromptText(name);
   const file = presetPromptModulesFile(name);
-  const migrated = !fs.existsSync(file);
-  const modules = migrated
-    ? migrateLegacyPresetPromptModules(sourcePrefix)
-    : normalizePresetPromptModules(readJsonSafe(file, null, true));
+  if (!fs.existsSync(file)) throw new Error(`找不到固定前缀模块文件 ${path.relative(ROOT, file)}`);
+  const modules = normalizePresetPromptModules(readJsonSafe(file, null, true));
   const content = composePresetPromptModules(modules);
-  if (!migrated && content !== sourcePrefix) {
+  if (content !== sourcePrefix) {
     throw new Error('模块配置与 DSH 固定前缀不同步；请通过模块编辑器保存，或还原一份配套备份');
   }
-  return { file, modules, content, sourcePrefix, migrated };
+  return { file, modules, content, sourcePrefix };
 }
 
 // 备份文件名带上预设名，便于辨认还原目标。
@@ -641,7 +621,7 @@ function listPresetBackups(name) {
 }
 
 function presetStatus(name) {
-  // 0.1.7+ 从 bundle patch 加载 preset；source 是权威源，patch 是生成物。
+  // Presets load through generated bundle patches; the source files are authoritative.
   const patch = patchFileFor(name);
   let patchCurrent = false;
   let patchError = null;
@@ -733,21 +713,10 @@ function appendActivity(line) {
   appendActivityLog(`[${localClock()}] ${redactSensitiveText(String(line).replace(/[\r\n]+/g, ' '))}\n`);
 }
 
-let legacyRoleModeCleanupAttempted = false;
 // 当前选中的人格卡只保存在 role 字段。
 function readRoleState() {
   const stored = readJsonSafe(ROLE_STATE_FILE, { role: null });
-  const state = {
-    role: stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored.role ?? null) : null
-  };
-  // 首次读取时清除旧状态文件中已经废弃的 mode 字段。
-  if (!legacyRoleModeCleanupAttempted) {
-    legacyRoleModeCleanupAttempted = true;
-    if (stored && typeof stored === 'object' && !Array.isArray(stored) && Object.hasOwn(stored, 'mode')) {
-      try { atomicWriteJson(ROLE_STATE_FILE, state); } catch {}
-    }
-  }
-  return state;
+  return { role: stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored.role ?? null) : null };
 }
 function writeRoleState(role) {
   atomicWriteJson(ROLE_STATE_FILE, { role: role ?? null });
@@ -812,12 +781,12 @@ function loadConfig() {
         : {}),
     },
     allow: {
-      private: normalizeIdList(file.allow?.private ?? file.allow?.privates ?? []),
-      groups: normalizeIdList(file.allow?.groups ?? file.allow?.group ?? [])
+      private: normalizeIdList(file.allow?.private ?? []),
+      groups: normalizeIdList(file.allow?.groups ?? [])
     },
     deny: {
-      private: normalizeIdList(file.deny?.private ?? file.deny?.privates ?? []),
-      groups: normalizeIdList(file.deny?.groups ?? file.deny?.group ?? [])
+      private: normalizeIdList(file.deny?.private ?? []),
+      groups: normalizeIdList(file.deny?.groups ?? [])
     },
     // 私聊/群聊均未配置白名单时是否放行所有（true 时启动会打警告）
     allowAllWhenEmpty: file.allowAllWhenEmpty === true,
@@ -883,8 +852,7 @@ function loadConfig() {
         unreadLimit: 30,
         contextWindow: 20
       },
-      // 图片/表情（含动图）的数量与体积上限。QQ 的动图表情常见 1~4MB，
-      // 旧的 4MB 单条总上限会误伤；这里默认 8MB，仍受 DSH 的 20MB/64MP 限制约束。
+      // 图片/表情（含动图）的数量与体积上限。
       media: {
         maxBytes: 8 * 1024 * 1024,
         maxPixels: 64_000_000,
@@ -893,20 +861,6 @@ function loadConfig() {
       ...(file.socialV2 ?? {})
     }
   };
-  // 忽略旧版周期性开话题参数；主动休息与故障恢复由全局 desktop-agent 生命周期管理。
-  delete cfg.socialV2.proactive;
-  delete cfg.socialV2.provideRecommendations;
-  delete cfg.socialV2.agentPreset;
-  // Remove settings owned by the retired per-conversation DSH runtime.
-  delete cfg.socialV2.wake;
-  delete cfg.socialV2.initialPromptMaxChars;
-
-  // The global agent always receives the registered SnowLuma tool surface; ignore
-  // per-tool switches left behind by the retired mapped-session panel.
-  delete cfg.socialV2.tools;
-  delete cfg.socialV2.voice;
-  delete cfg.slang;
-
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
   cfg.socialV2.sticker = {
     enabled: true,
@@ -926,10 +880,8 @@ function loadConfig() {
       ...((cfg.socialV2?.sticker?.collect) ?? {})
     }
   };
-  delete cfg.socialV2.sticker.collect.maxRemarkChars;
 
-  // socialV2.media：图片/表情的数量与体积上限。旧配置没有这一段，必须深度合并出默认值，
-  // 否则 `{...defaults, ...file.socialV2}` 里缺失的 media 会取到 undefined（等于无上限判断）。
+  // Keep explicit limits even when media settings are partially configured.
   cfg.socialV2.media = {
     maxBytes: 8 * 1024 * 1024,
     maxPixels: 64_000_000,
@@ -937,11 +889,7 @@ function loadConfig() {
     ...((cfg.socialV2?.media && typeof cfg.socialV2.media === 'object' && !Array.isArray(cfg.socialV2.media)) ? cfg.socialV2.media : {})
   };
 
-  // DSH 0.1.7 起 launch token 是**每进程现生成的 32 字节随机数，只存在内存里**，
-  // 不落盘、不可推导；只有启动器把 `dsh web` 的 stdout 重定向到文件时才能从日志读到。
-  // 所以这里发现的 token 只是兜底，主路径是客户端用 ~/.dsh 里持久化的签名密钥
-  // 离线铸造会话 Cookie（见 dsh-client 的 mintBrowserSessionCookie）。
-  // authTokenExplicit 记录「token 是用户填的还是这里猜的」，客户端据此排优先级。
+  // Keep explicit credentials distinct from a token discovered from the local DSH logs.
   cfg.dsh.authTokenExplicit = Boolean(cfg.dsh.authToken);
   if (!cfg.dsh.authToken) cfg.dsh.authToken = discoverDshLaunchToken();
 
@@ -1007,7 +955,7 @@ function acquireLock() {
     }
   };
   if (tryCreate()) return;
-  // 锁文件已存在：检查 PID 是否仍存活；内容为空视为过期锁（仅兼容旧版本遗留），删除后重试一次。
+  // A missing or invalid PID means the lock is stale; remove it and retry once.
   let stale = false;
   try {
     const content = fs.readFileSync(LOCK_FILE, 'utf8').trim();
@@ -1194,11 +1142,7 @@ async function segmentsToText(segments, options = {}) {
         break;
       }
       case 'json': out.push('[卡片消息]'); break;
-      // markdown：SnowLuma 1.14.9 的线上段落是 `{type:'markdown',data:{content}}`。
-      // 上游 1.14.17+（commit 1934e4e7「include text alongside received markdown」）
-      // 起还会带上 `data.text`。两个形状都读，这样将来升级 SnowLuma 运行时不会退化成
-      // 字面量 `[markdown]` 被喂给模型。SDK 的 KnownMessageSegment 联合里没有 markdown，
-      // 所以段类型是运行时多出来的 —— 这正是 default 分支原来会命中的情况。
+      // Markdown segments can expose their body as text or content.
       case 'markdown': out.push(String(d.text ?? d.content ?? '[Markdown]')); break;
       case 'forward': {
         const fid = forwardIdFromData(d);
@@ -1273,11 +1217,11 @@ function extractMediaFromSegments(segments) {
 
 function allowed(kind, id, cfg) {
   // OneBot 事件里的 id 可能是数字也可能是字符串（int64 序列化差异），统一转字符串比较。
-  // 配置字段兼容单数（group/private）与复数（groups/privates）两种写法。
   const s = String(id);
-  const denyList = cfg.deny[kind] ?? cfg.deny[kind + 's'] ?? [];
+  const listKey = kind === 'group' ? 'groups' : 'private';
+  const denyList = cfg.deny[listKey] ?? [];
   if (denyList.map(String).includes(s)) return false;
-  const allowList = cfg.allow[kind] ?? cfg.allow[kind + 's'] ?? [];
+  const allowList = cfg.allow[listKey] ?? [];
   if (allowList.length > 0) return allowList.map(String).includes(s);
   return cfg.allowAllWhenEmpty;
 }
@@ -1595,21 +1539,10 @@ async function main() {
     // 默认只允许把 launch token 交给回环地址；远程 DSH 需要显式 opt-in（见 dsh-client.ensureAuth）。
     allowRemote: cfg.dsh.allowRemote === true
   });
-  // DSH 的模型目录 RPC：0.1.5 是 `session/modelCatalog`。**不能走基类门面**
-  // `api.sessions.modelCatalog` —— 桥接钉住的 `@deepseek-ai/dsh-host-apiproxy@0.1.1-rc.2`
-  // 的 sessions 门面里根本没有这个方法（只有 `models` → 已下线的 `session/models`），
-  // 调用会抛 “api.sessions.modelCatalog is not a function”，让思考强度档位静默退回内置清单。
-  // 这里直接用桥接自己覆写的 callUnary（它本来就是为「不依赖旧版客户端域方法」而存在的），
-  // 并保留一次 `session/models` 回落以兼容更老的 DSH。
+  // Call the model catalog endpoint directly because the API client facade does not expose it.
   const modelCatalogErrorLogged = new Set();
   async function fetchModelCatalog() {
-    try {
-      return await api.callUnary('session.modelCatalog', {});
-    } catch (error) {
-      const message = String(error?.message ?? error);
-      if (!/not.?found|unknown|unsupported|404|invalid server-response/i.test(message)) throw error;
-      return api.callUnary('session.models', {});
-    }
+    return api.callUnary('session.modelCatalog', {});
   }
   async function readModelCatalog() {
     if (!modelCatalogInFlight) {
@@ -1706,16 +1639,13 @@ async function main() {
   let desktopAgentInitialContextSessionId = String(desktopAgentSavedState.initialContextSessionId ?? '');
   let desktopAgentInitialContextPrompt = null;
   const savedLifecycle = String(desktopAgentSavedState.lifecycle ?? '');
-  const legacyWakeAt = Number(desktopAgentSavedState.restUntil ?? desktopAgentSavedState.wakeAt) || 0;
   const validLifecycles = new Set(['idle', 'active', 'resting', 'recovering', 'stopped']);
   let desktopAgentLifecycle = validLifecycles.has(savedLifecycle)
     ? savedLifecycle
-    : desktopAgentSavedState.stopped === true
-      ? 'stopped'
-      : legacyWakeAt > 0 || desktopAgentSavedState.restUntil === 0 && savedLifecycle === 'resting'
-        ? 'resting'
-        : desktopAgentSessionId ? 'active' : 'idle';
-  let desktopAgentRestUntil = desktopAgentLifecycle === 'resting' ? legacyWakeAt : 0;
+    : desktopAgentSessionId ? 'active' : 'idle';
+  let desktopAgentRestUntil = desktopAgentLifecycle === 'resting'
+    ? Math.max(0, Number(desktopAgentSavedState.restUntil) || 0)
+    : 0;
   const desktopAgentRestNeedsClamp = desktopAgentLifecycle === 'resting'
     && desktopAgentRestUntil > Date.now() + DESKTOP_AGENT_REST_MAX_MS;
   if (desktopAgentRestNeedsClamp) desktopAgentRestUntil = Date.now() + DESKTOP_AGENT_REST_MAX_MS;
@@ -1830,51 +1760,15 @@ async function main() {
     setInterval(checkDsh, 5000);
   }
 
-  // ── SnowLuma 上游健康：**连上了 ≠ 收得到** ──────────────────────────────────
-  //
-  // 为什么必须有这一段（这是一个真实存在的、被误诊过的失败形态）：
-  // SnowLuma 用原生组件（`native/snowluma-win32-x64.{dll,node}`）挂进 QQ 客户端进程
-  // 才能拿到消息，它自己的日志里管这层叫 `[Hook]`。这层会退化：
-  //     WARN [Hook] receive path stale: ... silentFor=136193ms; reporting good=false
-  // 而 **SnowLuma 进程与它的 OneBot WebSocket 都还活着**。于是桥接这边一切正常：
-  // WebSocket 是通的、`bot.on('open')` 打过「SnowLuma 已连接」，控制台没有任何异常，
-  // 但群里一条消息都不来 —— 运维看到的现象是「接了但没反应」，而**没有任何证据指向
-  // SnowLuma 的 hook**，于是被报成「qq-bridge 注入失败」。
-  //
-  // 桥接本身**不可能**造成这种失败：它没有任何原生/注入面（依赖全纯 JS，源码里
-  // 没有 .dll/.node/FFI/进程注入），也不启动、不控制 SnowLuma 与 QQ。它能做、也应该做的
-  // 是**把这个失败变得可诊断**。
-  //
-  // 信号从哪来（**两处都实测核对过 SnowLuma 1.14.9 的运行时源码，别凭直觉改**）：
-  //
-  //   ① **心跳载荷里的 `status.good`** —— 权威信号，且是免费的。
-  //      SnowLuma 每 30s 由**自己的定时器无条件**发一个 heartbeat
-  //      （`index.mjs` 的 `HEARTBEAT_INTERVAL = 3e4` / `startHeartbeat()`），
-  //      载荷里带 `status: { online, good: online && bridge.receiveHealthy }`。
-  //      `receiveHealthy` 是它**对「QQ → hook → 我」这条接收链路**的自评，
-  //      静默约 105s 就翻 false。所以：读心跳里的 good 就等于拿到了 hook 的健康度。
-  //      ⚠️ 注意它**不经过** QQ 事件流水线 —— 心跳是本地生成的，所以"没有事件包"
-  //      **不能**用来判断 hook 死活（见下方 ② 的措辞）。
-  //
-  //   ② `get_status` 的 `good`/`online` —— 与 ① 同源，用于①长期收不到时的兜底轮询。
-  //      ⚠️ **不要用 `get_login_info` 取 good**：它只返回 `{ user_id, nickname }`。
-  //      取错字段不会报错（SDK 只校验 status/retcode 信封，不校验 data 载荷），
-  //      good 会永远停在 null —— 本文件第一版就是这么写的，等于权威信号整条是死代码。
-  //      `src/mcp-snowluma-safe.js` 的 snowluma_status 工具是对的取法（get_login_info
-  //      拿昵称 + get_status 拿 online/good），可对照。
-  //
-  //   ③ `bot_status`（账号会话上下线）—— SnowLuma 1.14.17 起才有，老运行时永不触发，
-  //      所以只是加分项，不能作为唯一依据。
-  //
-  //   ④ 「距最近一个事件包的时长」—— 只能证明**SnowLuma 进程与 WS 链路还活着**，
-  //      **不能**证明 hook 收得到 QQ 数据（心跳会一直来）。所以它只作为兜底提示，
-  //      阈值取很宽，措辞必须留余地。
+  // ── SnowLuma 上游健康 ──────────────────────────────────────────────────────
+  // 心跳与 get_status 用于判断接收链路健康度；bot_status 补充账号状态。
+  // 事件包到达时间仅反映进程与 WebSocket 活动，不能单独证明 QQ 消息接收正常。
   const SNOWLUMA_STATUS_POLL_MS = 60_000;
   const SNOWLUMA_SILENCE_WARN_MS = Math.max(60_000, Number(cfg.snowluma?.silenceWarnMs) || 10 * 60_000);
   const snowlumaHealth = {
     lastPacketAt: 0,      // 最近一个来自 SnowLuma 的事件包（含 meta/心跳）
     lastPacketKind: '',
-    accountOnline: null,  // bot_status 的 online/offline（需要较新的 SnowLuma 运行时）
+    accountOnline: null,  // bot_status 的 online/offline
     good: null,           // 接收链路健康度：来自心跳 status.good / get_status.good
     goodSource: '',       // 'heartbeat' | 'get_status' —— 便于诊断"这条判断从哪来"
     goodError: '',
@@ -2030,8 +1924,7 @@ async function main() {
       }
       return '';
     };
-    const consoleTokenMatches = (req, url) => [
-      url.searchParams.get('token'),
+    const consoleTokenMatches = (req) => [
       req.headers['x-console-token'],
       consoleCookieToken(req)
     ].some((candidate) => tokenEq(candidate, consoleToken));
@@ -2165,18 +2058,17 @@ async function main() {
         res.end();
         return;
       }
-      // 控制台鉴权：支持旧版请求头/查询参数，以及登录页设置的 HttpOnly Cookie。
+      if (req.method === 'GET' && url.pathname === '/' && url.searchParams.has('token')) {
+        res.writeHead(303, { location: '/?login=invalid', ...SECURITY_HEADERS });
+        res.end();
+        return;
+      }
+      // 控制台使用 HttpOnly Cookie；x-console-token 仅供本机 MCP 客户端调用。
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
-      const tokenMatches = consoleTokenMatches(req, url);
+      const tokenMatches = consoleTokenMatches(req);
       if (consoleToken && !tokenMatches) {
         if (req.method === 'GET' && url.pathname === '/') {
-          // 兼容旧的 ?token= 链接，但无效令牌不留在地址栏或浏览器历史中。
-          if (url.searchParams.has('token')) {
-            res.writeHead(303, { location: '/?login=invalid', ...SECURITY_HEADERS });
-            res.end();
-            return;
-          }
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           try {
             res.end(fs.readFileSync(path.join(ROOT, 'public', 'login.html'), 'utf8'));
@@ -2193,7 +2085,6 @@ async function main() {
       // MCP 请求必须显式声明 agent-call 并携带唯一全局陪伴者令牌；否则不能借用控制台权限。
       // 各端点用 `if (x-agent-token && !agentTokenOk(...))` 做会话绑定校验，但那个写法在
       // **头缺失时整条跳过** —— 而头缺失恰恰是模型没传 token 时的自然结果
-      // （旧版 mcp-snowluma-safe.js 用 `...(token ? {...} : {})` 直接省略了这个头）。
       // 于是「漏传令牌」不是被拒绝，而是**升级成控制台全权**：典型的 confused deputy。
       //
       // 现在 MCP 端一律带上 x-agent-call: 1；带了令牌就必须命中某个活跃会话，
@@ -2298,7 +2189,6 @@ async function main() {
         }
         if (req.method === 'GET' && url.pathname === '/') {
           const headers = { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS };
-          if (url.searchParams.has('token')) headers['set-cookie'] = consoleCookieHeader();
           res.writeHead(200, headers);
           try {
             res.end(fs.readFileSync(path.join(ROOT, 'public', 'console.html'), 'utf8'));
@@ -2624,9 +2514,6 @@ async function main() {
             bytes: Buffer.byteLength(content, 'utf8'),
             warnings: roleWarnings(content),
             limits: { injectMaxChars: roleInjectMaxChars },
-            stats: roleCharStats(content),
-            // 每个小节在各模式下是否会被注入，供控制台预览「这条规则到底生不生效」
-            sections: { v1: roleSectionReport(content, 'v1'), v2: roleSectionReport(content, 'v2') },
           });
           return;
         }
@@ -2742,7 +2629,6 @@ async function main() {
               chars: prompt.content.length,
               bytes: Buffer.byteLength(prompt.content, 'utf8'),
               warnings: presetPromptWarnings(prompt.content),
-              migrated: prompt.migrated,
               status: presetStatus(preset),
             });
           } catch (error) {
@@ -2861,21 +2747,15 @@ async function main() {
             const restoredPrefix = extractPresetPrefix(restored);
             if (restoredPrefix === null) { sendJson({ ok: false, error: '备份内容不是有效的预设文件' }, 400); return; }
             const pairedModulesFile = `${backupPath}.modules.json`;
-            let restoredModules;
-            let restoredContent;
-            let restoredYaml = restored;
-            if (fs.existsSync(pairedModulesFile)) {
-              restoredModules = normalizePresetPromptModules(readJsonSafe(pairedModulesFile, null, true));
-              restoredContent = composePresetPromptModules(restoredModules);
-              if (restoredContent !== restoredPrefix) {
-                sendJson({ ok: false, error: '备份中的模块配置与固定前缀不一致，拒绝还原' }, 400);
-                return;
-              }
-            } else {
-              // 兼容模块化改造前生成的 11 段固定前缀备份。
-              restoredModules = migrateLegacyPresetPromptModules(restoredPrefix);
-              restoredContent = composePresetPromptModules(restoredModules);
-              restoredYaml = renderPresetPromptYaml(restored, restoredContent);
+            if (!fs.existsSync(pairedModulesFile)) {
+              sendJson({ ok: false, error: '该备份缺少配套的固定前缀模块文件，无法还原' }, 400);
+              return;
+            }
+            const restoredModules = normalizePresetPromptModules(readJsonSafe(pairedModulesFile, null, true));
+            const restoredContent = composePresetPromptModules(restoredModules);
+            if (restoredContent !== restoredPrefix) {
+              sendJson({ ok: false, error: '备份中的模块配置与固定前缀不一致，拒绝还原' }, 400);
+              return;
             }
             // 还原路径必须与保存路径同样严格：备份必须保留对应 preset 的核心协议内容。
             const blockers = presetPromptBlockers(restoredContent);
@@ -2888,7 +2768,7 @@ async function main() {
             const hadModulesFile = fs.existsSync(modulesFile);
             try {
               atomicWriteText(modulesFile, `${JSON.stringify(serializePresetPromptModules(restoredModules), null, 2)}\n`);
-              atomicWriteText(presetSourceYaml(preset), restoredYaml);
+              atomicWriteText(presetSourceYaml(preset), restored);
               buildPatches();
             } catch (error) {
               if (sourceBackup && fs.existsSync(sourceBackup)) {
@@ -2911,7 +2791,6 @@ async function main() {
           return;
         }
 
-        // Per-conversation DSH session list/status routes were removed with the legacy mapping runtime.
         if (req.method === 'GET' && url.pathname === '/api/console/desktop-agent') {
           await refreshPresetList();
           let live = null;
@@ -3470,20 +3349,12 @@ async function main() {
               })
               .slice(0, 50);
           }
-          // Remove stale settings owned by the retired mapped-session runtime.
-          delete merged.proactive;
-          delete merged.provideRecommendations;
-          delete merged.agentPreset;
-          delete merged.wake;
-          delete merged.initialPromptMaxChars;
-          delete merged.tools;
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致参数丢失，这里直接保留当前值。
           for (const sub of ['send', 'wait', 'sticker', 'feedback', 'context']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
               merged[sub] = current[sub] ?? {};
             }
           }
-          delete merged.voice;
           // send：数值归一化
           if (body.send && typeof body.send === 'object') {
             merged.send = { ...(current.send ?? {}), ...body.send };
@@ -3530,10 +3401,6 @@ async function main() {
                 }
               }
             }
-          }
-          if (merged.sticker && typeof merged.sticker === 'object'
-              && merged.sticker.collect && typeof merged.sticker.collect === 'object') {
-            delete merged.sticker.collect.maxRemarkChars;
           }
           // feedback：数值/布尔归一化
           if (body.feedback && typeof body.feedback === 'object') {
@@ -6166,7 +6033,7 @@ async function main() {
 
   function desktopAgentPromptText(text, { includeRoleCard = false, memoryContext = '' } = {}) {
     const roleState = readRoleState();
-    const roleHint = includeRoleCard && roleState.role ? currentRoleHintV2() : '';
+    const roleHint = includeRoleCard && roleState.role ? currentRoleHint() : '';
     const rolePrefix = roleHint
       ? `${renderDesktopAgentPromptTemplate(cfg.desktopAgent.promptTemplates.roleCard, {
         roleName: roleState.role,
@@ -6884,13 +6751,9 @@ async function main() {
       const raw = readJsonSafe(SOCIAL_V2_FILE, null);
       socialV2.paused = raw?.paused === true;
       if (raw && typeof raw.conversations === 'object') {
-        let migratedLegacyFields = 0;
         for (const [key, val] of Object.entries(raw.conversations)) {
           if (!val || typeof val !== 'object') continue;
           if (!/^(group|private):\d+$/.test(key)) continue;
-          if (['agentToken', 'wakeConfig', 'bootstrapSent', 'wakeTimes', 'pendingWakeReasons'].some((field) => Object.hasOwn(val, field))) {
-            migratedLegacyFields += 1;
-          }
           const lastUnreadSeq = Math.max(0, Number(val.lastUnreadSeq) || 0,
             ...[...(Array.isArray(val.unread) ? val.unread : []), ...(Array.isArray(val.recentMessages) ? val.recentMessages : [])]
               .map((message) => Number.isSafeInteger(message?.seq) && message.seq > 0 ? message.seq : 0));
@@ -6928,10 +6791,7 @@ async function main() {
             if (rebuilt.size) seenForwardIds.set(key, rebuilt);
           }
         }
-        // 加载阶段统一落盘，清除旧逐 QQ session 令牌和唤醒字段。只有文件仍是我们读到的版本才写；
-        // 如果这期间另一个进程已经写过文件，回写会覆盖它的新状态。
-        //
-        // But if another process changed it while loading, don't overwrite newer state.
+        // 加载阶段统一规范化状态。只有文件仍是我们读到的版本才写，避免覆盖另一实例的新状态。
         const nowStamp = (() => {
           try {
             const s = fs.statSync(SOCIAL_V2_FILE);
@@ -6944,7 +6804,6 @@ async function main() {
           log('⚠️ state/social-v2.json 在本次加载期间被其它进程改写，跳过回写以免覆盖更新的状态（是否误开了第二个桥接实例？）');
         } else {
           saveSocialV2State();
-          if (migratedLegacyFields > 0) log(`已迁移 ${migratedLegacyFields} 份 QQ 缓冲状态，移除旧逐会话 agent token 与唤醒配置`);
         }
       }
     } catch (error) {
@@ -7025,14 +6884,11 @@ async function main() {
       return '';
     }
   }
-  // 角色卡保留 〔一代〕/〔二代〕历史小节标记以兼容旧卡；运行时固定选取自主会话内容，
-  // **再**按上限截断，避免未使用的小节占掉本次的注入预算。
-  function roleHintForAutonomousRuntime() {
-    const selected = selectRoleText(roleRawContent(), 'v2');
-    if (!selected) return '';
-    return selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected;
+  function roleHintForCurrentRuntime() {
+    const content = roleRawContent();
+    if (!content) return '';
+    return content.length > roleInjectMaxChars ? truncateText(content, roleInjectMaxChars) : content;
   }
-  // 自主会话角色提示：去掉历史一代角色卡中的 [SILENT] / 空格分句指令，避免与工具协议冲突。
   function isCjkLikeChar(ch) {
     if (!ch) return false;
     const code = ch.codePointAt(0);
@@ -7091,33 +6947,8 @@ async function main() {
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
   }
 
-  function currentRoleHintV2() {
-    // 先按历史 〔二代〕/〔一代〕角色卡标记筛小节；下方逐行过滤给未标记的老卡片兜底。
-    const raw = roleHintForAutonomousRuntime();
-    if (!raw) return '';
-    // 历史一代角色卡专用指令整行过滤，避免污染自主会话工具协议。
-    // 用 role-card.js 导出的那份（文件顶部已 import）：这里原先又抄了一份同源正则，
-    // 两份"哪行算一代指令"的安全相关过滤器一旦漂移，就会出现"selectRoleText 保留了自主会话内容、
-    // 这里却把一代指令漏进提示词"这种只在特定角色卡上复现的错。
-    const lines = raw.split('\n');
-    const kept = [];
-    let inExampleSection = false;
-    for (const line of lines) {
-      if (/^##\s*.*回复示例/.test(line)) {
-        inExampleSection = true;
-        kept.push(line);
-        continue;
-      }
-      if (inExampleSection && /^##\s/.test(line)) {
-        inExampleSection = false;
-      }
-      if (inExampleSection) {
-        kept.push(line);
-      } else if (!GEN1_ROLE_LINE_RE.test(line)) {
-        kept.push(line);
-      }
-    }
-    return kept.join('\n');
+  function currentRoleHint() {
+    return roleHintForCurrentRuntime();
   }
 
   // QQ 群成员名片/昵称缓存：@ 段解析用，避免每条消息都调一次 OneBot API。
@@ -7639,7 +7470,7 @@ async function main() {
   function acknowledgeMessagesV2(st, throughSeq) {
     const before = st.unread.length;
     if (throughSeq === null) {
-      // Compatibility for console actions and old presets; new agents pass a cursor.
+      // Console clear actions may acknowledge all currently buffered messages at once.
       st.unread = [];
       st.lastReadThroughSeq = st.lastUnreadSeq;
     } else {
@@ -7909,14 +7740,7 @@ async function main() {
     try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }
   });
 
-  // ── 上游健康：任何事件包都算「SnowLuma 还活着」，心跳还额外带接收链路健康度 ──
-  // 用 onEvent 挂一个**旁路**订阅（不影响主链路）：
-  //   · 任意事件包 → 记账（证明 SnowLuma 进程 + WS 链路还在）；
-  //   · `meta_event/heartbeat` → 读载荷里的 `status.good`。**这是主信号**：
-  //     SnowLuma 每 30 秒无条件发一次心跳，而 good = online && receiveHealthy 是它对
-  //     「QQ → hook → 我」这条接收链路的自评（实测核对过 1.14.9 运行时源码）。
-  //     免费、及时，且**不依赖较新的运行时**。
-  // 注册失败不影响主链路（不同 SDK 版本的订阅方法可能不同），所以整体包在 try 里。
+  // 旁路统计上游事件包，并从心跳读取接收链路健康信号；订阅失败不影响主消息链路。
   try {
     bot.onEvent((event) => {
       const post = event?.post_type;
@@ -7935,8 +7759,7 @@ async function main() {
     log(`（上游事件旁路订阅不可用，健康检测退化：${error?.message ?? error}）`);
   }
 
-  // SnowLuma 1.14.17 起新增 bot_status（账号会话边沿）。老运行时不会发这个事件，
-  // 所以它只是加分项：收到就记下来，收不到不影响其它判断。
+  // Track account online/offline events when the upstream emits them.
   try {
     bot.onBotStatus((event) => {
       noteUpstreamPacket('notice/bot_status');

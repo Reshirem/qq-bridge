@@ -5,15 +5,9 @@
 //   ② 插件模块导出 `Config`，且它是可用的 schemastery schema；
 //   ③ `Config` 至少有一个带 `volatile` 标记的字段（否则 settings 写入会抛
 //      "Plugin entry ... has no volatile fields"）；
-//   ④ 插件**不再**调用 0.2.0 已删除的 `ctx.settings.register()`。
+//   ④ 插件不调用未提供的 settings.register()；命名空间来自 bundle entry 与 Config。
 //
-// 为什么第 ④ 条要断言：0.1.x 的 `register(ns, schema, {base, applies})` 是当时的
-// 注册路径，0.2.0 把它整条删掉了（命名空间改为从 loader entry 推导）。
-// 旧代码在 0.2.0 下会被早退挡住而不报错，**看起来一切正常**——所以只有静态断言
-// 能防止有人照着旧注释把那条死路加回来（一旦加回，日志就会开始说谎）。
-//
-// 不接触真实 DSH 进程；活 DSH 上由 scripts/verify-dsh-021-adaptation.mjs 检查命名空间
-// 是否列出 ownerQQ，并由 scripts/probe-020-settings.mjs 验证其写入路径。运行模式不属于该命名空间。
+// 不接触真实 DSH 进程；在线设置检查由 scripts/verify-dsh-current.mjs 覆盖。
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -31,7 +25,7 @@ const source = fs.readFileSync(path.join(PLUGIN_DIR, 'lib', 'index.js'), 'utf8')
 test('插件导出 name / inject / Config / apply', () => {
   assert.equal(mod.name, 'qq-agent-presets');
   assert.deepEqual(mod.inject, ['settings'], 'inject 必须声明 settings，命名空间才随 settings seam 就绪');
-  assert.ok(mod.Config, '必须导出 Config —— 0.2.0 里这就是命名空间的 schema 来源');
+  assert.ok(mod.Config, '必须导出 Config 作为命名空间的 schema');
   assert.equal(typeof mod.apply, 'function');
 });
 
@@ -57,15 +51,13 @@ test('Config is a usable schemastery schema with only volatile ownerQQ', () => {
   assert.deepEqual(volatileFields, ['ownerQQ']);
 });
 
-test('不再调用 0.2.0 已删除的 ctx.settings.register', () => {
-  // 只看可执行代码：注释里会提到 register 做历史说明。
+test('插件使用当前 settings 契约', () => {
   const code = source
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, '')).join('\n');
   assert.ok(
     !/settings\s*\.\s*register\s*\(/.test(code),
-    'ctx.settings.register() 在 DSH 0.2.0 已不存在：调用它会让 apply 抛 TypeError。'
-    + '命名空间由 entry id + 导出的 Config 推导，无需注册。',
+    '插件不应调用 settings.register()；命名空间由 entry id 与导出的 Config 推导。',
   );
   // configure() 也要谨慎：auto:false 会关掉自动设置页策略，与默认行为相反。
   assert.ok(!/settings\s*\.\s*configure\s*\(/.test(code), 'apply 不应调用 settings.configure()');

@@ -3,8 +3,6 @@
 import { randomUUID } from 'node:crypto';
 import { probeCookie, probeRpc, probeMuxSocket, probeWorkspaceDir } from './probe-auth.mjs';
 
-// 鉴权与 RPC 引导统一走 probe-auth.mjs（旧的「读 guard 日志抓 launch token」在
-// DSH 0.1.7 起已失效，会让探针一律 401 —— 见该文件头部说明）。
 const cookie = probeCookie();
 const rpc = probeRpc(cookie);
 

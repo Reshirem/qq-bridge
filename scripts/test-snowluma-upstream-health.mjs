@@ -1,21 +1,4 @@
-// SnowLuma 上游健康与客户端库版本的登记期回归。
-//
-// 为什么需要这个文件
-// ------------------
-// 真实发生过的误诊：SnowLuma 的原生 `[Hook]` 收不到 QQ 数据时，它的进程与 OneBot
-// WebSocket **都还活着**，于是桥接这边一切正常（WebSocket 通、日志打过「SnowLuma 已连接」），
-// 但群里一条消息都不来。**桥接当时对这个状态没有任何观测**：没有状态字段、没有看门狗、
-// 没有控制台指示、文档里也没有对应排查分支 —— 于是它被报成「qq-bridge 注入失败」。
-//
-// 这个文件把「桥接必须观测上游健康」这件事固定下来，并盯住几处**容易静默退化**的地方：
-//   ① 客户端库版本：`bot_status` 是 SnowLuma 1.14.17 才有的，库低于此就永远收不到；
-//   ② 订阅面：`onEvent` / `onBotStatus` 一旦被删掉，静默检测与账号上下线判断会无声失效；
-//   ③ 上报面：`/api/status` 的 `snowluma` 字段与控制台的告警条/卡片；
-//   ④ 端点自愈的开关：`followDiscoveredEndpoint` 默认必须仍是「跟随」（保持既有行为），
-//      但要真的能关掉（多实例/多账号场景，实测踩过：指向死端口仍被自愈改回真实端点）。
-//
-// 同时校验一条**依赖契约**：`@snowluma/*` 的 npm 发布版有 ESM 扩展名 bug，必须靠
-// postinstall 补丁才能被纯 Node ESM 解析。上游若哪天修好了，这个测试会提醒我们补丁可以退休。
+// Keep the current SnowLuma connection and health reporting contracts explicit.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -38,21 +21,19 @@ const codeOf = (src) => src
   .replace(/\/\*[\s\S]*?\*\//g, '');
 const bridgeCode = codeOf(bridge);
 
-test('SnowLuma 客户端库不低于 bot_status 出现的版本（1.14.17）', () => {
-  // 低于这个版本订阅不到 bot_status：账号掉线/被顶号将没有任何信号。
+test('SnowLuma client libraries meet the current minimum version', () => {
   // 只比较 minor.patch 数值，够用且不引入语义化版本库依赖。
   const num = (v) => {
     const m = /^[\^~]?(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? ''));
     return m ? Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]) : null;
   };
-  const min = num('1.14.17');
+  const min = num('1.14.20');
   for (const name of ['@snowluma/sdk', '@snowluma/mcp']) {
     const declared = num(pkg.dependencies?.[name]);
     assert.ok(declared !== null, `${name} 必须在 dependencies 里声明`);
     assert.ok(
       declared >= min,
-      `${name} 声明为 ${pkg.dependencies[name]}，低于 1.14.17 —— 那样订阅不到 bot_status（账号上下线事件），`
-      + '上游健康会少一个信号。',
+      `${name} 声明为 ${pkg.dependencies[name]}，低于当前最低版本 1.14.20。`,
     );
   }
 });
@@ -100,23 +81,19 @@ test('桥接订阅了「上游还活着」的证据（onEvent）', () => {
   assert.match(bridgeCode, /noteUpstreamPacket\(/, 'onEvent 回调必须记账到 noteUpstreamPacket');
 });
 
-test('桥接订阅了 bot_status（账号上下线），且对老运行时优雅降级', () => {
+test('桥接订阅 bot_status，订阅不可用时给出提示', () => {
   assert.match(bridgeCode, /bot\.onBotStatus\(/, '必须订阅 bot_status');
-  // 老运行时不会发这个事件；订阅调用被 try 包住，失败只提示不致命
-  assert.match(bridgeCode, /bot_status 订阅不可用/, '订阅失败必须明确提示（老运行时应优雅降级）');
+  assert.match(bridgeCode, /bot_status 订阅不可用/, '订阅失败必须明确提示');
 });
 
 test('good 取自心跳 status.good / get_status —— 绝不能取自 get_login_info', () => {
-  // 这是本文件存在的最重要理由。SnowLuma 的字段分布（实测核对过 1.14.9 运行时源码）：
+  // SnowLuma 的字段分布：
   //   get_login_info → 只有 { user_id, nickname }
   //   get_status     → { online, good }
   //   30 秒一次的心跳载荷 → status: { online, good: online && receiveHealthy }
-  // 而 SDK **只校验 status/retcode 信封、不校验 data 载荷**，所以取错字段不会报错 ——
-  // 它只会让 good 永远停在 null，把"权威信号"变成一条永不触发的死分支。
-  // 本文件第一版就是这么写错的（health 代码的第一次实现整条 dead code），故立此断言。
   assert.match(bridgeCode, /\/get_status/, '必须轮询 get_status 拿 online/good');
   assert.match(bridgeCode, /body\.data\?\.good/, 'get_status 的 good 必须被读取');
-  // 主信号：心跳里的 status.good（免费、30 秒一次、老运行时也有）
+  // 主信号：心跳里的 status.good
   assert.match(bridgeCode, /meta_event_type === 'heartbeat'/, '必须识别 meta_event/heartbeat');
   assert.match(bridgeCode, /event\.status\?\.good/, '必须从心跳载荷读 status.good（主信号）');
   assert.match(bridgeCode, /noteReceiveHealth\(/, '心跳/轮询都必须经 noteReceiveHealth 归一记录');
@@ -170,7 +147,7 @@ test('控制台有对应的告警条与卡片', () => {
   assert.match(consoleHtml, /\[Hook\]/, '告警文案必须把排查方向指向 SnowLuma 的 [Hook] 日志');
 });
 
-test('端点自愈可关，且默认保持「跟随」（向后兼容）', () => {
+test('端点自愈可关闭，且默认启用', () => {
   assert.match(
     bridgeCode,
     /cfg\.snowluma\?\.followDiscoveredEndpoint !== false/,

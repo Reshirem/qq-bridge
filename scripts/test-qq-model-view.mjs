@@ -58,7 +58,7 @@ test('local media preserve message handles, ordering, face IDs, captions and for
   assert.equal(compact.hasForward, true);
 });
 
-test('forwarded and legacy messages retain otherwise unresolvable media references', () => {
+test('forwarded messages retain otherwise unresolvable media references', () => {
   const message = {
     index: 1, messageId: 'forward-node-id', messageSeq: 21,
     text: '转发图片', nestedForwardIds: ['nested-id'],

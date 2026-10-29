@@ -28,8 +28,7 @@ const { names, packages } = collectDshToolNames();
 const guardPath = path.join(ROOT, 'plugins', 'qq-agent-presets', 'qq-tool-restrict.mjs');
 const guard = await import(pathToFileURL(guardPath).href);
 const guarded = new Set(guard.RESTRICTED_TOOL_NAMES);
-// 0.2.1 起 Codex / Claude Code 改为按需安装的可选插件：这组名字默认扫不到，
-// 不能算「拼错假名」（装上组合包后它们就回来了）。
+// Optional bundle tools may be absent from the current installation.
 const optional = new Set(guard.OPTIONAL_BUNDLE_TOOL_NAMES ?? []);
 
 const sorted = [...names.keys()].sort();

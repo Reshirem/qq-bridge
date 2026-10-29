@@ -1,22 +1,4 @@
-// desktop-agent 的注册期断言：全局陪伴者不得继承未授权的 DSH 本地执行能力。
-//
-// 为什么必须有这个文件
-// --------------------
-// `QSH_PLAN.md` §0.1 的结论是：QQ 动作闸门全部跑在桥接进程内，而 OneBot 的
-// 127.0.0.1:3000 HTTP 接口可被任何本机进程用 Bearer token 直接调用。因此
-// **全局 desktop-agent 不继承 DSH shell 和通用文件工具**，而通过专用桌面工具操作 Windows。
-//
-// 但在此之前没有任何断言检查过这件事：
-//   · `test-audit-setup-guards.mjs` 把工具名**喂**给 guard，验证它拒绝——这证明
-//     guard 逻辑对，**不证明本地工具已从工具清单里隐藏**；
-//   · `probe-tools.mjs` 只断言"模型某一轮没有调用本地工具"——**没调用 ≠ 不在清单里**。
-//
-// 本测试补上注册期那一半：从**真实 preset 文件**里解析出 preset 组成，断言
-// 工具守卫被挂载，并且守卫的 restrict 名单覆盖每一个已知本地执行工具。
-// 它不依赖运行中的 DSH，因此可以进 `npm run test:audit`，每次回归都跑。
-//
-// 口径说明：这里断言的是"preset 声明会隐藏/拒绝这些名字"。真正的端到端断言
-// （注册出来的清单里确实没有）需要活的 DSH，属 `probe-tools.mjs` 的范畴。
+// Verify the desktop-agent preset denies local DSH tools and loads the shared guard.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -33,30 +15,7 @@ const PRESETS_DIR = path.join(ROOT, 'dsh', 'agent-presets');
 const GLOBAL_AGENT_PRESETS = ['desktop-agent'];
 const GUARD_PATH = path.join(ROOT, 'plugins', 'qq-agent-presets', 'qq-tool-restrict.mjs');
 
-/**
- * 本地执行能力清单。
- *
- * ⚠️ 这里**必须**含每一个能执行本地命令、读写本地文件或派生 agent 的工具名。
- * 名字取自 DSH 0.1.7-rc.2 实际注册的工具（见 qq-tool-restrict.mjs 的注释）。
- * 2026-09-27 的对账替换：`cordis_define`/`cordis_undefine`/`cordis_run`/`cordis_stop`
- * 在 0.1.7 里已不存在（dsh-tool-cordis 现在只注册 cordis_inspect_list/query），
- * 同一轮补上 `load_workspace_dependencies`（自带 Python/Node/pnpm 路径）与
- * `list_subagent_models`（派生 agent 家族）。
- *
- * 两类失败模式，本文件都要防：
- *   ① **漏**（本地工具不在守卫名单里 ⇒ 留在 schema）——由 test 3 对账 RESTRICTED_TOOL_NAMES 防；
- *   ② **拼错假名**（名字根本不存在 ⇒ `tools.restrict` 抛错被吞 ⇒ 静默失效）——
- *      由 test 6 用「假 restrict 会对未知名字抛错」来防。
- *
- * 2026-09-29 针对 DSH 0.2.0-rc.2 重新对账（用 `scripts/scan-dsh-tool-names.mjs`
- * 从安装包里抽真实工具名双向求差）。旧名字全部还在（0 假名），新增 13 个危险语义名字：
- *   · 全局层默认启用、desktop-agent 会继承的三个 MCP 资源工具
- *     （`dsh-base` 的 `mcp-resources` 行没被 disabled）；
- *   · 派生 agent / 执行外部代码：subagent_codex / subagent_claude_code /
- *     spawn_teammate / team_task_*（现只在 DSH 自带 preset 里挂，列进来当回归网）；
- *   · plugin_manager（插件装载权 = 任意代码执行）；
- *   · schedule_*（无人值守的自我调度）。
- */
+/** Deny every known DSH tool that can access local execution, files, or delegation. */
 const LOCAL_EXECUTION_TOOLS = [
   'pwsh', 'bash',
   'read', 'read_image', 'write', 'edit', 'str_replace_editor',
@@ -70,36 +29,23 @@ const LOCAL_EXECUTION_TOOLS = [
   'job_list', 'job_output', 'job_kill', 'skill', 'present',
   'get_goal', 'create_goal', 'update_goal',
   'dev_mode_set', 'dev_mode_status', 'dev_mode_subagent',
-  // 0.2.0 新增对账
   'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource',
   'spawn_teammate', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
   'plugin_manager',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete',
-  // 0.2.1 新增对账（2026-10-22）：working_directory 由 dsh-base 默认挂载（全局层继承），
-  // terminal 一族 = shell，session_* 能跨会话读事件正文，plugin_market = 装载权。
+  // Workspace, terminal, history, plugin, and agent coordination tools
   'working_directory',
   'terminal_open', 'terminal_send', 'terminal_read', 'terminal_signal', 'terminal_close', 'terminal_list',
   'session_search', 'session_trace', 'session_event_read', 'session_event_search', 'session_event_trace',
   'plugin_market', 'create_worktree', 'wait_agent',
-  // 按需安装的可选组合包才注册的名字：0.2.1 起默认不存在，但一旦装上就要挡，
-  // 所以仍在名单里；对账时按「可选项」处理（见下方 OPTIONAL_BUNDLE_TOOLS）。
+  // Optional bundle tools remain denied whenever registered.
   'subagent_codex', 'subagent_claude_code',
 ];
 
-/** 0.2.1 起 Codex / Claude Code 改为按需安装：这组名字默认扫不到，不算拼错假名。 */
+/** Codex and Claude Code tools may be absent unless their optional bundles are installed. */
 const OPTIONAL_BUNDLE_TOOLS = new Set(['subagent_codex', 'subagent_claude_code']);
 
-/**
- * 工具名 → 真实存在与否。抽取实现在 `scripts/dsh-tool-names.mjs`（唯一实现，
- * 与 `scan-dsh-tool-names.mjs` 共用），用来抓"拼错的假名"。
- *
- * 历史坑：本测试过去自带一份**模糊**抽取器（全文件乱扫 `name: 'x'` + 只认少数
- * 包名前缀 + 只读包根目录的 cordis.patch.yml）。0.2.0 对账时它把 10 个**真实存在**
- * 的工具名报成假名：`dsh-mcp-resources` / `dsh-experimental-tool-agent-team` 不匹配
- * 它的包名白名单，`subagent_codex` 写在 `dsh-web-app/presets/*.patch.yml` 而非包根。
- * 误判方向很危险——它会逼人把真名字从守卫名单里删掉，等于自己拆掉安全边界。
- * 现在只保留一条实现，两边不可能再漂移。
- */
+/** Read installed DSH names through the shared scanner. */
 function collectDshToolNames() {
   const { names } = collectDshToolNamesShared();
   return names.size === 0 ? null : new Set(names.keys());
@@ -131,10 +77,8 @@ test('模拟会话的 preset 都挂了工具守卫（否则 L7 没有任何载�
       /qq-tool-restrict/,
       `${id} 必须挂载 qq-tool-restrict（L7 的落点），否则本地工具会随全局层继承进来`,
     );
-    // 源文件里仍是 preset 目录内的相对名；DSH 0.1.7 下真正装进 DSH 的是 bundle patch
-    // （scripts/build-agent-preset-patches.mjs 生成），那里会把它改写成从 profile 目录
-    // 可解析的 `qq-agent-presets/qq-tool-restrict.mjs`——这条断言钉的是"源里必须有守卫行"，
-    // 改写结果由 test-agent-preset-patches.mjs 钉住。
+    // The preset source uses a relative guard path; the generated bundle patch rewrites it
+    // to the profile-resolvable package specifier checked by test-agent-preset-patches.mjs.
     assert.match(yml, /\.\/qq-tool-restrict\.mjs/, `${id} 的守卫要指向本目录的 .mjs`);
   }
 });

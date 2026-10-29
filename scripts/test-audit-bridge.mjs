@@ -147,8 +147,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     }
 
     // ② 令牌比较必须是定长：错长度/错内容的令牌都不得通过（不能因为"前缀对"就放行）。
-    // 注意 Node 的 HTTP 客户端会自动裁掉自定义头的首尾空白，所以"带尾空格"这一类
-    // 必须用 ?token= 传（控制台本来就接受这种入口，它才是真实的攻击面）。
+    // 查询参数不参与鉴权；这里也覆盖尾随空白令牌不会被误认。
     for (const token of ['fixture-console-token-x', 'fixture-console-toke', 'FIXTURE-CONSOLE-TOKEN', 'fixture-console-token ']) {
       const res = await call(`/api/status?token=${encodeURIComponent(token)}`, 'GET');
       assert.equal(res.status, 401, `令牌「${token}」不得通过鉴权，实际 HTTP ${res.status}`);

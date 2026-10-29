@@ -18,14 +18,7 @@ function check(label, fn) {
 
 console.log('persona Config schema 校验：\n');
 
-// 旧写法（DSH 0.1.2 时代的 text 字段）—— 期望被拒绝
-check('旧配置 {text} 被拒绝（复现原故障）', () => {
-  let threw = false;
-  try { persona.Config({ text: 'hello' }); } catch { threw = true; }
-  if (!threw) throw new Error('旧配置竟然通过了校验，说明本次改动前提不成立');
-});
-
-// 新写法 —— 期望通过
+// Validate the current persona configuration fields.
 check('新配置 {prefix} 通过（个人前缀）', () => {
   const v = persona.Config({ prefix: 'You are a coding agent powered by the {{model}} model.' });
   if (v.prefix.length === 0) throw new Error('prefix 为空');
@@ -41,8 +34,7 @@ check('新配置 {prefix, suffix} 通过（schema 仍接受 suffix）', () => {
   if (v.includeRuntimeContext !== true) throw new Error('includeRuntimeContext 默认值异常');
 });
 
-// DSH 0.2.1 起 agent loop 只注册 provider / model 两个提示词变量（0.2.0 还有 cwd）。
-// 未知变量是 fail loud：system prompt 装配直接抛错，回合在 turn/start 后立刻 error。
+// The current agent loop registers provider and model prompt variables.
 const DSH_PROMPT_VARIABLES = new Set(['provider', 'model']);
 
 // 校验仓库里两个 preset 的 persona 配置块
@@ -62,14 +54,11 @@ for (const preset of ['desktop-agent']) {
   check('保留了 {{model}} 变量', () => {
     if (!/\{\{model\}\}/.test(row.config.prefix)) throw new Error('prefix 缺少 {{model}}');
   });
-  check('只引用 DSH 已注册的提示词变量（{{cwd}} 在 0.2.1 已不存在）', () => {
+  check('只引用 DSH 已注册的提示词变量', () => {
     const used = [...new Set([...JSON.stringify(row.config).matchAll(/\{\{([a-z][a-z0-9_]*)\}\}/g)].map((m) => m[1]))];
     const unknown = used.filter((v) => !DSH_PROMPT_VARIABLES.has(v));
     if (unknown.length > 0) throw new Error(`未知变量会让回合直接 error：${unknown.join(', ')}`);
     if (!used.includes('model')) throw new Error('prefix 缺少 {{model}}');
-  });
-  check('不再包含已废弃的 text 字段', () => {
-    if (Object.hasOwn(row.config, 'text')) throw new Error('仍有 text 字段');
   });
   check('persona 正文（除头句）完整保留', () => {
     const body = row.config.prefix.split('\n').slice(1).join('\n');

@@ -4,7 +4,6 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { roleCharStats, roleSectionReport } from '../src/role-card.js';
 import { pickBucketMs } from '../src/token-ledger.js';
 import { manualDirCommand } from '../src/state-acl.mjs';
 import { composePresetPromptModules, normalizePresetPromptModules, PRESET_PROMPT_MODULE_DEFINITIONS } from '../src/preset-prompt.js';
@@ -378,7 +377,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {
               const content = state.roleContents[name] ?? '';
-              const stats = roleCharStats(content);
               const injectMax = state.roleInjectMax;
               return {
                 name,
@@ -387,12 +385,8 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
                 lines: content.split('\n').length,
                 mtime: Date.parse(timestamp),
                 excerpt: content.split('\n').find((line) => line.trim() && !line.trim().startsWith('#')) ?? '',
-                injectedV1: Math.min(stats.v1, injectMax),
-                injectedV2: Math.min(stats.v2, injectMax),
-                charsV1: stats.v1,
-                charsV2: stats.v2,
-                hasModeTags: stats.v1Only > 0 || stats.v2Only > 0,
-                truncated: stats.v1 > injectMax || stats.v2 > injectMax,
+                injectedChars: Math.min(content.length, injectMax),
+                truncated: content.length > injectMax,
                 warnings: 0,
               };
             }),
@@ -411,13 +405,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               bytes: Buffer.byteLength(content, 'utf8'),
               warnings: [],
               limits: { injectMaxChars: state.roleInjectMax },
-              stats: roleCharStats(content),
-              sections: { v1: roleSectionReport(content, 'v1'), v2: roleSectionReport(content, 'v2') },
             });
           }
           case '/api/preset/desktop-agent-prompt/modules': {
             const content = composePresetPromptModules({ version: 1, modules: state.desktopPromptModules });
-            return json({ ok: true, modules: state.desktopPromptModules, content, chars: content.length, warnings: [], migrated: false, status: presetStatusFixture() });
+            return json({ ok: true, modules: state.desktopPromptModules, content, chars: content.length, warnings: [], status: presetStatusFixture() });
           }
           case '/api/desktop-agent/prompt-templates': {
             return json({ ok: true, templates: state.runtimePromptTemplates, defaults: DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS });

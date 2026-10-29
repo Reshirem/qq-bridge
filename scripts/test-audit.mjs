@@ -12,7 +12,7 @@ const tests = [
   'test-dsh-inbox-projection.mjs',
   'test-md-to-plain.mjs', 'test-mux-reconnect.mjs',
   'test-qq-model-view.mjs', 'test-qq-preset-contract.mjs',
-  'test-preset-prompt.mjs', 'test-role-card.mjs',
+  'test-preset-prompt.mjs',
   // 图片/表情链路（动图/表情包字段、CDN 优先与 emoji_id 兜底）+ 联网搜索
   // （DSH 同一路 DeepSeek 搜索、Bing RSS 兜底、凭据优先级与端点安全；
   //  本轮新增：空结果 note 必须在写缓存之前生成，否则缓存命中丢掉提示）。
@@ -32,9 +32,7 @@ const tests = [
   //    这是唯一挡住"绕过桥接直连 OneBot HTTP"的东西（见 QSH_PLAN.md §0.1/§5.2），
   //    所以纳入离线审计。
   'test-preset-local-tools.mjs',
-  // qq-agent-presets 的 settings 契约：0.2.0 删除了 ctx.settings.register()，
-  // 命名空间改为由 loader entry id + 导出的 Config 推导。断言三点前提都在，
-  // 并且那条已删除的 API 不会被照旧注释加回来。
+  // qq-agent-presets settings use the bundle entry id and exported Config schema.
   'test-qq-agent-presets-settings.mjs',
   // SnowLuma 上游健康（被误诊成「qq-bridge 注入失败」的那个失败形态）：
   //   · good 必须取自心跳 status.good / get_status —— 取自 get_login_info 会**静默失效**

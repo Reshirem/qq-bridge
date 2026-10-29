@@ -1,20 +1,7 @@
-(function () {
-  // 兼容旧的 ?token= 链接；新登录页使用 HttpOnly Cookie，不把令牌放进地址栏。
-  const qs = new URLSearchParams(location.search);
-  const token = qs.get('token');
-  if (token) {
-    localStorage.setItem('consoleToken', token);
-    history.replaceState({}, '', location.pathname + location.hash);
-  }
-})();
-
 async function api(path, method, body) {
   const headers = body ? {'content-type':'application/json'} : {};
-  const token = localStorage.getItem('consoleToken');
-  if (token) headers['x-console-token'] = token;
   const res = await fetch(path, { method: method || 'GET', headers, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401) {
-    localStorage.removeItem('consoleToken');
     location.replace('/?login=expired');
     throw new Error('控制台登录已失效，正在返回登录页');
   }
@@ -33,7 +20,6 @@ function fmtAgoMs(ms) {
   return Math.round(n / 86_400_000) + ' 天';
 }
 // SnowLuma 上游健康：控制台是唯一的可视化出口（桥接侧只有日志）。
-// 旧版桥接的 /api/status 没有 snowluma 字段，一律当「未知」处理，不抛错。
 function renderSnowlumaHealth(sl) {
   const el = document.getElementById('snowlumaWarn');
   const strong = document.getElementById('metricSnowluma');
@@ -43,7 +29,7 @@ function renderSnowlumaHealth(sl) {
     el.style.display = 'none';
     strong.textContent = '未知';
     strong.className = '';
-    hint.textContent = '桥接未上报上游健康（旧版桥接）';
+    hint.textContent = '桥接未上报上游健康状态';
     return;
   }
   const degraded = sl.degraded === true;
@@ -107,9 +93,6 @@ function roleEditorWarnings(text) {
   const value = String(text ?? '');
   const warns = [];
   if (value.length > roleInjectMax) warns.push(`超出注入上限：当前 ${value.length} 字符，只有前 ${roleInjectMax} 字符会进入提示词（多余 ${value.length - roleInjectMax} 字符不会生效）`);
-  if (/\[SILENT\]|空格分隔|按空格|用空格|空格分句|空格代表|自动转发|回复会自动|输出\s*\[SILENT\]/i.test(value)) {
-    warns.push('包含旧版专用指令（[SILENT] / 空格分句 / 自动转发），当前 desktop-agent runtime 不会按这些格式执行');
-  }
   return warns;
 }
 
@@ -179,18 +162,11 @@ async function refreshRoles() {
         const badge = document.createElement('span');
         badge.className = 'persona-badge warn';
         badge.textContent = `超出上限`;
-        badge.title = `新会话首次注入 ${role.injectedV2 ?? role.chars} 字符，超过 ${roleInjectMax} 字符上限`;
-        head.appendChild(badge);
-      }
-      if (role.hasModeTags) {
-        const badge = document.createElement('span');
-        badge.className = 'persona-badge';
-        badge.textContent = '带区段标记';
-        badge.title = '仅当前 desktop-agent runtime 适用的区段会注入';
+        badge.title = `新会话首次注入 ${role.injectedChars ?? role.chars} 字符，超过 ${roleInjectMax} 字符上限`;
         head.appendChild(badge);
       }
       const meta = document.createElement('small');
-      const injection = `当前 desktop-agent runtime 注入 ${role.injectedV2 ?? role.chars} 字符`;
+      const injection = `当前 desktop-agent runtime 注入 ${role.injectedChars ?? role.chars} 字符`;
       meta.textContent = `共 ${role.chars} 字符 · ${injection}${role.excerpt ? ' · ' + role.excerpt : ''}`;
       item.append(head, meta);
       item.addEventListener('click', () => openRoleForEdit(role.name));
@@ -207,7 +183,6 @@ async function refreshRoles() {
 // ── 全局 desktop-agent 提示词 ───────────────────────────────────────────────
 let desktopPromptOriginalModules = [];
 let desktopPromptOriginalContent = '';
-let desktopPromptMigrationPending = false;
 let desktopPromptEditing = false;
 let desktopPromptPreset = 'desktop-agent';
 
@@ -412,13 +387,12 @@ async function refreshSimPrompt() {
     }
     desktopPromptOriginalModules = (r.modules || []).map((module) => ({ ...module }));
     desktopPromptOriginalContent = r.content || '';
-    desktopPromptMigrationPending = r.migrated === true;
     renderPromptModules(desktopPromptOriginalModules);
     setSimEditing(false);
     document.getElementById('desktopPromptEdit').disabled = false;
     setSimMsg('');
     document.getElementById('desktopPromptStatus').textContent =
-      `陪伴者 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}${r.migrated ? ' · 旧格式待模块化保存' : ''}`;
+      `陪伴者 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}`;
     document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length
       ? '⚠️ ' + r.warnings.join('；') : '';
     document.getElementById('desktopPromptRestart').textContent =
@@ -939,7 +913,7 @@ document.getElementById('desktopPromptSave').addEventListener('click', async () 
     return;
   }
   const activeContent = updatePromptPreview();
-  const changesActivePrompt = desktopPromptMigrationPending || activeContent !== desktopPromptOriginalContent;
+  const changesActivePrompt = activeContent !== desktopPromptOriginalContent;
   const confirmText = changesActivePrompt
     ? '保存会更新陪伴者的固定前缀。重启 DSH 并重建全局会话后加载新版。确定继续？'
     : '保存模块设置。当前启用的固定前缀不变，因此无需重启 DSH。确定继续？';
@@ -954,7 +928,6 @@ document.getElementById('desktopPromptSave').addEventListener('click', async () 
   }
   desktopPromptOriginalModules = (r.modules || modules).map((module) => ({ ...module }));
   desktopPromptOriginalContent = r.content || activeContent;
-  desktopPromptMigrationPending = false;
   renderPromptModules(desktopPromptOriginalModules);
   setSimEditing(false);
   setSimMsg(r.requiresRestart
@@ -1498,8 +1471,6 @@ async function changeConsoleToken(generate) {
     msg.className = 'meta err';
     return;
   }
-  // 保存到 localStorage，当前页面继续使用新令牌
-  localStorage.setItem('consoleToken', r.token);
   input.value = r.token;
   msg.textContent = r.generated ? '已生成随机令牌，当前页面已自动使用。可点击显示后复制。' : '已保存新令牌';
   msg.className = 'meta ok';

@@ -146,18 +146,8 @@ class FakeWebSocket {
   frame(frame) { this.emit('message', { data: JSON.stringify(frame) }); }
 }
 
-// 退役会话要清掉 DSH 侧未跑的队列。读队列有两条路（见 src/dsh-client.js）：
-//   主路径 session/projections（0.2.0 的一元 RPC，不开 WebSocket）
-//   回退   session/control 开场 baseline（endpoint 不存在时）
-// 下面四条把两条路都钉住，并钉住 0.2.0 的 baseline 形状
-// （value.projections[<id>].values.inbox；0.1.7 的 value.queues 已不存在）。
+// Retiring a session reads its pending inbox through the current session/projections RPC.
 const projectionValues = (inbox) => ({ title: null, ...(inbox === undefined ? {} : { inbox }) });
-/** 让 session/projections 这条一元 RPC 不可用，逼出回退路径。 */
-const unavailableProjections = async (method, payload) => (
-  method === 'session/projections'
-    ? { result: { ok: false, error: { code: 'gateway/not-found', message: 'unknown endpoint' } } }
-    : { result: { ok: true, value: { accepted: true } } }
-);
 
 test('session retirement reads the inbox projection through session/projections (no socket)', async () => {
   globalThis.WebSocket = FakeWebSocket;
@@ -185,61 +175,34 @@ test('session retirement reads the inbox projection through session/projections 
   assert.equal(FakeWebSocket.sockets.length, before);
 });
 
-test('session retirement falls back to the 0.2.0 control baseline shape and removes only its own items', async () => {
-  globalThis.WebSocket = FakeWebSocket;
+test('session retirement reports projection errors and still cancels active work', async () => {
   const api = client();
   api.cookie = 'fixture=ok';
   const calls = [];
-  api.callUnary = async (method, payload) => { calls.push({ method, payload }); return unavailableProjections(method, payload); };
-  const stopped = api.stopSessionWork('session-a');
-  await tick();
-  const socket = FakeWebSocket.sockets.at(-1);
-  socket.open();
-  const opening = socket.frames.at(-1);
-  assert.equal(opening.endpoint, 'session/control');
-  assert.deepEqual(opening.payload, { args: {} });
-  socket.frame({ type: 'item', streamId: opening.streamId, value: { type: 'baseline', value: {
-    projections: {
-      'session-a': { asOfSeq: 9, values: projectionValues({ 'next-turn': [{ id: 'own-1' }], 'next-step': [{ id: 'own-2' }] }) },
-      'session-b': { asOfSeq: 4, values: projectionValues({ 'next-turn': [{ id: 'other' }], 'next-step': [] }) }
+  api.callUnary = async (method, payload) => {
+    calls.push({ method, payload });
+    if (method === 'session/projections') {
+      return { result: { ok: false, error: { code: 'gateway/internal', message: 'projection unavailable' } } };
     }
-  } } });
-  assert.deepEqual(await stopped, { removed: 2 });
-  assert.deepEqual(calls.filter((c) => c.method === 'session/updateQueue').map((c) => c.payload.itemId), ['own-1', 'own-2']);
-  assert.deepEqual(calls.at(-1), { method: 'session/cancel', payload: { sessionId: 'session-a' } });
-  assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+    return { result: { ok: true, value: { accepted: true } } };
+  };
+  await assert.rejects(api.stopSessionWork('session-a'), /session\/projections/);
+  assert.deepEqual(calls.map((call) => call.method), ['session/projections', 'session/cancel']);
 });
 
-test('session retirement closes its control socket on timeout', async () => {
-  globalThis.WebSocket = FakeWebSocket;
-  const api = client();
-  api.cookie = 'fixture=ok';
-  // 主路径不可用 ⇒ 走 control 流；control 流始终不发 baseline ⇒ 只能被超时中止。
-  api.callUnary = async (method, payload, signal) => { signal?.throwIfAborted(); return unavailableProjections(method, payload); };
-  const keepAlive = setTimeout(() => {}, 250);
-  try {
-    const stopped = api.stopSessionWork('session-a', { timeoutMs: 30 });
-    await assert.rejects(stopped, (error) => error.name === 'TimeoutError');
-    assert.equal(FakeWebSocket.sockets.at(-1).readyState, FakeWebSocket.CLOSED);
-  } finally { clearTimeout(keepAlive); }
-});
-
-test('session retirement reports control failure while still cancelling active work', async () => {
-  globalThis.WebSocket = FakeWebSocket;
+test('session retirement times out while reading projections and still attempts cancellation', async () => {
   const api = client();
   api.cookie = 'fixture=ok';
   const calls = [];
-  api.callUnary = async (method, payload) => { calls.push(method); return unavailableProjections(method, payload); };
-  const stopped = api.stopSessionWork('session-a');
-  const failure = assert.rejects(stopped, /session\/control ended/);
-  await tick();
-  const socket = FakeWebSocket.sockets.at(-1);
-  socket.open();
-  socket.frame({ type: 'error', streamId: socket.frames.at(-1).streamId, error: { code: 'gateway/internal' } });
-  await failure;
-  // 读队列失败不能阻止取消当前 turn —— 否则旧任务会一直跑下去。
-  assert.deepEqual(calls.filter((m) => m !== 'session/projections'), ['session/cancel']);
-  assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+  api.callUnary = async (method, payload, signal) => {
+    calls.push(method);
+    if (method !== 'session/projections') return { result: { ok: true, value: { accepted: true } } };
+    return await new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  await assert.rejects(api.stopSessionWork('session-a', { timeoutMs: 30 }), (error) => error.name === 'TimeoutError');
+  assert.deepEqual(calls, ['session/projections', 'session/cancel']);
 });
 
 test('pre-aborted event stream never opens a WebSocket', async () => {

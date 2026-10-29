@@ -1,72 +1,28 @@
 # qq-bridge — DSH 自主陪伴运行时与 QQ 消息桥接
 
-**English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
-
 > 🗂️ 文档索引（全部文档一句话说明 + 是否仍然有效）见 **[docs/README.md](docs/README.md)**；仓库目录/脚本命名约定见 **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**。
 >
 > 🧭 当前运行架构与渐进式重构原则见 **[docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md)**；代码代理修改指引见 **[AGENTS.md](AGENTS.md)**。
 >
 > 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**。
 
-项目围绕一个持久的全局 DSH 陪伴者会话运行，支持主动探索和自主选择关注点。固定前缀描述长期会话、自主活动与工具规则；当前人格卡定义具体身份、形态、性格和表达方式，可使用人类、动物、幻想角色及其他非人设定。电脑操作、QQ 消息和记忆都是可按需使用的空间、渠道或能力；`desktop-agent` 是技术 preset ID，不限定陪伴者的身份。WebUI 是主要控制入口，QQ 是可自行使用的消息渠道。逐 QQ DSH 会话映射及其控制面已从当前代码和 preset 安装包移除。
+项目围绕一个持久的全局 DSH 陪伴者会话运行，支持主动探索和自主选择关注点。固定前缀描述长期会话、自主活动与工具规则；当前人格卡定义具体身份、形态、性格和表达方式，可使用人类、动物、幻想角色及其他非人设定。电脑操作、QQ 消息和记忆都是可按需使用的空间、渠道或能力；`desktop-agent` 是技术 preset ID，不限定陪伴者的身份。WebUI 是主要控制入口，QQ 是可自行使用的消息渠道。
 
-> ⚠️ **当前版本 `v0.2.1-r1`，适配 DSH 0.2.1-rc.2**（0.2.0-rc.2 亦兼容；两个版本上都逐项实测：`npm run verify:adaptation`）。
-> 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie** —— DSH 0.1.7 起进程启动 token
-> 只存在于内存、不再落盘，旧版「从 guard 日志里读 token」的方式已失效。agent preset 是 DSH 0.1.7 起的
-> `@deepseek-ai/dsh-agent-preset` Cordis 行（`~/.dsh/.agent-presets/` 目录机制已废）。协议代次
-> （Cookie 鉴权 / 斜杠 RPC / `/api/remote.mux` 事件流）自 DSH `0.1.2-alpha.1` 起引入，与更早的点号
-> endpoint 协议不兼容 —— **DSH `0.1.1-rc.2` 及更早**请改用 tag
-> [`v0.1.0`](https://github.com/Reshirem/qq-bridge/releases/tag/v0.1.0)；**DSH 0.1.5-rc.1** 用
-> [`v0.1.5`](https://github.com/Reshirem/qq-bridge/releases/tag/v0.1.5)；**DSH 0.1.7-rc.2** 用
-> [`v0.1.7`](https://github.com/Reshirem/qq-bridge/releases/tag/v0.1.7)。
->
-> v0.2.0 修的主要是**会话待处理队列读不出来**：桥接退役/重置 QQ 会话时要先清掉 DSH 侧没跑的队列，
-> 而那段解析认的是一个**从来不存在的字段**（`session/control` baseline 的 `value.queues[<id>]`）——
-> 于是**每一次**退役都抛 `invalid session/control baseline`，队列清不掉、旧任务继续在 DSH 里跑，
-> 而日志里只有一行警告。**注意：这不是 0.2.0 引入的**——该代码随 v0.1.7 发布，报错日志早于
-> 0.2.0-rc.2 的发布，0.2.0 只是把它翻了出来。现在读队列以一元 RPC `session/projections` 为主路径、
-> 以 `projections[<id>].values.inbox` 为回退形状，并补了两条回归网。
-> 同一轮还按 0.2.0 的真实工具清单重新对账了 QQ 安全守卫（新增 15 个必须隐藏的工具名，
-> 含全局层默认启用的 `read_mcp_resource`、`plugin_manager`、`subagent_codex` 等）。
->
-> 逐条改动说明见 [docs/guides/DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md)（0.2.0）
-> 与 [docs/guides/DSH_021_ADAPTATION.md](docs/guides/DSH_021_ADAPTATION.md)（0.2.1）。
->
-> **r4 主要改动**：QQ 表情包/动图链路（表情 CDN 优先、`emoji_id` 兜底、DNS 多地址故障切换）、
-> 联网搜索改用与 DSH 同源的 DeepSeek 搜索（Bing 仅兜底）、`qq_wait_for_messages` 改 5 分钟长轮询、
-> 固定自主会话的回合收尾与机器人身份注入修复，外加一轮整体体检。
-> 逐条见 [**Release v0.2.0-r4**](https://github.com/Reshirem/qq-bridge/releases/tag/v0.2.0-r4)。
->
-> **v0.2.1-r1 主要改动**：适配 DSH 0.2.1-rc.2。修掉一处 **P0**——persona 里的 `{{cwd}}`
-> 提示词变量在 0.2.1 被删除，导致**每个回合在系统提示词装配阶段直接 error、模型一次都不跑**
-> （QQ 侧表现为「发消息完全没反应」）；同时把 0.2.1 新进全局层的 `working_directory`
-> 与 terminal / session-query / plugin_market 一族补进安全守卫名单。
-> 逐条见 [docs/guides/DSH_021_ADAPTATION.md](docs/guides/DSH_021_ADAPTATION.md)。
->
-> 默认分支 `main` **就是**本版本，`git clone` 直接拿到，无需切换分支。
+当前 qq-bridge 版本为 `v0.2.1-r1`，面向 DSH `0.2.1-rc.2`。安装、配置与运行步骤见 [DSH 安装说明](docs/guides/DSH_SETUP.md)。
 
 ```
 WebUI 任务 ─────────────────────────► DSH 全局陪伴者（`desktop-agent`）──► 电脑 / SnowLuma MCP
 QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──元数据提醒──► 同一个全局会话
 ```
 
-## 项目展示
-
-📽️ [AI 仿真群友 - 项目介绍视频](https://github.com/Reshirem/qq-bridge/releases/download/v0.1.5/project-intro.mp4)（约 11 MB）
-
-> 视频改由 **Release 附件**托管，不在仓库里——只想安装桥接的人不必再下载这 11 MB（它此前占整个仓库体积的 88%）。
-
 ## 架构
 
 - **QQ 侧**：`@snowluma/sdk` 的 `SnowLumaWebSocketClient`（OneBot v11 WebSocket 客户端，自动重连）
-- **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.1-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。全局会话创建后，桥接按 `config.json` 的 `dsh.provider`、`dsh.model` 和 `dsh.reasoningEffort` 用 `session.selectModel` 选择模型（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
+- **DSH 侧**：使用当前 DSH Web API 的 Cookie 鉴权、斜杠 RPC 与 `/api/remote.mux` 事件流；全局会话创建后，桥接按 `config.json` 的 `dsh.provider`、`dsh.model` 和 `dsh.reasoningEffort` 选择模型（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
 - **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入四个 MCP server：
   - `snowluma`（桥接自带 `src/mcp-snowluma-safe.js`）：本项目当前注册的完整 QQ 消息/媒体读写工具集；全局陪伴者会话可面向任意合法群/私聊 key 使用。发送要求活动 DSH 回合，仍受限频和审计；这不包含未注册在 MCP 内的 OneBot 群管理 API。
   - `snowluma-host`（桥接自带 `src/mcp-host-server.js`）：**只有** `snowluma_status`（只读探活 `get_login_info`）。
-    ⚠️ **v0.1.5 起移除了 `start_snowluma` / `stop_snowluma`**（以及 `snowluma.allowProcessControl` 配置项）——
-    原因是 **SnowLuma EULA §5.4** 规定「将其并入第三方安装包或 Docker 镜像、**通过自动化脚本部署**」
-    须事先取得书面授权，而原生组件属专有组件。本程序**只探测、不部署**：SnowLuma 的安装、启动与扫码
-    始终由你自己完成（详见 [LICENSE](LICENSE) 与 [RULES.md](RULES.md)）。
+    本程序只探测 SnowLuma 状态，不安装、复制或程序化启停 SnowLuma；安装、启动和扫码由管理员自行完成（详见 [LICENSE](LICENSE) 与 [RULES.md](RULES.md)）。
   - `web-search-safe`（桥接自带 `src/mcp-web-search-safe.js`）：只读 `web_search` / `web_fetch`（带 SSRF 防护），供 agent 按需查公开资料。
     **搜索优先复用 DSH 原本的联网搜索**（同一个 DeepSeek Anthropic 兼容端点 + `web_search` 服务端工具，凭据按 `config.webSearch.apiKey` → 环境变量 `DEEPSEEK_API_KEY` → DSH 的 `.credentials.yaml` 顺序解析），
     因而结果质量与 DSH 内的搜索一致、且**不再默认把群聊关键词发给 Bing**（Bing RSS 只在 DeepSeek 不可用时兜底）。
@@ -75,7 +31,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接缓冲 ──�
   - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；自身经历由 agent 自行选择记录。QQ 与自身经历共用固定 namespace，工具仅提供搜索、读取、保存和删除，并校验全局 agent 令牌；`agent_rest` 不限制记忆工具调用。WebUI 的“长期记忆 → 检索与记录”页支持 Gateway 相关度检索，也可按正文、时间和来源只读分页浏览本机账本中的全部活动原始记录；编辑和删除仍走 Gateway。“长期记忆 → 设置”页配置连接、启动摘要上限、Embedding/LLM Provider 和服务状态。Provider 地址、模型和密钥由用户手动填写。Windows 部署见 [记忆部署说明](docs/guides/DSH_SETUP.md#安装)；官方 `v2.0.0a4` 发布文件及校验值由部署脚本固定，运行数据留在 `state/a-memorix/`。
 - **会话模型**：所有自主活动共用一个持久的 `desktop-agent` DSH 会话。人格卡决定陪伴者的具体身份；QQ 群和私聊 ID 只作为消息来源/目标，不拆分会话上下文。全局陪伴者可通过 `qq_list_conversations` 发现账号中的群和好友，再按需读写。桥接不再创建或管理逐 QQ DSH 会话。
 - **全局陪伴者活动**：WebUI 的“会话控制”页可启动/继续自主探索、提交任务或持久停止；QQ 私聊、原生 @、已验证回复/引用、群消息中提到当前选中的人格卡名称或 `socialV2.attentionKeywords` 命中，也会向同一个全局会话发送元数据提醒。普通群消息留在桥接缓冲，由陪伴者自行选择是否通过 SnowLuma MCP 或 QQ 桌面界面查看和操作。每个活动回合以 `agent_rest` 结束：有限休息（最长 12 小时）到期后恢复一轮，有效 QQ 提醒也可提前结束休息并恢复一轮；未读的 QQ 提醒会在后续休息期间每分钟检查一次，最多补发一次；指数退避恢复时不补发。漏掉休息调用时按指数退避恢复，最长间隔 30 分钟。WebUI 停止会取消当前/排队任务并阻断自动恢复，只有 WebUI 手动任务能解除。
-- **提示词维护**：全局陪伴者固定使用技术 preset `desktop-agent`；WebUI 按用途拆分编辑固定前缀，支持逐个添加、命名、启用或删除自定义模块。模块源配置在 `dsh/agent-presets/desktop-agent/prompt-modules.json`，生成的完整前缀写入 `agent.cordis.yml` 并同步 `plugins/qq-agent-presets/` bundle patch。人格卡开场、QQ 来源提醒、休息/恢复和长期记忆摘要等桥接运行时动态提示模板也可在 WebUI 单独编辑，保存后直接用于后续对应场景。必要的会话、安全和回合收尾模块不能关闭；固定前缀中的模块开关只控制提示词文本，实际工具能力仍由各自设置控制。DSH 0.1.7 起 preset 由 `@deepseek-ai/dsh-agent-preset` 行加载，保存固定前缀后需重启 DSH，并重建全局会话才能获得新版前缀。
+- **提示词维护**：全局陪伴者固定使用技术 preset `desktop-agent`；WebUI 按用途拆分编辑固定前缀，支持逐个添加、命名、启用或删除自定义模块。模块源配置在 `dsh/agent-presets/desktop-agent/prompt-modules.json`，生成的完整前缀写入 `agent.cordis.yml` 并同步 `plugins/qq-agent-presets/` bundle patch。人格卡开场、QQ 来源提醒、休息/恢复和长期记忆摘要等桥接运行时动态提示模板也可在 WebUI 单独编辑，保存后直接用于后续对应场景。必要的会话、安全和回合收尾模块不能关闭；固定前缀中的模块开关只控制提示词文本，实际工具能力仍由各自设置控制。保存固定前缀后需重启 DSH，并重建全局会话才能获得新版前缀。
 - **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——按操作任务提供运行总览、会话控制、陪伴者提示词、长期记忆（检索与记录、设置）、提醒与消息、令牌与花费、访问与安全、调试与运维九个页面，右上角搜索框可跨页定位功能项；导航按工作空间、长期记忆、QQ 通道、系统与管理分组；“会话控制”页管理全局陪伴者，提示词页维护技术 preset `desktop-agent`；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；可查看活动日志、维护关键词提醒、配置管理员/控制台令牌（`consoleToken` 未配置时自动生成并打印在启动日志；可在控制台内修改或重新生成）
   - **令牌与花费看板**：实时显示 AI 的 token 消耗与折算金额（元），可下钻到**每个群 / 每个好友 / 每一轮对话**（轮次、步数、缓存命中/未命中输入、输出、命中率、花费、峰谷时段），并有**按时间的消耗走势图**（24 小时 / 3 天 / 7 天 / 30 天，柱子按高峰/空闲着色，一眼看出什么时候烧得凶、哪几个小时是 2 倍价）。累计总量取自 DSH 的 `tokenUsage` 投影（精确，含桥接启动前的历史），逐轮明细由 `assistant/message` 的 `usage` 折叠而来；金额按 DeepSeek 官方价目表折算并区分**高峰 / 空闲时段**（高峰单价为空闲的 2 倍，已内置中国法定节假日）。详见 [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)
   - **人格（角色扮演）管理**：列表点选即可载入查看/编辑提示词，支持新建、保存修改、改名（自动重命名文件）、另存为副本、删除；全局会话开场只注入一次，超过字符上限会实时提示
@@ -115,7 +71,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `dsh.baseUrl` | 固定 DSH API 地址及自动发现的回退地址，默认 `http://127.0.0.1:3080` |
 | `dsh.autoDetectPort` | 默认 `true`。Windows DSH 桌面版可能动态分配 API 端口；桥接启动时会从 DSH 进程持有的本机监听端口中识别 API。启动桥接前先启动 DSH；发现的端口仅用于本次运行，不写回配置。未发现桌面 API 时使用 `baseUrl`；若匹配到多个 API 且 `baseUrl` 不在其中，桥接会拒绝猜测，需指定目标地址 |
 | `dsh.provider` / `dsh.model` / `dsh.reasoningEffort` | DSH 会话使用的模型/推理强度；可在 WebUI“DSH 模型与思考强度”中从模型目录选择或手动填写 Provider / Model ID |
-| `dsh.authToken` | DSH launch token（进程启动凭据）。**通常应留空**：留空时桥接用 `~/.dsh/.credentials.yaml` 里持久化的签名密钥**离线铸造**会话 Cookie，不依赖任何进程期状态（DSH 0.1.7 起启动 token 只存在于内存、日志里那条是上一个进程的陈旧值，换 Cookie 只会 401）。只有显式填了才会优先走 token 交换 |
+| `dsh.authToken` | DSH launch token（进程启动凭据）。通常留空；桥接会用 `~/.dsh/.credentials.yaml` 中的浏览器会话签名密钥铸造 Cookie。显式填写时优先使用该 token 交换 Cookie |
 | `dsh.authHeader` / `dsh.authPrefix` | 保留字段，当前新版 DSH 链路使用 Cookie 交换，不再直接发送该鉴权头 |
 | `snowluma.wsUrl` | SnowLuma OneBot **WebSocket** 地址（如 `ws://127.0.0.1:3001`） |
 | `snowluma.httpUrl` | OneBot **HTTP API** 地址（如 `http://127.0.0.1:3000`）；不要填 WebSocket 端口，否则会报 HTTP 426 |
@@ -233,7 +189,7 @@ npm start          # 或双击 start.bat（守护模式：崩溃自动重启，�
 node scripts/test-audit.mjs
 ```
 
-QQ 消息模型视图和全局 `desktop-agent` preset 契约可单独运行 `npm run test:qq-contract`。旧逐会话令牌与唤醒回归已随映射运行时一并移除。
+QQ 消息模型视图和全局 `desktop-agent` preset 契约可单独运行 `npm run test:qq-contract`。
 
 控制台「令牌与花费」看板的账本与价目表回归（峰谷分时、幂等折叠、基线合并、压缩与容错）：
 
@@ -241,8 +197,6 @@ QQ 消息模型视图和全局 `desktop-agent` preset 契约可单独运行 `npm
 npm run test:tokens        # 单元测试
 npm run test:console-ui    # 离线浏览器回归（含看板渲染与逐轮下钻）
 ```
-
-升级后，QQ 注意信号进入唯一全局 `desktop-agent`。桥接不再管理逐 QQ DSH 映射；历史会话记录由 DSH 自己保留。
 
 验证 DSH 侧链路是否打通（会创建一个独立测试会话，不影响现有会话）：
 
@@ -258,11 +212,11 @@ npm run self-test
 qq-bridge/
   AGENTS.md             # 代码代理自动读取的仓库级修改指引
   config.example.json   # 配置模板（脱敏占位符；真实 config.json 不入库）
-  README.md / README.en.md / RULES.md
+  README.md / RULES.md
   docs/
     README.md           # 当前仓库文档索引
     FOLDER_MAP.md       # 目录结构与 scripts/ 命名约定
-    guides/             # 当前架构、安装、安全、隐私、控制台与兼容性指南
+    guides/             # 当前架构、安装、安全、隐私与控制台指南
   dsh/agent-presets/    # 全局 desktop-agent preset 源文件
   plugins/qq-agent-presets/ # DSH 全局 preset、工具守卫及 ownerQQ 身份标记设置
   src/
@@ -277,13 +231,12 @@ qq-bridge/
   state/                # 运行时数据（不入库）
 ```
 
-## SnowLuma 版本与上游健康（「连上了但收不到消息」）
+## SnowLuma 上游健康（「连上了但收不到消息」）
 
 「注入」在这个技术栈里只发生在一处：**SnowLuma 用原生组件挂进 QQ 客户端进程**（它自己日志里叫
 `[Hook]`，载体是安装目录的 `native/snowluma-win32-x64.{dll,node}`）。**本桥接没有任何原生/注入面**
 （依赖全为纯 JS，源码里没有 `.dll` / `.node` / FFI / 进程注入），也不启动、不控制 SnowLuma 或 QQ ——
-所以「QQ 注入失败」不可能是本桥接造成的。但**桥接过去无法把这个失败讲清楚**，于是它经常被误报成
-「qq-bridge 的问题」。现在桥接会主动把上游健康报出来。
+因此桥接无法修复 QQ 客户端内的 Hook 故障。桥接会展示上游健康信号，帮助区分网关连接问题和 QQ 接收链路问题。
 
 ### 已知行为：连上了 ≠ 收得到
 
@@ -298,53 +251,23 @@ WARN [Hook] process enumeration timed out after 4000ms (worker abandoned)
 这时桥接这边**一切正常**：WebSocket 通、日志打过 `SnowLuma 已连接`、控制台没有异常，但群里一条消息都不来。
 桥接现在对此做两件事：
 
-1. **主信号**：每 30 秒一次的 `meta_event/heartbeat` 载荷里的 `status.good`（SnowLuma 对「QQ → 原生 hook → 我」这条**接收链路**的自评，静默约 105 秒后翻 `false`）。心跳是 SnowLuma 自己的定时器无条件发的，所以这条信号免费且及时，且不需要较新的运行时。
-   兜底：每 60 秒问一次 `get_status`（`{online, good}`）。加分项：`bot_status`（账号会话上下线，**SnowLuma 1.14.20 才真的有**）+「距最近一个事件包的时长」（只能证明进程/WS 还活着，**不能**证明收得到 QQ 数据 —— 心跳会一直来）。
-   > ⚠️ **不要用 `get_login_info` 取 `good`**：它只返回 `{user_id, nickname}`，而 SDK 不校验 data 载荷 ⇒ 不会报错、`good` 永远是 `null`、这条判断变成永不触发的死代码。（本功能的第一版实现正是这么写错的，回归里已加反面断言钉住。）
+1. **主信号**：`meta_event/heartbeat` 载荷里的 `status.good`，用于判断 SnowLuma 的 QQ 接收链路是否正常。兜底是定时查询 `get_status`；若运行时提供账号会话上下线事件，也会一并显示。事件包到达时间只能证明进程和 WebSocket 仍有活动，不能单独证明 QQ 接收正常。
+   `get_login_info` 只用于读取账号身份，不作为接收健康信号。
 2. 判定退化时：日志打**明确指向 SnowLuma `[Hook]`** 的警告、控制台「运行总览」出现 `SnowLuma 上游` 卡片、
    「访问与安全」页出现告警条，`GET /api/status` 的 `snowluma` 字段给出 `degraded` / `good` / `hint`。
 
-排查顺序：控制台看 `SnowLuma 上游` 卡片 → 看 SnowLuma 的 `logs/snowluma-*.log` 里的 `[Hook]` 行 → 再考虑升级 SnowLuma（**升级不换原生组件，见下**）。
+排查顺序：控制台查看 `SnowLuma 上游` 卡片，再查看 SnowLuma 的 `logs/snowluma-*.log` 中 `[Hook]` 相关日志。
 
-### 版本要求
+### SnowLuma 连接注意事项
 
-> 下方带日期的实测记录保留当时环境与运行方式；其中 2026-10-03 的 `qq-chat-v2` 往返记录属于旧逐会话运行时，不代表当前架构。当前唯一 DSH 会话使用 `desktop-agent`。
+SnowLuma 需要启用 OneBot v11 HTTP 和 WebSocket。HTTP 与 WebSocket 可以使用不同 token；桥接会从 SnowLuma 配置中发现 WebSocket 连接信息，并在必要时重新探测。
 
-| 组件 | 要求 | 说明 |
-| --- | --- | --- |
-| SnowLuma **运行时**（QQ 网关本体） | **1.14.20 已实测**（1.14.9 亦兼容） | **实测记录（2026-10-03，SnowLuma 1.14.20 + QQ 在线）**：包 SHA256 与官方发布摘要一致；心跳 `status.good=true`／`interval=30000`；桥接走完「首次 1006 → 自愈 WS token → 已连接」；收到群消息（`lastPacketKind: message/group`）；完整往返成功（唤醒 → DSH 建会话挂 `qq-chat-v2` → 工具发送 1/1 条 → 实际发出两条回复）。 ⚠️ **升级运行时不会更换注入用的原生组件**：实测 `native/snowluma-win32-x64.{dll,node}` 与 `websocket-win32-x64.node` 在 **1.14.9 与 1.14.20 之间逐字节完全相同**（三方对比：官方 1.14.9 包 == 本机安装 == 官方 1.14.20 包），变的只有 `index.mjs`（+414 KB）等 JS 层。所以**升级能带来 OneBot 事件流水线、收发与新区块链路上的修复（`bot_status`、markdown 带 text、事件种类订阅更全），但不会修「原生 hook 挂不上 QQ」这类问题** —— 那种要走 SnowLuma 自己的排查。**升级 SnowLuma 是使用者自己的事**：本桥接只探测、不部署（见 [LICENSE](LICENSE) 与 [RULES.md](RULES.md)） |
-| `@snowluma/sdk` / `@snowluma/mcp`（本仓库依赖） | 已钉 `^1.14.20` | 客户端库；OneBot v11 是稳定契约，新库可连旧运行时（本项目实测：库 1.14.20 + 运行时 1.14.9 可正常收发） |
-| `bot_status`（账号上下线） | **1.14.20 有；1.14.9 没有** | 逐一核对的只有这两个版本：`bot_status` 在 1.14.9 的 `index.mjs` 里出现 **0** 次、1.14.20 里 **3** 次（带 `sub_type`/`user_id`）。**具体从哪个版本引入未逐版核对**。桥接对老运行时**优雅降级**：订阅不到就只靠心跳 `good` 与 `get_status` |
-
-### 已知行为：HTTP token 与 WS token 是**两个不同的值**
-
-SnowLuma 同一个账号的 **HTTP token（默认 3000 端口）与 WebSocket token（默认 3001 端口）并不相同**
-（实测；`snowluma.accessToken` 里通常只能存一个 —— 存的是 HTTP 那个）。因此：
-
-- **桥接每次启动的首次 WS 连接几乎必然失败一次**（日志里 `SnowLuma 连接断开（code=1006）` →
-  `SnowLuma 首次连接未成功（将在后台自动重连并尝试自愈 WS token）`），随后自愈重新发现 WS token、
-  重连成功，才打出 `SnowLuma 已连接`。**这条序列是正常的，不是故障。**
-- 真正会一直连不上的情况：**自愈无从下手** —— `snowluma.homeDir` 没配 / 被移动 / 读不到
-  SnowLuma 的 `config/onebot_<QQ号>.json`，或权限不足。这时日志里会有 `token 自愈失败`，
-  而 QQ 侧表现为**完全收不到消息**。先确认 `homeDir` 指向真正的 SnowLuma 安装目录。
-
-### 已知行为：端点自愈会覆盖你写的 `wsUrl`
-
-换 QQ 账号后 OneBot 端口与 token 都会变，所以桥接在连不上时会自愈：重新发现 SnowLuma 的端点并
-**写回 `config.json`**。这在主场景下是对的，但它不区分「配置里是个过期值」和「你就是要指向别处」——
-想跑第二个实例或指向另一份 SnowLuma 安装时会连错账号。要关掉：
-
-```json
-"snowluma": { "followDiscoveredEndpoint": false }
-```
-
-关掉后**只自愈 token**（换账号仍能恢复），绝不动 URL、也不写回 URL。
-
+若控制台显示网关已连接但没有收到 QQ 事件，先检查 SnowLuma 登录状态和自身日志中的 hook 报错。若要固定连接到指定网关，可在配置中设置 `snowluma.followDiscoveredEndpoint` 为 `false`；这时桥接仍可更新 token，但不会覆盖 `wsUrl`。
 ## 已知限制
 
 - agent 回复在回合结束时一次性发送（不做流式逐字转发）；回复超过 `socialV2.send.maxMessageChars`（默认 500 字，可用 `social.maxReplyChars` 调整）自动按句读/URL 边界分段
 - 图片及部分表情可以通过安全下载接入多模态模型；视频和其它不支持的媒体类型不做内容解析
-- 当前桥接运行时不提供 QQ 语音发送、接收或转写能力；旧语音实现不属于受支持的运行功能
+- 当前桥接运行时不提供 QQ 语音发送、接收或转写能力
 - agent 的 Markdown 回复会转成纯文本（链接保留 `文字 (url)` 形式）
 - `@snowluma/sdk` 的 npm 发布版存在 ESM 扩展名 bug，本仓库通过 postinstall 补丁修复（见 `scripts/patch-snowluma-sdk.mjs`）
 
