@@ -1854,9 +1854,34 @@ button:active:not(:disabled) {
 #section-usage .usage-legend i.mixed { background:var(--accent-hover) }
 
 /* ================= 长期记忆 ================= */
-#section-memory .memory-heading, #section-memory-settings .memory-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px }
-#section-memory .memory-heading h2, #section-memory-settings .memory-heading h2 { margin-bottom:4px }
-#section-memory .memory-heading p, #section-memory-settings .memory-heading p { margin-top:0 }
+#section-memory .memory-heading, #section-memory-organizer .memory-heading, #section-memory-settings .memory-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px }
+#section-memory-organizer .memory-heading-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px }
+#section-memory .memory-heading h2, #section-memory-organizer .memory-heading h2, #section-memory-settings .memory-heading h2 { margin-bottom:4px }
+#section-memory .memory-heading p, #section-memory-organizer .memory-heading p, #section-memory-settings .memory-heading p { margin-top:0 }
+#section-memory-organizer .memory-organizer-start { align-items:end; gap:10px; margin:12px 0 4px }
+#section-memory-organizer .memory-organizer-start label { flex:0 0 auto }
+#section-memory-organizer #memoryOrganizerSession { flex:1 1 360px; min-width:180px; max-width:100% }
+#section-memory-organizer .memory-organizer-jobs { display:grid; gap:10px; margin-top:10px }
+#section-memory-organizer .memory-organizer-job { display:grid; gap:6px; min-width:0; padding:12px 14px; border:1px solid var(--border); border-radius:12px; background:var(--surface) }
+#section-memory-organizer .memory-organizer-job > summary { display:grid; gap:4px; cursor:pointer; list-style:none }
+#section-memory-organizer .memory-organizer-job > summary::-webkit-details-marker { display:none }
+#section-memory-organizer .memory-organizer-job > summary::after { content:'展开任务详情'; justify-self:start; color:var(--muted); font-size:11px }
+#section-memory-organizer .memory-organizer-job[open] > summary::after { content:'收起任务详情' }
+#section-memory-organizer .memory-organizer-job-summary-info { font-size:12px; overflow-wrap:anywhere }
+#section-memory-organizer .memory-organizer-job-body { display:grid; gap:6px; min-width:0 }
+#section-memory-organizer .memory-organizer-job-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px }
+#section-memory-organizer .memory-organizer-badge { display:inline-flex; align-items:center; padding:2px 8px; border:1px solid var(--border); border-radius:999px; font-size:11px; color:var(--muted); background:var(--surface-hover) }
+#section-memory-organizer .memory-organizer-badge.ok { color:var(--pill-green-fg); border-color:var(--border); background:var(--pill-green-bg) }
+#section-memory-organizer .memory-organizer-badge.err { color:var(--pill-red-fg); border-color:var(--border); background:var(--pill-red-bg) }
+#section-memory-organizer .memory-organizer-job-range,
+#section-memory-organizer .memory-organizer-job-target,
+#section-memory-organizer .memory-organizer-job-progress,
+#section-memory-organizer .memory-organizer-job-error,
+#section-memory-organizer .memory-organizer-job-updated { margin:0; overflow-wrap:anywhere }
+#section-memory-organizer .memory-organizer-job-progress { font-size:13px }
+#section-memory-organizer .memory-organizer-progressbar { display:block; width:100%; height:6px; accent-color:var(--accent); border:0; border-radius:999px; overflow:hidden }
+#section-memory-organizer .memory-organizer-job-error { white-space:pre-wrap }
+#section-memory-organizer .memory-organizer-job-updated { font-size:11px }
 #section-memory-settings .memory-config-group { margin:12px 0 }
 #section-memory-settings .memory-config-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px 16px; align-items:end }
 #section-memory-settings .memory-config-grid > label:not(.memory-toggle),
@@ -1872,17 +1897,24 @@ button:active:not(:disabled) {
 #section-memory-settings .memory-config-actions { align-items:center; margin-top:12px }
 #section-memory-settings .memory-config-actions [role=status] { flex:1 1 240px }
 #section-memory .memory-search-controls { align-items:end; gap:9px; margin:12px 0 4px }
-#section-memory .memory-list-actions:not([hidden]) { display:flex; justify-content:flex-end; margin:-8px 0 18px }
+#section-memory .memory-list-actions:not([hidden]), #section-memory-organizer .memory-list-actions:not([hidden]) { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px; margin:-8px 0 18px }
 #section-memory .memory-search-controls label { flex:0 0 auto }
 #section-memory #memoryQuery { flex:1 1 280px; min-width:180px }
 #section-memory #memoryTimeStart, #section-memory #memoryTimeEnd { flex:0 1 150px }
 #section-memory #memoryOriginFilter { flex:0 1 150px }
 #section-memory .memory-results { display:grid; gap:8px; margin:10px 0 18px }
-#section-memory .memory-hit { display:flex; flex-direction:column; align-items:stretch; gap:7px; width:100%; padding:12px 14px; text-align:left; background:var(--surface); border:1px solid var(--border); border-radius:12px; color:var(--text); box-shadow:none }
+#section-memory .memory-hit { display:block; min-width:0; padding:12px 14px; text-align:left; background:var(--surface); border:1px solid var(--border); border-radius:12px; color:var(--text); box-shadow:none }
 #section-memory .memory-hit:hover { background:var(--surface-hover); border-color:var(--accent) }
+#section-memory .memory-hit-summary { display:flex; flex-direction:column; align-items:stretch; gap:7px; cursor:pointer; list-style:none }
+#section-memory .memory-hit-summary::-webkit-details-marker { display:none }
+#section-memory .memory-hit-summary::after { content:'展开记录'; color:var(--muted); font-size:11px }
+#section-memory .memory-hit[open] .memory-hit-summary::after { content:'收起记录' }
 #section-memory .memory-hit-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px }
-#section-memory .memory-hit-content { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; max-height:7.5em; overflow:hidden }
+#section-memory .memory-hit-content { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; max-height:4.5em; overflow:hidden }
 #section-memory .memory-hit .meta { font-size:11px; overflow-wrap:anywhere }
+#section-memory .memory-hit-expanded { display:grid; gap:10px; justify-items:start; min-width:0; margin-top:10px; padding-top:10px; border-top:1px solid var(--border) }
+#section-memory .memory-hit-full { width:100%; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55 }
+#section-memory-organizer .memory-organizer-page-label { text-align:center }
 #section-memory .memory-editor-actions { align-items:center; margin-top:10px }
 #section-memory .memory-editor-actions #memoryEditorStatus { flex:1 1 240px }
 @media(max-width:760px) {
@@ -1890,4 +1922,7 @@ button:active:not(:disabled) {
   #section-memory .memory-search-controls label { flex:1 1 100% }
   #section-memory #memoryTimeStart, #section-memory #memoryTimeEnd,
   #section-memory #memoryOriginFilter { flex:1 1 100%; max-width:none }
+  #section-memory-organizer .memory-organizer-start { align-items:stretch }
+  #section-memory-organizer .memory-organizer-start label { flex:1 1 100% }
+  #section-memory-organizer #memoryOrganizerSession { flex:1 1 100%; max-width:none }
 }

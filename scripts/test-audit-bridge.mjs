@@ -107,9 +107,9 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     const templatesSaved = await call('/api/desktop-agent/prompt-templates', 'POST', adminOnly, { templates: updatedTemplates });
     assert.equal(templatesSaved.status, 200, '管理员应能保存有效运行时模板');
     assert.equal(JSON.parse(templatesSaved.body).templates.recovery, '');
-    const invalidTemplates = { ...updatedTemplates, roleCard: '缺少必需占位符' };
-    const templatesRejected = await call('/api/desktop-agent/prompt-templates', 'POST', adminOnly, { templates: invalidTemplates });
-    assert.equal(templatesRejected.status, 400, '缺少必需占位符的模板必须拒绝');
+    const customTemplates = { ...updatedTemplates, roleCard: '自由编写' };
+    const customSaved = await call('/api/desktop-agent/prompt-templates', 'POST', adminOnly, { templates: customTemplates });
+    assert.equal(customSaved.status, 200, '管理员可以自行决定模板内容');
     console.log('PASS agent token cannot reach persona/prompt/effort/whitelist admin endpoints');
   } catch (error) { failures++; console.error('FAIL agent token admin isolation:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }

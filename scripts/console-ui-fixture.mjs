@@ -50,7 +50,7 @@ function roleWarnings(content) {
 function presetStatusFixture() {
   return {
     preset: 'desktop-agent',
-    label: '全局陪伴者',
+    label: '全局数字角色',
     sourceFile: 'dsh/agent-presets/desktop-agent/agent.cordis.yml',
     installed: true,
     requiresRestart: true,
@@ -320,7 +320,7 @@ function usageRecentFixture() {
 
 export function makeFixtureState() {
   const promptContent = {
-    identity: '你是用户长期相处的自主陪伴者；人格卡定义你的具体身份和形态，可以采用非人设定。',
+    identity: '你是用户长期相处的自主数字角色；人格卡定义你的具体身份和形态，可以采用非人设定。',
   };
   const desktopPromptModules = PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => ({
     ...definition,
@@ -349,7 +349,6 @@ export function makeFixtureState() {
       context: { recentLimit: 100, unreadLimit: 30, contextWindow: 20 },
       feedback: { maxLength: 500, notifyOwnerOnError: false },
     },
-    security: { interceptNotify: true },
     hardenStateDir: false,
     toolLog: [
       { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'call', args: JSON.stringify({ key: 'group:123456789', limit: 20 }) },
@@ -511,7 +510,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           // 抄错的那一版和真的那一版看起来一模一样。
           case '/api/security': return json({
             ok: true,
-            security: state.security,
             stateDir: state.hardenStateDir
               ? { hardened: true, path: 'D:\\demo\\qq-bridge\\state', manualCommand: '' }
               : { hardened: false, path: 'D:\\demo\\qq-bridge\\state', manualCommand: manualDirCommand('D:\\demo\\qq-bridge\\state') }
@@ -574,7 +572,27 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return json({ ok: true, restoredFrom: 'desktop-agent.agent.cordis.yml.fixture', requiresRestart: true });
           }
           case '/api/dsh/effort': state.dshEffort = body.reasoningEffort; return json({ ok: true, reasoningEffort: body.reasoningEffort });
-          case '/api/whitelist': state.whitelist = body; return json({ ok: true });
+          case '/api/whitelist': {
+            if (body.ownerQQ !== undefined) {
+              const value = String(body.ownerQQ ?? '').trim();
+              if (value && (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0)) {
+                return json({ ok: false, error: 'ownerQQ 必须是 QQ 号（正整数）' }, 400);
+              }
+              state.whitelist.ownerQQ = value ? Number(value) : null;
+            }
+            for (const name of ['allow', 'deny']) {
+              if (!body[name]) continue;
+              for (const kind of ['groups', 'private']) {
+                if (!Array.isArray(body[name][kind])) continue;
+                const values = body[name][kind];
+                if (values.some((value) => !/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0)) {
+                  return json({ ok: false, error: `${name}.${kind}必须只包含正整数 QQ 号` }, 400);
+                }
+                state.whitelist[name][kind] = [...new Set(values.map(Number))];
+              }
+            }
+            return json({ ok: true, ...state.whitelist });
+          }
           case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
           case '/api/socialV2/activity': state.activityPaused = body.paused; return json({ ok: true });
           case '/api/socialV2/tool-log/clear': state.toolLog = []; return json({ ok: true });
@@ -586,8 +604,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               state.hardenStateDir = true;
               return json({ ok: true, hardened: true, path: 'D:\\demo\\qq-bridge\\state' });
             }
-            state.security = body;
-            return json({ ok: true });
+            return json({ ok: false, error: '该安全设置已停用' }, 400);
           case '/api/console/token': return json({ ok: true, token: body.token || 'offline-demo-token-123456', generated: !body.token });
           case '/api/test-send': return json({ ok: true, message_id: 'mock-message-001' });
           case '/api/console/desktop-agent':

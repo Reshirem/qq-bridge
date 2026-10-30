@@ -116,6 +116,15 @@ function readBridgeAgentToken() {
   throw new Error('桥接内部调用凭证尚未就绪');
 }
 
+function readBridgeAgentSessionId() {
+  try {
+    const state = JSON.parse(fs.readFileSync(path.join(ROOT, 'state', 'desktop-agent.json'), 'utf8'));
+    const sessionId = String(state?.sessionId ?? '').trim();
+    if (sessionId) return sessionId;
+  } catch {}
+  throw new Error('桥接全局 desktop-agent 会话尚未就绪');
+}
+
 /**
  * 把桥接返回的 `error` 变成可读文本。
  *
@@ -137,10 +146,40 @@ function errorText(value, fallback) {
   return fallback;
 }
 
+function normalizeQqConversationKey(value) {
+  const key = String(value ?? '').trim();
+  return /^(?:group|private):[1-9]\d*$/.test(key) ? key : '';
+}
+
+function qqTargetKeyForBridge(path, init = {}) {
+  let url;
+  try { url = new URL(path, 'http://127.0.0.1'); } catch { return ''; }
+  const queryKey = normalizeQqConversationKey(url.searchParams.get('key'));
+  if (queryKey) return queryKey;
+  let body = init.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { body = null; }
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return '';
+  const bodyKey = normalizeQqConversationKey(body.key);
+  if (bodyKey) return bodyKey;
+  if ((url.pathname === '/api/send/group' || url.pathname === '/api/send/reply') && body.groupId != null) {
+    return normalizeQqConversationKey(`group:${body.groupId}`);
+  }
+  if (url.pathname === '/api/send/private' && body.userId != null) {
+    return normalizeQqConversationKey(`private:${body.userId}`);
+  }
+  return '';
+}
+
 async function agentApi(path, init = {}) {
   const timeoutMs = init.timeoutMs || 15000;
   const { timeoutMs: _omit, ...rest } = init;
-  const headers = agentHeaders(rest.headers);
+  const requestHeaders = { ...(rest.headers ?? {}) };
+  delete requestHeaders['x-qq-target-key'];
+  const targetKey = qqTargetKeyForBridge(path, rest);
+  if (targetKey) requestHeaders['x-qq-target-key'] = targetKey;
+  const headers = agentHeaders(requestHeaders);
   const res = await fetch(`${agentApiBase()}${path}`, { ...rest, headers, signal: AbortSignal.timeout(timeoutMs) });
   let body = null;
   try { body = await res.json(); } catch { body = null; }
@@ -163,11 +202,13 @@ async function agentApi(path, init = {}) {
 function agentHeaders(extra = {}) {
   const consoleToken = readConsoleToken();
   const bridgeAgentToken = readBridgeAgentToken();
+  const bridgeAgentSessionId = readBridgeAgentSessionId();
   return {
     'content-type': 'application/json',
     ...(consoleToken ? { 'x-console-token': consoleToken } : {}),
     ...(extra ?? {}),
     'x-agent-token': bridgeAgentToken,
+    'x-agent-session-id': bridgeAgentSessionId,
     'x-agent-call': '1'
   };
 }
@@ -271,6 +312,20 @@ server.tool(
       return { content: [{ type: 'text', text: serializeModelData({ ...login, online: status.online, good: status.good }) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `查询失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_get_owner_identity',
+  '读取桥接当前配置的 ownerQQ 账号标识（只读）。需要确认某条 QQ 消息是否来自配置的 owner 时，可将返回的 ownerQQ 与消息结构化元数据中的 senderId 对比；消息上的 isOwner=true 也表示桥接已完成匹配。未配置时会明确返回 configured=false。该工具仅确认账号，不代表关系性质，也不要把 ownerQQ 数字复述给其他 QQ 会话。',
+  {},
+  async () => {
+    try {
+      const data = await agentApi('/api/desktop-agent/owner-identity');
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取 ownerQQ 失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );
@@ -479,7 +534,7 @@ server.tool(
 
 server.tool(
   'agent_rest',
-  '结束当前全局陪伴者活动回合。每个活动回合必须将此工具作为最后一个工具调用；调用后桥接会结束当前 DSH 回合。durationMs 可设为 1 秒至 12 小时，安排到期后启动新回合；省略表示无限期休息。可以根据自己的节奏安排之后回来，不需要事先确定具体任务。休息期间不会运行异常回合的指数恢复重试。',
+  '结束当前全局数字角色活动回合。每个活动回合必须将此工具作为最后一个工具调用；调用后桥接会结束当前 DSH 回合。如果只是暂时结束活动、想稍后回来，可设置不超过 5 分钟的有限时长；如果你想休息，休息多久由你自己决定。durationMs 可设为 1 秒至 12 小时，安排到期后启动新回合；省略表示无限期休息。休息期间不会运行异常回合的指数恢复重试。',
   {
     durationMs: z.number().int().min(1000).max(12 * 60 * 60_000).optional().describe('有限休息时长，单位毫秒（1 秒至 12 小时）；省略表示无限期休息')
   },

@@ -27,7 +27,7 @@
 
 | 功能 | 当前入口/模块 | 来源与现状 |
 | --- | --- | --- |
-| QQ OneBot 收发、消息缓冲、会话历史和主动发送 | `src/bridge.js`、`src/mcp-snowluma-safe.js` | 主要继承原作者实现，fork 后改成单一全局陪伴者凭证与消息视图；当前群聊普通消息只缓冲，提醒仅传元数据 |
+| QQ OneBot 收发、消息缓冲、会话历史和主动发送 | `src/bridge.js`、`src/mcp-snowluma-safe.js` | 主要继承原作者实现，fork 后改成单一全局数字角色凭证与消息视图；当前群聊普通消息只缓冲，提醒仅传元数据 |
 | DSH API、认证和事件流 | `src/dsh-client.js` | 主要继承；当前由 fork 后的全局会话控制器统一调用 |
 | 搜索、外部网页抓取和 SSRF 防护 | `src/web-search.js`、`src/safe-fetch.js`、`src/mcp-web-search-safe.js` | 搜索与网络安全基础主要继承；MCP 接入和当前全局会话的使用方式由 fork 后维护 |
 | 图片、转发、收藏表情与 FFmpeg 归一化 | `src/media-normalize.js`、`src/forward.js`、`src/sticker-lib.js`、`src/ffmpeg-resolve.js` | 原有媒体/表情能力仍在，fork 后修过图片读取、发送和 Windows FFmpeg 路径 |
@@ -70,6 +70,6 @@
 
 ### 使用时要知道的设计边界
 
-全局陪伴者可以枚举当前 QQ 账号的群/好友，并通过合法的 `group:<数字>`、`private:<数字>` key 读取或发送；这是从原来的逐 QQ session 改成单一全局 session 后的行为，不是残留的白名单错误。桥接 API 仍有限频与内容审计，但 computer-use 通过 QQ 图形界面的动作不经过这些 API 检查。相关边界见 [安全基线](SECURITY_BASELINE.md) 与 [运行架构](ARCHITECTURE.md)。
+全局数字角色可以枚举当前 QQ 账号的群/好友，并通过合法的 `group:<数字>`、`private:<数字>` key 读取或发送；这是从原来的逐 QQ session 改成单一全局 session 后的行为，不是残留的白名单错误。桥接 API 仍有限频与内容审计，但 computer-use 通过 QQ 图形界面的动作不经过这些 API 检查。相关边界见 [安全基线](SECURITY_BASELINE.md) 与 [运行架构](ARCHITECTURE.md)。
 
 `src/bridge.js` 同时拥有 QQ 消息状态、提醒队列、DSH 生命周期、WebUI API 和出站策略，仍是最大维护风险；目前它不是一处孤立的旧代码，而是多个 fork 后功能的共享协调点。继续拆分时应先为提醒计时器与 A_Memorix 只读读取器补齐 fixture 验证，再逐步抽离职责。

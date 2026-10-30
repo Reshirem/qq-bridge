@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { BUNDLE_DIR, PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patches.mjs';
@@ -303,9 +303,42 @@ function autoInstallProfileBundles() {
   }
 }
 
+/**
+ * DSH profile 中的 qq-agent-presets 是指向仓库的 link bundle；Node 会从真实源码目录解析模块依赖。
+ * 因此仅安装 DSH profile 的 package.json 不会让 bundle 自己声明的依赖出现在源码旁边。
+ */
+async function installBundleSourceDependencies() {
+  const windows = process.platform === 'win32';
+  const cmd = windows ? (process.env.ComSpec || 'cmd.exe') : 'npm';
+  const args = windows
+    ? ['/d', '/v:off', '/s', '/c', 'npm.cmd install --prefix "%QQ_BRIDGE_BUNDLE_DIR%" --ignore-scripts --no-audit --no-fund']
+    : ['install', '--prefix', BUNDLE_DIR, '--ignore-scripts', '--no-audit', '--no-fund'];
+  const r = spawnSync(cmd, args, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 180000,
+    windowsHide: true,
+    windowsVerbatimArguments: windows,
+    ...(windows ? { env: { ...process.env, QQ_BRIDGE_BUNDLE_DIR: BUNDLE_DIR } } : {}),
+  });
+  if (r.error || r.status !== 0) {
+    const detail = r.error?.code || r.error?.message || `exit ${r.status}`;
+    fatal(`qq-agent-presets 源码依赖安装失败（${detail}）。请在仓库根目录执行 npm install --prefix plugins/qq-agent-presets`);
+  }
+
+  try {
+    const module = await import(pathToFileURL(path.join(BUNDLE_DIR, 'compaction-persona.mjs')).href);
+    if (typeof module.default !== 'function') throw new Error('缺少默认压缩引擎导出');
+  } catch (error) {
+    fatal(`qq-agent-presets/compaction-persona.mjs 无法从链接源码目录加载：${error?.message ?? error}`);
+  }
+  log('qq-agent-presets 源码依赖已安装，压缩模块导入正常');
+}
+
 // Validate the existing YAML before changing any presets or configuration.
 const cordisPatch = prepareCordisPatch();
 regeneratePresetPatches();
+await installBundleSourceDependencies();
 patchCordis(cordisPatch);
 const links = {};
 for (const name of BUNDLE_NAMES) links[name] = ensureBundle(name);

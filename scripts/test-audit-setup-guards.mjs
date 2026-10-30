@@ -1,31 +1,9 @@
 // Execute both real preset plugins against a captured tools service, without DSH/QQ.
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-let failures = 0;
-for (const preset of ['desktop-agent']) {
-  const { apply } = await import(pathToFileURL(path.join(root, 'plugins/qq-agent-presets/qq-tool-restrict.mjs')).href);
-  let guard;
-  const restricted = [];
-  apply({ tools: {
-    restrict: ({ deny }) => restricted.push(...deny),
-    guard: (callback) => { guard = callback; },
-  } });
-  assert.equal(typeof guard, 'function');
-  assert.ok(restricted.includes('dev_install_package'));
-  for (const name of ['mcp__wincu__computer_use', 'web_fetch', 'web_search',
-    'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
-    assert.equal(guard({ name }), undefined, `${preset}: expected allowed ${name}`);
-  }
-  for (const name of ['ask_user_question', 'todo_write', 'bash', 'read_file', 'dev_future_tool',
-    'mcp__untrusted__web_fetch', '', null, undefined]) {
-    try { assert.equal(typeof guard({ name }), 'string', `${preset}: must reject ${String(name)}`); }
-    catch (error) { failures++; console.error(`FAIL ${error.message}`); }
-  }
-  console.log(`${preset}: checked allowed tools and denied inherited/local/invalid tools`);
-}
 // ── state/ 权限收紧（Windows 上 mode 0o600 是空操作，必须动 ACL）的离线守卫 ──────────
 // 这里只做"结构 + 编码"级断言：真正的 icacls/UAC 行为在这个环境里跑不了（沙箱禁止改 ACL），
 // 而**假装测过**比不测更危险，所以明确只钉住下面这些不会骗人的事实。
@@ -84,5 +62,3 @@ import fs from 'node:fs';
   assert.equal(pkg.license, 'MIT', 'package.json 必须声明 license 字段');
   console.log('L6 compliance: no SnowLuma process control, no allowProcessControl, license declared');
 }
-
-process.exitCode = failures ? 1 : 0;

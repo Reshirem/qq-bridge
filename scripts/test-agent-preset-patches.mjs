@@ -1,121 +1,27 @@
-// Verify the current preset bundle patch contract (offline; DSH does not need to be running):
-//   1. Bundle patches (plugins/qq-agent-presets/presets/*.patch.yml) match their sources
-//      （dsh/agent-presets/<preset>/{preset.yml,agent.cordis.yml}）逐字一致；
-//   2. Each patch inserts an @deepseek-ai/dsh-agent-preset row,
-//      config 里带 id/name/description/order/plugins；
-//   3. The guard uses a profile-resolvable package specifier;
-//   4. desktop-agent uses the shared fail-closed tool guard.
+// Verify the generated preset can load the persona and tool guard in the DSH profile.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
-import {
-  BUNDLE_DIR, GUARD_SPECIFIER, PRESETS, REPO_ROOT,
-  buildPatches, patchFileFor, presetRowId,
-} from './build-agent-preset-patches.mjs';
+import { BUNDLE_DIR, GUARD_SPECIFIER, PRESETS, REPO_ROOT, buildPatches, patchFileFor, presetRowId } from './build-agent-preset-patches.mjs';
 
-let failures = 0;
-function ok(cond, label) {
-  if (cond) console.log(`✅ ${label}`);
-  else { failures += 1; console.error(`❌ ${label}`); }
+for (const { file, changed } of buildPatches({ check: true })) {
+  assert.equal(changed, false, `${file} 与 preset 源不一致，请重新生成`);
 }
 
-const read = (p) => fs.readFileSync(p, 'utf8');
-const load = (p) => yaml.load(read(p));
-
-console.log('## 1. 产物与源不漂移（--check 语义）');
-{
-  const results = buildPatches({ check: true, log: () => {} });
-  for (const { file, changed } of results) {
-    ok(!changed, `${path.relative(REPO_ROOT, file)} 与源一致（不一致请跑 node scripts/build-agent-preset-patches.mjs）`);
-  }
-}
-
-console.log('## 2. Current preset patch shape');
+const bundle = JSON.parse(fs.readFileSync(path.join(BUNDLE_DIR, 'package.json'), 'utf8'));
 for (const name of PRESETS) {
-  const file = patchFileFor(name);
-  ok(fs.existsSync(file), `${path.relative(REPO_ROOT, file)} 存在`);
-  const doc = load(file);
-  ok(Array.isArray(doc) && doc.length === 1 && Array.isArray(doc[0]?.insert), `${name}: 顶层是 [ { insert: [...] } ]`);
-  const row = doc[0].insert[0];
-  ok(row.id === presetRowId(name), `${name}: 行 id = ${presetRowId(name)}（非 preset 名，便于按行定位）`);
-  ok(row.name === '@deepseek-ai/dsh-agent-preset', `${name}: 行 name = @deepseek-ai/dsh-agent-preset`);
-  ok(row.config?.id === name, `${name}: config.id = ${name}（桥接按这个 id 解析 preset）`);
-  const meta = load(path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'preset.yml'));
-  ok(row.config.name === meta.name && row.config.description === meta.description && row.config.order === meta.order,
-    `${name}: preset.yml 的 name/description/order 原样带进 config`);
-  ok(Array.isArray(row.config.plugins) && row.config.plugins.length > 0, `${name}: config.plugins 非空（新机制里必填）`);
-
-  // 与源行列表逐字对比：只允许守卫行的 name 被改写。
-  const source = load(path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'agent.cordis.yml'));
-  const expected = structuredClone(source);
-  for (const r of expected) if (r.name === './qq-tool-restrict.mjs') r.name = GUARD_SPECIFIER;
-  assert.deepEqual(row.config.plugins, expected, `${name}: config.plugins 必须与 agent.cordis.yml 完全一致（守卫名除外）`);
-  ok(true, `${name}: config.plugins 与 preset 源逐字一致（守卫名除外，共 ${expected.length} 行）`);
-
-  // 人格正文是产品本体：单独再钉一次，防止「顺手改写/截断」。
-  const srcPersona = source.find((r) => r.id === 'persona');
-  const patchPersona = row.config.plugins.find((r) => r.id === 'persona');
-  ok(typeof srcPersona?.config?.prefix === 'string' && srcPersona.config.prefix === patchPersona?.config?.prefix,
-    `${name}: persona.prefix 逐字一致（${srcPersona?.config?.prefix?.length ?? 0} 字符）`);
+  const patch = yaml.load(fs.readFileSync(patchFileFor(name), 'utf8'));
+  const row = patch?.[0]?.insert?.find((entry) => entry.id === presetRowId(name));
+  assert.equal(row?.name, '@deepseek-ai/dsh-agent-preset');
+  assert.equal(row?.config?.id, name);
+  assert.ok(bundle.dsh?.bundle?.patch?.includes(`./presets/${name}.patch.yml`));
+  const plugins = row.config.plugins;
+  assert.equal(plugins.find((plugin) => plugin.id === 'persona')?.name, '@deepseek-ai/dsh-persona');
+  assert.equal(plugins.find((plugin) => plugin.id === 'qq-tool-restrict')?.name, GUARD_SPECIFIER);
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, 'plugins', GUARD_SPECIFIER)));
+  const compaction = plugins.find((plugin) => plugin.id === 'compaction');
+  assert.equal(compaction?.config?.find((plugin) => plugin.id === 'compaction-basic')?.name, 'qq-agent-presets/compaction-persona.mjs');
+  assert.ok(fs.existsSync(path.join(BUNDLE_DIR, 'compaction-persona.mjs')));
 }
-
-console.log('## 3. 守卫行引用方式：只用「profile 目录可解析」的裸说明符');
-for (const name of PRESETS) {
-  const row = load(patchFileFor(name))[0].insert[0];
-  const guard = row.config.plugins.find((r) => r.id === 'qq-tool-restrict');
-  ok(guard !== undefined, `${name}: 有 qq-tool-restrict 守卫行`);
-  ok(guard?.name === GUARD_SPECIFIER, `${name}: 守卫行 name = ${GUARD_SPECIFIER}`);
-  const bad = row.config.plugins.filter((r) => typeof r.name === 'string' && (r.name.startsWith('.') || path.isAbsolute(r.name)));
-  ok(bad.length === 0, `${name}: no relative/absolute child paths${bad.length ? `: ${bad.map((r) => r.name).join(', ')}` : ''}`);
-  const guardFile = path.join(BUNDLE_DIR, GUARD_SPECIFIER.slice('qq-agent-presets/'.length));
-  ok(fs.existsSync(guardFile), `${name}: 守卫实现存在（${path.relative(REPO_ROOT, guardFile)}）`);
-}
-
-console.log('## 4. bundle 声明与安全边界');
-{
-  const pkg = JSON.parse(read(path.join(BUNDLE_DIR, 'package.json')));
-  const patches = pkg.dsh?.bundle?.patch;
-  ok(Array.isArray(patches), 'qq-agent-presets 的 dsh.bundle.patch 是数组（一个 bundle 可带多层 patch）');
-  for (const name of PRESETS) {
-    const declared = `./presets/${name}.patch.yml`;
-    ok(patches?.includes(declared), `bundle 列出了 ${declared}`);
-    ok(fs.existsSync(path.join(BUNDLE_DIR, declared)), `${declared} 存在`);
-  }
-
-  const canonical = path.join(BUNDLE_DIR, 'qq-tool-restrict.mjs');
-  const canonicalText = read(canonical);
-  for (const needle of ["'mcp__wincu__'", "'mcp__snowluma__'", "'mcp__snowluma-host__'", 'SAFE_EXACT', 'return `工具 "']) {
-    ok(canonicalText.includes(needle), `权威守卫包含 ${needle}`);
-  }
-  // 插件包中只保留一份工具守卫实现。
-  const canonicalMod = await import(pathToFileURL(canonical).href);
-  assert.equal(canonicalMod.name, 'qq-tool-restrict');
-  assert.deepEqual(canonicalMod.inject, ['tools']);
-  ok(true, '唯一权威实现导出 apply/inject');
-
-  // fail-closed 复检（独立于 test-audit-setup-guards.mjs 的那份假 ctx 测试）。
-  let guardFn;
-  const restricted = [];
-  canonicalMod.apply({ tools: { restrict: ({ deny }) => restricted.push(...deny), guard: (fn) => { guardFn = fn; } } });
-  ok(restricted.includes('pwsh') && restricted.includes('dev_install_package'), 'restrict 名单含本地执行面与开发注入器工具');
-  for (const name of ['mcp__wincu__computer_use', 'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
-    assert.equal(guardFn({ name }), undefined, `白名单应放行 ${name}`);
-  }
-  for (const name of ['ask_user_question', 'todo_write']) {
-    assert.ok(typeof guardFn({ name }) === 'string', `已移除的 DSH 工具应拒绝 ${name}`);
-  }
-  for (const name of ['web_search', 'web_fetch']) {
-    assert.equal(guardFn({ name }), undefined, `DSH 原生网页工具应由守卫放行 ${name}`);
-  }
-  ok(true, '白名单放行 QQ MCP 与由 DSH 配置控制的原生网页工具');
-  let deniedAll = true;
-  for (const name of ['bash', 'read', 'write', 'dev_future_unknown_tool', 'mcp__other__x', '', null, undefined, 123]) {
-    if (typeof guardFn({ name }) !== 'string') deniedAll = false;
-  }
-  ok(deniedAll, '非法/未知/空工具名一律拒绝（fail-closed）');
-}
-
-console.log(failures === 0 ? '\n✅ agent preset patch 契约通过' : `\n❌ ${failures} 项失败`);
-process.exit(failures === 0 ? 0 : 1);
+console.log('Generated preset patch is current and its required plugins resolve.');

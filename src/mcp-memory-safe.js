@@ -78,7 +78,7 @@ const server = new McpServer({ name: 'qq-bridge-memory', version: '1.0.0' });
 
 server.tool(
   'memory_search',
-  '按需检索 A_Memorix 长期记忆。来源可以筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（陪伴者自身经历、发现与待办；assistant 是现有数据来源标记）；QQ 来源记忆只在需要时读取。',
+  '按自然语言检索 A_Memorix 长期记忆。交流涉及过去的共同经历、约定或偏好，或对方提到“上次”“还记得吗”等内容时，可以结合当前话题、人物和场景主动检索，必要时用 memory_read 核对原记录与来源；不必每条消息都查。没有命中或来源不清不代表事情不存在，也不据此编造。来源可筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（数字角色自身经历、发现与待办；assistant 是现有数据来源标记）。记忆用于帮助理解，不代表可在当前聊天中直接披露其他场合的内容。',
   {
     query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；仅按时间检索时可省略'),
     limit: z.number().int().min(1).max(20).optional().describe('最多返回条数，默认 8'),
@@ -94,7 +94,7 @@ server.tool(
 
 server.tool(
   'memory_save',
-  '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；陪伴者自身的经历、发现和未完成事项使用现有数据标记 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。',
+  '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；数字角色自身的经历、发现和未完成事项使用现有数据标记 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。批处理重试时可复用 externalId 去重；明确更正旧记忆时，可用 supersedes 记录被更正的 memoryId 以保留追溯关系。',
   {
     content: z.string().min(1).max(20000).describe('要保存的记忆，尽量写清来源、时间、背景与确定程度'),
     origin: z.enum(['qq', 'assistant']).default('assistant').describe('来源类别：qq 或 assistant'),
@@ -103,15 +103,18 @@ server.tool(
     observedAt: z.string().optional().describe('可选 ISO 观察时间'),
     sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
     confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
-    evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('可选证据引用，例如消息 ID、会话 ID、任务记录标题')
+    evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('可选证据引用，例如消息 ID、会话 ID、任务记录标题'),
+    externalId: z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重'),
+    supersedes: z.string().max(300).optional().describe('可选被明确更正的旧 memoryId；保留新旧关系供追溯，不会自动删除旧记录')
   },
   async (args) => {
     try {
-      const { sourceContext, confidence, evidenceReferences, ...memory } = args;
+      const { sourceContext, confidence, evidenceReferences, supersedes, ...memory } = args;
       const metadata = {
         ...(sourceContext ? { sourceContext } : {}),
         ...(confidence ? { confidence } : {}),
-        ...(evidenceReferences?.length ? { evidenceReferences } : {})
+        ...(evidenceReferences?.length ? { evidenceReferences } : {}),
+        ...(supersedes ? { supersedes } : {})
       };
       return toolResult(await memoryApi('save', { ...memory, metadata }));
     } catch (error) { return toolError(error); }

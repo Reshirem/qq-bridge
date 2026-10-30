@@ -1,4 +1,4 @@
-// 纯函数回归：QQ 消息的模型视图把时间格式化为 at/ago，便于全局陪伴者按需读取。
+// 纯函数回归：QQ 消息的模型视图把时间格式化为 at/ago，便于全局数字角色按需读取。
 import assert from 'node:assert/strict';
 import { compactModelMessage, compactModelData, describeAge, serializeModelData } from '../src/qq-model-view.js';
 

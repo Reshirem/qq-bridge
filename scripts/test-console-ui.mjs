@@ -44,31 +44,79 @@ try {
   assert.equal(await page.locator('#section-desktop-agent').count(), 1, 'the global desktop-agent controls are present');
   assert.equal(await page.locator('#sessionList, #pendingList, #aiNotifyTarget, #dshSessionRefresh').count(), 0,
     'per-QQ session mapping and notification controls are absent');
-  assert.equal(await page.locator('[data-view="sessions"]').first().textContent().then(text => text.trim()), '会话控制');
+  assert.match(await page.locator('[data-view="sessions"]').first().textContent(), /会话控制/);
 
-  await page.locator('#desktopAgentStart').click();
+  await page.locator('[data-view="sessions"]').first().click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/console/desktop-agent') && response.request().method() === 'POST'),
+    page.locator('#desktopAgentStart').click(),
+  ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent'), 'start uses the global session endpoint');
-  await page.locator('#desktopAgentStop').click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/console/desktop-agent/stop') && response.request().method() === 'POST'),
+    page.locator('#desktopAgentStop').click(),
+  ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent/stop'), 'stop uses the global session endpoint');
   await page.locator('#desktopAgentMessage').fill('离线 UI 契约检查');
-  await page.locator('#desktopAgentSubmit').click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/console/desktop-agent') && response.request().method() === 'POST'),
+    page.locator('#desktopAgentSubmit').click(),
+  ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent' && request.body.message === '离线 UI 契约检查'));
+
+  await page.locator('[data-view="access"]').first().click();
+  await page.waitForFunction(() => document.getElementById('ownerQQ').value === '100001');
+  assert.equal(await page.locator('#secInterceptNotify, #secSave').count(), 0, 'the obsolete interception notification control is absent');
+  assert.equal(await page.locator('#section-whitelist #wlGroups').count(), 0, 'test-send lists are not presented as agent access controls');
+  await page.locator('#ownerQQ').fill('123456');
+  await page.locator('#ownerQQSave').click();
+  await page.waitForFunction(() => document.getElementById('ownerQQMsg').textContent.includes('已保存'));
+  const ownerSave = fixture.requests.filter(request => request.path === '/api/whitelist').at(-1);
+  assert.deepEqual(ownerSave.body, { ownerQQ: '123456' }, 'saving owner does not rewrite test-send lists');
+
+  await page.locator('[data-view="operations"]').first().click();
+  await page.locator('#section-test-send summary').click();
+  await page.locator('#wlGroups').fill('123456789, 555');
+  await page.locator('#wlSave').click();
+  await page.waitForFunction(() => document.getElementById('wlMsg').textContent.includes('已保存'));
+  const listSave = fixture.requests.filter(request => request.path === '/api/whitelist').at(-1);
+  assert.equal(Object.hasOwn(listSave.body, 'ownerQQ'), false, 'saving test-send lists does not change the owner');
+
+  await page.locator('[data-view="access"]').first().click();
+  await page.locator('#ownerQQ').fill('');
+  await page.locator('#ownerQQSave').click();
+  await page.waitForFunction(() => document.getElementById('ownerQQMsg').textContent.includes('已清除'));
+  assert.deepEqual(fixture.requests.filter(request => request.path === '/api/whitelist').at(-1).body, { ownerQQ: '' });
 
   await page.locator('[data-view="persona"]').click();
   await page.waitForFunction(() => document.getElementById('desktopPromptPreview')?.value.includes('人格卡定义你的具体身份和形态'));
   assert.equal(await page.locator('#desktopPromptPreset').count(), 0, 'there is no obsolete multi-preset selector');
-  assert.match(await page.locator('#desktopPromptStatus').textContent(), /陪伴者/);
+  assert.match(await page.locator('#desktopPromptStatus').textContent(), /数字角色/);
+  await page.locator('#desktopPromptEdit').click();
+  const promptToggles = page.locator('#desktopPromptModules .prompt-module-toggle input');
+  assert.ok(await promptToggles.count() > 0);
+  assert.equal(await promptToggles.evaluateAll((items) => items.some((item) => item.disabled)), false, 'all prompt modules can be switched off');
+  await promptToggles.first().uncheck();
+  await page.locator('#desktopPromptCancel').click();
 
   await page.locator('[data-view="social-v2"]').click();
-  await page.locator('#v2StatesList').click();
+  await page.locator('details').filter({ has: page.locator('#v2StatesList') }).locator('summary').click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/socialV2/states')),
+    page.locator('#v2StatesList').click(),
+  ]);
+  await page.waitForFunction(() => document.getElementById('v2AllStatesOutput').textContent.includes('group:123456789'));
   assert.match(await page.locator('#v2AllStatesOutput').textContent(), /group:123456789/);
-  await page.locator('#v2ResetBtn').click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/socialV2/reset') && response.request().method() === 'POST'),
+    page.locator('#v2ResetBtn').click(),
+  ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/socialV2/reset'), 'cache reset stays separate from the global session');
 
   assert.deepEqual(blockedRequests, [], 'the UI must not reach external endpoints');
   assert.deepEqual(errors, [], 'browser console and page should be free of errors');
   assert.deepEqual(fixture.unknownRequests, [], 'the offline fixture implements all current console API routes');
-  console.log('PASS single desktop-agent controls, on-demand QQ panel and offline-only UI');
+  console.log('PASS owner save/clear, independent test-send lists, desktop-agent controls and offline-only UI');
 } finally {
   await browser?.close();
   await fixture.close();

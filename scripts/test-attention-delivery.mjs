@@ -49,7 +49,7 @@ test('active turn receives QQ metadata at its next step; read messages need no r
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 1);
     assert.equal(h.calls.prompts[0].mode, 'steer');
-    assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，消息 id:55');
+    assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:55');
     assert.equal(h.attentionSnapshot().unresolved[0].promptedSeq, 1);
     assert.equal(h.acknowledgeDesktopAttentionThrough('group:456', 1), true);
     h.enterDesktopAgentRest();
@@ -71,7 +71,7 @@ test('unread signal is reminded only once after a one-minute rest check', async 
     clock.run(60_000);
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 2);
-    assert.equal(h.calls.prompts[1].content[0].text, '【QQ 提醒】\n- group:456，消息 id:55');
+    assert.equal(h.calls.prompts[1].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:55');
     assert.equal(h.attentionSnapshot().unresolved[0].reminderSent, true);
     h.enterDesktopAgentRest();
     h.setDesktopAgentTurnActive(false);
@@ -186,7 +186,7 @@ test('merged signals show the latest message and the count', async () => {
     h.queueDesktopAttentionSignal(signal());
     h.queueDesktopAttentionSignal({ ...signal('group:456', 2), messageId: '99' });
     await h.flushAttentionNow();
-    assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，消息 id:99，合并 2 条提醒');
+    assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:99，合并 2 条提醒');
   } finally { await h.close(); }
 });
 
@@ -196,7 +196,7 @@ test('older signals cannot replace the latest message metadata', async () => {
     h.queueDesktopAttentionSignal({ ...signal('group:456', 20), messageId: '200' });
     h.queueDesktopAttentionSignal({ ...signal('group:456', 19), messageId: '100' });
     await h.flushAttentionNow();
-    assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，消息 id:200，合并 2 条提醒');
+    assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:200，合并 2 条提醒');
     assert.equal(h.attentionSnapshot().unresolved[0].seq, 20);
   } finally { await h.close(); }
 });
@@ -219,7 +219,7 @@ test('a requeued newer message retains its own ID when older data is already que
     response.resolve({ result: { ok: false, error: { code: 'test', message: 'unavailable' } } });
     await pending;
     await h.flushAttentionNow();
-    assert.equal(h.calls.prompts[1].content[0].text, '【QQ 提醒】\n- group:456，消息 id:200，合并 2 条提醒');
+    assert.equal(h.calls.prompts[1].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:200，合并 2 条提醒');
   } finally { await h.close(); }
 });
 
@@ -228,7 +228,7 @@ test('local sequence locates a message when QQ did not supply an ID', async () =
   try {
     h.queueDesktopAttentionSignal({ ...signal('group:456', 7), messageId: null });
     await h.flushAttentionNow();
-    assert.match(h.calls.prompts[0].content[0].text, /^【QQ 提醒】\n- group:456，消息 seq:7@[0-9a-f-]{36}$/);
+    assert.match(h.calls.prompts[0].content[0].text, /^【QQ 提醒】\n- group:456，发送者 QQ 123，消息 seq:7@[0-9a-f-]{36}$/);
   } finally { await h.close(); }
 });
 

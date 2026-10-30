@@ -14,7 +14,7 @@ export const inject = ['settings', 'systemPrompt'];
 
 export const Config = z.object({
   ownerQQ: z.string()
-    .description('管理员身份标记 QQ（ownerQQ）；留空表示不覆盖 config.json')
+    .description('用于识别配置的 QQ 关系对象；关系称谓由人格卡决定。未设置时不注入账号标记，直接一对一会话按当前人格卡处理，不覆盖 config.json')
     .extra('volatile', true),
 });
 
@@ -29,7 +29,7 @@ function activeRoleCardForPrompt() {
   const roleName = typeof state?.role === 'string' ? state.role : '';
   if (!roleName) return '';
   if (!ROLE_NAME_RE.test(roleName)) {
-    return '【人格卡加载提示】当前选择的人格卡名称无效。请按通用陪伴者定位继续，不要臆造卡片内容。';
+    return '【人格卡加载提示】当前选择的人格卡名称无效。请按通用数字角色定位继续，不要臆造卡片内容。';
   }
 
   let content;
@@ -42,10 +42,10 @@ function activeRoleCardForPrompt() {
     if (!stat.isFile()) throw new Error('role file is missing or unreadable');
     content = fs.readFileSync(roleFile, 'utf8');
   } catch {
-    return `【人格卡加载提示】当前选择了「${roleName}」，但没有安全可读的人格卡正文。请按通用陪伴者定位继续，不要臆造卡片内容。`;
+    return `【人格卡加载提示】当前选择了「${roleName}」，但没有安全可读的人格卡正文。请按通用数字角色定位继续，不要臆造卡片内容。`;
   }
 
-  const template = typeof state.roleCardTemplate === 'string' && state.roleCardTemplate.includes('{roleContent}')
+  const template = typeof state.roleCardTemplate === 'string'
     ? state.roleCardTemplate
     : DEFAULT_ROLE_CARD_TEMPLATE;
   const formatted = template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (placeholder, token) => {

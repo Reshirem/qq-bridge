@@ -142,7 +142,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    sendStickerV2, startConsoleServer, api, bot,
+    sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State,
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
@@ -205,6 +205,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     planAnimation: mediaNormalize.planAnimation,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),
+    hardenFile: () => ({ ok: true, detail: 'stub' }),
     cleanupTemp: () => {},
     ...globals,
   });

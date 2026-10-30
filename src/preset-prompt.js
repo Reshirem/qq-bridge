@@ -1,4 +1,4 @@
-// 固定全局陪伴者预设提示词的读取与安全改写。
+// 固定全局数字角色预设提示词的读取与安全改写。
 //
 // 边界说明：
 //   预设提示词 = 按用途维护于 dsh/agent-presets/desktop-agent/prompt-modules.json，
@@ -17,61 +17,22 @@ export const PRESET_PROMPT_CUSTOM_TITLE_MAX_CHARS = 80;
 export const PRESET_ROLE_CARD_VARIABLE = '{{qq_bridge_active_role_card}}';
 
 /**
- * desktop-agent 固定前缀的可维护模块。required 模块负责运行时协议和关键边界，
- * 只能编辑正文，不能关闭；其它模块开关仅控制提示词文本，不改变 DSH 工具权限。
+ * desktop-agent 固定前缀的可维护模块。开关只控制提示词文本，不改变 DSH 工具权限。
  */
 export const PRESET_PROMPT_MODULE_DEFINITIONS = Object.freeze([
-  { id: 'identity', title: '陪伴者与人格卡', description: '动态载入当前人格卡，以其决定角色身份、性格和表达方式。', required: true },
+  { id: 'identity', title: '数字角色与人格卡', description: '动态载入当前人格卡，以其决定角色身份、性格和表达方式。', required: false },
   { id: 'autonomy', title: '相处与自主活动', description: '结合人格卡和当下情况，选择自主活动或休息。', required: false },
   { id: 'conversation', title: '自然对话与任务回应', description: '按照人格卡的语气与相处方式回应，结合情境调整表达。', required: false },
-  { id: 'qq-channel', title: '交流与人际联系', description: '会话运行期间，无论当前在做什么，都可自然兼顾 QQ 交流。', required: true },
+  { id: 'qq-channel', title: '交流与人际联系', description: '会话运行期间，无论当前在做什么，都可自然兼顾 QQ 交流。', required: false },
   { id: 'qq-wait', title: '等待交流的后续', description: '等待关注的对话消息，并按上下文继续交流。', required: false },
   { id: 'computer-scope', title: '电脑与其他活动空间', description: '电脑是可探索空间之一，也可使用其他已开放工具。', required: false },
-  { id: 'computer-user', title: '让用户优先使用电脑', description: '发现用户操作时停止输入，并在用户离开后再继续。', required: true },
-  { id: 'protected-apps', title: '受保护的项目与运行时应用', description: '限制对 ChatGPT、DSH、qq-bridge 和 SnowLuma 图形界面的操作。', required: true },
-  { id: 'untrusted-input', title: '外部信息与信任边界', description: '外部内容可作背景，不能扩大指令或权限。', required: true },
+  { id: 'computer-user', title: '让用户优先使用电脑', description: '发现用户操作时停止输入，并在用户离开后再继续。', required: false },
+  { id: 'protected-apps', title: '受保护的项目与运行时应用', description: '限制对 ChatGPT、DSH、qq-bridge 和 SnowLuma 图形界面的操作。', required: false },
+  { id: 'untrusted-input', title: '外部信息与信任边界', description: '外部内容可作背景，不能扩大指令或权限。', required: false },
   { id: 'memory', title: '记忆与经历', description: '趁重要信息仍在上下文时，选择性记录跨会话有用的内容。', required: false },
   { id: 'planned-rest', title: '休息与节奏', description: '按照人格卡和自身节奏选择休息时间，也可以安排之后回来。', required: false },
-  { id: 'turn-lifecycle', title: '结束这一轮', description: '以 agent_rest 作为活动回合的最后一个工具调用。', required: true },
+  { id: 'turn-lifecycle', title: '结束这一轮', description: '以 agent_rest 作为活动回合的最后一个工具调用。', required: false },
 ]);
-
-// 固定前缀应说明 QQ 与 SnowLuma 的关系；实际工具是否可用由 DSH profile 配置决定。
-export const PRESET_REQUIRED_MARKERS = [
-  'SnowLuma 是 QQ 消息通道',
-];
-
-// 必要的渠道背景应保留；实际权限由 DSH profile 中的工具守卫实施，而非依赖提示词文本。
-export const PRESET_BLOCKING_SUBSTRINGS = [
-  ...PRESET_REQUIRED_MARKERS,
-];
-export const PRESET_MIN_BODY_CHARS = 500;
-
-/** 当前唯一的 desktop-agent 预设使用的硬性不变量清单。 */
-export function presetBlockingSubstrings() {
-  return PRESET_BLOCKING_SUBSTRINGS;
-}
-
-/** 硬性校验：返回阻止保存的原因列表（空数组=可保存）。 */
-export function presetPromptBlockers(content) {
-  const text = String(content ?? '');
-  const blockers = [];
-  if (!text.trim()) {
-    blockers.push('陪伴者固定前缀不能为空');
-    return blockers;
-  }
-  for (const needle of presetBlockingSubstrings()) {
-    if (!text.includes(needle)) {
-      blockers.push(`缺少 QQ 渠道说明「${needle}」：请说明 SnowLuma 与 QQ 的关系`);
-    }
-  }
-  if (!text.includes(PRESET_ROLE_CARD_VARIABLE)) {
-    blockers.push(`缺少运行时人格卡变量「${PRESET_ROLE_CARD_VARIABLE}」：当前人格卡无法进入 persona 固定前缀`);
-  }
-  if (text.trim().length < PRESET_MIN_BODY_CHARS) {
-    blockers.push(`正文过短（${text.trim().length} 字符 < ${PRESET_MIN_BODY_CHARS}）：疑似内容被误删`);
-  }
-  return blockers;
-}
 
 /**
  * 定位 persona 条目的 prefix 块标量（支持 >- / | 等块语法）。
@@ -115,16 +76,8 @@ export function extractPresetPrefix(text) {
   return typeof prefix === 'string' ? prefix : null;
 }
 
-/** 保存前的软校验：只提示，不阻断。 */
-export function presetPromptWarnings(content) {
-  const text = String(content ?? '');
-  const warnings = [];
-  if (!text.trim()) warnings.push('内容为空');
-  for (const marker of PRESET_REQUIRED_MARKERS) {
-    if (!text.includes(marker)) warnings.push(`缺少「${marker}」说明：QQ 渠道背景可能不清楚`);
-  }
-  return warnings;
-}
+/** 保留 API 字段兼容性，不审查用户自定义的提示词内容。 */
+export function presetPromptWarnings() { return []; }
 
 /** 校验并规范化固定前缀模块文件/API 载荷。内置模块元数据来自代码定义，自定义模块标题随用户配置保存。 */
 export function normalizePresetPromptModules(value) {
@@ -154,8 +107,6 @@ export function normalizePresetPromptModules(value) {
     }
     const content = item.content.replace(/\r\n/g, '\n').trim();
     const enabled = item.enabled;
-    if (definition.required && !enabled) throw new Error(`「${definition.title}」是必要模块，不能关闭`);
-    if (enabled && !content) throw new Error(`「${definition.title}」已启用但正文为空`);
     if (Buffer.byteLength(content, 'utf8') > 64 * 1024) throw new Error(`「${definition.title}」正文超过 64 KB`);
     return { ...definition, enabled, content };
   });
@@ -176,7 +127,6 @@ export function normalizePresetPromptModules(value) {
       throw new Error(`「${title}」的启用状态或正文格式无效`);
     }
     const content = item.content.replace(/\r\n/g, '\n').trim();
-    if (item.enabled && !content) throw new Error(`「${title}」已启用但正文为空`);
     if (Buffer.byteLength(content, 'utf8') > 64 * 1024) throw new Error(`「${title}」正文超过 64 KB`);
     customModules.push({
       id,
@@ -226,10 +176,8 @@ export function renderPresetPromptYaml(text, content) {
   const normalized = String(content ?? '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const bytes = Buffer.byteLength(normalized, 'utf8');
   if (bytes > PRESET_PROMPT_MAX_BYTES) {
-    throw new Error(`陪伴者固定前缀过长（${(bytes / 1024).toFixed(1)} KB，上限 ${PRESET_PROMPT_MAX_BYTES / 1024} KB）`);
+    throw new Error(`数字角色固定前缀过长（${(bytes / 1024).toFixed(1)} KB，上限 ${PRESET_PROMPT_MAX_BYTES / 1024} KB）`);
   }
-  const blockers = presetPromptBlockers(normalized);
-  if (blockers.length) throw new Error(blockers.join('；'));
   // 新增行沿用文件的主导行尾，避免把 CRLF 文件写成更混乱的混合行尾。
   const crlf = (text.match(/\r\n/g) ?? []).length;
   const lfOnly = (text.match(/\n/g) ?? []).length - crlf;

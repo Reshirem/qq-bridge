@@ -4,7 +4,7 @@
 export const DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
   roleCard: '【当前角色卡：{roleName}】\n{roleContent}',
   qqAttention: '【QQ 提醒】\n{sources}',
-  qqSource: '- {key}{messageId}{count}',
+  qqSource: '- {key}{senderId}{messageId}{count}',
   restExpired: '【休息结束】休息时间到了。先留意当前情况，再按自己的兴趣和判断决定下一步。',
   qqWake: '',
   recovery: '【状态恢复检查】桥接需要重新确认会话状态。先查看当前会话和已有操作，避免重复已完成的事，再按当前情况继续。',
@@ -14,25 +14,25 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
 export const DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS = Object.freeze({
   roleCard: {
     label: 'persona 前缀人格卡模板',
-    description: '用于格式化动态加入 DSH persona 固定前缀的当前人格卡。必须保留 {roleContent}；{roleName} 可按需省略。修改后在下一次 DSH 提示词组装时生效。',
+    description: '用于格式化动态加入 DSH persona 固定前缀的当前人格卡。可使用 {roleContent} 和 {roleName}。修改后在下一次 DSH 提示词组装时生效。',
     tokens: ['roleName', 'roleContent'],
-    requiredTokens: ['roleContent'],
+    requiredTokens: [],
   },
   qqAttention: {
     label: 'QQ 消息提醒模板',
-    description: '有 QQ 来源提醒时使用。必须保留 {sources}，正文不会被放进提醒。',
+    description: '有 QQ 来源提醒时使用。可使用 {sources}；正文不会被放进提醒。',
     tokens: ['sources'],
-    requiredTokens: ['sources'],
+    requiredTokens: [],
   },
   qqSource: {
     label: 'QQ 来源信息行模板',
     description: '每个提醒来源生成一行；{messageId} 使用 id:QQ消息ID，缺失时使用 seq:本地序号@缓存标识，定位时需完整保留。{senderId}、{messageId} 和 {count} 在无对应信息时为空。',
     tokens: ['key', 'kind', 'reason', 'sender', 'senderId', 'messageId', 'count'],
-    requiredTokens: ['key'],
+    requiredTokens: [],
   },
   restExpired: {
     label: '休息到期提示',
-    description: '陪伴者主动休息时间结束时使用；可留空。',
+    description: '数字角色主动休息时间结束时使用；可留空。',
     tokens: [],
     requiredTokens: [],
     allowEmpty: true,
@@ -53,9 +53,9 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_FIELDS = Object.freeze({
   },
   memoryBootstrap: {
     label: '长期记忆开场摘要模板',
-    description: '首次开场存在自身经历记忆时使用。必须保留 {entries}。',
+    description: '首次开场存在自身经历记忆时使用，可使用 {entries}。',
     tokens: ['entries'],
-    requiredTokens: ['entries'],
+    requiredTokens: [],
   },
 });
 
@@ -65,7 +65,10 @@ const LEGACY_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
     '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以结合正在做的事，决定是否查看、回应或稍后再看。\n{sources}',
     '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以查看相关对话和上下文，再决定如何参与。\n{sources}',
   ],
-  qqSource: ['- {key}（{kind}，提醒原因：{reason}，发送者：{sender}{senderId}{messageId}{count}）'],
+  qqSource: [
+    '- {key}{messageId}{count}',
+    '- {key}（{kind}，提醒原因：{reason}，发送者：{sender}{senderId}{messageId}{count}）',
+  ],
   qqWake: ['【休息被 QQ 提醒提前结束】'],
 });
 const PROMPT_TEMPLATE_MAX_CHARS = 16_000;
@@ -83,15 +86,9 @@ export function normalizeDesktopAgentPromptTemplates(value) {
     const template = LEGACY_PROMPT_TEMPLATE_DEFAULTS[key]?.includes(normalized)
       ? DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS[key]
       : normalized;
-    if (!template && !field.allowEmpty) throw new Error(`「${field.label}」不能为空`);
     if (template.length > PROMPT_TEMPLATE_MAX_CHARS) {
       throw new Error(`「${field.label}」不能超过 ${PROMPT_TEMPLATE_MAX_CHARS} 个字符`);
     }
-    const placeholders = [...template.matchAll(/\{([^{}]+)\}/g)].map((match) => match[1]);
-    const unknown = [...new Set(placeholders.filter((token) => !field.tokens.includes(token)))];
-    if (unknown.length) throw new Error(`「${field.label}」含未知占位符：${unknown.map((token) => `{${token}}`).join('、')}`);
-    const missing = field.requiredTokens.filter((token) => !placeholders.includes(token));
-    if (missing.length) throw new Error(`「${field.label}」必须保留 ${missing.map((token) => `{${token}}`).join('、')}`);
     output[key] = template;
     totalChars += template.length;
   }

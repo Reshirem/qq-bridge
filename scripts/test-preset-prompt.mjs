@@ -6,12 +6,8 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 import yaml from 'js-yaml';
 import {
-  PRESET_BLOCKING_SUBSTRINGS,
-  PRESET_REQUIRED_MARKERS,
   extractPresetPrefix,
   locatePresetPromptBlock,
-  presetBlockingSubstrings,
-  presetPromptBlockers,
   presetPromptWarnings,
   normalizePresetPromptModules,
   composePresetPromptModules,
@@ -28,15 +24,6 @@ const PRESET_PATH = new URL('../dsh/agent-presets/desktop-agent/agent.cordis.yml
 const source = fs.readFileSync(PRESET_PATH, 'utf8');
 const originalPrefix = extractPresetPrefix(source);
 
-// 运行时固定使用 desktop-agent，因此提示词校验只维护必要的渠道背景。
-test('固定会话预设保留 QQ 渠道说明', () => {
-  const prefix = extractPresetPrefix(source);
-  assert.equal(typeof prefix, 'string', '应能抽出 persona.prefix');
-  const blockers = presetPromptBlockers(prefix);
-  assert.deepEqual(blockers, [], `固定预设不应有阻断项，实际：${blockers.join('；')}`);
-  assert.deepEqual(presetBlockingSubstrings(), PRESET_BLOCKING_SUBSTRINGS);
-});
-
 test('真实预设能定位到 persona 的 literal prefix 块', () => {
   const loc = locatePresetPromptBlock(source);
   assert.ok(loc, '应能定位 prefix 块');
@@ -48,9 +35,6 @@ test('真实预设能定位到 persona 的 literal prefix 块', () => {
 test('抽出的是 YAML 解析后的真实提示词字符串', () => {
   assert.equal(typeof originalPrefix, 'string');
   assert.ok(originalPrefix.length > 1500, `提示词应有实质内容，实际 ${originalPrefix.length} 字符`);
-  for (const marker of PRESET_REQUIRED_MARKERS) {
-    assert.ok(originalPrefix.includes(marker), `内置提示词应包含渠道说明：${marker}`);
-  }
   assert.ok(!originalPrefix.includes('{{cwd}}'), '不应使用 DSH 已移除的 cwd 变量');
 });
 
@@ -94,7 +78,6 @@ test('特殊内容可安全往返（空行、缩进、Markdown、模板变量、
     '【中文段落】含全角标点：，。！？——以及 {{model}} / {{cwd}} 变量',
     '结尾不留多余空行',
   ].join('\n');
-  // 必须在保留必要渠道说明的前提下追加特殊内容，否则会被阻断校验拦下
   const next = renderPresetPromptYaml(source, `${originalPrefix}\n\n${tricky}`);
   assert.equal(extractPresetPrefix(next), `${originalPrefix}\n\n${tricky}`);
   const rows = yaml.load(next);
@@ -102,29 +85,15 @@ test('特殊内容可安全往返（空行、缩进、Markdown、模板变量、
 });
 
 test('危险输入被拒绝，且不产生半截结果', () => {
-  assert.throws(() => renderPresetPromptYaml(source, ''), /不能为空/);
-  assert.throws(() => renderPresetPromptYaml(source, '   \n  \n'), /不能为空/);
   assert.throws(() => renderPresetPromptYaml(source, 'x'.repeat(200 * 1024)), /过长/);
   assert.throws(() => renderPresetPromptYaml('foo: bar\n', 'x'), /无法定位/);
   assert.throws(() => renderPresetPromptYaml('- id: other\n  config:\n    prefix: >-\n      x\n', 'x'), /无法定位/);
 });
 
-test('删掉必要的 QQ 渠道说明或正文过短时阻断保存', () => {
-  // 正文过短
-  assert.throws(() => renderPresetPromptYaml(source, '太短了'), /过短/);
-  // 逐条移除渠道说明，必须被拦住
-  for (const needle of PRESET_BLOCKING_SUBSTRINGS) {
-    const tampered = originalPrefix.replace(needle, '（已删除）');
-    assert.throws(
-      () => renderPresetPromptYaml(source, tampered),
-      new RegExp(`缺少 QQ 渠道说明「${needle}」`),
-      `删除「${needle}」后仍被允许保存`,
-    );
+test('任意提示词均可保存，包括短文本和空内容', () => {
+  for (const content of ['', '太短了', '用户自定义，没有预设变量或渠道说明']) {
+    assert.equal(extractPresetPrefix(renderPresetPromptYaml(source, content)), content);
   }
-  // 只做无损追加则应当通过
-  assert.doesNotThrow(() => renderPresetPromptYaml(source, `${originalPrefix}\n\n【补充】一句新规则。`));
-  const clean = presetPromptBlockers(originalPrefix);
-  assert.deepEqual(clean, [], `内置提示词不应有阻断项，实际：${clean.join('；')}`);
 });
 
 test('写回沿用文件主导行尾，且不吞掉块尾空行', () => {
@@ -160,13 +129,13 @@ test('只含空格/Tab 的行也能安全往返（不会被当成空行读丢）
   assert.equal(extractPresetPrefix(next), spaced, '空白行必须原样保留');
 });
 
-test('缺少 QQ 渠道背景时给出警告（但不阻断保存）', () => {
-  assert.deepEqual(presetPromptWarnings(originalPrefix), [], '内置提示词不应有警告');
-  const stripped = originalPrefix.replace(PRESET_REQUIRED_MARKERS[0], '');
-  const warnings = presetPromptWarnings(stripped);
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /QQ 渠道背景/);
-  assert.ok(presetPromptWarnings('').some((w) => /内容为空/.test(w)));
+test('模块均可关闭或留空，不检查提示词内容', () => {
+  const saved = JSON.parse(fs.readFileSync(new URL('../dsh/agent-presets/desktop-agent/prompt-modules.json', import.meta.url), 'utf8'));
+  const modules = saved.modules.map((m) => ({ ...m, enabled: false, content: '' }));
+  assert.equal(composePresetPromptModules({ version: 1, modules }), '');
+  modules[0].enabled = true;
+  assert.ok(composePresetPromptModules({ version: 1, modules }).startsWith('【'));
+  assert.deepEqual(presetPromptWarnings('任意内容'), []);
 });
 
 test('自定义固定前缀模块规范化、预览和序列化一致', () => {
@@ -181,15 +150,17 @@ test('自定义固定前缀模块规范化、预览和序列化一致', () => {
   assert.throws(() => normalizePresetPromptModules({ version: 1, modules: [...saved.modules, { ...custom, enabled: false, required: true }] }), /必要模块/);
 });
 
-test('运行时提示模板保留必需占位符并只替换一次', () => {
+test('运行时提示模板可自由编辑并只替换已知占位符', () => {
   const defaults = normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS);
   assert.equal(defaults.roleCard, '【当前角色卡：{roleName}】\n{roleContent}', '固定前缀已统一定义人格卡解读原则，开场模板只负责带入卡片');
   assert.equal(renderDesktopAgentPromptTemplate(defaults.roleCard, {
     roleName: '测试角色', roleContent: '正文包含 {roleName} 字面量',
   }), defaults.roleCard.replace('{roleName}', '测试角色').replace('{roleContent}', '正文包含 {roleName} 字面量'));
   assert.equal(normalizeDesktopAgentPromptTemplates({ ...defaults, recovery: '' }).recovery, '');
-  assert.throws(() => normalizeDesktopAgentPromptTemplates({ ...defaults, qqAttention: '提醒 {key}' }), /未知占位符/);
-  assert.throws(() => normalizeDesktopAgentPromptTemplates({ ...defaults, roleCard: '{roleName}' }), /必须保留/);
+  const custom = normalizeDesktopAgentPromptTemplates({ ...defaults, qqAttention: '提醒 {key}', roleCard: '' });
+  assert.equal(custom.qqAttention, '提醒 {key}');
+  assert.equal(custom.roleCard, '');
+  assert.equal(renderDesktopAgentPromptTemplate(custom.qqAttention, {}), '提醒 {key}');
 });
 
 test('旧版内置 QQ 提醒模板升级，自定义模板保留', () => {

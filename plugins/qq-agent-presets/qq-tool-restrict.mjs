@@ -103,6 +103,21 @@ const DIAG_FILE = (() => {
     return fileURLToPath(new URL('../../state/tool-restrict.log', import.meta.url))
   } catch { return '' }
 })()
+const DESKTOP_AGENT_STATE_FILE = (() => {
+  try {
+    return fileURLToPath(new URL('../../state/desktop-agent.json', import.meta.url))
+  } catch { return '' }
+})()
+
+const QQ_TOOL_PREFIXES = ['mcp__snowluma__', 'mcp__snowluma-host__']
+
+function currentDesktopAgentSessionId() {
+  if (!DESKTOP_AGENT_STATE_FILE) return ''
+  try {
+    const state = JSON.parse(fs.readFileSync(DESKTOP_AGENT_STATE_FILE, 'utf8'))
+    return typeof state?.sessionId === 'string' ? state.sessionId.trim() : ''
+  } catch { return '' }
+}
 
 function writeDiagnostics(lines) {
   if (!DIAG_FILE || !lines.length) return
@@ -166,6 +181,22 @@ export function apply(ctx) {
       ])
     }, 3000)
     timer?.unref?.()
+  }
+
+  // DSH exposes the invoking session as exec.agent.id. The MCP provider is
+  // shared by a profile, so bind QQ calls to the one bridge-owned session
+  // before the MCP subprocess receives them. Missing state is fail-closed.
+  if (typeof ctx.on === 'function') {
+    ctx.on('tools/pre-execute', async (exec, next) => {
+      const name = exec?.name
+      if (typeof name !== 'string' || !QQ_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return next()
+      const expectedSessionId = currentDesktopAgentSessionId()
+      const callerSessionId = String(exec?.agent?.id ?? '').trim()
+      if (!expectedSessionId || callerSessionId !== expectedSessionId) {
+        return { kind: 'deny', reason: 'QQ 工具仅允许桥接当前绑定的全局 desktop-agent 会话调用' }
+      }
+      return next()
+    })
   }
 
   // 2) 执行期白名单：任何不在允许范围内的工具调用都会被拒绝。

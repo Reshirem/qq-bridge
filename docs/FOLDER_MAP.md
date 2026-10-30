@@ -8,7 +8,7 @@
 | --- | --- |
 | `src/` | 桥接运行时、DSH/OneBot 客户端、MCP 服务与独立辅助模块 |
 | `dsh/agent-presets/` | 唯一全局 `desktop-agent` preset 的权威源 |
-| `plugins/` | DSH preset bundle 与承载 `ownerQQ` 管理者身份标记的设置插件 |
+| `plugins/` | DSH preset bundle 与承载 `ownerQQ` 关系对象身份标记的设置插件 |
 | `public/` | 桥接本地控制台页面 |
 | `roles/` | 可由管理员管理的人格卡；格式见 `roles/README.md` |
 | `scripts/` | 回归脚本、DSH 安装/核验脚本、协议探针和辅助工具 |

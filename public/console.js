@@ -417,11 +417,11 @@ async function refreshSimPrompt() {
     document.getElementById('desktopPromptEdit').disabled = false;
     setSimMsg('');
     document.getElementById('desktopPromptStatus').textContent =
-      `陪伴者 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}`;
+      `数字角色 · ${r.chars} 字符${r.status?.patchCurrent ? ' · 配置包已同步' : ' · 配置包待更新'}`;
     document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length
       ? '⚠️ ' + r.warnings.join('；') : '';
     document.getElementById('desktopPromptRestart').textContent =
-      '更改会写入陪伴者预设；重启 DSH 并重建全局会话后加载新版。';
+      '更改会写入数字角色预设；重启 DSH 并重建全局会话后加载新版。';
   } catch (error) {
     setSimEditing(false);
     document.getElementById('desktopPromptEdit').disabled = true;
@@ -629,15 +629,23 @@ async function refreshDshModel() {
   }
 }
 
+function renderTestSendLists(w) {
+  document.getElementById('wlGroups').value = (w.allow?.groups || []).join(', ');
+  document.getElementById('wlPrivate').value = (w.allow?.private || []).join(', ');
+  document.getElementById('dnGroups').value = (w.deny?.groups || []).join(', ');
+  document.getElementById('dnPrivate').value = (w.deny?.private || []).join(', ');
+}
+
 async function refreshWhitelist() {
   try {
     const w = await api('/api/whitelist');
-    document.getElementById('wlGroups').value = (w.allow.groups || []).join(', ');
-    document.getElementById('wlPrivate').value = (w.allow.private || []).join(', ');
+    if (w.error) throw new Error(w.error);
+    renderTestSendLists(w);
     document.getElementById('ownerQQ').value = w.ownerQQ != null ? String(w.ownerQQ) : '';
-    document.getElementById('dnGroups').value = (w.deny.groups || []).join(', ');
-    document.getElementById('dnPrivate').value = (w.deny.private || []).join(', ');
-  } catch {}
+  } catch (error) {
+    document.getElementById('ownerQQMsg').textContent = '读取失败：' + error.message;
+    document.getElementById('ownerQQMsg').className = 'meta err';
+  }
 }
 
 let desktopAgentStatusAt = 0;
@@ -658,7 +666,7 @@ async function refreshDesktopAgentStatus(force = false) {
       let summaryLabel = '已就绪';
       let hint = '持久会话可启动自主探索或接收任务';
       if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; summaryLabel = 'DSH 未连接'; hint = '检查 DSH 是否正在运行'; }
-      else if (!info.presetAvailable) { label = '陪伴者 preset 未加载；请安装 preset bundle 并重启 DSH'; tone = 'meta err'; summaryLabel = '缺少 preset'; hint = '请先完成 DSH preset 配置'; }
+      else if (!info.presetAvailable) { label = '数字角色 preset 未加载；请安装 preset bundle 并重启 DSH'; tone = 'meta err'; summaryLabel = '缺少 preset'; hint = '请先完成 DSH preset 配置'; }
       else if (info.error) { label = '读取会话状态失败：' + info.error; tone = 'meta err'; summaryLabel = '状态异常'; hint = '点击“刷新状态”重试'; }
       else if (info.lifecycle === 'stopped') {
         label = info.running ? '已停止；正在等待 DSH 取消当前回合' : '已停止；不会自动唤醒';
@@ -676,7 +684,7 @@ async function refreshDesktopAgentStatus(force = false) {
         const retryAt = info.recoveryAt ? new Date(info.recoveryAt).toLocaleString() : '即将';
         label = `异常恢复等待 · 第 ${info.recoveryAttempt || 1} 次，${retryAt} 重试`; tone = 'meta err'; summaryLabel = '等待恢复'; hint = '未正常进入休息态，桥接按指数间隔尝试恢复';
       }
-      else if (info.running) { label = '正在运行'; tone = 'meta ok'; summaryLabel = '运行中'; hint = '陪伴者正在自主探索或处理任务'; }
+      else if (info.running) { label = '正在运行'; tone = 'meta ok'; summaryLabel = '运行中'; hint = '数字角色正在自主探索或处理任务'; }
       else if (info.blank) { label = '会话已创建，尚未启动'; tone = 'meta'; summaryLabel = '等待启动'; hint = '点击“启动自主探索”'; }
       else { label = '会话空闲，可继续探索'; tone = 'meta'; summaryLabel = '空闲'; hint = '点击“启动自主探索”或发送具体任务'; }
       status.textContent = label + (info.sessionId ? ` · ${info.sessionId}` : '');
@@ -856,13 +864,13 @@ document.getElementById('roleSet').addEventListener('click', async () => {
   if (r.ok) {
     setRoleMsg(r.role
       ? `已选择「${r.role}」。当前人格卡会放入 DSH persona 固定前缀，下次模型请求时更新。`
-      : '已清除人格卡选择；下次模型请求时 persona 前缀恢复为通用陪伴者定位。', true);
+      : '已清除人格卡选择；下次模型请求时 persona 前缀恢复为通用数字角色定位。', true);
     refreshRoles();
   } else alert(r.error || '设置失败');
 });
 document.getElementById('roleClear').addEventListener('click', async () => {
   const r = await api('/api/role', 'POST', { role: null });
-  setRoleMsg(r.ok ? '已清除人格卡选择；下次模型请求时 persona 前缀恢复为通用陪伴者定位。' : (r.error || '清除失败'), r.ok);
+  setRoleMsg(r.ok ? '已清除人格卡选择；下次模型请求时 persona 前缀恢复为通用数字角色定位。' : (r.error || '清除失败'), r.ok);
   refreshRoles();
   refresh();
 });
@@ -918,10 +926,10 @@ document.getElementById('roleDelete').addEventListener('click', async () => {
 document.getElementById('roleFormReset').addEventListener('click', () => resetRoleForm());
 document.getElementById('newRoleContent').addEventListener('input', updateRoleEditorWarnings);
 
-// ── 全局陪伴者提示词 ──────────────────────────────────────────────────────
+// ── 全局数字角色提示词 ──────────────────────────────────────────────────────
 document.getElementById('desktopPromptEdit').addEventListener('click', () => {
   setSimEditing(true);
-  setSimMsg('编辑中：可修改模块正文和开关，也可逐个添加自定义模块。必要模块保持启用。');
+  setSimMsg('编辑中：可修改所有模块的正文和开关，也可逐个添加自定义模块。');
 });
 document.getElementById('desktopPromptAddModule').addEventListener('click', addCustomPromptModule);
 document.getElementById('desktopPromptCancel').addEventListener('click', () => {
@@ -945,7 +953,7 @@ document.getElementById('desktopPromptSave').addEventListener('click', async () 
   const activeContent = updatePromptPreview();
   const changesActivePrompt = activeContent !== desktopPromptOriginalContent;
   const confirmText = changesActivePrompt
-    ? '保存会更新陪伴者的固定前缀。重启 DSH 并重建全局会话后加载新版。确定继续？'
+    ? '保存会更新数字角色的固定前缀。重启 DSH 并重建全局会话后加载新版。确定继续？'
     : '保存模块设置。当前启用的固定前缀不变，因此无需重启 DSH。确定继续？';
   if (!confirm(confirmText)) return;
   setSimMsg('保存中…');
@@ -964,10 +972,10 @@ document.getElementById('desktopPromptSave').addEventListener('click', async () 
     ? `✅ 已保存${r.synced ? '并更新 DSH 配置包' : ''}；重启 DSH 并重建全局会话后加载新版`
     : '✅ 已保存未启用模块的正文；当前固定前缀未变化', true);
   document.getElementById('desktopPromptWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
-  document.getElementById('desktopPromptStatus').textContent = `陪伴者 · ${r.chars} 字符 · 已保存`;
+  document.getElementById('desktopPromptStatus').textContent = `数字角色 · ${r.chars} 字符 · 已保存`;
 });
 document.getElementById('desktopPromptRestore').addEventListener('click', async () => {
-  if (!confirm('还原陪伴者上次保存前的模块和固定前缀？当前改动会丢失（现有配置会先自动备份）。')) return;
+  if (!confirm('还原数字角色上次保存前的模块和固定前缀？当前改动会丢失（现有配置会先自动备份）。')) return;
   const r = await api('/api/preset/desktop-agent-prompt/restore', 'POST', { preset: desktopPromptPreset });
   if (!r.ok) { setSimMsg('❌ ' + (r.error || '还原失败'), false); return; }
   setSimMsg('✅ 已还原模块和提示词备份；重启 DSH 并重建全局会话后加载新版', true);
@@ -1064,15 +1072,42 @@ document.getElementById('dshEffortSave').addEventListener('click', async () => {
     msg.className = 'meta err';
   }
 });
-document.getElementById('wlSave').addEventListener('click', async () => {
-  const parse = (s) => s.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
-  const r = await api('/api/whitelist', 'POST', {
-    allow: { private: parse(document.getElementById('wlPrivate').value), groups: parse(document.getElementById('wlGroups').value) },
-    deny: { private: parse(document.getElementById('dnPrivate').value), groups: parse(document.getElementById('dnGroups').value) },
-    ownerQQ: document.getElementById('ownerQQ').value.trim()
-  });
-  if (r.ok) { refreshWhitelist(); refresh(); alert('白名单已保存并生效'); }
-  else alert(r.error || '保存失败');
+document.getElementById('ownerQQSave').addEventListener('click', async function () {
+  const msg = document.getElementById('ownerQQMsg');
+  this.disabled = true;
+  msg.textContent = '保存中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/whitelist', 'POST', { ownerQQ: document.getElementById('ownerQQ').value.trim() });
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    document.getElementById('ownerQQ').value = r.ownerQQ != null ? String(r.ownerQQ) : '';
+    msg.textContent = r.ownerQQ == null ? '已清除并生效' : '已保存并生效';
+    msg.className = 'meta ok';
+    refresh();
+  } catch (error) {
+    msg.textContent = '保存失败：' + error.message;
+    msg.className = 'meta err';
+  } finally { this.disabled = false; }
+});
+document.getElementById('wlSave').addEventListener('click', async function () {
+  const parse = (s) => s.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean);
+  const msg = document.getElementById('wlMsg');
+  this.disabled = true;
+  msg.textContent = '保存中…';
+  msg.className = 'meta';
+  try {
+    const r = await api('/api/whitelist', 'POST', {
+      allow: { private: parse(document.getElementById('wlPrivate').value), groups: parse(document.getElementById('wlGroups').value) },
+      deny: { private: parse(document.getElementById('dnPrivate').value), groups: parse(document.getElementById('dnGroups').value) }
+    });
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    renderTestSendLists(r);
+    msg.textContent = '已保存并生效';
+    msg.className = 'meta ok';
+  } catch (error) {
+    msg.textContent = '保存失败：' + error.message;
+    msg.className = 'meta err';
+  } finally { this.disabled = false; }
 });
 document.getElementById('tsSend').addEventListener('click', async () => {
   const r = await api('/api/test-send', 'POST', {
@@ -1118,7 +1153,7 @@ document.getElementById('desktopAgentStart').addEventListener('click', async () 
   }
 });
 document.getElementById('desktopAgentStop').addEventListener('click', async () => {
-  if (!confirm('停止全局陪伴者？当前运行和排队中的 DSH 任务会被取消；自动唤醒会保持关闭，直到你从此页面手动启动或提交任务。')) return;
+  if (!confirm('停止全局数字角色？当前运行和排队中的 DSH 任务会被取消；自动唤醒会保持关闭，直到你从此页面手动启动或提交任务。')) return;
   const button = document.getElementById('desktopAgentStop');
   const status = document.getElementById('desktopAgentMessageStatus');
   button.disabled = true;
@@ -1143,7 +1178,7 @@ document.getElementById('desktopAgentRebuild').addEventListener('click', async (
   const button = document.getElementById('desktopAgentRebuild');
   const status = document.getElementById('desktopAgentMessageStatus');
   button.disabled = true;
-  status.textContent = '正在重建全局陪伴者会话…';
+  status.textContent = '正在重建全局数字角色会话…';
   status.className = 'meta';
   try {
     const result = await api('/api/console/desktop-agent/reset', 'POST', {});
@@ -1406,7 +1441,7 @@ document.getElementById('v2ResumeBtn').addEventListener('click', async () => {
   refreshV2Activity();
 });
 document.getElementById('v2ResetBtn').addEventListener('click', async () => {
-  if (!confirm('确定清空本地 QQ 消息缓存、读取水位和待处理 QQ 提醒？全局陪伴者会话和运行状态不会改变。')) return;
+  if (!confirm('确定清空本地 QQ 消息缓存、读取水位和待处理 QQ 提醒？全局数字角色会话和运行状态不会改变。')) return;
   const r = await api('/api/socialV2/reset', 'POST', {});
   const msg = document.getElementById('v2ConfigMsg');
   msg.textContent = r.ok ? '✅ 已清空 QQ 消息缓存' : ('❌ ' + (r.error || '失败'));
@@ -1445,7 +1480,6 @@ document.getElementById('v2ToolLogClear').addEventListener('click', async () => 
 
 function loadSecurity() {
   api('/api/security').then(r => {
-    document.getElementById('secInterceptNotify').checked = r.security?.interceptNotify !== false;
     // state/ 的 ACL 是否收紧（Windows 上需要管理员权限，未提权时会失败）。
     // 明确警示 + 给出可复制的命令，而不是让用户以为已经安全。
     const warn = document.getElementById('stateDirWarn');
@@ -1459,13 +1493,6 @@ function loadSecurity() {
     }
   }).catch(() => {});
 }
-document.getElementById('secSave').addEventListener('click', async () => {
-  const r = await api('/api/security', 'POST', { interceptNotify: document.getElementById('secInterceptNotify').checked });
-  const msg = document.getElementById('secMsg');
-  msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) loadSecurity();
-});
 document.getElementById('stateDirReharden').addEventListener('click', async () => {
   const msg = document.getElementById('stateDirMsg');
   msg.textContent = '检测中…';
@@ -1499,26 +1526,37 @@ document.getElementById('consoleTokenRandom').addEventListener('click', () => ch
 
 // Presentation layer: keep every existing control mounted so drafts and API contracts survive navigation.
 const consolePages = {
-  overview: ['陪伴者', '全局陪伴者运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。', '工作空间'],
-  sessions: ['会话控制', '控制全局陪伴者', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。', '工作空间'],
-  persona: ['陪伴者提示词', '维护自主陪伴者的固定提示词', '这里可以编辑陪伴者的固定提示词和当前人格卡。', '工作空间'],
+  overview: ['数字角色', '全局数字角色运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。', '工作空间'],
+  sessions: ['会话控制', '控制全局数字角色', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。', '工作空间'],
+  persona: ['数字角色提示词', '维护自主数字角色的固定提示词', '这里可以编辑数字角色的固定提示词和当前人格卡。', '工作空间'],
   memory: ['检索与记录', '长期记忆 · 检索与记录', '在共享 A_Memorix 中相关度检索或分页浏览全部活动原始记录，并查看、替代或删除记录。', '长期记忆'],
+  'memory-organizer': ['整理进度', '长期记忆 · 独立整理', '查看每天最多一次的休息后自动整理进度，或选择历史 DSH 会话开始整理。', '长期记忆'],
   'memory-settings': ['记忆设置', '长期记忆设置', '配置 A_Memorix 连接、启动摘要和 Embedding / LLM Provider。', '长期记忆'],
   'social-v2': ['提醒与消息', 'QQ 消息渠道', '查看 QQ 提醒策略、消息工具和发送安全设置。', 'QQ 通道'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。', '系统与管理'],
-  access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。', '系统与管理'],
+  access: ['访问与安全', '明确边界，安心连接。', '设置关系对象 QQ，查看安全状态并管理控制台访问令牌。', '系统与管理'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。', '系统与管理']
 };
 let memoryHits = [];
 let memoryBrowseMode = false;
-let memoryBrowseCursor = '';
+const MEMORY_RESULTS_PAGE_SIZE = 10;
+let memoryResultsPageIndex = 0;
+let memoryBrowseCursors = [''];
+let memoryBrowsePageIndex = 0;
+let memoryBrowseNextCursor = '';
 let memoryBrowseTotal = 0;
 function resetMemoryBrowsePaging() {
-  memoryBrowseCursor = '';
-  const container = document.getElementById('memoryLoadMoreContainer');
-  const button = document.getElementById('memoryLoadMore');
+  memoryResultsPageIndex = 0;
+  memoryBrowseCursors = [''];
+  memoryBrowsePageIndex = 0;
+  memoryBrowseNextCursor = '';
+  memoryBrowseTotal = 0;
+  const container = document.getElementById('memoryPageControls');
+  const previous = document.getElementById('memoryPreviousPage');
+  const next = document.getElementById('memoryNextPage');
   if (container) container.hidden = true;
-  if (button) button.disabled = false;
+  if (previous) previous.disabled = false;
+  if (next) next.disabled = false;
 }
 function memoryDateInput(value) {
   if (!value) return '';
@@ -1560,6 +1598,294 @@ async function refreshMemoryStatus() {
       status.textContent = `读取状态失败：${error.message || '未知错误'}`;
       status.className = 'meta err';
     }
+  }
+}
+let memoryOrganizerData = null;
+let memoryOrganizerPollTimer = null;
+let memoryOrganizerLoading = false;
+const MEMORY_ORGANIZER_PAGE_SIZE = 10;
+let memoryOrganizerPageIndex = 0;
+const memoryOrganizerDisclosureState = new Map();
+function memoryOrganizerTimestamp(value) {
+  const timestamp = typeof value === 'number' ? value : Date.parse(String(value ?? ''));
+  return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toLocaleString() : '时间未知';
+}
+function scheduleMemoryOrganizerRefresh() {
+  clearTimeout(memoryOrganizerPollTimer);
+  memoryOrganizerPollTimer = null;
+  if (currentConsolePage !== 'memory-organizer' || !memoryOrganizerData) return;
+  const running = (memoryOrganizerData.jobs || []).some(job => ['queued', 'reading', 'organizing', 'writing'].includes(job.status));
+  if (running) memoryOrganizerPollTimer = setTimeout(() => refreshMemoryOrganizer({ silent: true }), 5000);
+}
+function renderMemoryOrganizerSessions() {
+  const select = document.getElementById('memoryOrganizerSession');
+  const previous = select.value;
+  const sessions = Array.isArray(memoryOrganizerData?.sessions) ? memoryOrganizerData.sessions : [];
+  select.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = sessions.length ? '选择要整理的 DSH 会话' : '没有可整理的历史会话';
+  select.appendChild(placeholder);
+  for (const session of sessions) {
+    const option = document.createElement('option');
+    option.value = session.sessionId;
+    const title = session.title || '未命名会话';
+    const cursor = Number.isSafeInteger(session.lastProcessedSeq) ? session.lastProcessedSeq : -1;
+    const scheduled = Number.isSafeInteger(session.lastScheduledSeq) ? session.lastScheduledSeq : cursor;
+    const asOf = Number.isSafeInteger(session.asOfSeq) ? session.asOfSeq : -1;
+    const remaining = Math.max(0, asOf - scheduled);
+    const kind = session.current ? '当前全局数字角色' : session.globalCompanionSource ? '全局数字角色历史会话' : session.origin === 'subagent' ? '子会话' : session.running ? '运行中' : '其他会话';
+    const shortId = session.sessionId.replace(/^session-/, '').slice(0, 8);
+    option.textContent = `${kind} · ${memoryOrganizerTimestamp(session.updatedAt)} · ${title} · ${shortId} · ${remaining ? `待整理至 seq ${asOf}` : '当前无新范围'}`;
+    option.disabled = remaining <= 0;
+    select.appendChild(option);
+  }
+  if (sessions.some(session => session.sessionId === previous && session.asOfSeq > session.lastScheduledSeq)) select.value = previous;
+  else if (sessions.some(session => session.current && session.asOfSeq > session.lastScheduledSeq)) select.value = sessions.find(session => session.current && session.asOfSeq > session.lastScheduledSeq).sessionId;
+  renderMemoryOrganizerSessionInfo();
+}
+function renderMemoryOrganizerSessionInfo() {
+  const select = document.getElementById('memoryOrganizerSession');
+  const selected = (memoryOrganizerData?.sessions || []).find(session => session.sessionId === select.value);
+  const info = document.getElementById('memoryOrganizerSessionInfo');
+  const start = document.getElementById('memoryOrganizerStart');
+  if (!selected) {
+    info.textContent = memoryOrganizerData?.sessionError
+      ? `读取 DSH 会话列表失败：${memoryOrganizerData.sessionError}`
+      : '请选择有未整理范围的 DSH 会话；手动整理从已排队的范围之后处理到点击时的日志末尾。';
+    info.className = `meta ${memoryOrganizerData?.sessionError ? 'err' : ''}`;
+    start.disabled = true;
+    return;
+  }
+  const cursor = Number.isSafeInteger(selected.lastProcessedSeq) ? selected.lastProcessedSeq : -1;
+  const scheduled = Number.isSafeInteger(selected.lastScheduledSeq) ? selected.lastScheduledSeq : cursor;
+  const asOf = Number.isSafeInteger(selected.asOfSeq) ? selected.asOfSeq : -1;
+  const remaining = Math.max(0, asOf - scheduled);
+  const kind = selected.current ? '当前全局数字角色' : selected.globalCompanionSource ? '全局数字角色历史会话' : selected.origin === 'subagent' ? `子会话${selected.parentSessionId ? `（父会话 ${selected.parentSessionId}）` : ''}` : selected.running ? 'DSH 正在运行' : '普通 DSH 会话';
+  const cwd = selected.cwd ? ` · 工作目录 ${selected.cwd}` : '';
+  const organizer = memoryOrganizerData || {};
+  const unavailable = !remaining ? '当前没有未排队的整理范围'
+    : organizer.enabled !== true ? '独立整理已关闭'
+      : organizer.memoryConfigured !== true ? '长期记忆尚未配置'
+        : organizer.dshReady !== true ? 'DSH 尚未就绪' : '';
+  info.textContent = `${kind} · ${selected.title || '未命名会话'} · 会话时间 ${memoryOrganizerTimestamp(selected.updatedAt)} · Session ${selected.sessionId}${cwd} · 已完成至 seq ${cursor} · 已排队至 seq ${scheduled} · 日志末尾 seq ${asOf}${unavailable ? ` · 无法启动：${unavailable}` : ''}`;
+  info.className = `meta ${unavailable ? 'err' : ''}`;
+  start.disabled = Boolean(unavailable);
+}
+function renderMemoryOrganizerJobs() {
+  const box = document.getElementById('memoryOrganizerJobs');
+  const jobs = Array.isArray(memoryOrganizerData?.jobs) ? [...memoryOrganizerData.jobs] : [];
+  jobs.sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+  box.replaceChildren();
+  const controls = document.getElementById('memoryOrganizerPageControls');
+  const previous = document.getElementById('memoryOrganizerPreviousPage');
+  const next = document.getElementById('memoryOrganizerNextPage');
+  const label = document.getElementById('memoryOrganizerPageLabel');
+  if (!jobs.length) {
+    memoryOrganizerPageIndex = 0;
+    if (controls) controls.hidden = true;
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    const strong = document.createElement('strong');
+    strong.textContent = '尚无整理任务';
+    const detail = document.createElement('p');
+    detail.textContent = '主会话每天首次成功休息后会自动创建任务；也可以选择历史会话开始整理。';
+    empty.append(strong, detail);
+    box.appendChild(empty);
+    return;
+  }
+  const pageCount = Math.ceil(jobs.length / MEMORY_ORGANIZER_PAGE_SIZE);
+  const jobIds = new Set(jobs.map(job => job.jobId));
+  for (const jobId of memoryOrganizerDisclosureState.keys()) if (!jobIds.has(jobId)) memoryOrganizerDisclosureState.delete(jobId);
+  memoryOrganizerPageIndex = Math.min(memoryOrganizerPageIndex, pageCount - 1);
+  const startIndex = memoryOrganizerPageIndex * MEMORY_ORGANIZER_PAGE_SIZE;
+  const visibleJobs = jobs.slice(startIndex, startIndex + MEMORY_ORGANIZER_PAGE_SIZE);
+  if (controls) controls.hidden = pageCount <= 1;
+  if (previous) previous.disabled = memoryOrganizerPageIndex <= 0;
+  if (next) next.disabled = memoryOrganizerPageIndex >= pageCount - 1;
+  if (label) label.textContent = `第 ${memoryOrganizerPageIndex + 1}/${pageCount} 页 · 显示 ${startIndex + 1}–${Math.min(startIndex + visibleJobs.length, jobs.length)} / ${jobs.length} 个任务`;
+  const labels = { queued: '排队中', reading: '读取中', organizing: '整理中', writing: '写入中', completed: '已完成', failed: '失败' };
+  for (const job of visibleJobs) {
+    const card = document.createElement('details');
+    card.className = 'memory-organizer-job';
+    const defaultOpen = ['queued', 'reading', 'organizing', 'writing', 'failed'].includes(job.status);
+    card.open = memoryOrganizerDisclosureState.has(job.jobId)
+      ? memoryOrganizerDisclosureState.get(job.jobId)
+      : defaultOpen;
+    card.addEventListener('toggle', () => memoryOrganizerDisclosureState.set(job.jobId, card.open));
+    const header = document.createElement('div');
+    header.className = 'memory-organizer-job-head';
+    const summary = document.createElement('summary');
+    summary.className = 'memory-organizer-job-summary';
+    const title = document.createElement('strong');
+    title.textContent = job.kind === 'manual' ? '手动整理' : '每日休息整理';
+    const badge = document.createElement('span');
+    badge.className = `memory-organizer-badge ${job.status === 'failed' ? 'err' : job.status === 'completed' ? 'ok' : ''}`;
+    badge.textContent = labels[job.status] || job.status || '未知';
+    header.append(title, badge);
+    const isGlobalSource = job.sourceSessionGlobal === true || job.kind === 'rest';
+    const sourceTitle = job.sourceSessionTitle || (job.sourceSessionCurrent ? '当前全局数字角色' : isGlobalSource ? '已结束的全局数字角色会话' : '未命名会话');
+    const summaryInfo = document.createElement('span');
+    summaryInfo.className = 'meta memory-organizer-job-summary-info';
+    summaryInfo.textContent = `${sourceTitle} · ${memoryOrganizerTimestamp(job.createdAt)} · seq ${Number(job.fromSeq) + 1}–${job.throughSeq}`;
+    summary.append(header, summaryInfo);
+    const body = document.createElement('div');
+    body.className = 'memory-organizer-job-body';
+    const range = document.createElement('p');
+    range.className = 'meta memory-organizer-job-range';
+    const sourceKind = job.sourceSessionCurrent ? '当前全局数字角色来源' : isGlobalSource ? '全局数字角色历史来源' : 'DSH 来源会话';
+    const sourceCwd = job.sourceSessionCwd ? ` · 工作目录 ${job.sourceSessionCwd}` : '';
+    range.textContent = `${sourceKind}「${sourceTitle}」· 会话时间 ${memoryOrganizerTimestamp(job.sourceSessionUpdatedAt)} · Session ${job.sourceSessionId} · 事件 seq ${Number(job.fromSeq) + 1}–${job.throughSeq}${sourceCwd}`;
+    const progress = document.createElement('p');
+    progress.className = 'memory-organizer-job-progress';
+    const progressData = job.progress || {};
+    const completed = Number.isSafeInteger(progressData.completed) ? progressData.completed : 0;
+    const total = Number.isSafeInteger(progressData.total) ? progressData.total : null;
+    progress.textContent = `${progressData.stage || labels[job.status] || job.status || '处理中'}${total !== null ? ` · ${completed}/${total} 段` : ''}`;
+    const organizerLine = document.createElement('p');
+    organizerLine.className = 'meta memory-organizer-job-target';
+    const organizerSessions = Array.isArray(job.organizerSessions) ? job.organizerSessions : [];
+    if (organizerSessions.length) {
+      organizerLine.textContent = `整理目标会话：${organizerSessions.map(session => `${session.title || '未命名整理会话'} · ${memoryOrganizerTimestamp(session.updatedAt)} · ${session.sessionId}`).join('；')}`;
+    } else if (job.organizerSessionId) {
+      organizerLine.textContent = `整理目标会话：${job.organizerSessionId}`;
+    } else {
+      organizerLine.textContent = '整理目标会话：尚未创建';
+    }
+    body.append(range, organizerLine, progress);
+    if (total > 0) {
+      const bar = document.createElement('progress');
+      bar.className = 'memory-organizer-progressbar';
+      bar.max = total;
+      bar.value = Math.min(total, completed);
+      bar.setAttribute('aria-label', '整理分段进度');
+      body.appendChild(bar);
+    }
+    if (job.status === 'failed' && job.error) {
+      const error = document.createElement('p');
+      error.className = 'meta err memory-organizer-job-error';
+      error.textContent = job.error;
+      body.appendChild(error);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'small';
+      retry.textContent = '重试';
+      retry.addEventListener('click', () => retryMemoryOrganizerJob(job.jobId, retry));
+      body.appendChild(retry);
+    }
+    if (job.status === 'completed' && job.result) {
+      const result = document.createElement('p');
+      result.className = 'meta';
+      result.textContent = job.result.noChange
+        ? '本段没有发现需要新增或更新的记忆。'
+        : `已确认 ${Number(job.result.newMemories) || 0} 条新记忆，调用记忆写入 ${Number(job.result.memoryWrites) || 0} 次。`;
+      body.appendChild(result);
+    }
+    const updated = document.createElement('p');
+    updated.className = 'meta memory-organizer-job-updated';
+    updated.textContent = `任务创建于 ${memoryOrganizerTimestamp(job.createdAt)} · 最近更新于 ${memoryOrganizerTimestamp(job.updatedAt)}`;
+    body.appendChild(updated);
+    card.append(summary, body);
+    box.appendChild(card);
+  }
+}
+async function refreshMemoryOrganizer({ silent = false } = {}) {
+  if (memoryOrganizerLoading) return;
+  memoryOrganizerLoading = true;
+  const status = document.getElementById('memoryOrganizerStatus');
+  if (!silent) { status.textContent = '正在读取整理队列…'; status.className = 'meta'; }
+  try {
+    const response = await api('/api/memory/organizer');
+    if (!response.ok) throw new Error(response.error || '读取整理状态失败');
+    memoryOrganizerData = response.organizer || {};
+    const organizer = memoryOrganizerData;
+    const active = organizer.jobs?.filter(job => ['queued', 'reading', 'organizing', 'writing'].includes(job.status)).length || 0;
+    const cleanupIds = new Set([
+      ...Object.values(organizer.sessionsByDay || {}),
+      ...(organizer.jobs || []).flatMap(job => [job.organizerSessionId, ...(job.organizerSessions || []).map(session => session.sessionId)])
+    ].filter(Boolean));
+    const cleanupButton = document.getElementById('memoryOrganizerCleanup');
+    cleanupButton.disabled = cleanupIds.size === 0 || organizer.dshReady !== true || organizer.cleanupBusy === true;
+    let message = !organizer.enabled ? '独立整理已在配置中关闭'
+      : !organizer.memoryConfigured ? '等待长期记忆 Gateway 完成配置'
+        : !organizer.dshReady ? '等待 DSH 就绪'
+          : `独立整理已启用 · ${active ? `${active} 个任务处理中` : '当前没有处理中任务'} · 时区 ${organizer.timeZone || 'UTC'}`;
+    status.textContent = message;
+    status.className = `meta ${organizer.enabled && organizer.memoryConfigured && organizer.dshReady ? 'ok' : 'err'}`;
+    renderMemoryOrganizerSessions();
+    renderMemoryOrganizerJobs();
+    scheduleMemoryOrganizerRefresh();
+  } catch (error) {
+    status.textContent = `读取整理队列失败：${error.message || '未知错误'}`;
+    status.className = 'meta err';
+    clearTimeout(memoryOrganizerPollTimer);
+    memoryOrganizerPollTimer = null;
+  } finally { memoryOrganizerLoading = false; }
+}
+async function startMemoryOrganizer() {
+  const button = document.getElementById('memoryOrganizerStart');
+  const status = document.getElementById('memoryOrganizerActionStatus');
+  const sessionId = document.getElementById('memoryOrganizerSession').value;
+  if (!sessionId) { status.textContent = '请先选择一个 DSH 会话。'; status.className = 'meta err'; return; }
+  button.disabled = true;
+  status.textContent = '正在创建历史整理任务…';
+  status.className = 'meta';
+  try {
+    const response = await api('/api/memory/organizer', 'POST', { action: 'start', sessionId });
+    if (!response.ok) throw new Error(response.error || '创建整理任务失败');
+    status.textContent = `整理任务已排队：事件 seq ${Number(response.fromSeq) + 1}–${response.throughSeq}`;
+    status.className = 'meta ok';
+    await refreshMemoryOrganizer();
+  } catch (error) {
+    status.textContent = error.message || '创建整理任务失败';
+    status.className = 'meta err';
+  } finally { renderMemoryOrganizerSessionInfo(); }
+}
+async function cleanupMemoryOrganizerSessions() {
+  const button = document.getElementById('memoryOrganizerCleanup');
+  const status = document.getElementById('memoryOrganizerActionStatus');
+  button.disabled = true;
+  status.textContent = '正在清理已完成的整理会话…';
+  status.className = 'meta';
+  try {
+    const response = await api('/api/memory/organizer', 'POST', { action: 'cleanup' });
+    if (!response.ok) throw new Error(response.error || '清理整理会话失败');
+    const archived = Array.isArray(response.archived) ? response.archived.length : 0;
+    const alreadyArchived = Array.isArray(response.alreadyArchived) ? response.alreadyArchived.length : 0;
+    const skipped = Array.isArray(response.skipped) ? response.skipped : [];
+    const failed = Array.isArray(response.failed) ? response.failed : [];
+    const reasons = new Map();
+    for (const item of skipped) reasons.set(item.reason || '其他原因', (reasons.get(item.reason || '其他原因') || 0) + 1);
+    const skippedText = [...reasons].map(([reason, count]) => `${reason} ${count}`).join('、');
+    const parts = [`已归档 ${archived} 个整理会话`];
+    if (alreadyArchived) parts.push(`已有 ${alreadyArchived} 个归档`);
+    if (skipped.length) parts.push(`跳过 ${skipped.length} 个（${skippedText}）`);
+    if (failed.length) parts.push(`失败 ${failed.length} 个：${failed[0].error || '未知错误'}`);
+    parts.push('会话日志保留');
+    status.textContent = parts.join('；');
+    status.className = `meta ${failed.length ? 'err' : 'ok'}`;
+  } catch (error) {
+    status.textContent = error.message || '清理整理会话失败';
+    status.className = 'meta err';
+  } finally {
+    await refreshMemoryOrganizer({ silent: true });
+  }
+}
+async function retryMemoryOrganizerJob(jobId, button) {
+  const status = document.getElementById('memoryOrganizerActionStatus');
+  button.disabled = true;
+  status.textContent = '正在重新排队…';
+  status.className = 'meta';
+  try {
+    const response = await api('/api/memory/organizer', 'POST', { action: 'retry', jobId });
+    if (!response.ok) throw new Error(response.error || '重试失败');
+    status.textContent = '任务已重新排队。';
+    status.className = 'meta ok';
+    await refreshMemoryOrganizer();
+  } catch (error) {
+    status.textContent = error.message || '重试失败';
+    status.className = 'meta err';
+    button.disabled = false;
   }
 }
 async function refreshMemorySettings() {
@@ -1689,24 +2015,53 @@ async function startAMemorix() {
     status.className = 'meta err';
   } finally { button.disabled = false; }
 }
-function renderMemoryResults(result, { append = false } = {}) {
-  const box = document.getElementById('memoryResults');
-  const incoming = Array.isArray(result?.hits) ? result.hits : [];
-  if (!append) memoryHits = [];
-  const startIndex = memoryHits.length;
-  memoryHits.push(...incoming);
-  if (!memoryHits.length) {
-    box.innerHTML = '<div class="empty-state"><strong>没有匹配记录</strong><p>可以换个问法，或扩大时间范围。</p></div>';
+function updateMemoryPageControls() {
+  const controls = document.getElementById('memoryPageControls');
+  const previous = document.getElementById('memoryPreviousPage');
+  const next = document.getElementById('memoryNextPage');
+  const label = document.getElementById('memoryPageLabel');
+  if (!controls || !previous || !next || !label) return;
+  if (memoryBrowseMode) {
+    const pageCountKnown = Math.ceil(memoryBrowseTotal / MEMORY_RESULTS_PAGE_SIZE);
+    const hasNext = memoryBrowsePageIndex + 1 < memoryBrowseCursors.length || Boolean(memoryBrowseNextCursor);
+    controls.hidden = memoryHits.length === 0 || (!hasNext && memoryBrowsePageIndex === 0);
+    previous.disabled = memoryBrowsePageIndex <= 0;
+    next.disabled = !hasNext;
+    const first = memoryBrowsePageIndex * MEMORY_RESULTS_PAGE_SIZE + (memoryHits.length ? 1 : 0);
+    const last = Math.min(memoryBrowsePageIndex * MEMORY_RESULTS_PAGE_SIZE + memoryHits.length, memoryBrowseTotal);
+    label.textContent = `第 ${memoryBrowsePageIndex + 1}${pageCountKnown ? `/${pageCountKnown}` : ''} 页 · 显示 ${first}–${last} / ${memoryBrowseTotal} 条`;
     return;
   }
-  const html = incoming.map((hit, index) => {
+  const pageCount = Math.ceil(memoryHits.length / MEMORY_RESULTS_PAGE_SIZE);
+  controls.hidden = pageCount <= 1;
+  previous.disabled = memoryResultsPageIndex <= 0;
+  next.disabled = memoryResultsPageIndex >= pageCount - 1;
+  const first = memoryResultsPageIndex * MEMORY_RESULTS_PAGE_SIZE + 1;
+  const last = Math.min((memoryResultsPageIndex + 1) * MEMORY_RESULTS_PAGE_SIZE, memoryHits.length);
+  label.textContent = `第 ${memoryResultsPageIndex + 1}/${pageCount} 页 · 显示 ${first}–${last} / ${memoryHits.length} 条`;
+}
+function renderMemoryResults(result) {
+  const box = document.getElementById('memoryResults');
+  const incoming = Array.isArray(result?.hits) ? result.hits : [];
+  memoryHits = incoming;
+  if (!memoryHits.length) {
+    box.innerHTML = '<div class="empty-state"><strong>没有匹配记录</strong><p>可以换个问法，或扩大时间范围。</p></div>';
+    updateMemoryPageControls();
+    return;
+  }
+  const startIndex = memoryBrowseMode ? 0 : memoryResultsPageIndex * MEMORY_RESULTS_PAGE_SIZE;
+  const visibleHits = memoryBrowseMode
+    ? memoryHits
+    : memoryHits.slice(startIndex, startIndex + MEMORY_RESULTS_PAGE_SIZE);
+  const html = visibleHits.map((hit, index) => {
     const origin = hit.metadata?.origin === 'qq' ? 'QQ 对话' : hit.metadata?.origin === 'assistant' ? '自身经历' : '来源未标注';
     const title = hit.title || hit.kind || origin;
     const time = hit.observedAt || hit.metadata?.observedAt || '';
-    return `<button class="memory-hit" type="button" data-memory-index="${startIndex + index}"><span class="memory-hit-head"><strong>${esc(title)}</strong><span class="tag">${esc(origin)}</span></span><span class="memory-hit-content">${esc(hit.content)}</span><span class="meta">${time ? `观察时间：${esc(new Date(time).toLocaleString())} · ` : ''}memoryId：<code>${esc(hit.memoryId)}</code></span></button>`;
+    const memoryIndex = startIndex + index;
+    return `<details class="memory-hit"><summary class="memory-hit-summary"><span class="memory-hit-head"><strong>${esc(title)}</strong><span class="tag">${esc(origin)}</span></span><span class="memory-hit-content">${esc(hit.content)}</span><span class="meta">${time ? `观察时间：${esc(new Date(time).toLocaleString())} · ` : ''}memoryId：<code>${esc(hit.memoryId)}</code></span></summary><div class="memory-hit-expanded"><div class="memory-hit-full">${esc(hit.content)}</div><button class="small" type="button" data-memory-index="${memoryIndex}">打开编辑器</button></div></details>`;
   }).join('');
-  if (append) box.insertAdjacentHTML('beforeend', html);
-  else box.innerHTML = html;
+  box.innerHTML = html;
+  updateMemoryPageControls();
 }
 async function searchMemory() {
   const status = document.getElementById('memorySearchStatus');
@@ -1754,11 +2109,11 @@ async function searchMemory() {
     status.className = 'meta err';
   }
 }
-async function browseAllMemory({ append = false } = {}) {
+async function browseAllMemory({ pageIndex = 0, navigate = false } = {}) {
   const status = document.getElementById('memorySearchStatus');
   const browseButton = document.getElementById('memoryBrowseAll');
-  const button = document.getElementById('memoryLoadMore');
-  const container = document.getElementById('memoryLoadMoreContainer');
+  const previousButton = document.getElementById('memoryPreviousPage');
+  const nextButton = document.getElementById('memoryNextPage');
   const query = document.getElementById('memoryQuery').value.trim();
   const start = document.getElementById('memoryTimeStart').value;
   const end = document.getElementById('memoryTimeEnd').value;
@@ -1767,49 +2122,68 @@ async function browseAllMemory({ append = false } = {}) {
     status.className = 'meta err';
     return;
   }
-  if (!append) {
+  if (!navigate) {
     memoryBrowseMode = true;
     resetMemoryBrowsePaging();
-    memoryBrowseTotal = 0;
     renderMemoryResults({ hits: [] });
+    pageIndex = 0;
+  } else if (!memoryBrowseCursors[pageIndex]) {
+    if (pageIndex !== memoryBrowseCursors.length || !memoryBrowseNextCursor) return;
+    memoryBrowseCursors.push(memoryBrowseNextCursor);
   }
-  status.textContent = append ? '正在读取下一页…' : '正在读取本机只读记忆账本…';
+  const previousPageIndex = memoryBrowsePageIndex;
+  status.textContent = navigate ? '正在读取记忆记录…' : '正在读取本机只读记忆账本…';
   status.className = 'meta';
   if (browseButton) browseButton.disabled = true;
-  if (button) button.disabled = true;
+  if (previousButton) previousButton.disabled = true;
+  if (nextButton) nextButton.disabled = true;
   try {
     const response = await api('/api/memory/records/list', 'POST', {
-      limit: 50,
+      limit: MEMORY_RESULTS_PAGE_SIZE,
       query,
       origin: document.getElementById('memoryOriginFilter').value,
       timeStart: start ? new Date(`${start}T00:00:00`).toISOString() : undefined,
       timeEnd: end ? new Date(`${end}T23:59:59.999`).toISOString() : undefined,
-      cursor: append ? memoryBrowseCursor : undefined
+      cursor: memoryBrowseCursors[pageIndex] || undefined
     });
     if (!response.ok) throw new Error(response.error || '读取全量记录失败');
     const result = response.result || {};
-    renderMemoryResults(result, { append });
-    memoryBrowseCursor = String(result.nextCursor || '');
+    memoryBrowsePageIndex = pageIndex;
+    memoryBrowseNextCursor = String(result.nextCursor || '');
     memoryBrowseTotal = Number(result.total || 0);
-    if (container) container.hidden = !memoryBrowseCursor;
+    renderMemoryResults(result);
     if (browseButton) browseButton.disabled = false;
-    if (button) button.disabled = false;
     status.textContent = memoryHits.length
-      ? `全量浏览：共 ${memoryBrowseTotal} 条活动原始记录，已显示 ${memoryHits.length} 条。`
+      ? `全量浏览：共 ${memoryBrowseTotal} 条活动原始记录。`
       : '没有符合筛选条件的活动原始记录。';
     status.className = 'meta ok';
   } catch (error) {
     if (browseButton) browseButton.disabled = false;
-    if (button) button.disabled = false;
-    if (!append) resetMemoryBrowsePaging();
-    else {
-      memoryBrowseCursor = '';
-      if (container) container.hidden = true;
+    if (!navigate) {
+      resetMemoryBrowsePaging();
+      document.getElementById('memoryResults').innerHTML = `<div class="empty-state"><strong>读取失败</strong><p>${esc(error.message || '未知错误')}</p></div>`;
+    } else {
+      memoryBrowsePageIndex = previousPageIndex;
+      if (pageIndex === memoryBrowseCursors.length - 1 && pageIndex > previousPageIndex) memoryBrowseCursors.pop();
     }
     status.textContent = error.message || '读取全量记录失败';
     status.className = 'meta err';
-    if (!append) document.getElementById('memoryResults').innerHTML = `<div class="empty-state"><strong>读取失败</strong><p>${esc(error.message || '未知错误')}</p></div>`;
+    updateMemoryPageControls();
+  } finally {
+    if (browseButton) browseButton.disabled = false;
   }
+}
+async function changeMemoryResultsPage(delta) {
+  if (memoryBrowseMode) {
+    const pageIndex = memoryBrowsePageIndex + delta;
+    if (pageIndex < 0) return;
+    if (pageIndex > memoryBrowsePageIndex + 1 || pageIndex >= memoryBrowseCursors.length && !memoryBrowseNextCursor) return;
+    await browseAllMemory({ pageIndex, navigate: true });
+    return;
+  }
+  const pageCount = Math.ceil(memoryHits.length / MEMORY_RESULTS_PAGE_SIZE);
+  memoryResultsPageIndex = Math.max(0, Math.min(pageCount - 1, memoryResultsPageIndex + delta));
+  renderMemoryResults({ hits: memoryHits });
 }
 function resetMemoryEditor() {
   document.getElementById('memoryId').value = '';
@@ -1949,6 +2323,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   if (updateHash && location.hash !== '#' + page) history.pushState({}, '', '#' + page);
   if (page === 'overview' || page === 'sessions') refreshDesktopAgentStatus();
   if (page === 'memory') refreshMemoryStatus();
+  if (page === 'memory-organizer') refreshMemoryOrganizer();
+  else { clearTimeout(memoryOrganizerPollTimer); memoryOrganizerPollTimer = null; }
   if (page === 'memory-settings') { refreshMemoryStatus(); refreshMemorySettings(); }
   closeConsoleSearch();
   if (focus) {
@@ -1960,6 +2336,10 @@ document.querySelectorAll('[data-view]').forEach(button => button.addEventListen
   setConsolePage(button.dataset.view, { focus: true, target: button.dataset.target });
 }));
 document.getElementById('memoryRefreshStatus').addEventListener('click', refreshMemoryStatus);
+document.getElementById('memoryOrganizerRefresh').addEventListener('click', () => refreshMemoryOrganizer());
+document.getElementById('memoryOrganizerCleanup').addEventListener('click', cleanupMemoryOrganizerSessions);
+document.getElementById('memoryOrganizerSession').addEventListener('change', renderMemoryOrganizerSessionInfo);
+document.getElementById('memoryOrganizerStart').addEventListener('click', startMemoryOrganizer);
 document.getElementById('memorySettingsRefreshStatus').addEventListener('click', () => { refreshMemoryStatus(); refreshMemorySettings(); });
 document.getElementById('memorySettingsSave').addEventListener('click', saveMemorySettings);
 document.getElementById('memoryProvidersSave').addEventListener('click', saveMemoryProviders);
@@ -1969,12 +2349,23 @@ document.getElementById('memoryEmbeddingClearKey').addEventListener('change', ev
 document.getElementById('memoryLlmClearKey').addEventListener('change', event => { if (event.target.checked) document.getElementById('memoryLlmKey').value = ''; });
 document.getElementById('memorySearch').addEventListener('click', searchMemory);
 document.getElementById('memoryBrowseAll').addEventListener('click', () => browseAllMemory());
-document.getElementById('memoryLoadMore').addEventListener('click', () => browseAllMemory({ append: true }));
+document.getElementById('memoryPreviousPage').addEventListener('click', () => changeMemoryResultsPage(-1));
+document.getElementById('memoryNextPage').addEventListener('click', () => changeMemoryResultsPage(1));
+document.getElementById('memoryOrganizerPreviousPage').addEventListener('click', () => {
+  memoryOrganizerPageIndex = Math.max(0, memoryOrganizerPageIndex - 1);
+  renderMemoryOrganizerJobs();
+});
+document.getElementById('memoryOrganizerNextPage').addEventListener('click', () => {
+  const count = Array.isArray(memoryOrganizerData?.jobs) ? memoryOrganizerData.jobs.length : 0;
+  const pageCount = Math.ceil(count / MEMORY_ORGANIZER_PAGE_SIZE);
+  memoryOrganizerPageIndex = Math.min(pageCount - 1, memoryOrganizerPageIndex + 1);
+  renderMemoryOrganizerJobs();
+});
 document.getElementById('memoryQuery').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); searchMemory(); }
 });
 document.getElementById('memoryResults').addEventListener('click', event => {
-  const hit = event.target.closest('[data-memory-index]');
+  const hit = event.target.closest('button[data-memory-index]');
   if (hit) selectMemoryHit(Number(hit.dataset.memoryIndex));
 });
 document.getElementById('memorySave').addEventListener('click', () => saveMemory(false));
@@ -2000,7 +2391,7 @@ function updateOverview(status) {
   renderSnowlumaHealth(status.snowluma);
   document.getElementById('metricMode').textContent = '按需提醒';
   document.getElementById('metricRole').textContent = '私聊、@、回复/引用、关键词';
-  document.getElementById('accessSummary').textContent = '管理员 ' + (status.ownerQQ || '未设置') + ' · ' + (status.allowGroups || []).length + ' 个白名单群 · ' + (status.allowPrivate || []).length + ' 位白名单好友';
+  document.getElementById('accessSummary').textContent = '关系对象 QQ：' + (status.ownerQQ || '未设置');
   document.getElementById('lastUpdated').textContent = '状态同步于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   document.getElementById('connectionAlert').hidden = true;
 }

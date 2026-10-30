@@ -33,6 +33,7 @@ npm run test:console-ui
 - 页面不再显示逐 QQ DSH 会话映射、逐来源通知或审批转发控件。
 - 提示词编辑区固定对应 `desktop-agent`。
 - QQ 通道面板保留提醒配置、消息缓存状态和清空缓存操作；清空缓存不会重置全局 DSH 会话。
+- “访问与安全”可独立保存和清除 ownerQQ；测试发送名单在“调试与运维”中独立保存。
 - 浏览器没有 JavaScript 错误、未实现的 fixture API 请求或外部网络请求。
 
 新增控制台 API 时，需在 `scripts/console-ui-fixture.mjs` 里补充对应的内存 mock。

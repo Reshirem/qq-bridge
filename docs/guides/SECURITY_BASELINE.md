@@ -36,13 +36,15 @@
 | 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通消息留在桥接缓冲；正文由全局 agent 主动读，无周期模型心跳 |
 | 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 12 小时）或无限休息；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
-| 管理者身份标记 | `handleIncoming()` | `String(event.user_id) === String(cfg.ownerQQ ?? '')` 时在消息上下文中标记管理者身份；这不授权管理操作。桥接不解析 QQ 管理命令，管理 API 由控制台令牌保护 |
+| QQ 关系对象标记 | `handleIncoming()`、`appendSocialV2Message()` | 消息发送者 ID 取 `event.user_id`，缺失时回退 `event.sender.user_id`；写入结构化 `userId`，owner 匹配写入 `isOwner`。仅当 `ownerQQ` 已配置且发送者 QQ 号相同才标记为 owner。显示名称不参与身份判断；具体关系称谓由人格卡及双方表达决定。聊天中的生活描述不参与账号标记，也不能单独建立跨来源身份关联；QQ 好友关系不代表信任等级或信息分享授权。这不授权管理操作 |
+| QQ 工具来源硬门槛 | `flushDesktopAttentionSignals()`、agent API 集中入口、`mcp-snowluma-safe.js` | 当前 QQ 批次全由已配置 `ownerQQ` 匹配的消息组成时允许跨来源工具操作；普通单来源回合只允许该唯一来源；混合、多来源、来源不明或 QQ 来源下未配置 `ownerQQ` 时拒绝跨来源操作。工具包装附加目标 key，桥接 API 对目标重新校验。回合结束和 bridge 重启清除临时授权；本机控制台与绑定的 desktop-agent 直接会话由本地入口授权 |
 
 ### 2. 工具面（agent 能做什么）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具、只读 `mcp__snowluma-host__snowluma_status` 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
+| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具、只读 `mcp__snowluma-host__snowluma_status` 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
+| 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `search` / `fetch` 是 DSH `@deepseek-ai/dsh-tool-web` 原生配置项，desktop-agent preset 默认设为 `false`；可在 DSH 自己的 preset/plugin 配置中调整。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容审计、限频和工具调用审计 |
@@ -51,17 +53,17 @@
 
 ### 2.1 桌面应用范围（提示词边界）
 
-`desktop-agent` 的会话提示要求：使用 computer-use 操作电脑时，ChatGPT、DeepSeek Harness、qq-bridge 和 SnowLuma 的 GUI 在无关任务中属于受保护界面，不读取或改动其中内容、设置、会话或运行控制；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化。用户开始操作电脑时，陪伴者停止输入并让出控制权；观察到数分钟没有新的用户操作迹象后，先重新查看界面，确认用户暂时离开再继续；情况仍不明确时继续让出控制权。该界面规则不禁用 SnowLuma MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
+`desktop-agent` 的会话提示要求：使用 computer-use 操作电脑时，ChatGPT、DeepSeek Harness、qq-bridge 和 SnowLuma 的 GUI 在无关任务中属于受保护界面，不读取或改动其中内容、设置、会话或运行控制；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化。用户开始操作电脑时，数字角色停止输入并让出控制权；观察到数分钟没有新的用户操作迹象后，先重新查看界面，确认用户暂时离开再继续；情况仍不明确时继续让出控制权。该界面规则不禁用 SnowLuma MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
 
 这是模型行为规则，不是 computer-use 服务端的应用级访问控制。当前工具守卫不按窗口标题或应用名拦截操作；用户明确提出涉及这些应用的任务时，仍由会话提示限定到所请求的范围。
 
-固定前缀也要求陪伴者区分 QQ 群聊和私聊的信息来源，不主动在其他聊天中转述，并谨慎处理跨会话询问。群聊、私聊和长期记忆仍共享全局会话上下文，这条要求是模型行为引导，不是程序级的会话隔离或内容过滤。
+固定前缀要求数字角色区分 QQ 聊天场合：当前场合的普通交流可正常参与；其他群/私聊的对话、人物、观点、关系、群内梗和个人经历不主动带入，也不因第三方请求而复述、概括或确认。来源特定信息在上下文或记忆中出现时仍受边界约束；同一当事人问起自己先前私聊的内容时可按当前问题所需自然回应。提示词用情形示例支持模型判断，不规定固定回复。这是模型行为引导；群聊、私聊和记忆仍共享全局会话上下文，并无程序级会话隔离或内容过滤。
 
 ### 3. 出站内容（模型能说什么、能发什么）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 敏感信息拦截 | `auditAndSend()` / `SENSITIVE_RE` / `assertOutboundAuditOk()` | 回复含本机路径、UNC、凭据赋值形态 → **整条拦截不发**；错误文本、审批理由、工具名同样过审 |
+| 敏感信息拦截 | 发送 API 中的 `SENSITIVE_RE` 检查 | 消息含本机路径、UNC 或凭据赋值形态时拦截，不发送；控制台测试发送也执行检查 |
 | 会话令牌防外发 | `redactKnownTokensOnly()` + `onebotSend()` | 所有已知 agent token 在发送前脱敏；文本里若仍出现已知令牌则**直接抛错不发** |
 | CQ 注入 | `onebotSend()` | 出站文本一律包成 `{type:'text'}` 段并做 `[CQ:` → `[CQ：` 转义，杜绝 CQ 码注入 |
 | @ 限制 | `onebotSend()` | `atUserId` 只接受正整数，禁止 `@all` |
@@ -80,6 +82,7 @@
 | 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免"空 = 管理端"的绕过 |
 | 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步）一律 POST；GET 只读 |
 | WebUI 会话管理 | `/api/console/desktop-agent` | 仅控制台令牌可查看状态、启动或提交任务；同一全局会话也接收 QQ 元数据注意信号。 |
+| WebUI 关系对象设置 | `/api/whitelist` | 仅控制台令牌可设置或清除 `ownerQQ`；首次保存后由本地配置优先，忽略 DSH 的同名设置。更改账号时，后续 QQ 工具请求不再沿用当前回合基于旧账号取得的跨来源权限；已缓存消息的身份标记按当前账号重新计算。测试发送名单独立保存，仍只限制控制台测试发送。 |
 | WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务可恢复停止/休息状态，用户在 DSH 对话中的直接消息和 QQ 注意信号可提前结束休息但不能解除持久停止态；所有入口复用单一 `desktop-agent` session。SnowLuma MCP 在内部附加持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
 | WebUI 持久停止 | `/api/console/desktop-agent/stop` | 仅控制台令牌可调用；先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作。DSH 暂不可用时停止态仍保存，恢复连接后不会自动唤醒。 |
 | WebUI 长期记忆设置 | `/api/memory/settings`、`/api/memory/providers`、`/api/memory/service` | 仅控制台令牌可配置或启停本机服务；状态接口只返回密钥是否已设置，不回显密钥。Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径；Provider 保存后重启 A_Memorix。 |
