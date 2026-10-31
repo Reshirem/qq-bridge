@@ -10,7 +10,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import {
   composePresetPromptModules,
@@ -356,16 +356,40 @@ function runAMemorixControl(action) {
   if (!['start', 'restart'].includes(action)) return Promise.reject(new Error('A_Memorix 操作无效'));
   const script = path.join(ROOT, 'scripts', 'a-memorix.ps1');
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, action], {
-      cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 90_000, maxBuffer: 512 * 1024
-    }, (error, stdout, stderr) => {
-      if (error) {
-        const detail = String(stderr || error.message || '启动脚本失败').trim().slice(0, 500);
-        reject(new Error(redactSensitiveText(detail)));
-        return;
-      }
-      resolve(String(stdout || '').trim());
-    });
+    // Windows 的后台服务可能继承 PowerShell 的管道句柄，令 execFile 等到服务退出才返回。
+    // 输出改写临时文件，并只等待控制脚本退出，服务进程无需关闭继承的句柄。
+    const outputPath = path.join(A_MEMORIX_STATE_DIR, `control-${process.pid}-${crypto.randomBytes(6).toString('hex')}.log`);
+    let outputFd;
+    let child;
+    try {
+      outputFd = fs.openSync(outputPath, 'wx', 0o600);
+      child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, action], {
+        cwd: ROOT, windowsHide: true, stdio: ['ignore', outputFd, outputFd]
+      });
+    } catch (error) {
+      if (outputFd !== undefined) fs.closeSync(outputFd);
+      try { fs.unlinkSync(outputPath); } catch {}
+      reject(error);
+      return;
+    }
+    fs.closeSync(outputFd);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 90_000);
+    let finished = false;
+    function finish(error, code) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      let output = '';
+      try { output = fs.readFileSync(outputPath, 'utf8').trim().slice(0, 512 * 1024); } catch {}
+      try { fs.unlinkSync(outputPath); } catch {}
+      if (error || timedOut || code !== 0) {
+        const detail = timedOut ? '启动脚本超时' : (output || error?.message || `启动脚本退出码 ${code}`);
+        reject(new Error(redactSensitiveText(detail.slice(0, 500))));
+      } else resolve(output);
+    }
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code) => finish(null, code));
   });
 }
 
@@ -1287,18 +1311,8 @@ async function main() {
   if (!ffmpegAvailable) {
     log('⚠️ 未检测到 FFmpeg：超过 1 MiB 的图片可能无法压缩；动图无法生成多帧预览，且超过上限时可能无法提供。请安装 FFmpeg、设置 FFMPEG_PATH 或将 ffmpeg 加入 PATH，然后重启桥接。');
   }
-  if (cfg.dsh.autoDetectPort !== false) {
-    const endpoint = await discoverDshBaseUrl(cfg.dsh.baseUrl);
-    if (endpoint.source === 'ambiguous') {
-      throw new Error(`发现多个 DSH Desktop API 端口：${endpoint.candidates.join(', ')}。请在 config.json 里明确 dsh.baseUrl，或设置 dsh.autoDetectPort=false。`);
-    }
-    if (endpoint.source === 'desktop' && endpoint.baseUrl !== cfg.dsh.baseUrl) {
-      log(`自动发现 DSH Desktop API：${endpoint.baseUrl}（仅本次运行使用，不写回动态端口）`);
-      cfg.dsh.baseUrl = endpoint.baseUrl;
-    } else if (endpoint.source === 'fallback') {
-      log(`未发现 DSH Desktop API，暂用配置地址：${endpoint.baseUrl}`);
-    }
-  }
+  // Keep the configured fallback separate from whichever dynamic port was last found.
+  const configuredDshBaseUrl = cfg.dsh.baseUrl;
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
@@ -1695,13 +1709,6 @@ async function main() {
   let desktopAgentSessionPromise = null;
   let desktopAgentResetting = false;
   let desktopAgentTurnActive = false;
-  // QQ MCP calls are authorized against the trusted source(s) that submitted
-  // the current DSH turn. This context is deliberately in-memory only and is
-  // cleared at turn end/restart; a stale owner message must never authorize a
-  // later turn.
-  let desktopAgentQqToolAuthorization = null;
-  let desktopAgentQqToolAuthorizationActive = false;
-  let desktopAgentQqToolAuthorizationRevision = 0;
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
   let memoryOrganizerWorkerPromise = null;
@@ -1718,16 +1725,7 @@ async function main() {
   let desktopAgentRestTimer = null;
   let desktopAgentRecoveryTimer = null;
   function setRuntimeOwnerQQ(ownerQQ) {
-    const changed = cfg.ownerQQ !== ownerQQ;
     cfg.ownerQQ = ownerQQ;
-    // A QQ-triggered turn cannot keep cross-source access granted to a former
-    // owner after the account changes. Local-only turns keep their authorization.
-    if (changed && desktopAgentQqToolAuthorizationActive
-      && desktopAgentQqToolAuthorization?.owner === true
-      && desktopAgentQqToolAuthorization.ownerFromQq === true) {
-      desktopAgentQqToolAuthorization = { ...desktopAgentQqToolAuthorization, owner: false };
-      desktopAgentQqToolAuthorizationRevision += 1;
-    }
   }
 
   function withCurrentOwnerIdentity(message) {
@@ -1777,93 +1775,6 @@ async function main() {
 
   function isDesktopAgentToken(token) {
     return !!desktopAgentSessionId && desktopAgentTokenMatches(token);
-  }
-
-  function normalizeQqConversationKey(value) {
-    const key = String(value ?? '').trim();
-    return /^(?:group|private):[1-9]\d*$/.test(key) ? key : '';
-  }
-
-  function qqToolScopeForSignals(batch) {
-    const items = Array.isArray(batch) ? batch.map(([, item]) => item) : [];
-    const sourceKeys = [...new Set(items.map((item) => normalizeQqConversationKey(item?.key)).filter(Boolean))];
-    const configuredOwner = cfg.ownerQQ == null ? '' : String(cfg.ownerQQ);
-    const ownerOnly = !!configuredOwner && items.length > 0 && items.every((item) => (
-      item?.sawOwner === true
-      && item?.sawNonOwner !== true
-      && String(item?.senderId ?? '') === configuredOwner
-    ));
-    return { owner: ownerOnly, ownerFromQq: true, sourceKeys };
-  }
-
-  function intersectQqToolScopes(current, incoming) {
-    if (!current || !incoming) return { owner: false, sourceKeys: [] };
-    const currentKeys = new Set(current.sourceKeys ?? []);
-    return {
-      owner: current.owner === true && incoming.owner === true,
-      ownerFromQq: current.ownerFromQq === true || incoming.ownerFromQq === true,
-      sourceKeys: (incoming.sourceKeys ?? []).filter((key) => currentKeys.has(key)),
-    };
-  }
-
-  function updateDesktopAgentQqToolAuthorization(batch, { forceUnknown = false } = {}) {
-    const incoming = forceUnknown ? { owner: false, sourceKeys: [] } : qqToolScopeForSignals(batch);
-    if (desktopAgentTurnActive || desktopAgentQqToolAuthorizationActive) {
-      desktopAgentQqToolAuthorization = intersectQqToolScopes(desktopAgentQqToolAuthorization, incoming);
-    } else {
-      desktopAgentQqToolAuthorization = incoming;
-    }
-    desktopAgentQqToolAuthorizationActive = true;
-    desktopAgentQqToolAuthorizationRevision += 1;
-    return desktopAgentQqToolAuthorizationRevision;
-  }
-
-  function updateDesktopAgentQqToolAuthorizationFromConsole() {
-    const incoming = { owner: true, sourceKeys: [] };
-    if (desktopAgentTurnActive || desktopAgentQqToolAuthorizationActive) {
-      desktopAgentQqToolAuthorization = intersectQqToolScopes(desktopAgentQqToolAuthorization, incoming);
-    } else {
-      desktopAgentQqToolAuthorization = incoming;
-    }
-    desktopAgentQqToolAuthorizationActive = true;
-    desktopAgentQqToolAuthorizationRevision += 1;
-    return desktopAgentQqToolAuthorizationRevision;
-  }
-
-  function authorizeDirectDesktopAgentTurn() {
-    if (desktopAgentQqToolAuthorizationActive) return;
-    desktopAgentQqToolAuthorization = { owner: true, sourceKeys: [] };
-    desktopAgentQqToolAuthorizationActive = true;
-    desktopAgentQqToolAuthorizationRevision += 1;
-  }
-
-  function narrowDesktopAgentQqToolAuthorization(key, isOwner) {
-    if (!desktopAgentQqToolAuthorizationActive) return;
-    const incoming = {
-      owner: isOwner === true && cfg.ownerQQ != null,
-      ownerFromQq: true,
-      sourceKeys: [normalizeQqConversationKey(key)].filter(Boolean),
-    };
-    desktopAgentQqToolAuthorization = intersectQqToolScopes(desktopAgentQqToolAuthorization, incoming);
-    desktopAgentQqToolAuthorizationRevision += 1;
-  }
-
-  function clearDesktopAgentQqToolAuthorization() {
-    desktopAgentQqToolAuthorization = null;
-    desktopAgentQqToolAuthorizationActive = false;
-    desktopAgentQqToolAuthorizationRevision += 1;
-  }
-
-  function desktopAgentQqToolAuthorizationError(req) {
-    const authorization = desktopAgentQqToolAuthorization;
-    if (!desktopAgentQqToolAuthorizationActive || !authorization) {
-      return 'QQ 工具拒绝：当前回合没有可验证的 QQ 来源授权';
-    }
-    if (authorization.owner === true) return '';
-    const targetKey = normalizeQqConversationKey(req.headers['x-qq-target-key']);
-    if (authorization.sourceKeys.length === 1 && targetKey === authorization.sourceKeys[0]) return '';
-    if (!targetKey) return 'QQ 工具拒绝：当前来源没有权限枚举或访问其他 QQ 会话';
-    return 'QQ 工具拒绝：当前来源只允许操作本次唯一提醒的会话';
   }
 
   function saveDesktopAgentState() {
@@ -2825,32 +2736,62 @@ async function main() {
     return allowed(kind, id, cfg);
   }
 
-  const checkDsh = async () => {
-    let ok = false;
-    try {
-      await api.settings.describe({});
-      ok = true;
-    } catch {}
-    if (ok) {
-      await refreshBridgeSettings();
-      // DSH 起来后拉一次 preset 清单；DSH 重启（dshReady 由 false 变 true）时再拉一次。
-      if (!dshReady || dshPresetIds.length === 0) {
-        try { await refreshPresetList(); } catch {}
+  let dshCheckPromise = null;
+  let dshDiscoveryNotice = '';
+  async function checkDsh() {
+    if (dshCheckPromise) return dshCheckPromise;
+    dshCheckPromise = (async () => {
+      if (!dshReady && cfg.dsh.autoDetectPort !== false) {
+        const endpoint = await discoverDshBaseUrl(configuredDshBaseUrl);
+        if (endpoint.source === 'ambiguous') {
+          const notice = `发现多个 DSH Desktop API 端口：${endpoint.candidates.join(', ')}；请在 config.json 中指定 dsh.baseUrl`;
+          if (notice !== dshDiscoveryNotice) log(`⚠️ ${notice}`);
+          dshDiscoveryNotice = notice;
+          return false;
+        }
+        if (endpoint.source === 'fallback') {
+          const notice = `未发现 DSH Desktop API，将继续搜索并检查配置地址 ${endpoint.baseUrl}`;
+          if (notice !== dshDiscoveryNotice) log(notice);
+          dshDiscoveryNotice = notice;
+        } else {
+          dshDiscoveryNotice = '';
+        }
+        if (api.setBaseUrl(endpoint.baseUrl)) {
+          cfg.dsh.baseUrl = endpoint.baseUrl;
+          log(`DSH API 地址已切换为 ${endpoint.baseUrl}（仅本次运行使用，不写回配置）`);
+        }
       }
-      if (!dshReady) {
-        dshReady = true;
-        log('DSH 已就绪（autonomous 自主会话运行时）');
-        log('全局数字角色运行时已就绪；QQ 消息按需读取，不创建逐会话 DSH 映射');
-        if (desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(1000);
-        void reconcileDesktopAgentLifecycle();
-        void reconcileMemoryOrganizerRestJobs().then(() => scheduleMemoryOrganizerRun(0));
+      let ok = false;
+      try {
+        await api.settings.describe({});
+        ok = true;
+      } catch {}
+      if (ok) {
+        await refreshBridgeSettings();
+        // DSH 起来后拉一次 preset 清单；DSH 重启（dshReady 由 false 变 true）时再拉一次。
+        if (!dshReady || dshPresetIds.length === 0) {
+          try { await refreshPresetList(); } catch {}
+        }
+        if (!dshReady) {
+          dshReady = true;
+          log('DSH 已就绪（autonomous 自主会话运行时）');
+          log('全局数字角色运行时已就绪；QQ 消息按需读取，不创建逐会话 DSH 映射');
+          if (desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(1000);
+          void reconcileDesktopAgentLifecycle();
+          void reconcileMemoryOrganizerRestJobs().then(() => scheduleMemoryOrganizerRun(0));
+        }
+      } else if (dshReady) {
+        dshReady = false;
+        desktopAgentTurnActive = false;
+        log('⚠️ DSH 不可用（重启中？），QQ 消息继续本地缓冲，注意信号待 DSH 恢复后处理');
       }
-    } else if (dshReady) {
-      dshReady = false;
-      desktopAgentTurnActive = false;
-      log('⚠️ DSH 不可用（重启中？），QQ 消息继续本地缓冲，注意信号待 DSH 恢复后处理');
-    }
-  };
+      return dshReady;
+    })().catch((error) => {
+      log(`DSH 状态检查失败：${error?.message ?? error}`);
+      return false;
+    }).finally(() => { dshCheckPromise = null; });
+    return dshCheckPromise;
+  }
   function startDshWatch() {
     if (dshCheckStarted) return;
     dshCheckStarted = true;
@@ -3248,6 +3189,10 @@ async function main() {
         // 因此仅靠控制台令牌挡不住 AI。这里改成白名单：只有 AI 真正需要的面放行，
         // 其余（人格/提示词/思考强度/白名单/重启…）一律 403——避免以后新增管理端点时忘记拉黑。
         if (req.headers['x-agent-token']) {
+          if (!isDesktopAgentToken(req.headers['x-agent-token'])) {
+            sendJson({ ok: false, error: '未授权：智能体调用携带的会话令牌无效' }, 403);
+            return;
+          }
           const agentAllowed = url.pathname === '/api/status'
             || url.pathname === '/api/desktop-agent/owner-identity'
             || url.pathname === '/api/desktop-agent/rest'
@@ -3266,15 +3211,6 @@ async function main() {
           if (sessionBoundAgentPath && String(req.headers['x-agent-session-id'] ?? '') !== String(desktopAgentSessionId ?? '')) {
             sendJson({ ok: false, error: '未授权：QQ 工具调用未绑定当前全局 desktop-agent 会话' }, 403);
             return;
-          }
-          if (url.pathname.startsWith('/api/socialV2/')
-            || url.pathname.startsWith('/api/send/')
-            || url.pathname.startsWith('/api/images/')) {
-            const authorizationError = desktopAgentQqToolAuthorizationError(req);
-            if (authorizationError) {
-              sendJson({ ok: false, error: authorizationError }, 403);
-              return;
-            }
           }
         }
         // 只读降级：表情库在启动时加载失败时，写接口必须明确失败。
@@ -4396,31 +4332,17 @@ async function main() {
           resumeDesktopAgentLifecycle('manual WebUI task');
           let manualPromptRegistered = false;
           let hadActiveTurn = false;
-          let authorizationSnapshot = null;
-          let authorizationRevision = null;
           try {
             const sessionId = await ensureDesktopAgentSession();
             hadActiveTurn = desktopAgentTurnActive;
-            authorizationSnapshot = {
-              authorization: desktopAgentQqToolAuthorization
-                ? { ...desktopAgentQqToolAuthorization, sourceKeys: [...desktopAgentQqToolAuthorization.sourceKeys] }
-                : null,
-              active: desktopAgentQqToolAuthorizationActive,
-            };
-            authorizationRevision = updateDesktopAgentQqToolAuthorizationFromConsole();
             if (desktopAgentTurnActive || desktopAgentManualPromptPending > 0) {
               desktopAgentManualPromptPending += 1;
               saveDesktopAgentState();
               manualPromptRegistered = true;
             }
             const accepted = await submitDesktopAgentPrompt(sessionId, message);
-        if (!accepted?.result?.ok) {
+            if (!accepted?.result?.ok) {
               const error = accepted?.result?.error;
-              if (authorizationRevision != null && desktopAgentQqToolAuthorizationRevision === authorizationRevision) {
-                desktopAgentQqToolAuthorization = authorizationSnapshot?.authorization ?? null;
-                desktopAgentQqToolAuthorizationActive = authorizationSnapshot?.active === true;
-                desktopAgentQqToolAuthorizationRevision += 1;
-              }
               desktopAgentManualPromptPending = Math.max(0, desktopAgentManualPromptPending - 1);
               saveDesktopAgentState();
               manualPromptRegistered = false;
@@ -4438,11 +4360,6 @@ async function main() {
             appendActivity(`全局数字角色收到 WebUI 任务（${message.length} 字符）`);
             sendJson({ ok: true, sessionId });
           } catch (error) {
-            if (authorizationRevision != null && desktopAgentQqToolAuthorizationRevision === authorizationRevision) {
-              desktopAgentQqToolAuthorization = authorizationSnapshot?.authorization ?? null;
-              desktopAgentQqToolAuthorizationActive = authorizationSnapshot?.active === true;
-              desktopAgentQqToolAuthorizationRevision += 1;
-            }
             if (manualPromptRegistered && desktopAgentLifecycle !== 'stopped') {
               desktopAgentManualPromptPending = Math.max(0, desktopAgentManualPromptPending - 1);
               saveDesktopAgentState();
@@ -7556,9 +7473,6 @@ async function main() {
           sender: item.sender,
           senderId: item.senderId,
           messageId: item.messageId,
-          isOwner: item.isOwner === true,
-          sawOwner: item.sawOwner === true,
-          sawNonOwner: item.sawNonOwner === true,
           seq: item.seq,
           count: item.count,
           firstAt: item.firstAt,
@@ -7595,7 +7509,6 @@ async function main() {
     desktopAgentRecoveryAttempt = 0;
     desktopAgentPendingWakeReason = '';
     desktopAgentManualPromptPending = 0;
-    clearDesktopAgentQqToolAuthorization();
     saveDesktopAgentState();
     log('WebUI：全局数字角色已进入持久停止态；不会自动唤醒');
     appendActivity('全局数字角色已由 WebUI 停止');
@@ -7870,7 +7783,7 @@ async function main() {
     desktopAttentionFlushTimer.unref?.();
   }
 
-  function trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, isOwner, now }) {
+  function trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now }) {
     if (!Number.isSafeInteger(seq) || seq <= 0) return;
     const existing = desktopAttentionUnresolved.get(key);
     if (!existing) {
@@ -7881,9 +7794,6 @@ async function main() {
       }
       desktopAttentionUnresolved.set(key, {
         key, kind, id, reason, sender, senderId, messageId, seq,
-        isOwner: isOwner === true,
-        sawOwner: isOwner === true,
-        sawNonOwner: isOwner !== true,
         count: 1,
         firstAt: now,
         lastAt: now,
@@ -7896,28 +7806,23 @@ async function main() {
 
     existing.count += 1;
     existing.lastAt = now;
-    existing.sawOwner = existing.sawOwner === true || isOwner === true;
-    existing.sawNonOwner = existing.sawNonOwner === true || isOwner !== true;
     if (seq > existing.seq) {
-      Object.assign(existing, { kind, id, reason, sender, senderId, messageId, seq, isOwner: isOwner === true });
+      Object.assign(existing, { kind, id, reason, sender, senderId, messageId, seq });
       existing.reminderQueued = false;
       existing.reminderSent = false;
     }
   }
 
-  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq, isOwner }) {
+  function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq }) {
     const now = Date.now();
-    trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, isOwner, now });
-    narrowDesktopAgentQqToolAuthorization(key, isOwner);
+    trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
     const existing = desktopAttentionQueue.get(key);
     if (existing) {
       existing.count += 1;
-      existing.sawOwner = existing.sawOwner === true || isOwner === true;
-      existing.sawNonOwner = existing.sawNonOwner === true || isOwner !== true;
       const hasIncomingSeq = Number.isSafeInteger(seq) && seq > 0;
       const hasExistingSeq = Number.isSafeInteger(existing.seq) && existing.seq > 0;
       if ((hasIncomingSeq && (!hasExistingSeq || seq >= existing.seq)) || (!hasIncomingSeq && !hasExistingSeq)) {
-        Object.assign(existing, { kind, id, reason, sender, senderId, messageId, seq: hasIncomingSeq ? seq : null, isOwner: isOwner === true });
+        Object.assign(existing, { kind, id, reason, sender, senderId, messageId, seq: hasIncomingSeq ? seq : null });
         existing.reminder = false;
       }
       existing.lastAt = now;
@@ -7929,9 +7834,6 @@ async function main() {
       }
       desktopAttentionQueue.set(key, {
         key, kind, id, reason, sender, senderId, messageId,
-        isOwner: isOwner === true,
-        sawOwner: isOwner === true,
-        sawNonOwner: isOwner !== true,
         seq: Number.isSafeInteger(seq) && seq > 0 ? seq : null,
         count: 1, firstAt: now, lastAt: now, reminder: false
       });
@@ -7991,12 +7893,10 @@ async function main() {
       const newer = desktopAttentionQueue.get(key);
       if (newer) {
         newer.count += item.count;
-        newer.sawOwner = newer.sawOwner === true || item.sawOwner === true;
-        newer.sawNonOwner = newer.sawNonOwner === true || item.sawNonOwner === true;
         if (Number.isSafeInteger(item.seq) && item.seq > (newer.seq || 0)) {
           Object.assign(newer, {
             kind: item.kind, id: item.id, reason: item.reason, sender: item.sender,
-            senderId: item.senderId, messageId: item.messageId, isOwner: item.isOwner === true,
+            senderId: item.senderId, messageId: item.messageId,
             seq: item.seq, reminder: item.reminder
           });
         }
@@ -8020,13 +7920,11 @@ async function main() {
       .sort((a, b) => a[1].lastAt - b[1].lastAt)
       .slice(-20);
     const wakeReason = desktopAgentPendingWakeReason;
-    if (batch.length === 0 && (!wakeReason || desktopAgentTurnActive || desktopAgentQqToolAuthorizationActive)) return;
+    if (batch.length === 0 && (!wakeReason || desktopAgentTurnActive)) return;
     const epoch = desktopAgentLifecycleEpoch;
     const attentionGeneration = desktopAttentionGeneration;
     for (const [key] of batch) desktopAttentionQueue.delete(key);
     const promise = (async () => {
-      let authorizationSnapshot = null;
-      let authorizationRevision = null;
       try {
         const sessionId = await ensureDesktopAgentSession();
         if (attentionGeneration !== desktopAttentionGeneration) return;
@@ -8034,18 +7932,11 @@ async function main() {
           requeueDesktopAttentionBatch(batch);
           return;
         }
-        if ((desktopAgentTurnActive || desktopAgentQqToolAuthorizationActive) && batch.length === 0) {
+        if (desktopAgentTurnActive && batch.length === 0) {
           requeueDesktopAttentionBatch(batch);
           return;
         }
-        const turnWasActive = desktopAgentTurnActive || desktopAgentQqToolAuthorizationActive;
-        authorizationSnapshot = {
-          authorization: desktopAgentQqToolAuthorization
-            ? { ...desktopAgentQqToolAuthorization, sourceKeys: [...desktopAgentQqToolAuthorization.sourceKeys] }
-            : null,
-          active: desktopAgentQqToolAuthorizationActive,
-        };
-        authorizationRevision = updateDesktopAgentQqToolAuthorization(batch, { forceUnknown: batch.length === 0 });
+        const turnWasActive = desktopAgentTurnActive;
         const lines = batch.map(([, item]) => {
           const cue = truncateText(String(item.reason ?? 'attention'), 80).replace(/[\r\n]/g, ' ');
           const sender = truncateText(String(item.sender ?? '未知'), 64).replace(/[\r\n]/g, ' ');
@@ -8107,11 +7998,6 @@ async function main() {
         if (batch.length) appendActivity(`QQ 注意信号已提交给全局数字角色（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
         if (attentionGeneration !== desktopAttentionGeneration) return;
-        if (authorizationRevision != null && desktopAgentQqToolAuthorizationRevision === authorizationRevision) {
-          desktopAgentQqToolAuthorization = authorizationSnapshot?.authorization ?? null;
-          desktopAgentQqToolAuthorizationActive = authorizationSnapshot?.active === true;
-          desktopAgentQqToolAuthorizationRevision += 1;
-        }
         const activeOnFailure = desktopAgentLifecycle === 'active';
         requeueDesktopAttentionBatch(batch);
         log(`数字角色唤醒提示提交失败，保留待处理提醒：${error?.message ?? error}`);
@@ -8937,8 +8823,7 @@ async function main() {
           sender: senderName,
           senderId,
           messageId,
-          seq: bufferedMessage?.seq,
-          isOwner
+          seq: bufferedMessage?.seq
         });
       }
       appendActivity(`${key} 消息已缓冲${wakeTrigger ? '；仅元数据提醒全局数字角色' : ''}：${textContent.slice(0, 80)}`);
@@ -8997,6 +8882,12 @@ async function main() {
     let retryMs = 3000;
     let failureStreak = 0;
     for (;;) {
+      // The health watcher rediscovers the endpoint while offline. Do not
+      // repeatedly reconnect the event stream to a stale or unknown port.
+      if (!dshReady) {
+        await sleep(1000);
+        continue;
+      }
       let framesThisStream = 0;
       try {
         log('连接 DSH 事件流…');
@@ -9018,13 +8909,6 @@ async function main() {
               const directDshWake = !turnWasAlreadyActive
                 && desktopAgentManualPromptPending === 0
                 && desktopAgentLifecycle === 'resting';
-              if (!turnWasAlreadyActive && !desktopAgentQqToolAuthorizationActive
-                && desktopAgentLifecycle !== 'stopped'
-                && (desktopAgentLifecycle !== 'resting' || directDshWake)) {
-                // A turn started directly in the bridge-owned DSH desktop-agent
-                // session is the local operator's input, not an untrusted QQ source.
-                authorizeDirectDesktopAgentTurn();
-              }
               if (manualQueued) {
                 desktopAgentManualPromptPending = Math.max(0, desktopAgentManualPromptPending - 1);
                 if (desktopAgentLifecycle === 'resting' || desktopAgentLifecycle === 'recovering') {
@@ -9110,7 +8994,6 @@ async function main() {
 
             if (event?.type === 'turn/end') {
               desktopAgentTurnActive = false;
-              clearDesktopAgentQqToolAuthorization();
               toolCallNames.delete(frame.sessionId);
               if (desktopAgentLifecycle === 'resting' && desktopAgentPendingWakeReason === 'qq-attention') {
                 resumeDesktopAgentRestForAttention();
@@ -9129,8 +9012,13 @@ async function main() {
       } catch (error) {
         log('事件流中断:', error?.message ?? error);
       } finally {
-        clearDesktopAgentQqToolAuthorization();
         toolCallNames.clear();
+      }
+      await checkDsh();
+      if (!dshReady) {
+        failureStreak = 0;
+        retryMs = 3000;
+        continue;
       }
       if (framesThisStream > 0) {
         failureStreak = 0;

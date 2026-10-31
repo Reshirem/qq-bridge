@@ -144,7 +144,8 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   return {
     sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
-    ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State,
+    ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
+    isDshReady() { return dshReady; },
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
     handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
     flushAttentionNow() {
@@ -181,7 +182,17 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     process: { pid: process.pid, platform: process.platform, kill: process.kill, env: {}, exit: (code) => { throw new Error('unexpected exit ' + code); } },
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
-    NodeApiClient: class { constructor() { return api; } },
+    NodeApiClient: class {
+      constructor(baseUrl) {
+        api.baseUrl = baseUrl;
+        api.setBaseUrl = (next) => {
+          if (api.baseUrl === next) return false;
+          api.baseUrl = next;
+          return true;
+        };
+        return api;
+      }
+    },
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '',
     // The production runtime may discover DSH's randomly allocated Desktop API port.

@@ -178,25 +178,28 @@ test('cached messages and active members use the current owner, including after 
   } finally { await f.close(); }
 });
 
-test('changing owner revokes cross-source access from the current QQ turn', async () => {
+test('QQ tools remain available across simultaneous sources with valid session credentials', async () => {
   const f = await start();
   try {
     const sessionId = await f.h.ensureDesktopAgentSession();
     f.h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId, running: false }] } } });
     f.h.setDesktopAgentLifecycle('active');
     f.h.setDesktopAgentTurnActive(false);
-    f.h.queueDesktopAttentionSignal({ key: 'group:456', kind: 'group', id: '456', reason: 'atMention', sender: 'owner', senderId: '123', messageId: '55', seq: 1, isOwner: true });
+    f.h.queueDesktopAttentionSignal({ key: 'group:456', kind: 'group', id: '456', reason: 'atMention', sender: 'user', senderId: '321', messageId: '55', seq: 1, isOwner: false });
     await f.h.flushAttentionNow();
     const token = JSON.parse(fs.readFileSync(path.join(f.h.temp, 'state', 'desktop-agent.json'), 'utf8')).agentToken;
-    const agent = { 'x-agent-token': token, 'x-agent-session-id': sessionId, 'x-agent-call': '1', 'x-qq-target-key': 'group:789' };
-    const initiallyAllowed = await f.call('/api/socialV2/state?key=group:789', undefined, agent);
-    assert.equal(initiallyAllowed.status, 200, JSON.stringify(initiallyAllowed.body));
-    assert.equal((await f.call('/api/whitelist', { ownerQQ: '999' })).status, 200);
-    assert.equal((await f.call('/api/socialV2/state?key=group:789', undefined, agent)).status, 403);
-    const source = { ...agent, 'x-qq-target-key': 'group:456' };
-    assert.equal((await f.call('/api/socialV2/state?key=group:456', undefined, source)).status, 200);
-    assert.equal((await f.call('/api/whitelist', { ownerQQ: '123' })).status, 200);
-    assert.equal((await f.call('/api/socialV2/state?key=group:789', undefined, agent)).status, 403);
+    const agent = { 'x-agent-token': token, 'x-agent-session-id': sessionId, 'x-agent-call': '1' };
+    f.h.queueDesktopAttentionSignal({ key: 'private:789', kind: 'private', id: '789', reason: 'privateMessage', sender: 'user', senderId: '789', messageId: '56', seq: 2, isOwner: false });
+    for (const key of ['group:456', 'private:789', 'group:999']) {
+      assert.equal((await f.call(`/api/socialV2/state?key=${key}`, undefined, agent)).status, 200, key);
+    }
+    assert.equal((await f.call('/api/whitelist', { ownerQQ: '' })).status, 200);
+    assert.equal((await f.call('/api/socialV2/state?key=private:789', undefined, agent)).status, 200);
+    f.h.getSocialV2State('private:789').lastIncomingAt = Date.now() - 30000;
+    assert.equal((await f.call('/api/socialV2/wait', { key: 'private:789', purpose: 'reply', timeoutMs: 5000, quietMs: 10000 }, agent)).status, 200);
+    assert.equal((await f.call('/api/socialV2/state?key=group:456', undefined, { ...agent, 'x-agent-token': 'invalid' })).status, 403);
+    assert.equal((await f.call('/api/socialV2/conversations', undefined, { 'x-agent-token': 'invalid', 'x-agent-session-id': sessionId })).status, 403);
+    assert.equal((await f.call('/api/socialV2/state?key=group:456', undefined, { ...agent, 'x-agent-session-id': 'other-session' })).status, 403);
     assert.equal((await f.call('/api/whitelist', { ownerQQ: '999' }, agent)).status, 403);
   } finally { await f.close(); }
 });
@@ -208,7 +211,7 @@ test('changing owner does not revoke a local console task authorization', async 
     f.h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId, running: false }] } } });
     assert.equal((await f.call('/api/console/desktop-agent', { message: 'local task' })).status, 200);
     const token = JSON.parse(fs.readFileSync(path.join(f.h.temp, 'state', 'desktop-agent.json'), 'utf8')).agentToken;
-    const agent = { 'x-agent-token': token, 'x-agent-session-id': sessionId, 'x-agent-call': '1', 'x-qq-target-key': 'group:789' };
+    const agent = { 'x-agent-token': token, 'x-agent-session-id': sessionId, 'x-agent-call': '1' };
     assert.equal((await f.call('/api/socialV2/state?key=group:789', undefined, agent)).status, 200);
     assert.equal((await f.call('/api/whitelist', { ownerQQ: '999' })).status, 200);
     assert.equal((await f.call('/api/socialV2/state?key=group:789', undefined, agent)).status, 200);

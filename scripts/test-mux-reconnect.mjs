@@ -71,11 +71,13 @@ sockets[0].close();
 await tick(60);
 
 // 连接 2：重连（bridge.js 的 for(;;) 会重建 generator）
+client.setBaseUrl('http://127.0.0.1:4090');
 startStream();
 await tick();
 sockets[1].simulateOpen();
 await tick(60);
 check('重连后重放了已有会话的 follow', followsOn(sockets[1]).includes('session-AAA'), `[${followsOn(sockets[1]).join(', ')}]`);
+check('重连使用新发现的端口', new URL(sockets[1].url).port === '4090', sockets[1].url);
 
 console.log(failed === 0 ? '\n✅ 事件流重连回归测试通过' : `\n❌ ${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

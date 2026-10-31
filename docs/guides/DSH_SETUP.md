@@ -12,7 +12,7 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并使用当前 SnowLuma MCP 工具集；桥接会按 QQ 提醒来源限制非 owner 的工具操作。`ownerQQ` 是可选的 QQ 账号身份锚点，消息以发送者 QQ 号匹配它；不按发送者名称或群名片判断。模型可用 `qq_get_owner_identity` 查询当前号码或未配置状态。未设置时，QQ 来源不能确认 owner，也不能跨来源调用工具；当前聊天来源内的操作仍可进行。该字段不授权桥接管理操作。可在控制台“访问与安全”中设置或清除，保存后本地设置优先；在首次通过控制台保存前，仍兼容 DSH 设置的 `qq-agent-presets.ownerQQ`。DSH 运行模式字段不参与运行。
+Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并使用当前 SnowLuma MCP 工具集；工具访问不限于提醒来源。`ownerQQ` 是可选的 QQ 账号身份锚点，消息以发送者 QQ 号匹配它；不按发送者名称或群名片判断。模型可用 `qq_get_owner_identity` 查询当前号码或未配置状态。未设置时，QQ 来源不能确认 owner，但不影响工具访问。该字段不授权桥接管理操作。可在控制台“访问与安全”中设置或清除，保存后本地设置优先；在首次通过控制台保存前，仍兼容 DSH 设置的 `qq-agent-presets.ownerQQ`。DSH 运行模式字段不参与运行。
 
 长期记忆为可选能力。Windows 上可在仓库根目录运行：
 
@@ -42,7 +42,7 @@ Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过
 
 整理任务与游标保存在 `state/memory-organizer.json`，其中也持久记录已自动排队的日期，避免桥接重启后同一天再次触发。WebUI“长期记忆 → 整理进度”可以查看任务、重试失败任务，或选择历史 DSH 会话并整理到点击时的日志末尾。首次启用长期记忆时，桥接会把尚未排队的历史休息边界合并到最新边界，每日最多排队一次。读取到截断、不完整或缺少连续序号的记录时，任务会失败并保留游标；检查 DSH headless 与 A_Memorix 凭据、确认错误后可在页面重试。历史会话整理仅依据它们自身可读取的 DSH 记录，不会另外读取 QQ 消息库。实际安装版 CLI 的 Node 入口和 `--help` 已确认可运行；完整整理与 Gateway 写入仍需观察当前任务结果。
 
-Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接会在**每次启动时**识别由 DeepSeek Harness 进程持有并经 API 确认的本机监听端口，因此应先启动 DSH，再启动桥接。发现的 URL 只用于当前桥接进程，不写回 `config.json`。未发现桌面 API 时使用 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`）作为回退；非 Windows 或固定端口部署可设置 `dsh.autoDetectPort: false`。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会拒绝猜测；将 `dsh.baseUrl` 指向目标实例即可明确选择。DSH Desktop 重启后若换了端口，重启桥接以重新发现。
+Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接启动时和 DSH 离线后会搜索由 DeepSeek Harness 进程持有、经 API 确认的本机监听端口。桥接可以先于 DSH 启动；未发现时继续定期搜索并检查 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`），发现并确认可用后再连接事件流。发现的 URL 只在内存中使用，不写回 `config.json`；DSH 重启换端口时会自动切换并恢复会话订阅。非 Windows、远程地址或关闭自动发现时使用配置地址。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会暂停连接而不猜测；指定目标地址并重启桥接即可。
 
 这个 API 端口由 DSH 本身开放；profile 里的 MCP 插件通过 stdio 启动，不另开 API 端口。桥接控制台的 `consolePort` 是独立端口，默认固定为 `3100`，占用时会报错退出。
 
@@ -83,9 +83,9 @@ node scripts/build-agent-preset-patches.mjs
 
 如果把仓库移动或重新 clone 到新路径，请再次运行 `setup-dsh.mjs`，以更新 profile 中的 MCP 路径和 bundle 链接。
 
-安装完成后，重启 DSH（或重新加载 profile），使 preset、ownerQQ 设置、工具会话绑定守卫和 MCP 工具生效。跨来源权限由 qq-bridge 同时执行校验，不依赖 SnowLuma 修改。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置位于 `qq-agent-presets.ownerQQ`。
+安装完成后，重启 DSH（或重新加载 profile），使 preset、ownerQQ 设置、工具会话绑定守卫和 MCP 工具生效。QQ 工具调用由 qq-bridge 校验会话凭证，不依赖 SnowLuma 修改。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置位于 `qq-agent-presets.ownerQQ`。
 
-电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具。QQ 来源触发时，桥接只允许访问本次唯一提醒的来源；当前回合全部提醒来自配置 `ownerQQ` 时才开放跨来源操作，混合来源或未配置 `ownerQQ` 则拒绝跨来源。群名片和昵称不参与 owner 判断。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
+电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 SnowLuma MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__snowluma__*` QQ 工具集、只读的 `mcp__snowluma-host__snowluma_status`、可选配置的 `mcp__qq-memory__*` 记忆工具及无害的 ask-user/todo 工具。数字角色可访问账号中的 QQ 会话，不受提醒来源或 `ownerQQ` 限制。群名片和昵称不参与 owner 判断。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
 ### 图片与动图依赖
 
@@ -140,7 +140,7 @@ node scripts/test-audit-setup-guards.mjs
 - 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局数字角色发不含消息正文的提醒；是否处理由 agent 自行判断。
 - 普通群消息正文保存在桥接侧，不会自动注入模型。全局 agent 可先用 `qq_list_conversations` 发现群/好友，再按需调用消息、历史或成员读取工具。
 - 没有模型心跳或定时轮询，也不靠长等待工具维持在线。每个活动回合必须以 `agent_rest` 作为最后一个工具调用；可设 1 秒至 12 小时的休息，或省略时长进入无限休息。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
-- 默认提示词建议：交流可能还有后续时先按需等待；只是暂时结束活动、想稍后回来时选择不超过 5 分钟的有限时长，真正想休息时自行决定时长。5 分钟是提示词引导而非程序限制，频繁定时唤醒也会产生模型调用。纯休息到期的回合没有 QQ 来源授权，不能因此访问 QQ；收到有效 QQ 提醒时仍按提醒来源授权。
+- 默认提示词建议：交流可能还有后续时先按需等待；只是暂时结束活动、想稍后回来时选择不超过 5 分钟的有限时长，真正想休息时自行决定时长。5 分钟是提示词引导而非程序限制，频繁定时唤醒也会产生模型调用。休息到期后的活动回合也可按需访问 QQ。
 - 回合未调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟递增恢复尝试，之后最长每 30 分钟尝试一次。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。
 - 工具等待、读取和发送都由当前 agent 回合主动决定；回合文本不会自动转发到 QQ。
 - 全局数字角色通过 SnowLuma MCP 发送时自动使用全局 agent 令牌，任意合法群/私聊 key 均可用；`agent_rest` 不限制休息或停止状态中的后续工具调用，发送仍接受速率限制与审计。若数字角色通过 QQ 桌面界面操作，行为不经过这些桥接 API 检查。

@@ -146,40 +146,10 @@ function errorText(value, fallback) {
   return fallback;
 }
 
-function normalizeQqConversationKey(value) {
-  const key = String(value ?? '').trim();
-  return /^(?:group|private):[1-9]\d*$/.test(key) ? key : '';
-}
-
-function qqTargetKeyForBridge(path, init = {}) {
-  let url;
-  try { url = new URL(path, 'http://127.0.0.1'); } catch { return ''; }
-  const queryKey = normalizeQqConversationKey(url.searchParams.get('key'));
-  if (queryKey) return queryKey;
-  let body = init.body;
-  if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch { body = null; }
-  }
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return '';
-  const bodyKey = normalizeQqConversationKey(body.key);
-  if (bodyKey) return bodyKey;
-  if ((url.pathname === '/api/send/group' || url.pathname === '/api/send/reply') && body.groupId != null) {
-    return normalizeQqConversationKey(`group:${body.groupId}`);
-  }
-  if (url.pathname === '/api/send/private' && body.userId != null) {
-    return normalizeQqConversationKey(`private:${body.userId}`);
-  }
-  return '';
-}
-
 async function agentApi(path, init = {}) {
   const timeoutMs = init.timeoutMs || 15000;
   const { timeoutMs: _omit, ...rest } = init;
-  const requestHeaders = { ...(rest.headers ?? {}) };
-  delete requestHeaders['x-qq-target-key'];
-  const targetKey = qqTargetKeyForBridge(path, rest);
-  if (targetKey) requestHeaders['x-qq-target-key'] = targetKey;
-  const headers = agentHeaders(requestHeaders);
+  const headers = agentHeaders(rest.headers);
   const res = await fetch(`${agentApiBase()}${path}`, { ...rest, headers, signal: AbortSignal.timeout(timeoutMs) });
   let body = null;
   try { body = await res.json(); } catch { body = null; }
@@ -666,7 +636,7 @@ if (cfg.socialV2?.tools?.sendPoke !== false) {
 
 server.tool(
   'qq_wait_for_messages',
-  '这是当前活动回合内的主动等待：purpose="reply" 用于确认对方是否继续补充，purpose="messages" 用于你主动继续观察或等回复；timeoutMs 是最长等待预算，quietMs 控制静默窗口。它只等待当前来源的消息，不结束当前回合，也不安排未来回合。直接看 newMessages、unreadCount 和 readThroughSeq，返回消息无需重复查询；仍有未展示未读才补读。',
+  '这是当前活动回合内的主动等待：purpose="reply" 用于确认对方是否继续补充，purpose="messages" 用于你主动继续观察或等回复；timeoutMs 是最长等待预算，quietMs 控制静默窗口。它等待指定会话的消息，不结束当前回合，也不安排未来回合。直接看 newMessages、unreadCount 和 readThroughSeq，返回消息无需重复查询；仍有未展示未读才补读。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     purpose: z.enum(['messages', 'reply']).optional().describe('默认 messages：主动等待新消息；reply：回复前短静默，按最后来信时间计算'),

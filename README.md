@@ -71,7 +71,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | 字段 | 说明 |
 | --- | --- |
 | `dsh.baseUrl` | 固定 DSH API 地址及自动发现的回退地址，默认 `http://127.0.0.1:3080` |
-| `dsh.autoDetectPort` | 默认 `true`。Windows DSH 桌面版可能动态分配 API 端口；桥接启动时会从 DSH 进程持有的本机监听端口中识别 API。启动桥接前先启动 DSH；发现的端口仅用于本次运行，不写回配置。未发现桌面 API 时使用 `baseUrl`；若匹配到多个 API 且 `baseUrl` 不在其中，桥接会拒绝猜测，需指定目标地址 |
+| `dsh.autoDetectPort` | 默认 `true`。Windows DSH 桌面版可能动态分配 API 端口；桥接启动时及 DSH 离线后会从其本机监听端口中识别 API。未发现时继续定期搜索，并检查配置的 `baseUrl`；就绪后连接事件流。发现的端口只在内存中使用，不写回配置。匹配到多个 API 且 `baseUrl` 不在其中时暂停连接，需指定目标地址并重启桥接 |
 | `dsh.provider` / `dsh.model` / `dsh.reasoningEffort` | DSH 会话使用的模型/推理强度；可在 WebUI“DSH 模型与思考强度”中从模型目录选择或手动填写 Provider / Model ID |
 | `dsh.authToken` | DSH launch token（进程启动凭据）。通常留空；桥接会用 `~/.dsh/.credentials.yaml` 中的浏览器会话签名密钥铸造 Cookie。显式填写时优先使用该 token 交换 Cookie |
 | `dsh.authHeader` / `dsh.authPrefix` | 保留字段，当前新版 DSH 链路使用 Cookie 交换，不再直接发送该鉴权头 |
@@ -94,7 +94,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | A_Memorix 请求超时与新会话首次注入摘要的条数/字符上限；默认 `45000` ms、`6` 条、`2500` 字符。配置与维护说明见 [长期记忆方案](docs/guides/MEMORY_ARCHITECTURE.md) |
 | `deny.*` | 控制台直接测试发送的目标拒绝名单；全局数字角色会话具有完整 SnowLuma 读写能力 |
 
-> 测试发送名单在控制台“调试与运维 → 测试发送”中配置；`allowAllWhenEmpty` 只影响对应允许名单为空时是否放行。它们不限制全局 desktop-agent：QQ 来源触发时的跨会话访问另由提醒来源和 `ownerQQ` 控制。SnowLuma MCP 自动附加桥接内部凭证，令牌不暴露给模型。
+> 测试发送名单在控制台“调试与运维 → 测试发送”中配置；`allowAllWhenEmpty` 只影响对应允许名单为空时是否放行。它们不限制全局 desktop-agent；数字角色可以访问账号中的群聊和私聊，`ownerQQ` 仅用于识别账号。SnowLuma MCP 自动附加桥接内部凭证，令牌不暴露给模型。
 
 > 控制台保存 `ownerQQ` 时会在 `config.json` 写入 `ownerQQSource: "config"`，包括清空账号的情况。需要恢复旧版的 DSH 同名设置优先行为时，可从本地配置删除该字段并重启桥接；手工编辑 `ownerQQ` 时也可设置该字段以确保本地值优先。
 
@@ -116,7 +116,7 @@ node scripts/setup-dsh.mjs
 
 ## 完整启动流程（从零开始）
 
-共 6 步。先启动 DSH 和 SnowLuma，再安装并启动桥接。Windows DSH 桌面版的 API 端口可能动态变化，桥接会在启动时自动发现；固定端口部署使用 `dsh.baseUrl`。
+共 6 步。安装并启动桥接后，DSH 和 SnowLuma 可稍后启动；桥接会在后台等待连接。Windows DSH 桌面版的 API 端口可能动态变化，桥接启动及断线时会自动发现；固定端口部署使用 `dsh.baseUrl`。
 
 1. **启动 DSH**
    确认 DSH 桌面版或 Web 服务正在运行。`3080` 是固定地址部署的默认值；Windows 桌面版的动态 API 端口由桥接启动时识别，所以应先开 DSH，再启动桥接。

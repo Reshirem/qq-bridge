@@ -4,10 +4,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
 import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
+
+const execFileAsync = promisify(execFile);
 
 /** DSH home：凭据文件与启动日志都在这里。 */
 export function resolveDshHome() {
@@ -148,9 +151,12 @@ export function isLoopbackBase(baseUrl) {
  * with an unauthenticated, read-only DSH API request. Other deployments keep their
  * configured baseUrl as the fallback.
  */
-export async function discoverDshBaseUrl(configuredBaseUrl, { enabled = true, timeoutMs = 700 } = {}) {
+export async function discoverDshBaseUrl(configuredBaseUrl, {
+  enabled = true, timeoutMs = 700, platform = process.platform,
+  runProcess = execFileAsync, fetchImpl = globalThis.fetch
+} = {}) {
   const fallback = String(configuredBaseUrl ?? 'http://127.0.0.1:3080').replace(/\/+$/, '');
-  if (!enabled || process.platform !== 'win32' || !isLoopbackBase(fallback)) {
+  if (!enabled || platform !== 'win32' || !isLoopbackBase(fallback)) {
     return { baseUrl: fallback, source: 'configured', candidates: [] };
   }
 
@@ -163,7 +169,7 @@ export async function discoverDshBaseUrl(configuredBaseUrl, { enabled = true, ti
       "  Get-NetTCPConnection -State Listen | Where-Object { $processIds -contains $_.OwningProcess -and $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::1','::') } | ForEach-Object { $_.LocalPort } | Sort-Object -Unique",
       '}'
     ].join('\n');
-    const output = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', query], {
+    const { stdout: output } = await runProcess('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', query], {
       encoding: 'utf8', timeout: 4000, windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore']
     });
@@ -175,7 +181,7 @@ export async function discoverDshBaseUrl(configuredBaseUrl, { enabled = true, ti
 
   async function isDshApi(baseUrl) {
     try {
-      const response = await fetch(new URL('/api/agentPresets/list', baseUrl), {
+      const response = await fetchImpl(new URL('/api/agentPresets/list', baseUrl), {
         method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs)
       });
       await response.body?.cancel();
@@ -342,6 +348,16 @@ export class NodeApiClient extends AbstractApiClient {
     return this.baseUrl;
   }
 
+  /** 切换 DSH 地址时重新生成与端口绑定的 Cookie，保留会话订阅。 */
+  setBaseUrl(baseUrl) {
+    const next = String(baseUrl ?? '').replace(/\/+$/, '');
+    if (!next || next === this.baseUrl) return false;
+    this.baseUrl = next;
+    this._preferToken = false;
+    this.invalidateAuth();
+    return true;
+  }
+
   /** 使当前 Cookie/launch token 失效；DSH 重启或 401 后会自动重新发现最新 token。 */
   invalidateAuth() {
     this._authEpoch += 1;
@@ -354,8 +370,10 @@ export class NodeApiClient extends AbstractApiClient {
     // 而 WS 抖动/DSH 重启都会走到那里——那是常态事件，不是「铸造的 Cookie 无效」的证据。
     // 策略切换只在 _doFetchWithAuth 真正收到 401 时决定。
     this._strategy = null;
-    const discovered = discoverDshLaunchToken();
-    if (discovered) this.launchToken = discovered;
+    if (!this.tokenExplicit) {
+      const discovered = discoverDshLaunchToken();
+      if (discovered) this.launchToken = discovered;
+    }
   }
 
   /** 持久化签名密钥（惰性探测后缓存）。 */
