@@ -1,4 +1,4 @@
-// 全局 desktop-agent 的工具策略：开放 SnowLuma QQ 工具与 Windows computer-use，
+// 全局 desktop-agent 的工具策略：开放 SnowLuma、MaaMCP 与 Windows computer-use，
 // 同时拦截 DSH 的 shell、通用文件、子代理和管理工具。
 //
 import fs from 'node:fs'
@@ -204,7 +204,10 @@ export function apply(ctx) {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
-    if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__', 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
-    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 Windows computer-use、SnowLuma QQ 工具和 A_Memorix 记忆工具）`
+    if (['mcp__wincu__', 'mcp__maa__', 'mcp__snowluma__', 'mcp__snowluma-host__', 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
+    if (name === 'mcp__web-search-safe__web_search' || name === 'mcp__web-search-safe__web_fetch') {
+      return `旧版桥接网页工具 "${name}" 已停用，请使用 DSH 自带的 web_search 或 web_fetch；如未显示，请重启 DSH 并重建会话。`
+    }
+    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（允许 Windows computer-use、MaaMCP、SnowLuma QQ、A_Memorix 记忆及 DSH 自带网页工具）`
   })
 }

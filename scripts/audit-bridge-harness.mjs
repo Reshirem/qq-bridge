@@ -156,6 +156,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     attentionSnapshot() {
       return {
         lifecycle: desktopAgentLifecycle,
+        restUntil: desktopAgentRestUntil,
         turnActive: desktopAgentTurnActive,
         flushScheduled: !!desktopAttentionFlushTimer,
         reminderScheduled: !!desktopAttentionReminderTimer,

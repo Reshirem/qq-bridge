@@ -2,6 +2,8 @@
 
 本文说明如何把唯一的全局 `desktop-agent` preset 与 MCP 工具安装到目标 DSH profile。WebUI 任务和 QQ 注意信号都进入同一个全局数字角色。这里不配置或切换 DSH 运行模式。
 
+可选的 MaaMCP 接入、截图适配和单独的 profile 配置见 [MAAMCP.md](MAAMCP.md)。工具守卫已放行 `mcp__maa__*`；本安装脚本仍只管理下述三个桥接 MCP 条目。
+
 ## 安装
 
 在运行 DSH 的设备上获取仓库并安装依赖：
@@ -67,7 +69,7 @@ DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
 脚本会：
 
 1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将用于 QQ 关系对象身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
-2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-web-search-safe`、`mcp-qq-memory` 四个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
+2. 将 `mcp-snowluma`、`mcp-snowluma-host`、`mcp-qq-memory` 三个受控 MCP 条目写入目标 profile 的 `cordis.patch.yml`，并清理旧的 `mcp-web-search-safe` 条目。网页搜索使用 DSH 自带工具。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
 3. 从目标 profile 清理不再使用的 bundle，并注册合并后的 `qq-agent-presets`。
 4. 在 `plugins/qq-agent-presets` 源码目录安装 bundle 自身依赖，并实际导入检查自定义压缩模块；随后尝试执行 `dsh plugin --profile <profile> install` 安装 profile bundle。若 DSH CLI 不可用，会提示手动执行 profile 安装命令。
 
@@ -106,7 +108,7 @@ npm start
 
 同一面板下方的“运行时提示模板”维护桥接侧具体事件使用的文本：人格卡模板只负责格式化 persona 固定前缀内的动态卡片；QQ 来源提醒、休息到期/QQ 打断/异常恢复仍附加在对应会话消息中；长期记忆摘要只在新建或重建会话的首次提示中出现。这些模板保存在 `config.json` 的 `desktopAgent.promptTemplates`，保存后下一次提示词组装或对应事件即使用新内容。默认固定前缀包含人格卡变量；删除它后当前人格卡不会自动注入。若 DSH 报 `unknown prompt variable`，确认 preset 和新版 `qq-agent-presets` 已安装并重启 DSH。
 
-在 DSH 的 `desktop-agent` 预设 → `tool-web` 插件配置中，`search` 与 `fetch` 分别控制 `web_search` 和 `web_fetch` 是否注册；本仓库的 preset 源默认将两项设为 `false`。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。启用工具后，DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。修改后重载 DSH 并重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
+在 DSH 的「插件 → 网页搜索」中配置提供方和所需凭据。`desktop-agent` 预设加载 `tool-web` 插件并沿用其默认配置，自动注册 `web_search` 和 `web_fetch`；实际是否可用还取决于所选提供方的就绪状态。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。预设变更后重启 DSH 并在桥接 WebUI「会话控制」中重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
 
 ## 验证
 
@@ -120,7 +122,7 @@ node scripts/test-preset-local-tools.mjs
 node scripts/test-audit-setup-guards.mjs
 ```
 
-确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局数字角色应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status` 和 `mcp__qq-memory__*`。`web_search` 与 `web_fetch` 由 DSH `tool-web` 行的 `search` / `fetch` 配置控制，本仓库 preset 默认关闭；启用后是否提供给当前模型步骤还取决于 DSH 当前提供方的就绪状态。`ask_user_question` 和 `todo_write` 不再由 `desktop-agent` 挂载。shell、通用文件工具、子代理或 Harness 管理工具也不应出现。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
+确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局数字角色应看到 `mcp__wincu__*`、完整的 `mcp__snowluma__*`、只读的 `mcp__snowluma-host__snowluma_status` 和 `mcp__qq-memory__*`。`web_search` 与 `web_fetch` 由 DSH `tool-web` 行的 `search` / `fetch` 配置控制，本仓库 preset 默认启用；是否提供给当前模型步骤还取决于 DSH 当前提供方的就绪状态。`ask_user_question` 和 `todo_write` 不再由 `desktop-agent` 挂载。shell、通用文件工具、子代理或 Harness 管理工具也不应出现。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
 如要核验 DSH 在线 API，可运行 `npm run verify:dsh`（默认 `web` profile），或通过 `DSH_PROFILE` 指定 profile；也可直接运行 `node scripts/verify-dsh-current.mjs <profile>`。其中部分检查需要正在运行且可访问的 DSH。不要把该在线核验与上述离线检查混为一谈。
 
@@ -139,8 +141,8 @@ node scripts/test-audit-setup-guards.mjs
 
 - 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局数字角色发不含消息正文的提醒；是否处理由 agent 自行判断。
 - 普通群消息正文保存在桥接侧，不会自动注入模型。全局 agent 可先用 `qq_list_conversations` 发现群/好友，再按需调用消息、历史或成员读取工具。
-- 没有模型心跳或定时轮询，也不靠长等待工具维持在线。每个活动回合必须以 `agent_rest` 作为最后一个工具调用；可设 1 秒至 12 小时的休息，或省略时长进入无限休息。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
-- 默认提示词建议：交流可能还有后续时先按需等待；只是暂时结束活动、想稍后回来时选择不超过 5 分钟的有限时长，真正想休息时自行决定时长。5 分钟是提示词引导而非程序限制，频繁定时唤醒也会产生模型调用。休息到期后的活动回合也可按需访问 QQ。
+- 不靠长等待工具维持在线。每个活动回合必须以 `agent_rest` 作为最后一个工具调用；休息限定为 1 至 5 分钟，省略时为 5 分钟，超出范围自动调整。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
+- 交流可能还有后续时可先按需等待；休息到期后会发起新的模型回合，数字角色可以按需访问 QQ。频繁定时恢复会增加模型调用。
 - 回合未调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟递增恢复尝试，之后最长每 30 分钟尝试一次。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。
 - 工具等待、读取和发送都由当前 agent 回合主动决定；回合文本不会自动转发到 QQ。
 - 全局数字角色通过 SnowLuma MCP 发送时自动使用全局 agent 令牌，任意合法群/私聊 key 均可用；`agent_rest` 不限制休息或停止状态中的后续工具调用，发送仍接受速率限制与审计。若数字角色通过 QQ 桌面界面操作，行为不经过这些桥接 API 检查。

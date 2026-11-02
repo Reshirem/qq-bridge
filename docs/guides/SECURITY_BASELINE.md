@@ -34,18 +34,22 @@
 | 管理端目标白名单 | `src/bridge.js` `allowed()` | 控制台直接操作 QQ 目标时使用 allow/deny 配置；全局 desktop-agent 的合法 QQ key 不受该列表限制 |
 | 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | MCP 从 `state/desktop-agent.json` 自动读取并附加桥接内部凭证，模型无需传递；不检查调用方 DSH session，桥接将凭证与全局自主运行时状态比对；QQ key 仍须匹配 `^(group\|private):\d+$` |
 | 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通消息留在桥接缓冲；正文由全局 agent 主动读，无周期模型心跳 |
-| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后进入有限（1 秒至 12 小时）或无限休息；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
+| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后休息 1 至 5 分钟；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
-| QQ 关系对象标记 | `handleIncoming()`、`appendSocialV2Message()` | 消息发送者 ID 取 `event.user_id`，缺失时回退 `event.sender.user_id`；写入结构化 `userId`，owner 匹配写入 `isOwner`。仅当 `ownerQQ` 已配置且发送者 QQ 号相同才标记为 owner。显示名称不参与身份判断；具体关系称谓由人格卡及双方表达决定。聊天中的生活描述不参与账号标记，也不能单独建立跨来源身份关联；QQ 好友关系不代表信任等级或信息分享授权。这不授权管理操作 |
+| QQ 关系对象标记 | `handleIncoming()`、`appendSocialV2Message()` | 消息发送者 ID 取 `event.user_id`，缺失时回退 `event.sender.user_id`；仅当 `ownerQQ` 已配置且发送者 QQ 号相同才标记为 owner。显示名称不参与身份判断；关系称谓由人格卡及双方表达决定。该账号仅被授权通过纯文本私聊 `/睡觉` 和 `/起床` 控制睡眠，不授予其他管理权限；群消息和引用、转发等非纯文本消息不触发命令。身份依赖 SnowLuma 提供的事件数据。 |
 | QQ 工具会话与凭证 | agent API 集中入口、`mcp-snowluma-safe.js` | 数字角色可访问账号中的 QQ 会话，不按提醒来源或 owner 身份限制；桥接校验内部凭证和当前 DSH 会话绑定，管理接口仅控制台可用。发送仍执行限频和审计。 |
 
 ### 2. 工具面（agent 能做什么）
 
+Maa 的 `connect_adb_device` 允许直接传入数字 IP 与端口，由 MaaFramework 内部建立网络 ADB 连接。adb 可执行文件由服务环境变量 `QQ_MAAMCP_ADB_PATH` 或进程 PATH 选择，必须是现有绝对路径；该工具没有接受模型指定程序路径、命令或 shell 参数的入口。已发现设备的连接方式保持兼容，此能力不要求开放 DSH 通用终端工具。
+
+可选 MaaMCP 已按 `mcp__maa__*` 命名空间放行，实际工具需另外挂载。`src/maa_mcp_server.py` 修正 DSH 使用说明，将标准服务器的截图结果扩展为图片，并验证截图真实路径位于 MaaMCP 截图目录内；没有新增通用文件读取工具。上游其他工具保持原样，包括 Pipeline 的资源文件访问和 Custom action 子进程启动；不能将 DSH 的通用执行工具禁用名单视为对 MaaMCP 的等效隔离。MaaMCP 服务复用 DSH 的 MCP 生命周期，随 DSH 关闭；按当前方案不联动 `agent_rest`、WebUI 停止或 Windows computer-use 的 Esc，具体行为见 [MAAMCP.md](MAAMCP.md)。
+
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__snowluma__*` QQ 工具、只读 `mcp__snowluma-host__snowluma_status` 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
+| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、可选 `mcp__maa__*` MaaMCP 工具、完整 `mcp__snowluma__*` QQ 工具、只读 `mcp__snowluma-host__snowluma_status` 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
 | 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
-| DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `search` / `fetch` 是 DSH `@deepseek-ai/dsh-tool-web` 原生配置项，desktop-agent preset 默认设为 `false`；可在 DSH 自己的 preset/plugin 配置中调整。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
+| DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容审计、限频和工具调用审计 |
 | 动态 ACL | sticker / image media helpers | 贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
@@ -53,7 +57,7 @@
 
 ### 2.1 桌面应用范围（提示词边界）
 
-`desktop-agent` 的会话提示要求：使用 computer-use 操作电脑时，ChatGPT、DeepSeek Harness、qq-bridge 和 SnowLuma 的 GUI 在无关任务中属于受保护界面，不读取或改动其中内容、设置、会话或运行控制；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化。用户开始操作电脑时，数字角色停止输入并让出控制权；观察到数分钟没有新的用户操作迹象后，先重新查看界面，确认用户暂时离开再继续；情况仍不明确时继续让出控制权。该界面规则不禁用 SnowLuma MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
+`desktop-agent` 的会话提示要求：使用 computer-use 操作电脑时，ChatGPT、DeepSeek Harness、qq-bridge 和 SnowLuma 的 GUI 在无关任务中属于受保护界面，不读取或改动其中内容、设置、会话或运行控制；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化。数字角色可按需观察用户的电脑活动。电脑操作插件支持部分后台操作和由用户通过 Esc 停止桌面操作，但普通鼠标移动或按键不会自动停止工具。该界面规则不禁用 SnowLuma MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
 
 这是模型行为规则，不是 computer-use 服务端的应用级访问控制。当前工具守卫不按窗口标题或应用名拦截操作；用户明确提出涉及这些应用的任务时，仍由会话提示限定到所请求的范围。
 
@@ -85,8 +89,9 @@
 | WebUI 关系对象设置 | `/api/whitelist` | 仅控制台令牌可设置或清除 `ownerQQ`；首次保存后由本地配置优先，忽略 DSH 的同名设置。更改账号时，已缓存消息的身份标记按当前账号重新计算；QQ 工具访问范围不受影响。测试发送名单独立保存，仍只限制控制台测试发送。 |
 | WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务可恢复停止/休息状态，用户在 DSH 对话中的直接消息和 QQ 注意信号可提前结束休息但不能解除持久停止态；所有入口复用单一 `desktop-agent` session。SnowLuma MCP 在内部附加持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
 | WebUI 持久停止 | `/api/console/desktop-agent/stop` | 仅控制台令牌可调用；先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作。DSH 暂不可用时停止态仍保存，恢复连接后不会自动唤醒。 |
+| QQ 持久睡眠 | `handleIncoming()`、`sleepDesktopAgent()` | 只有配置账号的私聊纯文本命令可进入或结束；进入时保存 `sleeping`、清除待处理提醒并尝试取消 DSH 工作，消息继续缓冲但不生成提醒。桥接重启和 DSH 重连后保持睡眠；恢复后不补发睡眠期间的提醒。DSH 外部直接发起的回合在事件到达后请求取消，并非 DSH 层的入口拦截。 |
 | WebUI 长期记忆设置 | `/api/memory/settings`、`/api/memory/providers`、`/api/memory/service` | 仅控制台令牌可配置或启停本机服务；状态接口只返回密钥是否已设置，不回显密钥。Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径；Provider 保存后重启 A_Memorix。 |
-| 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token；调用会保存有限或无限休息状态，并在返回工具结果后取消当前 DSH turn。该状态不限制后续工具调用；休息到期只发起一次恢复回合。 |
+| 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token；调用会保存定时休息状态，并在返回工具结果后取消当前 DSH turn。该状态不限制后续工具调用；休息到期只发起一次恢复回合。 |
 | 记忆工具 | `/api/desktop-agent/memory/*` | 校验全局 agent token，并固定访问 `config.json` 中的 A_Memorix namespace，不受 `agent_rest` 生命周期限制。参数正文与检索词不写入工具参数日志。 |
 | 记忆管理 | `/api/memory/*` | 受控制台令牌保护；用于 WebUI 搜索、查看、保存、替代和删除。A_Memorix namespace API key 留在桥接本地配置，不返回给页面或 DSH。 |
 | 记忆全量浏览 | `POST /api/memory/records/list` | 受控制台令牌与 JSON/Origin 校验保护；带 `x-agent-token` 时因默认拒绝白名单而返回 403。仅读取配置 namespace 的 `paragraphs` 表，校验 storage key 路径与必需列，使用 SQLite `mode=ro` + `query_only` 和参数化查询；不读向量/图存储，不写数据库。 |

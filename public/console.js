@@ -665,7 +665,11 @@ async function refreshDesktopAgentStatus(force = false) {
       let tone = 'meta ok';
       let summaryLabel = '已就绪';
       let hint = '持久会话可启动自主探索或接收任务';
-      if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; summaryLabel = 'DSH 未连接'; hint = '检查 DSH 是否正在运行'; }
+      if (info.lifecycle === 'sleeping') {
+        label = info.running ? '睡眠中；正在等待 DSH 取消当前回合' : '睡眠中；不会自动唤醒';
+        tone = info.running ? 'meta err' : 'meta'; summaryLabel = '睡眠中'; hint = '由 ownerQQ 私聊发送 /起床 恢复';
+      }
+      else if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; summaryLabel = 'DSH 未连接'; hint = '检查 DSH 是否正在运行'; }
       else if (!info.presetAvailable) { label = '数字角色 preset 未加载；请安装 preset bundle 并重启 DSH'; tone = 'meta err'; summaryLabel = '缺少 preset'; hint = '请先完成 DSH preset 配置'; }
       else if (info.error) { label = '读取会话状态失败：' + info.error; tone = 'meta err'; summaryLabel = '状态异常'; hint = '点击“刷新状态”重试'; }
       else if (info.lifecycle === 'stopped') {
@@ -700,14 +704,14 @@ async function refreshDesktopAgentStatus(force = false) {
       const rebuildButton = document.getElementById('desktopAgentRebuild');
       const submitButton = document.getElementById('desktopAgentSubmit');
       const stopButton = document.getElementById('desktopAgentStop');
-      const blocked = !!info.error || !info.dshReady || !info.presetAvailable
+      const blocked = info.lifecycle === 'sleeping' || !!info.error || !info.dshReady || !info.presetAvailable
         || (!!info.sessionId && !!info.found && !info.agentAvailable);
       desktopAgentControlsAvailable = !blocked;
       startButton.textContent = info.running ? '正在运行…' : info.lifecycle === 'stopped' ? '重新启动自主探索' : (info.sessionId && !info.blank ? '继续自主探索' : '启动自主探索');
       startButton.disabled = blocked || !!info.running;
-      stopButton.disabled = (info.lifecycle === 'stopped' && !info.running) || (info.lifecycle === 'idle' && !info.sessionId);
+      stopButton.disabled = info.lifecycle === 'sleeping' || (info.lifecycle === 'stopped' && !info.running) || (info.lifecycle === 'idle' && !info.sessionId);
       rebuildButton.hidden = !info.sessionId || !info.found;
-      rebuildButton.disabled = !info.dshReady || !info.presetAvailable || !!info.running;
+      rebuildButton.disabled = info.lifecycle === 'sleeping' || !info.dshReady || !info.presetAvailable || !!info.running;
       submitButton.disabled = blocked || !document.getElementById('desktopAgentMessage').value.trim();
     } catch (error) {
       status.textContent = '状态读取失败：' + (error?.message || '请求失败');

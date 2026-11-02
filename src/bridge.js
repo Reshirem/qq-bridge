@@ -77,7 +77,8 @@ const MEMORY_ORGANIZER_STATE_FILE = path.join(STATE_DIR, 'memory-organizer.json'
 const DESKTOP_AGENT_FILE = path.join(STATE_DIR, 'desktop-agent.json');
 const DESKTOP_AGENT_RECOVERY_BASE_MS = 60_000;
 const DESKTOP_AGENT_RECOVERY_MAX_MS = 30 * 60_000;
-const DESKTOP_AGENT_REST_MAX_MS = 12 * 60 * 60_000;
+const DESKTOP_AGENT_REST_MIN_MS = 60_000;
+const DESKTOP_AGENT_REST_MAX_MS = 5 * 60_000;
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 let roleCardPromptTemplate = DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.roleCard;
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
@@ -1690,7 +1691,7 @@ async function main() {
   let desktopAgentInitialContextSessionId = String(desktopAgentSavedState.initialContextSessionId ?? '');
   let desktopAgentInitialContextPrompt = null;
   const savedLifecycle = String(desktopAgentSavedState.lifecycle ?? '');
-  const validLifecycles = new Set(['idle', 'active', 'resting', 'recovering', 'stopped']);
+  const validLifecycles = new Set(['idle', 'active', 'resting', 'recovering', 'stopped', 'sleeping']);
   let desktopAgentLifecycle = validLifecycles.has(savedLifecycle)
     ? savedLifecycle
     : desktopAgentSessionId ? 'active' : 'idle';
@@ -1698,7 +1699,7 @@ async function main() {
     ? Math.max(0, Number(desktopAgentSavedState.restUntil) || 0)
     : 0;
   const desktopAgentRestNeedsClamp = desktopAgentLifecycle === 'resting'
-    && desktopAgentRestUntil > Date.now() + DESKTOP_AGENT_REST_MAX_MS;
+    && (desktopAgentRestUntil === 0 || desktopAgentRestUntil > Date.now() + DESKTOP_AGENT_REST_MAX_MS);
   if (desktopAgentRestNeedsClamp) desktopAgentRestUntil = Date.now() + DESKTOP_AGENT_REST_MAX_MS;
   let desktopAgentRecoveryAttempt = Math.max(0, Math.floor(Number(desktopAgentSavedState.recoveryAttempt) || 0));
   let desktopAgentRecoveryAt = Number(desktopAgentSavedState.recoveryAt) || 0;
@@ -1724,6 +1725,8 @@ async function main() {
   let desktopAttentionReminderTimer = null;
   let desktopAgentRestTimer = null;
   let desktopAgentRecoveryTimer = null;
+  let desktopAgentSleepCancellation = null;
+  let desktopAgentSleepRetryTimer = null;
   function setRuntimeOwnerQQ(ownerQQ) {
     cfg.ownerQQ = ownerQQ;
   }
@@ -4281,6 +4284,10 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent/stop') {
+          if (desktopAgentLifecycle === 'sleeping') {
+            sendJson({ ok: false, error: '数字角色正在睡眠，请先由 ownerQQ 私聊发送 /起床' }, 409);
+            return;
+          }
           stopDesktopAgentLifecycle();
           let cancelled = false;
           let cancelError = '';
@@ -4304,6 +4311,10 @@ async function main() {
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent/reset') {
+          if (desktopAgentLifecycle === 'sleeping') {
+            sendJson({ ok: false, error: '数字角色正在睡眠，请先由 ownerQQ 私聊发送 /起床' }, 409);
+            return;
+          }
           try {
             const result = await recreateDesktopAgentSession();
             sendJson({ ok: true, ...result, historyRetained: true });
@@ -4316,6 +4327,10 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent') {
           const body = await readBody();
+          if (desktopAgentLifecycle === 'sleeping') {
+            sendJson({ ok: false, error: '数字角色正在睡眠，请先由 ownerQQ 私聊发送 /起床' }, 409);
+            return;
+          }
           const message = String(body.message ?? '').trim();
           if (!message) {
             sendJson({ ok: false, error: '任务内容不能为空' }, 400);
@@ -4350,7 +4365,7 @@ async function main() {
               sendJson({ ok: false, error: `${error?.code ?? 'prompt_rejected'}: ${error?.message ?? 'DSH 未接受任务'}` }, 502);
               return;
             }
-            if (desktopAgentLifecycle === 'stopped') {
+            if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'sleeping') {
               try { await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }); } catch {}
               sendJson({ ok: false, error: '任务提交期间全局会话已被停止' }, 409);
               return;
@@ -4944,19 +4959,24 @@ async function main() {
             sendJson({ ok: false, error: '数字角色会话令牌无效' }, 403);
             return;
           }
-          let durationMs = null;
+          if (desktopAgentLifecycle === 'sleeping') {
+            sendJson({ ok: false, error: '数字角色正在睡眠' }, 409);
+            return;
+          }
+          let durationMs = DESKTOP_AGENT_REST_MAX_MS;
           if (body.durationMs !== undefined && body.durationMs !== null) {
             durationMs = Number(body.durationMs);
-            if (!Number.isFinite(durationMs) || Math.round(durationMs) < 1000) {
-              sendJson({ ok: false, error: 'durationMs 必须至少为 1000；省略该参数表示无限期休息' }, 400);
+            if (!Number.isFinite(durationMs) || durationMs <= 0) {
+              sendJson({ ok: false, error: 'durationMs 必须为正数；休息时间为 1 至 5 分钟，省略时为 5 分钟' }, 400);
               return;
             }
-            durationMs = Math.min(Math.round(durationMs), DESKTOP_AGENT_REST_MAX_MS);
+            durationMs = Math.min(Math.max(Math.round(durationMs), DESKTOP_AGENT_REST_MIN_MS), DESKTOP_AGENT_REST_MAX_MS);
           }
           enterDesktopAgentRest(durationMs);
           sendJson({
             ok: true,
             lifecycle: 'resting',
+            durationMs,
             restUntil: desktopAgentRestUntil > 0 ? new Date(desktopAgentRestUntil).toISOString() : null,
             turnCancellationScheduled: true
           });
@@ -7501,6 +7521,8 @@ async function main() {
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
     clearDesktopAttentionReminderTimer();
+    if (desktopAgentSleepRetryTimer) clearTimeout(desktopAgentSleepRetryTimer);
+    desktopAgentSleepRetryTimer = null;
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
     desktopAgentLifecycle = 'stopped';
@@ -7512,6 +7534,72 @@ async function main() {
     saveDesktopAgentState();
     log('WebUI：全局数字角色已进入持久停止态；不会自动唤醒');
     appendActivity('全局数字角色已由 WebUI 停止');
+  }
+
+  async function cancelSleepingSession() {
+    if (desktopAgentSleepCancellation) return desktopAgentSleepCancellation;
+    const sessionId = desktopAgentSessionId;
+    const pendingFlush = desktopAttentionFlushPromise;
+    const cancellation = (async () => {
+      if (desktopAgentLifecycle !== 'sleeping' || desktopAgentSessionId !== sessionId) return;
+      if (sessionId && dshReady) await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS });
+      // An already-submitted reminder can create a turn after the first stop.
+      // Wait for it and stop again before allowing /起床 to resume the session.
+      if (pendingFlush) {
+        await pendingFlush.catch(() => {});
+        if (desktopAgentLifecycle !== 'sleeping' || desktopAgentSessionId !== sessionId) return;
+        if (sessionId && dshReady) await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS });
+      }
+      desktopAgentTurnActive = false;
+    })();
+    desktopAgentSleepCancellation = cancellation;
+    try { await cancellation; }
+    catch (error) {
+      if (desktopAgentLifecycle === 'sleeping' && !desktopAgentSleepRetryTimer) {
+        desktopAgentSleepRetryTimer = setTimeout(() => {
+          desktopAgentSleepRetryTimer = null;
+          if (desktopAgentLifecycle === 'sleeping') void cancelSleepingSession().catch((retryError) => log(`睡眠任务取消重试失败：${retryError?.message ?? retryError}`));
+        }, 5000);
+        desktopAgentSleepRetryTimer.unref?.();
+      }
+      throw error;
+    } finally { if (desktopAgentSleepCancellation === cancellation) desktopAgentSleepCancellation = null; }
+  }
+
+  async function sleepDesktopAgent() {
+    if (desktopAgentLifecycle === 'sleeping') return cancelSleepingSession();
+    desktopAgentLifecycleEpoch += 1;
+    desktopAttentionGeneration += 1;
+    clearDesktopAgentRestTimer();
+    clearDesktopAgentRecoveryTimer();
+    clearDesktopAttentionReminderTimer();
+    if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
+    desktopAttentionFlushTimer = null;
+    desktopAttentionQueue.clear();
+    desktopAttentionUnresolved.clear();
+    desktopAgentLifecycle = 'sleeping';
+    desktopAgentRestUntil = 0;
+    desktopAgentRecoveryAt = 0;
+    desktopAgentRecoveryAttempt = 0;
+    desktopAgentPendingWakeReason = '';
+    desktopAgentManualPromptPending = 0;
+    saveDesktopAgentState();
+    appendActivity('ownerQQ 已让数字角色进入睡眠；QQ 提醒和自动唤醒已暂停');
+    await cancelSleepingSession();
+  }
+
+  async function wakeDesktopAgent() {
+    if (desktopAgentSleepRetryTimer) clearTimeout(desktopAgentSleepRetryTimer);
+    desktopAgentSleepRetryTimer = null;
+    if (desktopAgentSleepCancellation) await desktopAgentSleepCancellation.catch(() => {});
+    if (desktopAgentLifecycle !== 'sleeping') return false;
+    resumeDesktopAgentLifecycle('ownerQQ /起床');
+    desktopAgentPendingWakeReason = 'sleep-ended';
+    saveDesktopAgentState();
+    scheduleDesktopAttentionFlush(0);
+    if (!dshReady) scheduleDesktopAgentRecovery('ownerQQ woke agent while DSH offline');
+    appendActivity('ownerQQ 已结束数字角色睡眠');
+    return true;
   }
 
   function resumeDesktopAgentLifecycle(reason = 'manual WebUI task') {
@@ -7547,23 +7635,21 @@ async function main() {
     timer.unref?.();
   }
 
-  function enterDesktopAgentRest(durationMs = null) {
+  function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_MAX_MS) {
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
     desktopAgentLifecycle = 'resting';
-    desktopAgentRestUntil = durationMs == null ? 0 : Date.now() + Math.min(Math.max(1, Number(durationMs) || 1), DESKTOP_AGENT_REST_MAX_MS);
+    desktopAgentRestUntil = Date.now() + durationMs;
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
     desktopAgentPendingWakeReason = desktopAttentionQueue.size > 0 ? 'qq-attention' : '';
     saveDesktopAgentState();
     armDesktopAgentRestTimer();
-    log(desktopAgentRestUntil
-      ? `全局数字角色进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`
-      : '全局数字角色进入无限期休息；DSH 对话输入、有效 QQ 提醒或人工 WebUI 任务可恢复');
-    appendActivity(desktopAgentRestUntil ? '全局数字角色进入定时休息' : '全局数字角色进入无限期休息');
+    log(`全局数字角色进入休息，至 ${new Date(desktopAgentRestUntil).toISOString()}`);
+    appendActivity('全局数字角色进入定时休息');
     armDesktopAttentionReminderCheck();
 
     // Let the MCP result reach DSH before cancelling this turn. The lifecycle epoch
@@ -7632,7 +7718,7 @@ async function main() {
   }
 
   function scheduleDesktopAgentRecovery(reason = 'turn ended without agent_rest') {
-    if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'resting' || desktopAgentLifecycle === 'idle') return;
+    if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'sleeping' || desktopAgentLifecycle === 'resting' || desktopAgentLifecycle === 'idle') return;
     if (desktopAgentRecoveryTimer) return;
     clearDesktopAttentionReminderTimer();
     for (const [key, item] of desktopAttentionQueue) {
@@ -7719,6 +7805,13 @@ async function main() {
       const result = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
       const live = (Array.isArray(result.items) ? result.items : [])
         .find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId) ?? null;
+      if (desktopAgentLifecycle === 'sleeping') {
+        if (live) {
+          try { await cancelSleepingSession(); }
+          catch (error) { log(`恢复 DSH 后重申睡眠态失败：${error?.message ?? error}`); }
+        }
+        return;
+      }
       if (desktopAgentLifecycle === 'stopped') {
         if (live) {
           try { await api.stopSessionWork(desktopAgentSessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }); }
@@ -7814,6 +7907,7 @@ async function main() {
   }
 
   function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq }) {
+    if (desktopAgentLifecycle === 'sleeping') return;
     const now = Date.now();
     trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
     const existing = desktopAttentionQueue.get(key);
@@ -7958,6 +8052,7 @@ async function main() {
         });
         const wakeInstructionByReason = {
           'rest-expired': cfg.desktopAgent.promptTemplates.restExpired,
+          'sleep-ended': '【睡眠结束】ownerQQ 已发送起床命令，你可以继续活动。',
           'qq-attention': cfg.desktopAgent.promptTemplates.qqWake,
           recovery: cfg.desktopAgent.promptTemplates.recovery,
         };
@@ -8782,6 +8877,30 @@ async function main() {
     const resolveReply = (messageId) => resolveReplyInfo(kind, id, messageId, event.self_id);
     // textContent 带引用对象信息，供 DSH 判断“这句话在对谁说”；
     // plainContent 只保留当前消息自己的文字，避免把引用原文用于唤醒关键词判断。
+    const rawSegments = event.message;
+    const isOwnerPrivate = kind === 'private' && cfg.ownerQQ != null
+      && senderId === String(cfg.ownerQQ) && String(id) === senderId
+      && senderId !== String(event?.self_id ?? '');
+    const command = isOwnerPrivate && Array.isArray(rawSegments) && rawSegments.length > 0
+      && rawSegments.every((segment) => segment?.type === 'text')
+      ? rawSegments.map((segment) => String(segment?.data?.text ?? '')).join('').trim() : '';
+    if (command === '/睡觉' || command === '/起床') {
+      let reply;
+      try {
+        if (command === '/睡觉') {
+          await sleepDesktopAgent();
+          reply = '已进入睡眠，QQ 提醒和自动唤醒已暂停。发送 /起床 恢复。';
+        } else {
+          reply = await wakeDesktopAgent() ? '已结束睡眠，正在恢复活动。' : '当前没有处于睡眠状态。';
+        }
+      } catch (error) {
+        log(`睡眠命令执行失败：${error?.message ?? error}`);
+        reply = '睡眠状态已保存，但取消当前任务未确认；请检查桥接日志。';
+      }
+      try { await withTimeout(bot.sendPrivateMessage(Number(senderId), text(reply)), SEND_TIMEOUT_MS, '睡眠命令回执'); }
+      catch (error) { log(`睡眠命令回执发送失败：${error?.message ?? error}`); }
+      return;
+    }
     const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
@@ -8807,7 +8926,7 @@ async function main() {
       const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, mediaList, senderId || null, extractForwardIds(event.message ?? []));
       // The QQ reminder pause switch and configuration can suppress wake signals.
       // Ordinary group messages remain buffered without creating a DSH session or model turn.
-      if (socialV2.paused || cfg.socialV2?.enabled === false) {
+      if (desktopAgentLifecycle === 'sleeping' || socialV2.paused || cfg.socialV2?.enabled === false) {
         appendActivity(`${key} QQ 提醒已暂停，消息仅缓冲不唤醒：${textContent.slice(0, 80)}`);
         return;
       }
@@ -8905,7 +9024,7 @@ async function main() {
             if (event?.type === 'turn/start') {
               const turnWasAlreadyActive = desktopAgentTurnActive;
               desktopAgentTurnActive = true;
-              const manualQueued = !turnWasAlreadyActive && desktopAgentManualPromptPending > 0 && desktopAgentLifecycle !== 'stopped';
+              const manualQueued = !turnWasAlreadyActive && desktopAgentManualPromptPending > 0 && desktopAgentLifecycle !== 'stopped' && desktopAgentLifecycle !== 'sleeping';
               const directDshWake = !turnWasAlreadyActive
                 && desktopAgentManualPromptPending === 0
                 && desktopAgentLifecycle === 'resting';
@@ -8936,12 +9055,12 @@ async function main() {
                 saveDesktopAgentState();
                 log('DSH 对话中的手动消息提前结束全局数字角色休息');
                 appendActivity('DSH 对话中的手动消息提前结束全局数字角色休息');
-              } else if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'resting') {
+              } else if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'sleeping' || desktopAgentLifecycle === 'resting') {
                 const lifecycle = desktopAgentLifecycle;
                 const sessionId = frame.sessionId;
                 setTimeout(() => {
                   if (desktopAgentLifecycle !== lifecycle || desktopAgentSessionId !== sessionId) return;
-                  void api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS })
+                  void (lifecycle === 'sleeping' ? cancelSleepingSession() : api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }))
                     .catch((error) => log('全局数字角色处于 ' + lifecycle + ' 状态时 DSH 意外启动 turn，取消失败：' + (error?.message ?? error)));
                 }, 0).unref?.();
               } else if (desktopAgentLifecycle === 'recovering') {
@@ -8999,6 +9118,7 @@ async function main() {
                 resumeDesktopAgentRestForAttention();
               } else if (desktopAgentLifecycle === 'active' && desktopAgentManualPromptPending === 0) {
                 if (desktopAgentPendingWakeReason === 'rest-expired'
+                  || desktopAgentPendingWakeReason === 'sleep-ended'
                   || desktopAgentPendingWakeReason === 'qq-attention'
                   || desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(0);
                 else scheduleDesktopAgentRecovery('turn ended without agent_rest');
@@ -9247,7 +9367,7 @@ async function main() {
   }
   if (desktopAgentRestNeedsClamp) {
     saveDesktopAgentState();
-    log('旧的有限休息时间超过 12 小时上限，已将截止时间缩短并保存');
+    log('旧的无限期休息或超长休息已调整为最多 5 分钟并保存');
   }
   armDesktopAgentRestTimer();
   armDesktopAgentRecoveryTimer();

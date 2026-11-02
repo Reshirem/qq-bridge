@@ -61,6 +61,7 @@ const DEV_TOOL_PREFIX = /^dev_/;
 /** 全局数字角色允许使用的 MCP 命名空间前缀。 */
 const EXPECTED_SAFE_PREFIXES = [
   'mcp__wincu__',
+  'mcp__maa__',
   'mcp__snowluma__',
   'mcp__snowluma-host__',
 ];
@@ -85,16 +86,6 @@ test('模拟会话的 preset 都挂了工具守卫（否则 L7 没有任何载�
     // The preset source uses a relative guard path; the generated bundle patch rewrites it
     // to the profile-resolvable package specifier checked by test-agent-preset-patches.mjs.
     assert.match(yml, /\.\/qq-tool-restrict\.mjs/, `${id} 的守卫要指向本目录的 .mjs`);
-  }
-});
-
-test('desktop-agent 源 preset 默认关闭 tool-web 的 search/fetch', () => {
-  for (const id of GLOBAL_AGENT_PRESETS) {
-    const { yml } = readPreset(id);
-    const webRow = /id:\s*tool-web[\s\S]{0,200}/.exec(yml);
-    assert.ok(webRow, `${id} 应有 tool-web 条目`);
-    assert.match(webRow[0], /search:\s*false/, `${id}: tool-web.search 必须为 false`);
-    assert.match(webRow[0], /fetch:\s*false/, `${id}: tool-web.fetch 必须为 false`);
   }
 });
 

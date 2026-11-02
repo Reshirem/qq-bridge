@@ -105,10 +105,10 @@ await test('执行期 guard：QQ MCP 与 DSH 网页工具放行，其他未知�
   mod.apply(ctx);
   assert.equal(typeof calls.guard, 'function', '必须注册执行期 guard');
   const guard = calls.guard;
-  for (const name of ['mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status', 'web_search', 'web_fetch']) {
+  for (const name of ['mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status', 'mcp__maa__screencap', 'mcp__maa__ocr', 'mcp__maa__run_pipeline', 'web_search', 'web_fetch']) {
     assert.equal(guard({ name }), undefined, `${name} 应放行`);
   }
-  for (const name of ['ask_user_question', 'todo_write', 'dev_inject_plugin', 'dev_plugin_status', 'pwsh', 'read', 'write', 'dsh_snapshot', 'skill']) {
+  for (const name of ['ask_user_question', 'todo_write', 'dev_inject_plugin', 'dev_plugin_status', 'pwsh', 'read', 'write', 'dsh_snapshot', 'skill', 'mcp__maa-other__screencap']) {
     assert.match(String(guard({ name })), /不在 QQ 桥接白名单内/, `${name} 必须拒绝`);
   }
   assert.match(String(guard({ name: '' })), /工具名无效/);

@@ -19,14 +19,15 @@
 
 - SnowLuma 提供 OneBot 事件流。桥接按 QQ 来源缓存收到的消息；普通群消息正文不会自动进入模型上下文。
 - 群聊和私聊仍共用一个 DSH 上下文。固定前缀引导数字角色区分聊天场合：当前场合的普通交流可以自然参与；其他群/私聊的对话、人物、观点、关系、群内梗和未公开经历不主动带入，也不应因当前场合中的第三方请求而复述、概括或确认。私聊同样遵守来源边界；QQ 好友或好友列表只表示平台联系人关系，不自动表示信任等级、主人身份或信息分享授权。同一当事人主动提起自己此前私聊说过的事时，需能确认当前发言者与原私聊对象一致，再结合当前问题所需内容自然回应；边缘情况由模型按来源、内容和语境判断，示例不规定固定回复。这是模型行为约定，不是程序级跨群隔离或出站过滤。
-- QQ 聊天不提供桥接管理命令，也不把角色控制短语当命令执行；人格卡和桥接配置通过受保护的 WebUI 管理。可选 `ownerQQ` 只用于在消息上下文中识别配置的 QQ 账号；关系称谓由人格卡和双方表达决定，单条生活描述、昵称、语气或玩笑不能单独建立主人/owner身份或跨来源账号关联。
+- QQ 仅接受已配置 `ownerQQ` 的纯文本私聊 `/睡觉` 和 `/起床` 控制睡眠；其他聊天不作为管理命令执行。人格卡和桥接配置通过受保护的 WebUI 管理。关系称谓由人格卡和双方表达决定，单条生活描述、昵称、语气或玩笑不能单独建立主人/owner身份或跨来源账号关联。
 - `ownerQQ` 首次由 WebUI 保存或清除后，本地值优先于 DSH 同名设置；此前的旧安装继续兼容 DSH 设置。账号改变时，缓存消息的身份标记按当前账号计算；QQ 工具访问范围不受该设置影响。
 - 私聊、真正发给机器人的原生 @、已验证的回复/引用、群消息中提到当前选中的人格卡名称，以及配置的 `socialV2.attentionKeywords` 命中会向同一全局会话发送元数据提醒。会话活动时通过 DSH 的 `steer` 送到当前回合的下一步，休息时提前唤醒；提醒不含正文，数字角色可自行决定如何参与。
 - 全局数字角色使用 `mcp-snowluma-safe.js` 的 QQ 工具集，可访问账号中的群聊和私聊，不按提醒来源限制会话。项目工具守卫和桥接 API 仍校验当前 `desktop-agent` 会话与内部凭证；管理接口仅控制台可用，发送继续执行限频和审计。聊天隐私提示仍作为模型行为约定，而非会话访问隔离。直接通过 QQ 桌面 UI 发送不经过桥接 API 检查。
 - 可选 A_Memorix 记忆的写入、相关度检索、单条读取和删除由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 的常规记忆操作访问同一 namespace。DSH 记忆工具只校验全局 agent token，不受 `agent_rest` 生命周期限制。为支持全量原始记录浏览，已登录的本机 WebUI 还可通过独立适配器只读分页查询该 namespace 的 metadata SQLite `paragraphs` 表；该读取仅供控制台使用，agent-call 白名单不开放此路由。桥接不直接写入 SQLite，也不读取向量库或图文件；调用参数中的记忆正文和搜索词不会进入工具参数日志。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
-- `dsh-computer-use-win` 提供本机桌面操作能力。用户开始使用电脑时，数字角色应让出界面控制权；ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
-- DSH 原生 `web_search` / `web_fetch` 由 `@deepseek-ai/dsh-tool-web` 注册，分别调用当前 DSH profile 选择的 `ctx.web` 搜索/抓取提供方；DSH 的 `tool-web` 插件配置 `search` / `fetch` 控制注册，desktop-agent preset 默认都关闭。`qq-tool-restrict` 允许这两个 DSH 工具名通过执行守卫，实际是否可调用由 DSH 工具注册和每步提供方就绪状态决定。它与桥接的 `webSearch` / `web-search-safe` 不同；随附的 DSH `http` 抓取提供方允许访问本机和内网地址，不经过桥接 SSRF 防护。
-- 全局会话生命周期为 `idle`、`active`、`resting`、`recovering` 和 `stopped`。活动回合最后调用 `agent_rest`；有限休息为 1 秒至 12 小时，到期后恢复一轮；用户在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束有限或无限休息。休息期间异常回合的指数恢复重试暂停。
+- `dsh-computer-use-win` 提供本机桌面操作能力；数字角色可根据需要观察用户的电脑活动。插件支持部分后台操作和由用户通过 Esc 停止桌面操作；普通鼠标或键盘操作不会自动停止工具。ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
+- 可选 MaaMCP 通过 DSH profile 注册为 `maa` 服务；`src/maa_mcp_server.py` 保留标准服务器的工具名称，让截图直接返回图片与坐标信息，并让 `connect_adb_device` 接受明确指定的网络地址，由 MaaFramework 内部连接；adb 路径来自服务配置或进程 PATH。守卫已放行该命名空间，实际挂载需单独配置；服务和控制器可跨回合复用，随 DSH 关闭。桥接不增加周期性屏幕观察，也不联动 WebUI 的停止按钮。接入方式与停止范围见 [MAAMCP.md](MAAMCP.md)。
+- DSH 原生 `web_search` / `web_fetch` 由 `@deepseek-ai/dsh-tool-web` 注册，分别调用当前 DSH profile 选择的 `ctx.web` 搜索/抓取提供方；desktop-agent preset 沿用 `tool-web` 的默认配置，默认注册两项。`qq-tool-restrict` 允许这两个 DSH 工具名通过执行守卫，实际是否可调用由 DSH 工具注册和每步提供方就绪状态决定。它与桥接的 `webSearch` / `web-search-safe` 不同；随附的 DSH `http` 抓取提供方允许访问本机和内网地址，不经过桥接 SSRF 防护。
+- 全局会话生命周期为 `idle`、`active`、`resting`、`recovering`、`sleeping` 和 `stopped`。活动回合最后调用 `agent_rest`；休息为 1 至 5 分钟，到期后恢复一轮；用户在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束普通休息。`sleeping` 由 ownerQQ 私聊命令进入并持久保存，清除提醒，禁止自动唤醒，消息仍缓冲；`/起床` 恢复一轮。DSH 直接启动的回合会被桥接请求取消。
 - 如果活动回合刚通过 QQ 回复某个来源，数字角色会在休息前用最近一次 `readThroughSeq` 检查该来源是否有新未读；桥接会清掉已被读取水位覆盖的排队提醒，只保留尚未展示的新提醒，避免同一消息重复唤醒。
 - 桥接运行期间，首次提交的 QQ 提醒会保留到对应消息被 `readThroughSeq` 确认。若它仍未读，会话进入休息后由单一全局计时器每分钟检查一次，并最多补发一次；异常回合处于指数退避 `recovering` 时不运行这类提醒检查。
 - 消息提醒与 QQ 工具使用 `id:` 和 `seq:` 区分 QQ 消息 ID 与本地序号；有歧义的纯数字会返回明确提示。缺少 QQ 消息 ID 时提醒中的本地序号会带缓存标识；清空 QQ 缓存时同步丢弃待处理提醒，并使之前的本地序号提醒失效，避免序号重新指向新消息。
