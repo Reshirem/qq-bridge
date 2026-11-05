@@ -75,7 +75,8 @@ for (const previousRest of [0, Date.now() + 3600000]) {
     h.setDesktopAgentLifecycle('active');
     h.setDesktopAgentTurnActive(true);
     await h.sendStickerV2('group:456', 'fixture-sticker');
-    assert.equal(body.message.find((part) => part.type === 'image').data.file, 'base64://' + image.toString('base64'));
+    assert.deepEqual(body.message.map(part => part.type), ['image'], 'send one standalone sticker bubble');
+    assert.equal(body.message[0].data.file, 'base64://' + image.toString('base64'));
     console.log('PASS sticker sending gives OneBot validated bytes, never a URL to refetch');
   } catch (error) { failures++; console.error('FAIL safe sticker sending:', error.message); }
   finally { await h.close(); }

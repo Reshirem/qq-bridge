@@ -3,7 +3,7 @@
 //
 // 用法：
 //   1) 另开一个窗口：node voice-gui.mjs --no-open --port 3215
-//   2) $env:QQ_BRIDGE_TEST_LIVE="1"; node scripts/test-voice-concurrency.mjs --port 3215
+//   2) $env:QQ_BRIDGE_TEST_LIVE="1"; node scripts/test-voice-edge.mjs --port=3215
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

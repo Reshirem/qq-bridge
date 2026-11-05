@@ -133,7 +133,7 @@ test('synthetic payload size comparison (characters, not measured token usage)',
   console.log(`Synthetic 40-message payload: ${before} -> ${after} characters (${(after / before * 100).toFixed(1)}% remaining); minified-only=${minifiedOnly}. This is not a billing/token benchmark.`);
 });
 
-test('MCP validates read watermarks and removes retired wait and cached-history tools', async () => {
+test('MCP exposes QQ tool schemas and forwards valid calls with their source and message references', async () => {
   const requests = [];
   const api = http.createServer(async (req, res) => {
     let raw = '';
@@ -175,7 +175,18 @@ test('MCP validates read watermarks and removes retired wait and cached-history 
     assert.equal(listed.tools.some(t => t.name === 'qq_wait_for_messages'), false);
     assert.equal(listed.tools.some(t => t.name === 'qq_get_recent_messages'), false);
     assert.equal('gapMode' in listed.tools.find(t => t.name === 'qq_send_message').inputSchema.properties, false);
+    for (const name of ['qq_list_stickers', 'qq_get_sticker_image', 'qq_set_sticker_remark']) {
+      assert.ok(listed.tools.some(tool => tool.name === name), name);
+    }
+    const stickerSchema = listed.tools.find(tool => tool.name === 'qq_send_sticker')?.inputSchema;
+    assert.ok(stickerSchema, 'qq_send_sticker is available');
+    assert.equal('message' in stickerSchema.properties, false, 'stickers use a separate bubble');
     const common = { key: 'group:123' };
+    const sticker = { ...common, stickerId: 'fixture-sticker', replyToMessageId: 'id:21' };
+    const sentSticker = await client.callTool({ name: 'qq_send_sticker', arguments: sticker });
+    assert.notEqual(sentSticker.isError, true);
+    assert.equal(requests.at(-1).url, '/api/socialV2/send-sticker');
+    assert.deepEqual(requests.at(-1).body, { ...sticker, atUserId: null });
     const read = await client.callTool({ name: 'qq_get_unread_messages', arguments: common });
     const readText = read.content.find((part) => part.type === 'text').text;
     const data = JSON.parse(readText);

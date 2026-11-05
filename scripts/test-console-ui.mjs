@@ -38,6 +38,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('dialog', dialog => dialog.accept());
+  fixture.state.snowluma = { connected: true, degraded: true, silent: true, good: true, hint: '测试网关心跳中断' };
   await page.goto(fixture.url);
   await page.waitForFunction(() => document.getElementById('desktopAgentStatus')?.textContent.length > 0);
 
@@ -65,6 +66,17 @@ try {
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent' && request.body.message === '离线 UI 契约检查'));
 
   await page.locator('[data-view="access"]').first().click();
+  await page.locator('#snowlumaWarn').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#metricSnowluma').textContent(), '心跳中断');
+  assert.equal(await page.locator('#snowlumaWarnHint').textContent(), fixture.state.snowluma.hint);
+  assert.doesNotMatch(await page.locator('#snowlumaWarn').innerText(), /\[Hook\]/);
+  fixture.state.snowluma = { connected: true, degraded: true, good: false, hint: '测试网关接收异常' };
+  await page.locator('#refreshConsole').click();
+  await page.waitForFunction(() => document.getElementById('metricSnowluma').textContent === '接收异常');
+  assert.equal(await page.locator('#snowlumaWarnHint').textContent(), fixture.state.snowluma.hint);
+  fixture.state.snowluma = { connected: true, degraded: false, good: true };
+  await page.locator('#refreshConsole').click();
+  await page.locator('#snowlumaWarn').waitFor({ state: 'hidden' });
   await page.waitForFunction(() => document.getElementById('ownerQQ').value === '100001');
   assert.equal(await page.locator('#secInterceptNotify, #secSave').count(), 0, 'the obsolete interception notification control is absent');
   assert.equal(await page.locator('#section-whitelist #wlGroups').count(), 0, 'test-send lists are not presented as agent access controls');

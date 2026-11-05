@@ -2889,8 +2889,6 @@ async function main() {
       snowlumaHealth.degraded = true;
       snowlumaHealth.reason = snap.hint ?? '';
       log(`⚠️ SnowLuma 上游不健康：${snap.hint}`);
-      log('   这不是桥接的问题：桥接没有任何原生/注入面，也不控制 SnowLuma 或 QQ。');
-      log('   排查：SnowLuma 的 logs/snowluma-*.log 里搜 [Hook]（看是否有 "receive path stale" 或 "process enumeration timed out"）。');
     } else if (!snap.degraded && snowlumaHealth.degraded) {
       snowlumaHealth.degraded = false;
       snowlumaHealth.reason = '';
@@ -8464,7 +8462,11 @@ async function main() {
     //   · 实测踩过：把 wsUrl 指向一个死端口想让它"别连"，启动后仍被改回真实端点并连上。
     // 关掉之后**只自愈 token**（换账号仍然能恢复），但绝不动 URL、也不写回 URL。
     const followEndpoint = cfg.snowluma?.followDiscoveredEndpoint !== false;
-    const wsUrl = followEndpoint ? (r.wsUrl || cfg.snowluma.wsUrl) : cfg.snowluma.wsUrl;
+    const endpoints = followEndpoint ? {
+      wsUrl: r.wsUrl || cfg.snowluma.wsUrl,
+      httpUrl: r.baseUrl || cfg.snowluma.httpUrl,
+    } : {};
+    const wsUrl = endpoints.wsUrl ?? cfg.snowluma.wsUrl;
     const wsChanged = bot.accessToken !== wsToken || bot.url !== wsUrl;
     bot.accessToken = wsToken || undefined;
     // 端口也是 per-account 的（实测：换账号后 WS 从 3001 之类变到别的端口），
@@ -8478,20 +8480,15 @@ async function main() {
     if (!followEndpoint && r.wsUrl && r.wsUrl !== cfg.snowluma.wsUrl) {
       log(`   （已按 snowluma.followDiscoveredEndpoint=false 忽略发现到的端点 ${r.wsUrl}，继续用配置值 ${cfg.snowluma.wsUrl}）`);
     }
-    // 把确认可用的端点写回 config.json：下次启动直接就对了，不用再自愈一遍。
-    // ⚠️ 必须在**改 cfg 之前**算出要写什么，但写文件时对照的是**文件里**的旧值 ——
-    //    这里显式传 wsUrl，且不依赖 cfg 的内存值来判断"是否需要写"。
-    // 关掉端点跟随时不写 URL：否则"我设了别处"这件事会被自愈持久化地抹掉。
-    const previousWsUrl = cfg.snowluma.wsUrl;
-    cfg.snowluma.wsUrl = wsUrl;
+    // Use the same resolved endpoints for subsequent bridge requests and future restarts.
+    Object.assign(cfg.snowluma, endpoints);
     try {
       const w = persistSnowLumaEndpoint(path.join(ROOT, 'config.json'), {
         accessToken: httpToken,
-        ...(followEndpoint ? { wsUrl, httpUrl: r.baseUrl } : {})
+        ...endpoints
       });
       if (w.updated) log(`   已写回 config.json：${Object.keys(w.changed).join(' / ')}`);
       else log('   config.json 端点已是最新，无需改写');
-      if (!followEndpoint && previousWsUrl !== wsUrl) cfg.snowluma.wsUrl = previousWsUrl;
     } catch (error) {
       log(`   ⚠️ 写回 config.json 失败：${error?.message ?? error}`);
     }

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { discoverSnowLumaConnection } from '../src/snowluma-conn.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8').trimStart());
 const timeoutMs = (Number(process.argv[2]) || 45) * 1000;
 
 // 用项目自己的自发现拿「当前真正可用」的 token 与端点。
@@ -25,24 +25,26 @@ if (!disc.ok) {
   console.log(`❌ 无法发现可用的 SnowLuma 连接：${disc.error}`);
   process.exit(2);
 }
-console.log(`已发现端点 ${disc.wsUrl}（token ${String(disc.wsToken || disc.token).slice(0, 4)}…，来源 ${disc.source}）`);
+const configuredWsUrl = cfg.snowluma?.wsUrl || 'ws://127.0.0.1:3001';
+const wsUrl = cfg.snowluma?.followDiscoveredEndpoint === false ? configuredWsUrl : disc.wsUrl || configuredWsUrl;
+console.log(`WebSocket 端点 ${wsUrl}（凭据来源 ${disc.source}）`);
 
 const bot = new SnowLumaWebSocketClient({
-  url: disc.wsUrl,
+  url: wsUrl,
   accessToken: disc.wsToken || disc.token || undefined,
   reconnect: false,
 });
 
 const seen = new Map();
 let done = false;
-const finish = (why) => {
+const finish = (why, code) => {
   if (done) return;
   done = true;
   console.log(`\n=== 结果（${why}）===`);
   console.log('收到的事件类型：');
   for (const [k, n] of [...seen].sort()) console.log(`  ${k} x${n}`);
   try { bot.close(); } catch {}
-  process.exit(0);
+  process.exit(code);
 };
 
 bot.onEvent((event) => {
@@ -51,20 +53,22 @@ bot.onEvent((event) => {
   seen.set(sub, (seen.get(sub) ?? 0) + 1);
 
   if (post === 'meta_event' && event?.meta_event_type === 'heartbeat') {
+    const valid = typeof event.status?.good === 'boolean';
     console.log('✅ 收到 heartbeat —— 心跳是**本地定时器**发的，与 QQ 是否有消息无关');
     console.log('   status =', JSON.stringify(event.status));
     console.log('   interval =', event.interval);
     console.log(`   → status.good = ${JSON.stringify(event.status?.good)}` +
-      (typeof event.status?.good === 'boolean'
+      (valid
         ? '  ✅ 字段存在（桥接的上游健康主信号可用）'
         : '  ❌ 字段缺失/非布尔 —— 桥接的 good 会一直停在 null！'));
     console.log(`   → status.online = ${JSON.stringify(event.status?.online)}`);
-    finish('拿到心跳');
+    finish(valid ? '拿到心跳' : '心跳缺少接收链路状态', valid ? 0 : 1);
   }
 });
 
 bot.on('error', (e) => console.log('  ws error:', e?.message ?? e));
-bot.connect().then(() => console.log(`已连接 ${cfg.snowluma.wsUrl}（只读，不发消息），等心跳…`))
-  .catch((e) => { console.log('连接失败:', e?.message ?? e); finish('连接失败'); });
+bot.on('close', () => finish('收到心跳前连接已关闭', 1));
+bot.connect().then(() => console.log(`已连接 ${wsUrl}（只读，不发消息），等心跳…`))
+  .catch((e) => { console.log('连接失败:', e?.message ?? e); finish('连接失败', 1); });
 
-setTimeout(() => finish('超时'), timeoutMs);
+setTimeout(() => finish('超时', 1), timeoutMs);

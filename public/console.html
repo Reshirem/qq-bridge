@@ -521,11 +521,9 @@
         <span class="meta" id="stateDirMsg"></span>
       </div>
       <div id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
-        <b>⚠️ QQ 网关连着，但收不到 QQ 的数据</b>
+        <b>⚠️ QQ 网关健康提醒</b>
         <div class="meta" style="margin:4px 0" id="snowlumaWarnHint"></div>
-        <div class="meta" id="snowlumaWarnDiag">最近一个上游事件包：<b id="snowlumaWarnPkt">unknown</b>；SnowLuma 自评接收链路 good=<b id="snowlumaWarnGood">unknown</b>。</div>
-        <div class="meta" style="margin:4px 0">这是 <b>SnowLuma 自己那边</b>的问题：它的 <code>[Hook]</code> 没能从 QQ 客户端取到数据，所以桥接的 WebSocket 连上了却始终没有内容可收。桥接没有原生 / 注入组件，也不改 SnowLuma，一条上游事件包都不会替你凭空造出来。</div>
-        <div class="meta">排查：打开 SnowLuma 的 <code>logs/snowluma-*.log</code>，搜 <code>[Hook]</code>，看有没有 <code>receive path stale</code> / <code>process enumeration timed out</code> 这类行；顺带考虑<b>升级 SnowLuma</b>（新版运行时对 hook 的兜底更好）。桥接这边不用重启。</div>
+        <div class="meta" id="snowlumaWarnDiag">最近一个上游事件包：<b id="snowlumaWarnPkt">unknown</b>；SnowLuma 自评接收链路：<b id="snowlumaWarnGood">unknown</b>。</div>
       </div>
     </section>
 <section id="section-token" data-page="access" class="card">

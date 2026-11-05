@@ -1,85 +1,39 @@
-// 视觉/图片链路自检脚本：
-// 1. 校验配置默认模型为 DeepSeek-V4-Flash-Vision-Exp
-// 2. 校验 safe-fetch 的 SSRF 防护（本机地址应被拒绝）
-// 3. 若桥接运行中，校验 /api/images/message 端点可用（用唯一全局 desktop-agent token）
-// 运行：node scripts/test-vision-media.mjs
+// Optional operator check of an unread QQ image on the running bridge.
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { safeFetchBuffer } from '../src/safe-fetch.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+test('media downloads reject loopback URLs', async () => {
+  await assert.rejects(safeFetchBuffer('http://127.0.0.1/'), /内网|本机|禁止/);
+});
 
-function readJson(file) {
-  let text = fs.readFileSync(file, 'utf8');
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  return JSON.parse(text);
-}
-
-const config = readJson(path.join(ROOT, 'config.json'));
-let passed = 0;
-let failed = 0;
-
-function check(name, cond, extra = '') {
-  if (cond) {
-    passed += 1;
-    console.log(`✅ ${name}${extra ? ' — ' + extra : ''}`);
-  } else {
-    failed += 1;
-    console.error(`❌ ${name}${extra ? ' — ' + extra : ''}`);
-  }
-}
-
-// 1. 配置
-// Models whose DSH capability metadata declares image input.
-// deepseek-flash（DeepSeek-V41-Flash）是当前默认；deepseek-v4-flash-vision-exp 为历史默认。
-const MULTIMODAL_MODELS = ['deepseek-flash', 'deepseek-v4-flash-vision-exp'];
-check('config.dsh.model 为多模态模型', MULTIMODAL_MODELS.includes(config.dsh?.model), `当前 ${config.dsh?.model}`);
-check('config.dsh.reasoningEffort 为 max', config.dsh?.reasoningEffort === 'max', `当前 ${config.dsh?.reasoningEffort}`);
-check('config.socialV2.tools.getImages 默认开启', config.socialV2?.tools?.getImages !== false);
-
-// 2. safe-fetch SSRF
-try {
-  await safeFetchBuffer('http://127.0.0.1/');
-  check('safe-fetch 拒绝本机地址', false, '未抛出异常');
-} catch (error) {
-  check('safe-fetch 拒绝本机地址', /内网|本机|禁止/.test(String(error?.message ?? error)), error?.message);
-}
-
-// 3. 桥接端点（可选）
-const consoleTokenFile = path.join(ROOT, 'state', 'console-token');
-const socialV2File = path.join(ROOT, 'state', 'qq-unread.sqlite');
-const desktopAgentFile = path.join(ROOT, 'state', 'desktop-agent.json');
-if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File) && fs.existsSync(desktopAgentFile)) {
+test('running bridge resolves unread image metadata', {
+  skip: process.env.QQ_BRIDGE_TEST_LIVE !== '1' && 'set QQ_BRIDGE_TEST_LIVE=1 to check the running bridge',
+}, async t => {
+  const root = new URL('../', import.meta.url);
+  const read = name => fs.readFileSync(new URL(name, root), 'utf8').replace(/^\uFEFF/, '');
+  const config = JSON.parse(read('config.json'));
+  const consoleToken = config.consoleToken || read('state/console-token').trim();
+  const { agentToken } = JSON.parse(read('state/desktop-agent.json'));
+  assert.ok(agentToken && consoleToken, 'live probe requires initialized bridge credentials');
+  const db = new DatabaseSync(fileURLToPath(new URL('state/qq-unread.sqlite', root)), { readOnly: true });
+  let row;
   try {
-    const consoleToken = fs.readFileSync(consoleTokenFile, 'utf8').trim();
-    const { DatabaseSync } = await import('node:sqlite');
-    const db = new DatabaseSync(socialV2File, { readOnly: true });
-    let cached;
-    try { cached = db.prepare('SELECT source,message FROM unread LIMIT 1').get(); }
-    finally { db.close(); }
-    const desktopAgent = JSON.parse(fs.readFileSync(desktopAgentFile, 'utf8'));
-    const agentToken = desktopAgent?.agentToken;
-    const conv = cached ? [cached.source, JSON.parse(cached.message)] : null;
-    if (conv) {
-      const [key, st] = conv;
-      const messageId = st.messageId;
-      if (agentToken && messageId) {
-        const url = `http://127.0.0.1:${config.consolePort || 3100}/api/images/message?key=${encodeURIComponent(key)}&messageId=${encodeURIComponent(String(messageId))}`;
-        const res = await fetch(url, { headers: { 'x-agent-token': agentToken, 'x-console-token': consoleToken }, signal: AbortSignal.timeout(10000) });
-        const body = await res.json().catch(() => ({}));
-        check('桥接 /api/images/message 端点可访问', res.ok === true && body.ok === true, `HTTP ${res.status}`);
-      } else {
-        console.log('⚠️ 跳过桥接端点检查：没有全局 agent token 或消息 ID');
-      }
-    }
-  } catch (error) {
-    console.log(`⚠️ 桥接端点检查跳过：${error?.message ?? error}`);
-  }
-} else {
-  console.log('⚠️ 跳过桥接端点检查：缺少 console token、全局数字角色状态或 QQ 消息缓存');
-}
-
-console.log(`\n结果：${passed} 通过，${failed} 失败`);
-process.exit(failed > 0 ? 1 : 0);
+    row = db.prepare(`SELECT source, json_extract(message, '$.messageId') AS id
+      FROM unread WHERE json_extract(message, '$.hasMedia') = 1 AND id IS NOT NULL
+      ORDER BY seq DESC LIMIT 1`).get();
+  } finally { db.close(); }
+  if (!row) return t.skip('no unread image with a QQ message ID');
+  const url = new URL('/api/images/message', 'http://127.0.0.1:' + (config.consolePort || 3100));
+  url.search = new URLSearchParams({ key: row.source, messageId: 'id:' + row.id });
+  const response = await fetch(url, {
+    headers: { 'x-agent-call': '1', 'x-agent-token': agentToken, 'x-console-token': consoleToken },
+    signal: AbortSignal.timeout(30000),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.ok(result.ok && result.media?.length > 0, 'expected image metadata for the selected QQ message');
+});

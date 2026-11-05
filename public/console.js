@@ -32,15 +32,15 @@ function renderSnowlumaHealth(sl) {
     hint.textContent = '桥接未上报上游健康状态';
     return;
   }
-  const degraded = sl.degraded === true;
   const connected = sl.connected === true;
+  const degraded = connected && sl.degraded === true;
   const ago = sl.lastPacketAgoMs;
   const receiving = Number.isFinite(ago);
   const goodText = sl.good === true ? 'good=true' : sl.good === false ? 'good=false' : 'good 未知';
   if (degraded) {
-    strong.textContent = '已连接 · 未接收';
+    strong.textContent = sl.good === false ? '接收异常' : '心跳中断';
     strong.className = 'err';
-    hint.textContent = '网关连着，但 QQ 侧数据没到';
+    hint.textContent = sl.good === false ? '网关报告 QQ 接收异常' : '最近没有收到网关心跳或事件';
   } else if (!connected) {
     strong.textContent = '未连接';
     strong.className = 'err';
@@ -52,8 +52,7 @@ function renderSnowlumaHealth(sl) {
       + (sl.good === false ? 'good=false' : sl.good === true ? 'good=true' : 'good 未上报');
   }
   if (!degraded) { el.style.display = 'none'; return; }
-  document.getElementById('snowlumaWarnHint').textContent = sl.hint
-    || '桥接与 QQ 网关的 WebSocket 连着，但一直收不到 QQ 侧的数据。';
+  document.getElementById('snowlumaWarnHint').textContent = sl.hint || hint.textContent;
   document.getElementById('snowlumaWarnPkt').textContent = (receiving ? fmtAgoMs(ago) + '前' : '从未收到')
     + (sl.lastPacketKind ? '（' + sl.lastPacketKind + '）' : '');
   document.getElementById('snowlumaWarnGood').textContent = goodText;

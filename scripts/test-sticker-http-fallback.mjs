@@ -7,6 +7,7 @@
 //
 // 本文件验证：WS 正常时走 WS（不多打一次 HTTP）；WS 失败时自动改走 HTTP，且结果标 via=http。
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 let failures = 0;
@@ -18,7 +19,7 @@ async function test(name, run) {
 }
 
 // 一个只用来"演 WS 挂掉"的客户端：除了被桥接订阅的事件方法，request 一律抛错。
-class WsDownBot {
+class WsDownBot extends EventEmitter {
   onPrivateMessage() {}
   onGroupMessage() {}
   onNotice() {}

@@ -73,9 +73,9 @@ test('empty searches are rejected without calling the transport', async () => {
 
 /**
  * 用假 transport 加载 mcp-snowluma-safe.js，拿到它的工具回调。
- * 只需要把 fetch（桥接 API / OneBot HTTP）、http（长轮询）、McpServer、zod、两个本地纯模块塞进上下文。
+ * 只需要把 fetch（桥接 API / OneBot HTTP）、McpServer、zod、两个本地纯模块塞进上下文。
  */
-function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
+function loadSnowlumaTools(fetchImpl, fixtureConfig = null) {
   const tools = new Map();
   // vm 里没有 ESM 的 import.meta，把模块顶部的 __dirname 推导整段替换成固定值。
   const source = fs.readFileSync(new URL('../src/mcp-snowluma-safe.js', import.meta.url), 'utf8')

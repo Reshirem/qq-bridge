@@ -418,7 +418,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=', 'base64'));
           }
           case '/api/stickers': return json({ ok: true, stickers: [{ id: 'qq-fixture', desc: 'QQ 收藏示例' }], total: 1 });
-          case '/api/status': return json({ ok: true, dshReady: true, role: state.role, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
+          case '/api/status': return json({ ok: true, dshReady: true, snowluma: state.snowluma, role: state.role, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
           case '/api/roles': return json({
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {

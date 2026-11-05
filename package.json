@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "node src/bridge.js",
+    "test": "node scripts/test-audit.mjs",
     "test:policy": "node scripts/test-autonomy-policy.mjs",
     "test:attention": "node scripts/test-attention-delivery.mjs",
     "test:message-ref": "node scripts/test-qq-message-reference.mjs",
@@ -37,7 +38,7 @@
     "verify:persona": "node scripts/verify-persona-config.mjs",
     "test:mcp-servers": "node scripts/test-mcp-servers-stdio.mjs",
     "test:plugin": "node scripts/test-qq-agent-presets-settings.mjs",
-    "test:setup-idempotent": "node scripts/test-setup-dsh-idempotent.mjs",
+    "test:setup-idempotent": "node scripts/test-audit-setup.mjs",
     "test:mux-reconnect": "node scripts/test-mux-reconnect.mjs",
     "probe:events": "node scripts/probe-events.mjs",
     "probe:tools": "node scripts/probe-tools.mjs",

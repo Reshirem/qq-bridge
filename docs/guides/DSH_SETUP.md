@@ -116,7 +116,7 @@ npm start
 
 ```bash
 node scripts/build-agent-preset-patches.mjs --check
-node scripts/test-setup-dsh-idempotent.mjs
+npm run test:setup-idempotent
 node scripts/test-autonomy-policy.mjs
 node scripts/test-preset-local-tools.mjs
 node scripts/test-audit-setup-guards.mjs

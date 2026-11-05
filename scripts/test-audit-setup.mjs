@@ -16,6 +16,29 @@ const yaml = (await import(pathToFileURL(path.join(parserRoot, 'dist/js-yaml.mjs
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-bridge-audit-setup-'));
 let failures = 0;
 
+// Exercise real npm installation and adapter imports entirely inside the fixture.
+function copyOfflinePlugins(repo) {
+  fs.cpSync(path.join(root, 'plugins'), path.join(repo, 'plugins'), {
+    recursive: true,
+    filter: (src) => !['node_modules', 'package-lock.json'].includes(path.basename(src)),
+  });
+  const manifest = path.join(repo, 'plugins/qq-agent-presets/package.json');
+  const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  const modules = {
+    '@deepseek-ai/dsh-compaction-basic': 'export default class BasicCompactionEngine {}',
+    '@deepseek-ai/dsh-llm': 'export class BlockAssembler {}\nexport class LlmError extends Error {}',
+    '@deepseek-ai/schemastery': 'export default {}',
+  };
+  for (const name of Object.keys(pkg.dependencies)) {
+    const dir = path.join(repo, 'fixture-packages', name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', type: 'module', exports: './index.js' }));
+    fs.writeFileSync(path.join(dir, 'index.js'), modules[name]);
+    pkg.dependencies[name] = `file:../../fixture-packages/${name}`;
+  }
+  fs.writeFileSync(manifest, JSON.stringify(pkg));
+}
+
 function fixture(name, patch = '') {
   const base = path.join(sandbox, name);
   const repo = path.join(base, 'repo');
@@ -30,7 +53,7 @@ function fixture(name, patch = '') {
   // setup-dsh.mjs checks ffmpeg availability using this standalone resolver.
   fs.copyFileSync(path.join(root, 'src/ffmpeg-resolve.js'), path.join(repo, 'src/ffmpeg-resolve.js'));
   fs.cpSync(path.join(root, 'dsh'), path.join(repo, 'dsh'), { recursive: true });
-  fs.cpSync(path.join(root, 'plugins'), path.join(repo, 'plugins'), { recursive: true });
+  copyOfflinePlugins(repo);
   fs.cpSync(parserRoot, path.join(repo, 'node_modules/js-yaml'), { recursive: true });
   fs.mkdirSync(path.join(home, 'profiles/web'), { recursive: true });
   const patchFile = path.join(home, 'profiles/web/cordis.patch.yml');
@@ -40,8 +63,12 @@ function fixture(name, patch = '') {
     dependencies: { existing: '1.0.0' },
     dsh: { profile: { bundles: ['existing'] } },
   }));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
-  Object.assign(env, { PATH: path.dirname(process.execPath), DSH_HOME: home, HOME: home, USERPROFILE: home, QQ_BRIDGE_SKIP_DSH_INSTALL: '1' });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(path$|npm_)/i.test(key)));
+  Object.assign(env, {
+    PATH: path.dirname(process.execPath), DSH_HOME: home, HOME: home, USERPROFILE: home,
+    QQ_BRIDGE_SKIP_DSH_INSTALL: '1', npm_config_offline: 'true',
+    npm_config_cache: path.join(base, 'npm-cache'), npm_config_userconfig: path.join(home, '.npmrc'),
+  });
   const run = (profile = 'web', extraEnv = {}) => spawnSync(process.execPath, [path.join(repo, 'scripts/setup-dsh.mjs'), profile], {
     env: { ...env, ...extraEnv }, cwd: repo, encoding: 'utf8', timeout: 15000,
   });
@@ -73,6 +100,9 @@ try {
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
     assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'qq-agent-presets']);
+    const bundle = path.join(f.home, 'plugins/qq-agent-presets');
+    assert.equal(pkg.dependencies['qq-agent-presets'], `link:${bundle.replaceAll(path.sep, '/')}`);
+    assert.ok(fs.statSync(path.join(bundle, 'presets/desktop-agent.patch.yml')).isFile());
   });
 
   test('malformed patch fails before replacing user configuration or presets', () => {

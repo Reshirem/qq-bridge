@@ -1,6 +1,6 @@
 // 表情包体系自检：
 // 1) sticker-lib 纯函数（合并/查找/格式化）
-// 2) 配置项与 MCP 工具描述存在性
+// 2) 示例配置（MCP 工具注册由 stdio 契约回归验证）
 // 3) 可选 live 模式：QQ_BRIDGE_TEST_LIVE=1 时调用 SnowLuma 拉取收藏表情并验证 safeFetchBuffer 可抓图
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,35 +77,10 @@ console.log('## 配置文件');
   ok(!('sendCaptionMaxChars' in cfg.socialV2.sticker), '示例已移除旧配文设置');
 }
 
-console.log('## 表情单气泡约束');
-{
-  const mcp = fs.readFileSync(path.join(ROOT, 'src', 'mcp-snowluma-safe.js'), 'utf8');
-  const sendStickerBlock = mcp.slice(mcp.indexOf("'qq_send_sticker'"), mcp.indexOf("'qq_collect_sticker'"));
-  ok(!sendStickerBlock.includes('message: z.string()'), 'qq_send_sticker MCP 不再接受 message 参数');
-  ok(sendStickerBlock.includes('不能在同一气泡里附带文字'), 'qq_send_sticker 描述强调单气泡');
-
-}
-
-console.log('## MCP 工具描述存在性');
-{
-  const mcp = fs.readFileSync(path.join(ROOT, 'src', 'mcp-snowluma-safe.js'), 'utf8');
-  for (const name of ['qq_list_stickers', 'qq_get_sticker_image', 'qq_send_sticker', 'qq_set_sticker_remark']) {
-    ok(mcp.includes(`'${name}'`) || mcp.includes(`"${name}"`), `MCP 工具 ${name} 已注册`);
-  }
-}
-
-console.log('## bridge 路由/函数存在性');
-{
-  const bridge = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
-  for (const s of ['/api/socialV2/sticker-list', '/api/socialV2/sticker-image', '/api/socialV2/send-sticker', '/api/socialV2/sticker-remark', '/api/stickers', 'syncStickerLibrary', 'sendStickerV2']) {
-    ok(bridge.includes(s), `bridge 包含 ${s}`);
-  }
-}
-
 if (process.env.QQ_BRIDGE_TEST_LIVE === '1') {
   console.log('## live：SnowLuma 收藏表情链路');
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8').trimStart());
     const base = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
     const headers = { 'content-type': 'application/json', ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) };
     const res = await fetch(`${base}/fetch_custom_face_detail`, {
@@ -116,9 +91,10 @@ if (process.env.QQ_BRIDGE_TEST_LIVE === '1') {
     });
     const body = await res.json();
     ok(res.ok && body.status === 'ok' && body.retcode === 0, 'fetch_custom_face_detail 调用成功');
-    const items = Array.isArray(body.data) ? body.data : [];
-    ok(items.length > 0, `返回 ${items.length} 个收藏表情`);
-    if (items.length > 0) {
+    const items = body.data;
+    ok(Array.isArray(items), '网关返回收藏表情列表');
+    if (Array.isArray(items) && !items.length) console.log('  跳过图片下载：当前账号没有收藏表情。');
+    if (Array.isArray(items) && items.length) {
       const { safeFetchBuffer } = await import('../src/safe-fetch.js');
       try {
         const img = await safeFetchBuffer(items[0].url, 4 * 1024 * 1024);

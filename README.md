@@ -189,8 +189,10 @@ npm start          # 或双击 start.bat（守护模式：崩溃自动重启，�
 离线回归（使用临时目录和模拟服务，不读取真实配置、不发 QQ 消息）：
 
 ```bash
-node scripts/test-audit.mjs
+npm test
 ```
+
+日常开发可先跑改动涉及的专项，推送前跑上述离线回归。WebUI 交互有变化时加跑 `npm run test:console-ui`。需要验证实际 SnowLuma 网关连接和心跳时，运行 `npm run probe:heartbeat`。表情、外网搜索和独立语音 GUI 等专项的真实联调需显式设置 `QQ_BRIDGE_TEST_LIVE=1`。
 
 QQ 消息模型视图和全局 `desktop-agent` preset 契约可单独运行 `npm run test:qq-contract`。
 

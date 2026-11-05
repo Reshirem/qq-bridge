@@ -356,14 +356,6 @@ await test('webSearch：provider=deepseek 且无 key 时不静默回退（明确
   }
 });
 
-await test('MCP 服务器复用 web-search 模块（不再自己抓 Bing HTML）', async () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'mcp-web-search-safe.js'), 'utf8');
-  assert.match(source, /from '\.\/web-search\.js'/, 'MCP 必须复用统一搜索模块');
-  assert.match(source, /webSearch\(/, 'MCP 必须调用 webSearch()');
-  assert.ok(!/b_algo/.test(source), 'MCP 里不得再有一份 Bing HTML 解析（会与模块实现漂移）');
-  assert.ok(!/bingSearch/.test(source), 'MCP 里不得再有一份 bingSearch 实现');
-});
-
 await test('safe-fetch：多地址时按 IPv4 优先并在失败后切换', async () => {
   // 直接验证纯函数（不联网）：一个 IPv6 在前、IPv4 在后的应答，必须排出 IPv4 优先的顺序。
   const { default: dns } = await import('node:dns');

@@ -7,6 +7,7 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import vm from 'node:vm';
+import { EventEmitter } from 'node:events';
 import yaml from 'js-yaml';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -99,7 +100,16 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     stopSessionWork: async (sessionId) => { calls.cancelled.push(sessionId); return { removed: 0 }; },
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
-  class FakeBot {
+  class FakeBot extends EventEmitter {
+    constructor(options) { super(); Object.assign(this, options); }
+    onPrivateMessage(fn) { this.on('private', fn); }
+    onGroupMessage(fn) { this.on('group', fn); }
+    onNotice(kind, fn) { this.on('notice/' + kind, fn); }
+    onEvent(fn) { this.on('event', fn); }
+    onBotStatus(fn) { this.on('bot_status', fn); }
+    async getLoginInfo() { return { user_id: 42, nickname: 'fixture' }; }
+    async connect() {}
+    close() {}
     async sendPrivateMessage(id, text) { calls.sent.push({ kind: 'private', id, text }); }
     async sendGroupMessage(id, text) { calls.sent.push({ kind: 'group', id, text }); }
     async getImage({ file }) {
@@ -146,7 +156,10 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   }, { out: [], droppingImport: false }).out.join('\n');
   source = source.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(path.join(temp, 'src/bridge.js')).href));
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
-  source = source.replace('  bot.onPrivateMessage(async (event) => {', `
+  // Register the real SDK event handlers before stopping startup at the network boundary.
+  const connectStart = source.indexOf('  bot.connect().catch(');
+  if (connectStart < 0) throw new Error('Cannot locate bridge connection startup in the offline fixture');
+  source = source.slice(0, connectStart) + `
   return {
     closeUnreadStore: () => unreadStore.close(), sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
@@ -178,7 +191,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     setDesktopAgentLifecycle(value) { desktopAgentLifecycle = value; },
     setDesktopAgentPendingWakeReason(value) { desktopAgentPendingWakeReason = String(value); },
   };
-  bot.onPrivateMessage(async (event) => {`);
+}`;
   const timers = new Set();
   const context = vm.createContext({
     fs, os, path, http, crypto, yaml, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
