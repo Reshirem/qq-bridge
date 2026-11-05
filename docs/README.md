@@ -19,6 +19,7 @@
 | --- | --- |
 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md) | 当前会话运行模型、代码结构评估与渐进式重构原则 |
 | [guides/MEMORY_ARCHITECTURE.md](guides/MEMORY_ARCHITECTURE.md) | 长期记忆目标、MaiBot/A_Memorix 对齐方式、调用与上下文职责 |
+| [guides/CHAT_LEARNING.md](guides/CHAT_LEARNING.md) | 黑话记录、表情包后台学习、来源范围、资源限制与验证 |
 | [guides/COMPANION_PROMPT_MEMORY_PLAN.md](guides/COMPANION_PROMPT_MEMORY_PLAN.md) | 数字角色聊天、隐私、记忆和上下文压缩改进计划与进度 |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | 将唯一的 `desktop-agent` preset 和 MCP 工具安装到 DSH |
 | [../roles/README.md](../roles/README.md) | 人格卡格式与编辑说明 |

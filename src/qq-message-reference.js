@@ -27,10 +27,7 @@ export function findQQMessageReference(state, reference) {
   if (parsed.bufferId && parsed.bufferId !== String(state?.bufferId ?? '').toLowerCase()) {
     throw invalidReference('本地消息缓存已清空或更换，请重新读取消息');
   }
-  const messages = [
-    ...(Array.isArray(state?.recentMessages) ? state.recentMessages : []),
-    ...(Array.isArray(state?.unread) ? state.unread : []),
-  ];
+  const messages = state?.unread ?? [];
   const byId = parsed.kind === 'seq' ? null : messages.find((message) => (
     message?.messageId != null && String(message.messageId) === parsed.value
   )) ?? null;

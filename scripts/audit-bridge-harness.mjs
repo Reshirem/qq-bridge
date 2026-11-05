@@ -1,3 +1,4 @@
+import { qqChannelConfig } from '../src/qq-channel-config.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
 import fs from 'node:fs';
@@ -6,17 +7,22 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import vm from 'node:vm';
+import yaml from 'js-yaml';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
-import * as wait from '../src/v2-wait.js';
+import * as unreadStore from '../src/qq-unread-store.js';
 import * as autonomyPolicy from '../src/autonomy-policy.js';
 import * as qqMessageReference from '../src/qq-message-reference.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as mediaNormalize from '../src/media-normalize.js';
 import * as forward from '../src/forward.js';
 import * as sticker from '../src/sticker-lib.js';
+import * as chatLearning from '../src/chat-learning.js';
+import * as learningAssets from '../src/learning-assets.js';
+import * as learningApi from '../src/learning-api.js';
+import * as memoryOrganizer from '../src/memory-organizer.js';
 import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as memorixGateway from '../src/a-memorix-gateway.js';
@@ -38,7 +44,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
     dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
-    consoleToken: 'fixture-console-token', ...config,
+    consoleToken: 'fixture-console-token', chatLearning: { enabled: false }, ...config,
   }));
   // Extra state files let fixtures cover malformed persisted data.
   for (const [rel, content] of Object.entries(files)) {
@@ -142,8 +148,9 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
-    sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
+    closeUnreadStore: () => unreadStore.close(), sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
+    runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, memoryOrganizerPatchText,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
     isDshReady() { return dshReady; },
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
@@ -174,7 +181,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   bot.onPrivateMessage(async (event) => {`);
   const timers = new Set();
   const context = vm.createContext({
-    fs, os, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
+    fs, os, path, http, crypto, yaml, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
     fetch: fakeFetch,
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
@@ -206,7 +213,8 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     patchFileFor: fixturePatchFileFor,
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
-    ...markdown, ...sensitive, ...wait, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
+    qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
+    ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer,
     ...modelPrices, ...tokenLedger, ...memorixGateway, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
@@ -229,6 +237,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   const bridge = await context.auditReady;
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
+    bridge.closeUnreadStore();
     for (const timer of timers) clearTimeout(timer);
     const target = path.resolve(temp);
     if (path.dirname(target) !== path.resolve(os.tmpdir()) || !path.basename(target).startsWith('qq-audit-bridge-')) {

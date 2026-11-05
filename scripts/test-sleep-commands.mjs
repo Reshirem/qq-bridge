@@ -25,7 +25,7 @@ test('owner 私聊睡眠会丢弃提醒、持久保存并可恢复', async () =>
     assert.ok(h.calls.cancelled.length > 0);
     await h.handleIncomingForTest('private', 789, message(789, '睡眠中的消息'));
     assert.equal(h.attentionSnapshot().queue.length, 0);
-    assert.equal(h.getSocialV2State('private:789').recentMessages.length, 2);
+    assert.equal(h.getSocialV2State('private:789').unread.length, 2);
     const persisted = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/desktop-agent.json'), 'utf8'));
     assert.equal(persisted.lifecycle, 'sleeping');
     restored = await bridgeHarness({ files: { 'state/desktop-agent.json': persisted } });

@@ -72,7 +72,7 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     };
   }
 
-  async function request(operation, body, { requestTimeoutMs } = {}) {
+  async function request(operation, body, { requestTimeoutMs, allowMissingMemory = false } = {}) {
     if (!enabled) throw new Error('长期记忆未启用；请在 config.json 中设置 memory.enabled=true');
     if (configError) throw new Error(configError);
     if (!apiKey) throw new Error('长期记忆尚未配置 A_Memorix namespace API key');
@@ -95,6 +95,12 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     }
     let payload = null;
     try { payload = await response.json(); } catch {}
+    // A missing record is a normal lookup result. Do not confuse it with a
+    // missing namespace/route, authentication failure, or unavailable service.
+    if (allowMissingMemory && operation === 'get' && response.status === 404
+        && payload?.code === 'not_found' && payload?.message === 'memory not found') {
+      return { memory: null };
+    }
     if (!response.ok) {
       throw new Error(`A_Memorix ${operation} 失败（HTTP ${response.status}）：${resultError(payload, 'Gateway 未返回详细原因')}`);
     }
@@ -182,7 +188,7 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     const payload = await request('get', {
       context: context(),
       ...(memoryId ? { memoryId: String(memoryId).trim() } : { externalId: String(externalId).trim() })
-    });
+    }, { allowMissingMemory: true });
     const record = payload.memory;
     if (!record || typeof record !== 'object') return null;
     return {

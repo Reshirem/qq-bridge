@@ -24,7 +24,6 @@ export const PRESET_PROMPT_MODULE_DEFINITIONS = Object.freeze([
   { id: 'autonomy', title: '相处与自主活动', description: '结合人格卡和当下情况，选择自主活动或休息。', required: false },
   { id: 'conversation', title: '自然对话与任务回应', description: '按照人格卡的语气与相处方式回应，结合情境调整表达。', required: false },
   { id: 'qq-channel', title: '交流与人际联系', description: '会话运行期间，无论当前在做什么，都可自然兼顾 QQ 交流。', required: false },
-  { id: 'qq-wait', title: '等待交流的后续', description: '等待关注的对话消息，并按上下文继续交流。', required: false },
   { id: 'computer-scope', title: '电脑与其他活动空间', description: '电脑是可探索空间之一，也可使用其他已开放工具。', required: false },
   { id: 'computer-user', title: '观察用户的电脑活动', description: '根据需要观察用户正在做什么，结合情况自然交流和行动。', required: false },
   { id: 'protected-apps', title: '受保护的项目与运行时应用', description: '限制对 ChatGPT、DSH、qq-bridge 和 SnowLuma 图形界面的操作。', required: false },
@@ -113,7 +112,7 @@ export function normalizePresetPromptModules(value) {
   const fixedIds = new Set(PRESET_PROMPT_MODULE_DEFINITIONS.map((definition) => definition.id));
   const customModules = [];
   for (const [id, item] of byId) {
-    if (fixedIds.has(id)) continue;
+    if (fixedIds.has(id) || id === 'qq-wait') continue;
     if (item.custom !== true || !/^custom-[a-z0-9][a-z0-9-]{7,63}$/.test(id)) {
       throw new Error(`未知固定前缀模块：${id}`);
     }

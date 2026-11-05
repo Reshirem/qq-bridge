@@ -424,6 +424,7 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
       const resultValue = content.length === 1 ? content[0] : content;
       const resultObject = resultValue && typeof resultValue === 'object' && !Array.isArray(resultValue)
         ? resultValue : null;
+      // Historical wait results remain evidence in transcripts created before the tool was retired.
       if (ok && (toolLeaf.startsWith('qq_get_') || toolLeaf === 'qq_wait_for_messages') && resultObject) {
         const args = call?.args && typeof call.args === 'object' && !Array.isArray(call.args) ? call.args : {};
         const key = String(resultObject.key ?? args.key ?? '').trim();

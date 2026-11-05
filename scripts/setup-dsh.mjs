@@ -116,7 +116,7 @@ function mcpEntries() {
     out += `        command: ${yamlSingleQuote(node)}\n`;
     out += `        args:\n`;
     out += `          - ${yamlSingleQuote(s.script)}\n`;
-    // qq_wait_for_messages 最长可等 10 分钟；DSH 默认 60s 会提前掐断工具调用。
+    // 图像处理与批量发送使用各自的 MCP 超时预算。
     if (s.toolCallTimeoutMs) out += `        toolCallTimeoutMs: ${s.toolCallTimeoutMs}\n`;
   }
   out += '# === qq-bridge MCP END ===\n';

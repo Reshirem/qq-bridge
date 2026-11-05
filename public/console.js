@@ -1230,106 +1230,97 @@ document.getElementById('desktopAgentMessage').addEventListener('keydown', event
   }
 });
 // ── QQ 消息通道配置 ────────────────────────────────────────────────────────
-async function loadV2Config() {
+// Each form writes only its own settings. Seconds and percentages are UI units.
+const qqSettingsForms = {
+  qqReminderForm: { enabled: 'enabled', keywords: 'attentionKeywords' },
+  qqConversationForm: { delayPerCharMs: 'send.delayPerCharMs' },
+  qqStickerForm: { enabled: 'sticker.enabled', syncEnabled: 'sticker.syncEnabled', collect: 'sticker.collect.enabled' },
+  qqFeedbackForm: { maxLength: 'feedback.maxLength' },
+};
+
+function showQQSettings(form, config) {
+  for (const [name, path] of Object.entries(qqSettingsForms[form.id])) {
+    const field = form.elements.namedItem(name);
+    const value = path.split('.').reduce((object, key) => object?.[key], config);
+    if (field.type === 'checkbox') field.checked = value === true;
+    else if (name === 'keywords') field.value = (value || []).join('\n');
+    else field.value = value;
+  }
+  if (form.id === 'qqStickerForm') document.getElementById('stickerFavoritesSync').disabled = !config.sticker.syncEnabled;
+}
+async function loadQQSettings(page) {
+  const forms = [...document.querySelectorAll('[data-page="' + page + '"] form')].filter(form => qqSettingsForms[form.id]);
+  if (!forms.length) return;
   try {
-    const r = await api('/api/socialV2/config');
-    const c = r.config || {};
-    document.getElementById('v2Enabled').checked = c.enabled !== false;
-    document.getElementById('v2AttentionKeywords').value = Array.isArray(c.attentionKeywords) ? c.attentionKeywords.join('\n') : '';
-    const s = c.send || {};
-    document.getElementById('v2BurstEnabled').checked = s.burstEnabled !== false;
-    document.getElementById('v2BurstMax').value = s.burstMaxMessages ?? 8;
-    document.getElementById('v2BurstMin').value = s.burstIntervalMinMs ?? 1000;
-    document.getElementById('v2BurstMaxMs').value = s.burstIntervalMaxMs ?? 3000;
-    document.getElementById('v2LongGapProb').value = s.longGapProbability ?? 0.2;
-    document.getElementById('v2LongGapMin').value = s.longGapMinMs ?? 5000;
-    document.getElementById('v2LongGapMax').value = s.longGapMaxMs ?? 10000;
-    document.getElementById('v2MaxSendMin').value = s.maxSendPerMinute ?? 8;
-    document.getElementById('v2MaxSendHour').value = s.maxSendPerHour ?? 60;
-    document.getElementById('v2MaxMsgChars').value = s.maxMessageChars ?? 500;
-    document.getElementById('v2MaxGapMs').value = s.maxGapMs ?? 10000;
-    document.getElementById('v2GapBaseMs').value = s.gapBaseMs ?? 800;
-    document.getElementById('v2GapPerCharMs').value = s.gapPerCharMs ?? 20;
-    document.getElementById('v2SendHint').value = s.recommendedHint || '';
-    const wt = c.wait || {};
-    document.getElementById('v2WaitDefaultMs').value = wt.defaultMs ?? 30000;
-    document.getElementById('v2WaitMinMs').value = wt.minMs ?? 5000;
-    document.getElementById('v2WaitMaxMs').value = wt.maxMs ?? 600000;
-    document.getElementById('v2WaitDefaultQuietMs').value = wt.defaultQuietMs ?? 8000;
-    document.getElementById('v2MinQuietAfterNewMs').value = wt.minQuietAfterNewMs ?? 10000;
-    const stk = c.sticker || {};
-    document.getElementById('v2StickerEnabled').checked = stk.enabled !== false;
-    document.getElementById('v2StickerSyncTtlSec').value = Math.round((stk.syncTtlMs || 60000) / 1000);
-    document.getElementById('v2StickerMaxList').value = stk.maxListCount ?? 100;
-    const stkCollect = stk.collect || {};
-    document.getElementById('v2StickerCollectEnabled').checked = stkCollect.enabled !== false;
-    document.getElementById('v2StickerCollectPerMin').value = stkCollect.maxPerMinute ?? 2;
-    document.getElementById('v2StickerCollectPerHour').value = stkCollect.maxPerHour ?? 10;
-    const ctx = c.context || {};
-    document.getElementById('v2ContextRecentLimit').value = ctx.recentLimit ?? 100;
-    document.getElementById('v2ContextUnreadLimit').value = ctx.unreadLimit ?? 30;
-    document.getElementById('v2ContextWindow').value = ctx.contextWindow ?? 20;
-    const fb = c.feedback || {};
-    document.getElementById('v2FeedbackMaxLength').value = fb.maxLength ?? 500;
-    document.getElementById('v2FeedbackNotifyOwner').checked = fb.notifyOwnerOnError === true;
-  } catch {}
+    const { config } = await consoleApiResult('/api/socialV2/config');
+    for (const form of forms) {
+      showQQSettings(form, config);
+      form.querySelector('fieldset').disabled = false;
+    }
+  } catch (error) {
+    for (const form of forms) form.querySelector('[role=status]').textContent = error.message;
+  }
+}
+for (const [id, fields] of Object.entries(qqSettingsForms)) {
+  const form = document.getElementById(id);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const patch = {};
+    for (const [name, path] of Object.entries(fields)) {
+      const field = form.elements.namedItem(name);
+      let value;
+      if (field.type === 'checkbox') value = field.checked;
+      else if (name === 'keywords') value = field.value.split(/[\r\n,，]+/).map(word => word.trim()).filter(Boolean);
+      else value = field.valueAsNumber;
+      const keys = path.split('.');
+      const last = keys.pop();
+      const section = keys.reduce((object, key) => object[key] ??= {}, patch);
+      section[last] = value;
+    }
+    const status = form.querySelector('[role=status]');
+    form.querySelector('fieldset').disabled = true;
+    try {
+      const { config } = await consoleApiResult('/api/socialV2/config', 'POST', patch);
+      showQQSettings(form, config);
+      status.textContent = '已保存';
+      if (id === 'qqReminderForm' || id === 'qqConversationForm') refreshQQDashboard();
+    } catch (error) { status.textContent = error.message; }
+    finally { form.querySelector('fieldset').disabled = false; }
+  });
 }
 
-async function saveV2Config() {
-  const body = {
-    enabled: document.getElementById('v2Enabled').checked,
-    attentionKeywords: document.getElementById('v2AttentionKeywords').value
-      .split(/[\r\n,，]+/)
-      .map(value => value.trim())
-      .filter(Boolean),
-    send: {
-      burstEnabled: document.getElementById('v2BurstEnabled').checked,
-      burstMaxMessages: Math.round(Number(document.getElementById('v2BurstMax').value) || 8),
-      burstIntervalMinMs: Math.round(Number(document.getElementById('v2BurstMin').value) || 1000),
-      burstIntervalMaxMs: Math.round(Number(document.getElementById('v2BurstMaxMs').value) || 3000),
-      longGapProbability: Number(document.getElementById('v2LongGapProb').value) || 0,
-      longGapMinMs: Math.round(Number(document.getElementById('v2LongGapMin').value) || 5000),
-      longGapMaxMs: Math.round(Number(document.getElementById('v2LongGapMax').value) || 10000),
-      maxSendPerMinute: Math.round(Number(document.getElementById('v2MaxSendMin').value) || 0),
-      maxSendPerHour: Math.round(Number(document.getElementById('v2MaxSendHour').value) || 0),
-      maxMessageChars: Math.round(Number(document.getElementById('v2MaxMsgChars').value) || 500),
-      maxGapMs: Math.round(Number(document.getElementById('v2MaxGapMs').value) || 10000),
-      gapBaseMs: Math.round(Number(document.getElementById('v2GapBaseMs').value) || 800),
-      gapPerCharMs: Math.round(Number(document.getElementById('v2GapPerCharMs').value) || 20),
-      recommendedHint: document.getElementById('v2SendHint').value
-    },
-    wait: {
-      defaultMs: Math.round(Number(document.getElementById('v2WaitDefaultMs').value) || 5000),
-      minMs: Math.round(Number(document.getElementById('v2WaitMinMs').value) || 1000),
-      maxMs: Math.round(Number(document.getElementById('v2WaitMaxMs').value) || 10000),
-      defaultQuietMs: Number.isFinite(Number(document.getElementById('v2WaitDefaultQuietMs').value)) ? Math.max(0, Math.round(Number(document.getElementById('v2WaitDefaultQuietMs').value))) : 8000,
-      minQuietAfterNewMs: Number.isFinite(Number(document.getElementById('v2MinQuietAfterNewMs').value)) ? Math.max(0, Math.round(Number(document.getElementById('v2MinQuietAfterNewMs').value))) : 10000
-    },
-    sticker: {
-      enabled: document.getElementById('v2StickerEnabled').checked,
-      syncTtlMs: Math.max(1000, Math.round(Number(document.getElementById('v2StickerSyncTtlSec').value) || 60) * 1000),
-      maxListCount: Math.min(500, Math.max(1, Math.round(Number(document.getElementById('v2StickerMaxList').value) || 100))),
-      collect: {
-        enabled: document.getElementById('v2StickerCollectEnabled').checked,
-        maxPerMinute: Math.max(0, Math.round(Number(document.getElementById('v2StickerCollectPerMin').value) || 0)),
-        maxPerHour: Math.max(0, Math.round(Number(document.getElementById('v2StickerCollectPerHour').value) || 0))
-      }
-    },
-    context: {
-      recentLimit: Math.round(Number(document.getElementById('v2ContextRecentLimit').value) || 100),
-      unreadLimit: Math.round(Number(document.getElementById('v2ContextUnreadLimit').value) || 30),
-      contextWindow: Math.round(Number(document.getElementById('v2ContextWindow').value) || 20)
-    },
-    feedback: {
-      maxLength: Math.round(Number(document.getElementById('v2FeedbackMaxLength').value) || 500),
-      notifyOwnerOnError: document.getElementById('v2FeedbackNotifyOwner').checked
-    }
-  };
-  const r = await api('/api/socialV2/config', 'POST', body);
-  const msg = document.getElementById('v2ConfigMsg');
-  msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) loadV2Config();
+let qqDashboardRequest = 0;
+async function refreshQQDashboard(names = false) {
+  const namesButton = document.getElementById('v2StatesList');
+  if (names) namesButton.disabled = true;
+  const request = ++qqDashboardRequest;
+  const status = document.getElementById('v2ActivityStatus');
+  try {
+    const data = await consoleApiResult('/api/socialV2/states' + (names ? '?names=1' : ''));
+    if (request !== qqDashboardRequest) return;
+    const rows = data.conversations.sort((a, b) => b.lastIncomingAt - a.lastIncomingAt);
+    const unread = rows.reduce((total, row) => total + row.unreadCount, 0);
+    const asleep = data.lifecycle === 'sleeping';
+    const mode = asleep ? '角色睡眠中' : data.lifecycle === 'stopped' ? '角色已停止' : data.enabled ? '已开启' : '已关闭';
+    const metrics = [['QQ 提醒', mode], ['缓冲来源', rows.length], ['有未读的来源', rows.filter(row => row.unreadCount > 0).length], ['未读消息', unread], ['待处理提醒来源', rows.filter(row => row.attention).length]];
+    document.getElementById('v2Summary').innerHTML = metrics.map(([label, value]) => '<span>' + label + ' <b>' + esc(value) + '</b></span>').join('');
+    status.textContent = (data.nameError || '') + (asleep ? '睡眠期间收到的消息只进入缓存。' : '') + '更新于 ' + new Date().toLocaleTimeString();
+    const when = value => value ? esc(new Date(value).toLocaleString()) : '—';
+    const headings = ['来源', '未读', '提醒', '最近来信', '最近回复'];
+    const cells = rows.map(row => {
+      const kind = row.key.startsWith('group:') ? '群聊' : '私聊';
+      const attention = { queued: '等待提交', unread: '等待阅读' }[row.attention] || '—';
+      const values = [
+        '<strong>' + esc(row.name || kind) + '</strong><small>' + esc(row.key) + '</small>',
+        esc(row.unreadCount), attention, when(row.lastIncomingAt), when(row.lastAiReplyAt),
+      ];
+      return '<tr>' + values.map((value, i) => '<td data-label="' + headings[i] + '">' + value + '</td>').join('') + '</tr>';
+    });
+    document.getElementById('v2AllStatesOutput').innerHTML = cells.length
+      ? '<table><thead><tr>' + headings.map(label => '<th>' + label + '</th>').join('') + '</tr></thead><tbody>' + cells.join('') + '</tbody></table>'
+      : '<p class="meta">暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。</p>';
+  } catch (error) { if (request === qqDashboardRequest) status.textContent = '读取缓冲状态失败：' + error.message; }
+  finally { if (names) namesButton.disabled = false; }
 }
 
 function v2ToolLogStatus(entry) {
@@ -1351,17 +1342,10 @@ function summarizeToolArgs(tool, args) {
     parts.push(`${k}=${v}`);
   };
   const t = String(tool || '');
-  if (t.includes('qq_wait_for_messages')) {
-    push('timeoutMs', obj.timeoutMs != null ? obj.timeoutMs : '默认30000');
-    push('minNewMessages', obj.minNewMessages != null ? obj.minNewMessages : 1);
-    push('quietMs', obj.quietMs != null ? obj.quietMs : '默认8000');
-  } else if (t.includes('qq_send_message')) {
+  if (t.includes('qq_send_message')) {
     const msgs = Array.isArray(obj.messages) ? obj.messages : (obj.messages != null ? [obj.messages] : []);
     push('条数', msgs.length);
     if (msgs.length) push('首条', String(msgs[0]).slice(0, 30));
-    push('gapMode', obj.gapMode || 'auto');
-    if (obj.gapMs != null) push('gapMs', obj.gapMs);
-    if (Array.isArray(obj.gaps) && obj.gaps.length) push('gaps', obj.gaps.join(','));
     if (obj.replyToMessageId != null && obj.replyToMessageId !== '') push('引用id', obj.replyToMessageId);
   } else if (t.includes('qq_send_burst')) {
     const msgs = Array.isArray(obj.messages) ? obj.messages : [];
@@ -1375,7 +1359,7 @@ function summarizeToolArgs(tool, args) {
     if (obj.id != null && obj.id !== '') push('id', String(obj.id).slice(0, 40));
   } else if (t.includes('qq_mark_read')) {
     push('key', obj.key);
-  } else if (t.includes('qq_get_unread_messages') || t.includes('qq_get_recent_messages') || t.includes('qq_social_state') || t.includes('qq_get_my_recent_messages') || t.includes('qq_get_message_detail') || t.includes('qq_get_active_members')) {
+  } else if (t.includes('qq_get_unread_messages') || t.includes('qq_get_conversation_history') || t.includes('qq_social_state') || t.includes('qq_get_my_recent_messages') || t.includes('qq_get_message_detail') || t.includes('qq_get_active_members')) {
     push('key', obj.key);
     if (obj.messageId != null) push('messageId', obj.messageId);
     if (obj.limit != null) push('limit', obj.limit);
@@ -1408,11 +1392,19 @@ function renderV2ToolLog(entries) {
   html += '</table>';
   box.innerHTML = html;
 }
-function loadV2ToolLog() {
-  return api('/api/socialV2/tool-log?limit=200')
-    .then(r => { renderV2ToolLog(r.entries || []); })
-    .catch(() => { renderV2ToolLog([]); });
+let qqToolLogRequest = 0;
+async function loadV2ToolLog() {
+  const request = ++qqToolLogRequest;
+  const failed = document.getElementById('qqFailuresOnly').checked;
+  const status = document.getElementById('v2ToolLogMsg');
+  try {
+    const data = await consoleApiResult('/api/socialV2/tool-log?limit=200' + (failed ? '&failed=1' : ''));
+    if (request !== qqToolLogRequest) return;
+    renderV2ToolLog(data.entries.slice().reverse());
+    status.textContent = failed && !data.entries.length ? '没有失败记录' : '显示最近 ' + data.entries.length + ' 项';
+  } catch (error) { if (request === qqToolLogRequest) status.textContent = error.message; }
 }
+document.getElementById('qqFailuresOnly').addEventListener('change', loadV2ToolLog);
 document.getElementById('v2ToolLogOutput').addEventListener('click', (ev) => {
   const cell = ev.target.closest('.tool-log-cell');
   if (!cell) return;
@@ -1427,39 +1419,27 @@ document.getElementById('v2ToolLogOutput').addEventListener('click', (ev) => {
   }
 });
 
-document.getElementById('v2ConfigSave').addEventListener('click', saveV2Config);
-async function refreshV2Activity() {
-  try {
-    const r = await api('/api/socialV2/activity');
-    const el = document.getElementById('v2ActivityStatus');
-    el.textContent = r.paused ? '已暂停' : '运行中';
-    el.className = r.paused ? 'meta err' : 'meta ok';
-  } catch {}
-}
-document.getElementById('v2PauseBtn').addEventListener('click', async () => {
-  await api('/api/socialV2/activity', 'POST', { paused: true });
-  refreshV2Activity();
-});
-document.getElementById('v2ResumeBtn').addEventListener('click', async () => {
-  await api('/api/socialV2/activity', 'POST', { paused: false });
-  refreshV2Activity();
-});
+document.getElementById('v2StatesList').addEventListener('click', () => refreshQQDashboard(true));
 document.getElementById('v2ResetBtn').addEventListener('click', async () => {
-  if (!confirm('确定清空本地 QQ 消息缓存、读取水位和待处理 QQ 提醒？全局数字角色会话和运行状态不会改变。')) return;
-  const r = await api('/api/socialV2/reset', 'POST', {});
-  const msg = document.getElementById('v2ConfigMsg');
-  msg.textContent = r.ok ? '✅ 已清空 QQ 消息缓存' : ('❌ ' + (r.error || '失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) document.getElementById('v2AllStatesOutput').textContent = '（空）';
+  if (!confirm('清空所有来源的消息缓存、读取水位和待处理提醒？')) return;
+  const msg = document.getElementById('v2ResetMsg');
+  try {
+    await consoleApiResult('/api/socialV2/reset', 'POST', {});
+    msg.textContent = '已清空';
+    await refreshQQDashboard();
+  } catch (error) { msg.textContent = error.message; }
 });
-document.getElementById('v2StatesList').addEventListener('click', async () => {
-  const r = await api('/api/socialV2/states');
-  document.getElementById('v2AllStatesOutput').textContent = JSON.stringify(r.conversations || [], null, 2);
-});
-document.getElementById('v2FeedbackLoad').addEventListener('click', async () => {
-  const r = await api('/api/socialV2/feedback');
-  document.getElementById('v2FeedbackOutput').textContent = JSON.stringify(r.entries || [], null, 2);
-});
+async function loadQQFeedback() {
+  const box = document.getElementById('v2FeedbackOutput');
+  try {
+    const { entries } = await consoleApiResult('/api/socialV2/feedback');
+    box.innerHTML = entries.slice().reverse().map(entry => {
+      const level = { error: '错误', warning: '提醒', info: '信息' }[entry.level] || '信息';
+      return '<div class="knowledge-record"><strong class="' + (entry.level === 'error' ? 'err' : '') + '">' + level + '</strong> <small>' + esc(entry.time ? new Date(entry.time).toLocaleString() : '') + ' · ' + esc(entry.key) + '</small><p>' + esc(entry.message) + '</p></div>';
+    }).join('') || '<p class="meta">暂无角色主动反馈。</p>';
+  } catch (error) { box.textContent = error.message; }
+}
+document.getElementById('v2FeedbackLoad').addEventListener('click', loadQQFeedback);
 document.getElementById('v2FeedbackClear').addEventListener('click', async () => {
   if (!confirm('确定清空全部 AI 反馈？')) return;
   const r = await api('/api/socialV2/feedback-clear', 'POST', {});
@@ -1468,18 +1448,14 @@ document.getElementById('v2FeedbackClear').addEventListener('click', async () =>
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) document.getElementById('v2FeedbackOutput').textContent = '（空）';
 });
-document.getElementById('v2ToolLogLoad').addEventListener('click', async () => {
-  const msg = document.getElementById('v2ToolLogMsg');
-  msg.textContent = '';
-  await loadV2ToolLog();
-});
+document.getElementById('v2ToolLogLoad').addEventListener('click', loadV2ToolLog);
 document.getElementById('v2ToolLogClear').addEventListener('click', async () => {
   if (!confirm('确定清空全部工具调用日志？')) return;
   const r = await api('/api/socialV2/tool-log/clear', 'POST', {});
   const msg = document.getElementById('v2ToolLogMsg');
   msg.textContent = r.ok ? '✅ 已清空' : ('❌ ' + (r.error || '失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
-  renderV2ToolLog([]);
+  if (r.ok) { ++qqToolLogRequest; renderV2ToolLog([]); }
 });
 
 function loadSecurity() {
@@ -1529,14 +1505,170 @@ document.getElementById('consoleTokenSave').addEventListener('click', () => chan
 document.getElementById('consoleTokenRandom').addEventListener('click', () => changeConsoleToken(true));
 
 // Presentation layer: keep every existing control mounted so drafts and API contracts survive navigation.
+// ── 后台学习与按来源的知识库 ─────────────────────────────────────────────
+let learningPoll = null;
+let learningStatusRequest = 0;
+const knowledgeState = {
+  slang: { items: [], offset: 0, total: 0, selected: null, request: 0 },
+  sticker: { items: [], offset: 0, total: 0, selected: null, request: 0 },
+};
+const knowledgeLabels = { candidate: '待确认', learned: '自动学得', confirmed: '人工确认', rejected: '已停用 / 拒绝' };
+async function consoleApiResult(path, method, body) {
+  const response = await api(path, method, body);
+  if (!response.ok) throw new Error(response.error || '操作失败');
+  return response;
+}
+async function refreshLearning(loadConfig = true) {
+  const request = ++learningStatusRequest;
+  clearTimeout(learningPoll);
+  try {
+    const data = await consoleApiResult('/api/learning/status');
+    if (request !== learningStatusRequest) return;
+    const config = data.config;
+    if (loadConfig) {
+      document.getElementById('learningEnabled').checked = config.enabled;
+      document.getElementById('learningSlang').checked = config.slang;
+      document.getElementById('learningStickers').checked = config.stickers;
+      document.getElementById('learningMin').value = config.minMessages;
+      document.getElementById('learningCooldown').value = config.cooldownMs / 60000;
+      document.getElementById('learningWait').value = config.maxWaitMs / 60000;
+      document.getElementById('learningSources').value = config.sources.join('\n');
+    }
+    const last = data.lastResult;
+    document.getElementById('learningStatus').textContent = (data.running ? '正在分析一批消息' : config.enabled ? '后台学习已启用，等待消息批次' : '后台学习已关闭')
+      + (data.lastError ? ` · 最近失败：${data.lastError}` : '')
+      + (data.failedMessages ? ` · ${data.failedMessages} 条消息连续失败 3 次，已暂停自动重试；修复后可立即分析` : '')
+      + (last ? ` · 上次完成：${last.key}，${last.messages} 条消息 → ${last.words} 条黑话、${last.pictures} 张表情` : '')
+      + (data.dropped ? ` · 队列满时累计跳过 ${data.dropped} 条最早消息` : '');
+    document.getElementById('learningSummary').innerHTML = [['待处理消息', data.pending], ['已完成批次', data.runs], ['黑话记录', data.words], ['本地表情', data.pictures], ['累计输入 token', data.usage?.inputTokens || 0], ['累计输出 token', data.usage?.outputTokens || 0]].map(([label, count]) => `<span>${label} <b>${esc(count)}</b></span>`).join('');
+    document.getElementById('learningRun').disabled = data.running || !config.enabled || !data.pending;
+    if (currentConsolePage === 'learning') learningPoll = setTimeout(() => refreshLearning(false), 5000);
+  } catch (error) { document.getElementById('learningStatus').textContent = error.message; }
+}
+document.getElementById('learningRefresh').addEventListener('click', () => refreshLearning());
+document.getElementById('learningSave').addEventListener('click', async () => {
+  const status = document.getElementById('learningActionStatus');
+  try {
+    await consoleApiResult('/api/learning/settings', 'POST', {
+      enabled: document.getElementById('learningEnabled').checked,
+      slang: document.getElementById('learningSlang').checked,
+      stickers: document.getElementById('learningStickers').checked,
+      minMessages: Number(document.getElementById('learningMin').value),
+      cooldownMs: Number(document.getElementById('learningCooldown').value) * 60000,
+      maxWaitMs: Number(document.getElementById('learningWait').value) * 60000,
+      sources: document.getElementById('learningSources').value.split(/[\s,，]+/).filter(Boolean),
+    });
+    status.textContent = '设置已保存'; refreshLearning();
+  } catch (error) { status.textContent = error.message; }
+});
+document.getElementById('learningRun').addEventListener('click', async () => {
+  const status = document.getElementById('learningActionStatus');
+  try { await consoleApiResult('/api/learning/run', 'POST', {}); status.textContent = '已开始分析一批消息'; refreshLearning(false); }
+  catch (error) { status.textContent = error.message; }
+});
+function stickerImageUrl(entry) {
+  return '/api/learning/stickers/image?' + new URLSearchParams({ id: entry.id, scope: entry.scope });
+}
+async function refreshKnowledge(kind, reset = false) {
+  const state = knowledgeState[kind];
+  if (reset) state.offset = 0;
+  const request = ++state.request;
+  const base = kind === 'slang' ? '/api/slang' : '/api/learning/stickers';
+  const box = document.getElementById(kind + 'Records');
+  try {
+    const data = await consoleApiResult(base + '?' + new URLSearchParams({
+      query: document.getElementById(kind + 'Query').value,
+      scope: document.getElementById(kind + 'ScopeFilter').value.trim(),
+      status: document.getElementById(kind + 'StatusFilter').value,
+      offset: String(state.offset),
+    }));
+    if (request !== state.request) return;
+    Object.assign(state, { items: data.items, total: data.total, offset: data.offset });
+    box.innerHTML = data.items.length ? data.items.map((entry, index) => {
+      const selected = state.selected?.id === entry.id && state.selected?.scope === entry.scope;
+      return `<button class="knowledge-record${selected ? ' active' : ''}" data-knowledge-index="${index}">${kind === 'sticker' ? `<img src="${esc(stickerImageUrl(entry))}" alt="${esc(entry.desc)}" loading="lazy">` : ''}<strong>${esc(entry.content || entry.desc)}</strong>${kind === 'slang' ? `<p>${esc(entry.meaning || '含义尚不明确')}</p>` : `<p>${esc((entry.tags || []).join(' · '))}</p>`}<span class="meta">${esc(entry.scope)} · ${esc(knowledgeLabels[entry.status])}${kind === 'slang' ? ` · ${esc(entry.count)} 次证据` : ''}</span></button>`;
+    }).join('') : '<p class="meta">暂无符合条件的记录。可在「后台学习」查看队列与设置。</p>';
+    document.getElementById(kind + 'Page').textContent = `共 ${data.total} 条 · 第 ${Math.floor(data.offset / 30) + 1} 页`;
+    document.getElementById(kind + 'Previous').disabled = data.offset === 0;
+    document.getElementById(kind + 'Next').disabled = !data.hasMore;
+  } catch (error) { if (request === state.request) box.textContent = error.message; }
+}
+function selectKnowledge(kind, entry) {
+  knowledgeState[kind].selected = entry;
+  document.getElementById(kind + 'ActionStatus').textContent = '';
+  document.getElementById(kind + 'Scope').value = entry?.scope || '';
+  document.getElementById(kind + 'Status').value = entry?.status || 'confirmed';
+  document.getElementById(kind + 'Usage').value = entry?.usage || '';
+  document.getElementById(kind + 'Delete').disabled = !entry;
+  if (kind === 'slang') {
+    document.getElementById('slangEditorTitle').textContent = entry ? '编辑词条' : '新增词条';
+    document.getElementById('slangContent').value = entry?.content || '';
+    document.getElementById('slangMeaning').value = entry?.meaning || '';
+    document.getElementById('slangEvidence').textContent = entry ? (entry.evidence || []).map(e => `${e.key} · ${e.userId || '未知发送人'} · ${new Date(e.time).toLocaleString()}\n${e.messageId ? 'id:' + e.messageId + '\n' : ''}${e.text}`).join('\n\n') || entry.legacyEvidence || '暂无证据' : '暂无证据';
+  } else {
+    document.getElementById('stickerSave').disabled = !entry;
+    document.getElementById('stickerDescription').value = entry?.desc || '';
+    document.getElementById('stickerTags').value = (entry?.tags || []).join('、');
+    const preview = document.getElementById('stickerPreview');
+    preview.hidden = !entry;
+    if (entry) preview.src = stickerImageUrl(entry); else preview.removeAttribute('src');
+    document.getElementById('stickerEditorHint').textContent = entry ? `来源 ${entry.scope} · 已发送 ${entry.usedCount || 0} 次${entry.evidence?.messageId ? ' · 证据 id:' + entry.evidence.messageId : ''}` : '选择一张表情查看和编辑。';
+  }
+}
+for (const kind of ['slang', 'sticker']) {
+  document.getElementById(kind + 'Search').addEventListener('click', () => refreshKnowledge(kind, true));
+  document.getElementById(kind + 'Query').addEventListener('keydown', event => { if (event.key === 'Enter') refreshKnowledge(kind, true); });
+  document.getElementById(kind + 'Records').addEventListener('click', event => {
+    const button = event.target.closest('[data-knowledge-index]');
+    if (button) selectKnowledge(kind, knowledgeState[kind].items[Number(button.dataset.knowledgeIndex)]);
+  });
+  for (const [suffix, delta] of [['Previous', -30], ['Next', 30]]) document.getElementById(kind + suffix).addEventListener('click', () => {
+    knowledgeState[kind].offset = Math.max(0, knowledgeState[kind].offset + delta); refreshKnowledge(kind);
+  });
+  document.getElementById(kind + 'Save').addEventListener('click', async () => {
+    const entry = knowledgeState[kind].selected;
+    const body = { id: entry?.id, originalScope: entry?.scope, scope: document.getElementById(kind + 'Scope').value.trim(), status: document.getElementById(kind + 'Status').value, usage: document.getElementById(kind + 'Usage').value };
+    if (kind === 'slang') Object.assign(body, { content: document.getElementById('slangContent').value, meaning: document.getElementById('slangMeaning').value });
+    else Object.assign(body, { desc: document.getElementById('stickerDescription').value, tags: document.getElementById('stickerTags').value.split(/[,，、\n]/).map(t => t.trim()).filter(Boolean) });
+    try {
+      const data = await consoleApiResult(kind === 'slang' ? '/api/slang' : '/api/learning/stickers', 'POST', body);
+      selectKnowledge(kind, data.entry); document.getElementById(kind + 'ActionStatus').textContent = '已保存'; refreshKnowledge(kind);
+    } catch (error) { document.getElementById(kind + 'ActionStatus').textContent = error.message; }
+  });
+  document.getElementById(kind + 'Delete').addEventListener('click', async () => {
+    const entry = knowledgeState[kind].selected;
+    if (!entry || !confirm(`删除这条${kind === 'slang' ? '黑话' : '本地表情'}记录？如需阻止再次学习，可改为“已拒绝 / 停用”。`)) return;
+    try {
+      await consoleApiResult((kind === 'slang' ? '/api/slang' : '/api/learning/stickers') + '/delete', 'POST', { id: entry.id, scope: entry.scope });
+      selectKnowledge(kind, null); refreshKnowledge(kind, true);
+    } catch (error) { document.getElementById(kind + 'ActionStatus').textContent = error.message; }
+  });
+}
+document.getElementById('slangNew').addEventListener('click', () => selectKnowledge('slang', null));
+async function refreshStickerFavorites(sync = false) {
+  const status = document.getElementById('stickerFavoritesStatus');
+  try {
+    status.textContent = sync ? '正在从 QQ 同步…' : '正在读取缓存…';
+    if (sync) await consoleApiResult('/api/stickers/sync', 'POST', {});
+    const data = await consoleApiResult('/api/stickers?count=500');
+    document.getElementById('stickerFavorites').innerHTML = data.stickers.map(e => `<div class="knowledge-record"><strong>${esc(e.desc || '无 QQ 备注')}</strong><span class="meta">${esc(e.id)}</span></div>`).join('') || '<p class="meta">暂无 QQ 收藏表情。</p>';
+    status.textContent = `已显示 ${data.stickers.length} / ${data.total} 张`;
+  } catch (error) { status.textContent = error.message; }
+}
+document.getElementById('stickerFavoritesRefresh').addEventListener('click', () => refreshStickerFavorites());
+document.getElementById('stickerFavoritesSync').addEventListener('click', () => refreshStickerFavorites(true));
+
 const consolePages = {
+  learning: ['后台学习', '从交流中积累理解。', '按消息批次学习黑话与表情，独立查看进度、范围和用量控制。', 'QQ 通道'],
+  slang: ['黑话记录', '记住词语背后的意思。', '检索含义，核对证据，并按聊天来源管理学到的黑话。', 'QQ 通道'],
+  stickers: ['表情包', '让表情用在合适的场合。', '管理本地学习表情的描述、情绪标签、使用场景与来源。', 'QQ 通道'],
   overview: ['数字角色', '全局数字角色运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。', '工作空间'],
   sessions: ['会话控制', '控制全局数字角色', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。', '工作空间'],
   persona: ['数字角色提示词', '维护自主数字角色的固定提示词', '这里可以编辑数字角色的固定提示词和当前人格卡。', '工作空间'],
   memory: ['检索与记录', '长期记忆 · 检索与记录', '在共享 A_Memorix 中相关度检索或分页浏览全部活动原始记录，并查看、替代或删除记录。', '长期记忆'],
   'memory-organizer': ['整理进度', '长期记忆 · 独立整理', '查看每天最多一次的休息后自动整理进度，或选择历史 DSH 会话开始整理。', '长期记忆'],
   'memory-settings': ['记忆设置', '长期记忆设置', '配置 A_Memorix 连接、启动摘要和 Embedding / LLM Provider。', '长期记忆'],
-  'social-v2': ['提醒与消息', 'QQ 消息渠道', '查看 QQ 提醒策略、消息工具和发送安全设置。', 'QQ 通道'],
+  'social-v2': ['提醒与消息', 'QQ 消息渠道', '查看各来源的未读情况，管理提醒和对话设置。', 'QQ 通道'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。', '系统与管理'],
   access: ['访问与安全', '明确边界，安心连接。', '设置关系对象 QQ，查看安全状态并管理控制台访问令牌。', '系统与管理'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。', '系统与管理']
@@ -2330,6 +2462,13 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   if (page === 'memory-organizer') refreshMemoryOrganizer();
   else { clearTimeout(memoryOrganizerPollTimer); memoryOrganizerPollTimer = null; }
   if (page === 'memory-settings') { refreshMemoryStatus(); refreshMemorySettings(); }
+  clearTimeout(learningPoll);
+  if (page === 'learning') refreshLearning();
+  if (['social-v2', 'stickers', 'operations'].includes(page)) loadQQSettings(page);
+  if (page === 'social-v2') refreshQQDashboard();
+  if (page === 'operations') { loadV2ToolLog(); loadQQFeedback(); }
+  if (page === 'slang') refreshKnowledge('slang');
+  if (page === 'stickers') refreshKnowledge('sticker');
   closeConsoleSearch();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
@@ -2393,7 +2532,7 @@ function updateOverview(status) {
   document.getElementById('metricDsh').className = status.dshReady ? 'ok' : 'err';
   document.getElementById('metricDshHint').textContent = status.dshReady ? '桥接状态已同步' : '请检查 DSH 是否运行';
   renderSnowlumaHealth(status.snowluma);
-  document.getElementById('metricMode').textContent = '按需提醒';
+  document.getElementById('metricMode').textContent = status.qqRemindersEnabled === false ? '已关闭' : '按需提醒';
   document.getElementById('metricRole').textContent = '私聊、@、回复/引用、关键词';
   document.getElementById('accessSummary').textContent = '关系对象 QQ：' + (status.ownerQQ || '未设置');
   document.getElementById('lastUpdated').textContent = '状态同步于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -2415,7 +2554,8 @@ function setConnectionError(error) {
 }
 document.getElementById('refreshConsole').addEventListener('click', async function () {
   this.disabled = true;
-  const jobs = [refresh(), refreshV2Activity()];
+  const jobs = [refresh()];
+  if (currentConsolePage === 'social-v2') jobs.push(refreshQQDashboard());
   if (currentConsolePage === 'overview') jobs.push(refreshDesktopAgentStatus(true));
   await Promise.allSettled(jobs);
   this.disabled = false;
@@ -2925,9 +3065,10 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadSecurity(); refreshSimPrompt(); refreshRuntimePromptTemplates(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); loadSecurity(); refreshSimPrompt(); refreshRuntimePromptTemplates(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => {
   refresh();
+  if (currentConsolePage === 'social-v2' && !document.getElementById('v2StatesList').disabled) refreshQQDashboard();
   if (currentConsolePage === 'overview') refreshDesktopAgentStatus();
 }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。

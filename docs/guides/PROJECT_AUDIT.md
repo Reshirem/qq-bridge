@@ -62,7 +62,7 @@
 
 ### 仍是核验缺口，不是已确认的运行故障
 
-1. **当前工具名扫描器不能读取 DSH Desktop 内置 bundle。** 本机 DSH Desktop 版本为 `44.7.0`。`C:\Users\Reshirem\.dsh\profiles\desktop\package.json` 注册了 `@deepseek-ai/dsh-base` 和 `@deepseek-ai/dsh-web-app` 等 bundle；profile `node_modules` 里有 `dshmarket`、`dsh-computer-use-win` 和 `qq-agent-presets`，但没有独立的 `@deepseek-ai` 包目录。桌面安装的 `resources\app.asar` 中可检索到 `@deepseek-ai/dsh-tool-pwsh`、`@deepseek-ai/dsh-tool-bash`、`@deepseek-ai/dsh-tool-fs`、`@deepseek-ai/dsh-tool-terminal`、`@deepseek-ai/dsh-tool-session-query`、`@deepseek-ai/dsh-tool-subagent`、`@deepseek-ai/dsh-tool-web` 等包名引用。这能确认包名线索，却不能证明每个包在运行时注册了哪些工具名。现有 `dshModulesDir()`、`verify:persona` 和 `scan:tool-names` 只读取独立的 profile `node_modules`，因此这次不能据它们判断 DSH 44.7.0 的真实工具注册表，也不能确认守卫覆盖了该版本全部工具。下一步需要给扫描器增加 `app.asar` 支持，或取得可扫描的解包模块目录；在此之前，守卫与 DSH 工具名的版本对账仍属未完成。
+1. **当前工具名扫描器不能读取 DSH Desktop 内置 bundle。** 本机 DSH Desktop 版本为 `44.7.0`。`%USERPROFILE%\.dsh\profiles\desktop\package.json` 注册了 `@deepseek-ai/dsh-base` 和 `@deepseek-ai/dsh-web-app` 等 bundle；profile `node_modules` 里有 `dshmarket`、`dsh-computer-use-win` 和 `qq-agent-presets`，但没有独立的 `@deepseek-ai` 包目录。桌面安装的 `resources\app.asar` 中可检索到 `@deepseek-ai/dsh-tool-pwsh`、`@deepseek-ai/dsh-tool-bash`、`@deepseek-ai/dsh-tool-fs`、`@deepseek-ai/dsh-tool-terminal`、`@deepseek-ai/dsh-tool-session-query`、`@deepseek-ai/dsh-tool-subagent`、`@deepseek-ai/dsh-tool-web` 等包名引用。这能确认包名线索，却不能证明每个包在运行时注册了哪些工具名。现有 `dshModulesDir()`、`verify:persona` 和 `scan:tool-names` 只读取独立的 profile `node_modules`，因此这次不能据它们判断 DSH 44.7.0 的真实工具注册表，也不能确认守卫覆盖了该版本全部工具。下一步需要给扫描器增加 `app.asar` 支持，或取得可扫描的解包模块目录；在此之前，守卫与 DSH 工具名的版本对账仍属未完成。
 2. **没有连接真实 QQ / SnowLuma，也没有跑在线 DSH 生命周期核验。** 26/26 离线回归使用模拟接口，不代表网关登录、事件订阅、真实发送和在线生命周期全部已验收。`npm run verify:dsh` 会创建临时 workspace/session 后归档，这次没有运行。
 3. **真实 A_Memorix schema/Gateway 尚未联调。** `scripts/a-memorix-readonly-list.py` 已通过临时 SQLite fixture 的分页、来源/时间/关键词过滤、LIKE 转义、storage key 越界拒绝及数据库摘要不变检查；fixture 使用读取器要求的当前列结构，不证明用户实际安装的 A_Memorix 版本结构兼容。系统 PATH 没有 Python 命令，但仓库内 A_Memorix venv 可用于该 fixture。
 4. **提醒队列缺少端到端时间测试。** 唤醒分类有纯函数测试，消息水位与 MCP schema 有协议测试；“进入休息后等一分钟、只补发一次、退避态不补发”的完整计时器状态流目前没有单独 fixture 测试。
@@ -70,6 +70,6 @@
 
 ### 使用时要知道的设计边界
 
-全局数字角色可以枚举当前 QQ 账号的群/好友，并通过合法的 `group:<数字>`、`private:<数字>` key 读取或发送；这是从原来的逐 QQ session 改成单一全局 session 后的行为，不是残留的白名单错误。桥接 API 仍有限频与内容审计，但 computer-use 通过 QQ 图形界面的动作不经过这些 API 检查。相关边界见 [安全基线](SECURITY_BASELINE.md) 与 [运行架构](ARCHITECTURE.md)。
+全局数字角色可以枚举当前 QQ 账号的群/好友，并通过合法的 `group:<数字>`、`private:<数字>` key 读取或发送；这是从原来的逐 QQ session 改成单一全局 session 后的行为，不是残留的白名单错误。桥接 API 执行内容审计，但 computer-use 通过 QQ 图形界面的动作不经过这些 API 检查。相关边界见 [安全基线](SECURITY_BASELINE.md) 与 [运行架构](ARCHITECTURE.md)。
 
 `src/bridge.js` 同时拥有 QQ 消息状态、提醒队列、DSH 生命周期、WebUI API 和出站策略，仍是最大维护风险；目前它不是一处孤立的旧代码，而是多个 fork 后功能的共享协调点。继续拆分时应先为提醒计时器与 A_Memorix 只读读取器补齐 fixture 验证，再逐步抽离职责。

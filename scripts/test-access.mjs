@@ -154,17 +154,17 @@ test('cached messages and active members use the current owner, including after 
   const f = await start();
   try {
     const st = f.h.getSocialV2State('group:456');
-    st.recentMessages = [
+    const sample = [
       { seq: 1, userId: '123', sender: 'old', isOwner: true, ownerLabel: 'old label', isSelf: false },
       { seq: 2, userId: '999', sender: 'new', isOwner: false, ownerLabel: '', isSelf: false },
       { seq: 3, userId: null, sender: 'unknown', isOwner: true, ownerLabel: 'stale', isSelf: false },
       { seq: 4, sender: 'self', isOwner: true, ownerLabel: '我', isSelf: true },
     ];
-    st.unread = st.recentMessages.slice(0, 3);
+    st.unread = sample.slice(0, 3);
     const owners = async (route) => (await f.call(route)).body.messages.map((message) => [message.isOwner, message.ownerLabel]);
-    assert.deepEqual(await owners('/api/socialV2/recent?key=group:456'), [
-      [true, '配置关系对象（ownerQQ 123）'], [false, ''], [false, ''], [true, '我'],
-    ]);
+    f.h.bot.request = async () => ({ status: 'ok', retcode: 0, data: { messages: sample.slice(0,3).map((m,i) => ({
+      message_id: i+1, group_id: 456, sender: { user_id: m.userId, nickname: m.sender }, message: [],
+    })) } });
     assert.equal((await f.call('/api/whitelist', { ownerQQ: '999' })).status, 200);
     assert.deepEqual(await owners('/api/socialV2/unread?key=group:456'), [
       [false, ''], [true, '配置关系对象（ownerQQ 999）'], [false, ''],
@@ -196,7 +196,7 @@ test('QQ tools remain available across simultaneous sources with valid session c
     assert.equal((await f.call('/api/whitelist', { ownerQQ: '' })).status, 200);
     assert.equal((await f.call('/api/socialV2/state?key=private:789', undefined, agent)).status, 200);
     f.h.getSocialV2State('private:789').lastIncomingAt = Date.now() - 30000;
-    assert.equal((await f.call('/api/socialV2/wait', { key: 'private:789', purpose: 'reply', timeoutMs: 5000, quietMs: 10000 }, agent)).status, 200);
+    assert.equal((await f.call('/api/socialV2/unread?key=private:789', undefined, agent)).status, 200);
     assert.equal((await f.call('/api/socialV2/state?key=group:456', undefined, { ...agent, 'x-agent-token': 'invalid' })).status, 403);
     assert.equal((await f.call('/api/socialV2/conversations', undefined, { 'x-agent-token': 'invalid', 'x-agent-session-id': sessionId })).status, 403);
     assert.equal((await f.call('/api/socialV2/state?key=group:456', undefined, { ...agent, 'x-agent-session-id': 'other-session' })).status, 403);

@@ -107,7 +107,6 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
     URLSearchParams,
     fetch: fetchImpl,
     AbortSignal,
-    http: httpImpl ?? { request: () => { throw new Error('test did not inject http'); } },
     process,
     setTimeout,
     clearTimeout,
@@ -128,47 +127,6 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null, httpImpl = null) {
   callTool.schema = (name) => tools.get(name)?.schema;
   return callTool;
 }
-
-// 回归（issue #24）：`qq_wait_for_messages` 以前走全局 fetch（undici 自带 300s headersTimeout），
-// 而沉睡前观察的预算就是 300s —— 第 301 秒必然 `fetch failed`，桥接侧却还在跑满预算占着
-// activeWaits，AI 只能重试烧 token。现在必须走 node:http 长轮询（没有默认响应超时）。
-test('qq_wait_for_messages uses the node:http long-poll channel, not fetch', async () => {
-  const { EventEmitter } = await import('node:events');
-  const { PassThrough } = await import('node:stream');
-  let requested = null;
-  const fakeHttp = {
-    request(options, callback) {
-      requested = options;
-      const req = new EventEmitter();
-      req.destroy = () => {};
-      req.end = (body) => {
-        requested.body = body;
-        queueMicrotask(() => {
-          const res = new PassThrough();
-          res.statusCode = 200;
-          res.complete = false;
-          callback(res);
-          res.end(JSON.stringify({ ok: true, newMessages: [], readThroughSeq: 7 }));
-        });
-      };
-      return req;
-    }
-  };
-  const callTool = loadSnowlumaTools(
-    async () => { assert.fail('wait 不得再走 fetch（会被 undici 的 300s headersTimeout 掐断）'); },
-    null,
-    fakeHttp
-  );
-  const result = await callTool('qq_wait_for_messages', { key: 'group:1', timeoutMs: 300000, quietMs: 10000 });
-  assert.notEqual(result.isError, true, result.content?.[0]?.text);
-  assert.ok(requested, '必须真的发起 http.request');
-  assert.equal(requested.path, '/api/socialV2/wait');
-  assert.equal(requested.method, 'POST');
-  assert.equal(requested.hostname, '127.0.0.1');
-  assert.ok(Number(requested.port) > 0, '必须打到控制台端口');
-  assert.match(String(requested.body), /"timeoutMs":300000/);
-  assert.equal(JSON.parse(result.content[0].text).readThroughSeq, 7, '长轮询响应必须原样返回给模型');
-});
 
 // 回归：桥接个别分支会把 error 回成**对象**。直接 `new Error(obj)` 会变成
 // "[object Object]"（r3 的已知未修项里就有一条线上记录：qq_wait_for_messages 报

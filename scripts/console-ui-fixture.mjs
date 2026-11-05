@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Offline console preview. No production modules, credentials, state, or network clients are loaded. */
+import { qqChannelConfig } from '../src/qq-channel-config.js';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
@@ -328,7 +329,10 @@ export function makeFixtureState() {
     content: promptContent[definition.id] || `离线演示模块：${definition.title}。`,
   }));
   return {
-    role: '小鲸鱼', activityPaused: false, desktopAgentStopped: false,
+    role: '小鲸鱼', desktopAgentStopped: false,
+    learning: { enabled: true, slang: true, stickers: true, minMessages: 20, cooldownMs: 300000, maxWaitMs: 900000, sources: [] },
+    slang: [{ id: 'fixture-word', content: '摸鱼', meaning: '工作时偷闲', scope: 'group:123456789', status: 'learned', count: 3, usage: '熟人闲聊', evidence: [{ key: 'group:123456789', userId: '100001', text: '今天忙完了，可以摸鱼一会', time: Date.parse(timestamp) }] }],
+    learnedStickers: [{ id: 'fixture-sticker', desc: '开心的小猫', tags: ['开心', '赞同'], usage: '回应好消息', scope: 'group:123456789', status: 'learned', usedCount: 2 }],
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
     roleContents: {
       小鲸鱼: '# 小鲸鱼\n\n- 性格：好奇、爱接梗，遇到不懂的会直接问\n- 说话风格：简短，偶尔用 emoji',
@@ -340,21 +344,18 @@ export function makeFixtureState() {
     runtimePromptTemplates: normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS),
     dshEffort: 'max',
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
-    v2: {
-      enabled: true,
-      attentionKeywords: ['看看这个'],
-      send: { burstEnabled: true, burstMaxMessages: 8, burstIntervalMinMs: 1000, burstIntervalMaxMs: 3000, longGapProbability: 0.2, longGapMinMs: 5000, longGapMaxMs: 10000, maxSendPerMinute: 8, maxSendPerHour: 60, maxMessageChars: 500, maxGapMs: 10000, gapBaseMs: 800, gapPerCharMs: 20, recommendedHint: '单条消息保持完整，避免连续刷屏。' },
-      wait: { defaultMs: 30000, minMs: 5000, maxMs: 600000, defaultQuietMs: 8000, minQuietAfterNewMs: 10000 },
-      sticker: { enabled: true, syncTtlMs: 60000, maxListCount: 100, collect: { enabled: true, maxPerMinute: 2, maxPerHour: 10 } },
-      context: { recentLimit: 100, unreadLimit: 30, contextWindow: 20 },
-      feedback: { maxLength: 500, notifyOwnerOnError: false },
-    },
+    v2: qqChannelConfig({ attentionKeywords: ['看看这个'] }),
+    buffers: [
+      { key: 'group:123456789', name: '示例群聊', unreadCount: 2, attention: 'queued', lastIncomingAt: Date.now(), lastAiReplyAt: Date.now() - 120000 },
+      { key: 'private:100001', name: '示例好友', unreadCount: 0, attention: '', lastIncomingAt: Date.now() - 60000, lastAiReplyAt: 0 },
+    ],
     hardenStateDir: false,
     toolLog: [
       { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'call', args: JSON.stringify({ key: 'group:123456789', limit: 20 }) },
       { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'result', ok: true },
+      { time: timestamp, key: 'group:123456789', tool: 'qq_get_message_detail', type: 'result', ok: false, error: '消息定位已失效' },
     ],
-    feedback: [{ time: timestamp, level: 'info', message: '这是离线演示反馈。' }],
+    feedback: [{ time: timestamp, key: 'group:123456789', level: 'error', message: '离线演示错误。' }],
   };
 }
 
@@ -404,6 +405,19 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       }
       if (method === 'GET') {
         switch (path) {
+          case '/api/learning/status': return json({ ok: true, config: state.learning, running: false, pending: 12, runs: 4, words: state.slang.length, pictures: state.learnedStickers.length, dropped: 0 });
+          case '/api/slang':
+          case '/api/learning/stickers': {
+            const collection = path === '/api/slang' ? state.slang : state.learnedStickers;
+            const query = url.searchParams.get('query') || '', scope = url.searchParams.get('scope'), status = url.searchParams.get('status');
+            const filtered = collection.filter(e => (!query || JSON.stringify(e).includes(query)) && (!scope || e.scope === scope) && (!status || e.status === status));
+            return json({ ok: true, items: filtered, total: filtered.length, offset: 0, hasMore: false });
+          }
+          case '/api/learning/stickers/image': {
+            res.writeHead(200, { 'content-type': 'image/png' });
+            return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=', 'base64'));
+          }
+          case '/api/stickers': return json({ ok: true, stickers: [{ id: 'qq-fixture', desc: 'QQ 收藏示例' }], total: 1 });
           case '/api/status': return json({ ok: true, dshReady: true, role: state.role, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
           case '/api/roles': return json({
             roles: state.roles.slice(),
@@ -496,13 +510,9 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             });
           }
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
-          case '/api/socialV2/activity': return json({ ok: true, paused: state.activityPaused });
-          case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
+          case '/api/socialV2/tool-log': return json({ ok: true, entries: url.searchParams.get('failed') === '1' ? state.toolLog.filter(e => e.ok === false) : state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
-          case '/api/socialV2/states': return json({ ok: true, conversations: [
-            { key: 'group:123456789', bufferedCount: 3 },
-            { key: 'private:100001', bufferedCount: 1 },
-          ] });
+          case '/api/socialV2/states': return json({ ok: true, enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
           // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是
           // `icacls DIR /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /T /C` —— 正是那句
@@ -523,6 +533,19 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       }
       if (method === 'POST') {
         switch (path) {
+          case '/api/learning/settings': state.learning = { ...state.learning, ...body }; return json({ ok: true, config: state.learning });
+          case '/api/learning/run': return json({ ok: true, running: true });
+          case '/api/stickers/sync': return json({ ok: true, total: 1 });
+          case '/api/slang':
+          case '/api/learning/stickers': {
+            const list = path === '/api/slang' ? state.slang : state.learnedStickers;
+            let entry = list.find(e => e.id === body.id);
+            if (!entry) { entry = { id: `fixture-${list.length + 1}`, evidence: [], count: 0 }; list.push(entry); }
+            Object.assign(entry, { ...body, id: entry.id });
+            return json({ ok: true, entry });
+          }
+          case '/api/slang/delete': state.slang = state.slang.filter(e => e.id !== body.id); return json({ ok: true });
+          case '/api/learning/stickers/delete': state.learnedStickers = state.learnedStickers.filter(e => e.id !== body.id); return json({ ok: true });
           case '/api/role': state.role = body.role; return json({ ok: true });
           case '/api/roles/create': {
             const content = body.content ?? '';
@@ -593,11 +616,10 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             }
             return json({ ok: true, ...state.whitelist });
           }
-          case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
-          case '/api/socialV2/activity': state.activityPaused = body.paused; return json({ ok: true });
+          case '/api/socialV2/config': state.v2 = qqChannelConfig(state.v2, body); return json({ ok: true, config: state.v2 });
           case '/api/socialV2/tool-log/clear': state.toolLog = []; return json({ ok: true });
           case '/api/socialV2/feedback-clear': state.feedback = []; return json({ ok: true });
-          case '/api/socialV2/reset': return json({ ok: true });
+          case '/api/socialV2/reset': state.buffers = []; return json({ ok: true });
           case '/api/security':
             if (body.rehardenStateDir === true) {
               // 离线演示：把「重新检测」当成一次成功的收紧（真实实现要管理员权限）

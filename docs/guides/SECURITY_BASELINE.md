@@ -6,7 +6,7 @@
 >
 > 维护规则：任何改动如果改变了下面任一条目，**必须在同一个 PR 里更新本文**。
 >
-> 当前只有一个全局 `desktop-agent`。桥接缓存 QQ 消息，只把私聊、原生 @、验证回复/引用及配置关键词作为元数据提醒。WebUI 可启动、提交任务或持久停止。每个活动回合应以 `agent_rest` 收尾；它结束当前模型回合，但不限制后续工具调用。用户在 DSH 对话中发消息、有效 QQ 提醒或 WebUI 任务可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未调用休息工具的回合按指数退避恢复，最高间隔 30 分钟；WebUI 停止态不自动恢复自动调度。全局主体可使用本项目当前完整 SnowLuma MCP 工具集及 `dsh-computer-use-win`，其令牌可访问任意合法 QQ 会话 key。桥接 API 发送执行限频和审计；GUI 操作不经过这些 API 检查。逐 QQ DSH 映射、令牌与控制入口已移除。
+> 当前只有一个全局 `desktop-agent`。桥接缓存 QQ 消息，只把私聊、原生 @、验证回复/引用及配置关键词作为元数据提醒。WebUI 可启动、提交任务或持久停止。每个活动回合应以 `agent_rest` 收尾；它结束当前模型回合，但不限制后续工具调用。用户在 DSH 对话中发消息、有效 QQ 提醒或 WebUI 任务可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未调用休息工具的回合按指数退避恢复，最高间隔 30 分钟；WebUI 停止态不自动恢复自动调度。全局主体可使用本项目当前完整 SnowLuma MCP 工具集及 `dsh-computer-use-win`，其令牌可访问任意合法 QQ 会话 key。桥接 API 发送执行内容检查和审计；GUI 操作不经过这些 API 检查。逐 QQ DSH 映射、令牌与控制入口已移除。
 
 ---
 
@@ -18,7 +18,7 @@
 | **被注入的模型** | 会尝试调用任意工具名、传任意参数、尝试外发本机内容 | —— |
 | **本机其他用户** | 能登录同一台机器，能读文件系统 | 已取得管理员/root 的主体 |
 | **本机其他进程 / 浏览器页面** | 能访问 `127.0.0.1`，能构造任意 HTTP 请求 | 已能读写本项目 `state/` 的主体 |
-| **DSH 侧 desktop-agent** | 由 WebUI 自主探索/任务动作、用户在 DSH 对话中的直接消息或 QQ 元数据提醒启动；每轮以 `agent_rest` 收尾；直接 DSH 消息和有效 QQ 提醒可提前结束休息，异常恢复重试不会在休息期间触发 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计/限频 |
+| **DSH 侧 desktop-agent** | 由 WebUI 自主探索/任务动作、用户在 DSH 对话中的直接消息或 QQ 元数据提醒启动；每轮以 `agent_rest` 收尾；直接 DSH 消息和有效 QQ 提醒可提前结束休息，异常恢复重试不会在休息期间触发 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计 |
 
 **不在此模型的范围内**：QQ 账号本身被盗、SnowLuma 网关被攻陷、DSH 本体漏洞、
 操作系统级攻击者。这些情况下本项目无法提供额外保护，README 中已声明。
@@ -37,9 +37,15 @@
 | 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后休息 1 至 5 分钟；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
 | 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
 | QQ 关系对象标记 | `handleIncoming()`、`appendSocialV2Message()` | 消息发送者 ID 取 `event.user_id`，缺失时回退 `event.sender.user_id`；仅当 `ownerQQ` 已配置且发送者 QQ 号相同才标记为 owner。显示名称不参与身份判断；关系称谓由人格卡及双方表达决定。该账号仅被授权通过纯文本私聊 `/睡觉` 和 `/起床` 控制睡眠，不授予其他管理权限；群消息和引用、转发等非纯文本消息不触发命令。身份依赖 SnowLuma 提供的事件数据。 |
-| QQ 工具会话与凭证 | agent API 集中入口、`mcp-snowluma-safe.js` | 数字角色可访问账号中的 QQ 会话，不按提醒来源或 owner 身份限制；桥接校验内部凭证和当前 DSH 会话绑定，管理接口仅控制台可用。发送仍执行限频和审计。 |
+| QQ 工具会话与凭证 | agent API 集中入口、`mcp-snowluma-safe.js` | 数字角色可访问账号中的 QQ 会话，不按提醒来源或 owner 身份限制；桥接校验内部凭证和当前 DSH 会话绑定，管理接口仅控制台可用。发送仍执行内容检查和审计。 |
+
+QQ 未读每来源最多 500 条，按序分页读取后才允许推进确认水位。历史通过所属群或好友的 SnowLuma 接口查询，读取历史不会自动确认未读。媒体回查必须匹配返回的 QQ 消息 ID。SQLite 缓存的序号、未读和来源元数据同事务保存，导入旧 JSON 成功后才移除旧文件。等待消息工具及其 HTTP 路由已移除。
 
 ### 2. 工具面（agent 能做什么）
+
+后台黑话/表情学习明确允许在主角色未读取消息时分析有界的新消息批次。这是独立的 headless 进程，不能向主角色注入任务或向 QQ 发消息。`learning-tool-guard.mjs` 在执行前仅放行本批图片工具；通用执行、文件、联网、插件管理与子代理工具同时在临时 patch 中禁用。最终 JSON 只作为数据处理，证据须来自本批且黑话须在原文出现，图片编号须来自本批桥接准备的清单。含义和表情分类仍可能被模型误判，管理端可以确认或拒绝。
+
+学习管理端 `/api/learning/*` 与 `/api/slang*` 受现有控制台鉴权、Host/Origin 和请求体限制保护，agent 默认拒绝白名单不扩张。`/api/socialV2/slang-query` 复用内部 token 与全局 session 绑定。新知识读取按目标来源和管理员明确指定的 global 筛选；这不改变全局会话上下文本身共享的残余风险。本地表情只读哈希命名的 `state/learned-stickers/` 文件，校验真实路径和 SHA-256，并在发送排队结束后重新检查来源与状态；没有开放任意文件发送。完整数据和资源上限见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
 
 Maa 的 `connect_adb_device` 允许直接传入数字 IP 与端口，由 MaaFramework 内部建立网络 ADB 连接。adb 可执行文件由服务环境变量 `QQ_MAAMCP_ADB_PATH` 或进程 PATH 选择，必须是现有绝对路径；该工具没有接受模型指定程序路径、命令或 shell 参数的入口。已发现设备的连接方式保持兼容，此能力不要求开放 DSH 通用终端工具。
 
@@ -51,8 +57,8 @@ Maa 的 `connect_adb_device` 允许直接传入数字 IP 与端口，由 MaaFram
 | 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
-| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容审计、限频和工具调用审计 |
-| 动态 ACL | sticker / image media helpers | 贴纸只能发收藏库内的表情；图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
+| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容检查和工具调用审计 |
+| 动态 ACL | sticker / image media helpers | 贴纸只能发 QQ 收藏库或当前来源可用的本地学习表情；学习表情校验专用目录 realpath 与内容哈希。其他图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
 | **只探测、不部署** | `mcp-host-server.js` | 该 MCP server **只提供 `snowluma_status`（只读探活 `get_login_info`）**。SnowLuma EULA §5.4 要求将其并入第三方安装包或 Docker 镜像、通过自动化脚本部署时事先取得书面授权；原生组件属专有组件。本程序不安装、不复制、不打包或程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
 
 ### 2.1 桌面应用范围（提示词边界）
@@ -71,7 +77,7 @@ Maa 的 `connect_adb_device` 允许直接传入数字 IP 与端口，由 MaaFram
 | 会话令牌防外发 | `redactKnownTokensOnly()` + `onebotSend()` | 所有已知 agent token 在发送前脱敏；文本里若仍出现已知令牌则**直接抛错不发** |
 | CQ 注入 | `onebotSend()` | 出站文本一律包成 `{type:'text'}` 段并做 `[CQ:` → `[CQ：` 转义，杜绝 CQ 码注入 |
 | @ 限制 | `onebotSend()` | `atUserId` 只接受正整数，禁止 `@all` |
-| 发送限流 | `socialV2.send.*` / `sticker.collect.*` | 每分钟/每小时硬上限，超限拒绝并退避 |
+| 分条与收藏 | `socialV2.send` / `sticker.collect` | 限制一次调用的气泡数。消息发送不设每分钟、每小时或单条字数配额。收藏 QQ 表情另有频率限制。 |
 
 ### 4. 控制台（本机最高权限入口）
 
@@ -82,7 +88,7 @@ Maa 的 `connect_adb_device` 允许直接传入数字 IP 与端口，由 MaaFram
 | 定长比较 | `crypto.timingSafeEqual` | 比较前先比长度，避免 `!==` 短路带来的时延侧信道 |
 | Host 校验 | 请求最前面 | Host 必须是 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`，否则 403（DNS rebinding 硬化） |
 | CSRF | 非 GET 请求 | 必须 `content-type: application/json`；若带 `Origin`，其 host 必须等于本机 |
-| agent 令牌隔离 | 请求前缀白名单 | 带 `x-agent-token` 的请求默认拒绝，仅放行 `/api/status`、`/api/desktop-agent/rest`、`/api/desktop-agent/memory/*`、`/api/socialV2/*`、`/api/send/*`、`/api/images/*`；其它管理端点一律 403。`active`、`resting`、`recovering` 和 `stopped` 生命周期状态不控制白名单工具是否可调用；每个端点仍执行自身的参数校验和必要的发送频率、内容审计。 |
+| agent 令牌隔离 | 请求前缀白名单 | 带 `x-agent-token` 的请求默认拒绝，仅放行 `/api/status`、`/api/desktop-agent/rest`、`/api/desktop-agent/memory/*`、`/api/socialV2/*`、`/api/send/*`、`/api/images/*`；其它管理端点一律 403。`active`、`resting`、`recovering` 和 `stopped` 生命周期状态不控制白名单工具是否可调用；每个端点仍执行自身的参数校验和内容检查和工具审计。 |
 | 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免"空 = 管理端"的绕过 |
 | 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步）一律 POST；GET 只读 |
 | WebUI 会话管理 | `/api/console/desktop-agent` | 仅控制台令牌可查看状态、启动或提交任务；同一全局会话也接收 QQ 元数据注意信号。 |
@@ -196,7 +202,7 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 - [x] 出站文本命中敏感信息时整条拦截；含已知会话令牌时直接抛错
 - [x] SSRF：scheme、URL 凭据、私有 IP、重定向、超时、大小限制（11 项）
 - [x] 桥接 `200 + {ok:false}` 会被 MCP 当作失败上报（不产生静默假成功）
-- [x] bridge API 发送校验全局会话令牌、限频和审计，不受 `agent_rest` 生命周期限制
+- [x] bridge API 发送校验全局会话令牌、内容检查和审计，不受 `agent_rest` 生命周期限制
 - [x] WebUI 全量记忆浏览 HTTP 路由：控制台令牌可到达只读适配器，desktop-agent token 默认 403（`test-audit-bridge.mjs`）
 - [x] Python SQLite 记忆读取器：临时 fixture 覆盖分页、来源/时间/关键词筛选、LIKE 转义、storage key 越界拒绝，且读取前后数据库摘要不变（`test-a-memorix-readonly.mjs`）
 - [ ] A_Memorix 实际安装版本与生产 namespace 的 schema/Gateway 联调；fixture 只覆盖当前读取器要求的列和关系表形态

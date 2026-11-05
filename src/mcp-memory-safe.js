@@ -63,7 +63,7 @@ async function memoryApi(operation, payload) {
   if (!response.ok || body?.ok === false) {
     throw new Error(String(body?.error || `qq-bridge HTTP ${response.status}`).slice(0, 700));
   }
-  return body?.result ?? {};
+  return body && Object.hasOwn(body, 'result') ? body.result : {};
 }
 
 function toolResult(data) {
@@ -123,10 +123,17 @@ server.tool(
 
 server.tool(
   'memory_read',
-  '读取指定长期记忆的完整内容和来源信息。memoryId 通常来自 memory_search。',
-  { memoryId: z.string().min(1).max(300).describe('A_Memorix 返回的 memoryId') },
+  '读取指定长期记忆的完整内容和来源信息。memoryId 必须原样使用 memory_search 或 memory_save 实际返回的 ID，不得猜测或传占位词。found=false 表示该记录不存在，可以重新检索；这不代表相关事实不存在，也不能把未读取的内容当作更正或去重依据。',
+  { memoryId: z.string().min(1).max(300).describe('工具实际返回的 memoryId；不能使用 PLACEHOLDER、see summary 等描述或自行编造的 ID') },
   async (args) => {
-    try { return toolResult(await memoryApi('read', args)); } catch (error) { return toolError(error); }
+    try {
+      const record = await memoryApi('read', args);
+      return toolResult(record ?? {
+        found: false,
+        memoryId: args.memoryId,
+        note: '该 ID 没有对应记忆。请重新检索并使用实际返回的 ID；无法找到时保留不确定性，不推断旧记录内容。'
+      });
+    } catch (error) { return toolError(error); }
   }
 );
 

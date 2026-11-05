@@ -22,6 +22,8 @@
 | 路径 | 职责 |
 | --- | --- |
 | `bridge.js` | 运行时组合与协调中心；全局会话生命周期、QQ 注意信号、消息缓冲、控制台和发送门禁仍有较多共享状态，改动时优先小步拆分 |
+| `qq-unread-store.js` | 每来源未读队列的 SQLite 增量持久化，事务内维护新增、已读和淘汰记录 |
+| `qq-channel-config.js` | QQ 提醒、发送及表情配置的默认值与旧设置迁移 |
 | `autonomy-policy.js` | 不依赖运行时状态的消息唤醒分类规则 |
 | `dsh-client.js` | DSH API、鉴权和事件流客户端 |
 | `mcp-snowluma-safe.js` / `mcp-host-server.js` | 受限 QQ 工具与只读网关状态工具 |
@@ -29,6 +31,9 @@
 | `mcp-memory-safe.js` / `a-memorix-gateway.js` | A_Memorix Gateway 客户端、受全局 agent token 保护的 DSH 记忆工具与共享记忆检索/管理接口 |
 | `media-normalize.js` / `ffmpeg-resolve.js` / `forward.js` | 图片媒体转换、通用 ffmpeg 路径解析与合并转发处理 |
 | `sticker-lib.js` | QQ 收藏表情数据读取与发送辅助 |
+| `chat-learning.js` / `learning-api.js` | 后台学习队列、黑话/表情知识存储与控制台管理 |
+| `learning-runner.js` / `learning-tool-guard.mjs` / `mcp-learning-images.js` | 独立 DSH 学习进程、只允许本批看图的工具守卫与图片 MCP |
+| `learning-assets.js` | 本地学习表情的内容哈希寻址、读取校验与清理 |
 | `state-acl.mjs` / `sensitive.js` | 本地状态目录 ACL 与敏感内容判断 |
 | `token-ledger.js` / `model-prices.js` | token 用量统计与价格换算 |
 | `preset-prompt.js` / `qq-model-view.js` | preset 提示词和 QQ 消息视图处理 |

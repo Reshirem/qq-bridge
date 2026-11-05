@@ -75,6 +75,11 @@ try {
   assert.deepEqual(ownerSave.body, { ownerQQ: '123456' }, 'saving owner does not rewrite test-send lists');
 
   await page.locator('[data-view="operations"]').first().click();
+  await page.locator('#qqFailuresOnly').check();
+  await page.waitForFunction(() => document.getElementById('v2ToolLogMsg').textContent.includes('1 项'));
+  assert.match(await page.locator('#v2ToolLogOutput').innerText(), /消息定位已失效/);
+  assert.doesNotMatch(await page.locator('#v2ToolLogOutput').innerText(), /qq_get_unread_messages/);
+  assert.match(await page.locator('#v2FeedbackOutput .err').innerText(), /错误/);
   await page.locator('#section-test-send summary').click();
   await page.locator('#wlGroups').fill('123456789, 555');
   await page.locator('#wlSave').click();
@@ -100,23 +105,71 @@ try {
   await page.locator('#desktopPromptCancel').click();
 
   await page.locator('[data-view="social-v2"]').click();
-  await page.locator('details').filter({ has: page.locator('#v2StatesList') }).locator('summary').click();
   await Promise.all([
-    page.waitForResponse(response => response.url().endsWith('/api/socialV2/states')),
+    page.waitForResponse(response => response.url().includes('/api/socialV2/states?names=1')),
     page.locator('#v2StatesList').click(),
   ]);
   await page.waitForFunction(() => document.getElementById('v2AllStatesOutput').textContent.includes('group:123456789'));
   assert.match(await page.locator('#v2AllStatesOutput').textContent(), /group:123456789/);
+  assert.match(await page.locator('#v2Summary').innerText(), /未读消息\s*2/);
+  for (const width of [1440, 760, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'buffer dashboard fits width ' + width);
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator('#qqConversationForm [name=delayPerCharMs]').fill('25');
+  await page.locator('#qqConversationForm button').click();
+  await page.waitForFunction(() => document.querySelector('#qqConversationForm [role=status]').textContent === '已保存');
+  assert.equal(fixture.state.v2.send.delayPerCharMs, 25);
+  assert.equal(fixture.state.v2.wait, undefined);
+  await page.locator('#qqReminderForm input[name=enabled]').uncheck();
+  await page.locator('#qqReminderForm button').click();
+  await page.waitForFunction(() => document.querySelector('#qqReminderForm [role=status]').textContent === '已保存');
+  assert.equal(fixture.state.v2.enabled, false);
+  assert.equal(fixture.state.v2.sticker.enabled, true);
+  await page.locator('details').filter({ has: page.locator('#v2ResetBtn') }).locator('summary').click();
   await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/api/socialV2/reset') && response.request().method() === 'POST'),
     page.locator('#v2ResetBtn').click(),
   ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/socialV2/reset'), 'cache reset stays separate from the global session');
 
+  await page.waitForFunction(() => document.querySelector('#v2AllStatesOutput').textContent.includes('暂无缓冲消息'));
+  await page.locator('[data-view="learning"]').first().click();
+  await page.waitForFunction(() => document.getElementById('learningStatus').textContent.includes('已启用'));
+  await page.locator('#learningSources').fill('group:123456789');
+  await page.locator('#learningSave').click();
+  await page.waitForFunction(() => document.getElementById('learningActionStatus').textContent.includes('已保存'));
+  assert.deepEqual(fixture.state.learning.sources, ['group:123456789']);
+  await page.locator('[data-view="slang"]').first().click();
+  await page.locator('#slangRecords [data-knowledge-index]').first().click();
+  assert.equal(await page.locator('#slangContent').inputValue(), '摸鱼');
+  await page.locator('#slangMeaning').fill('完成任务后休息一会');
+  await page.locator('#slangStatus').selectOption('confirmed');
+  await page.locator('#slangSave').click();
+  await page.waitForFunction(() => document.getElementById('slangActionStatus').textContent.includes('已保存'));
+  assert.equal(fixture.state.slang[0].meaning, '完成任务后休息一会');
+  await page.locator('[data-view="stickers"]').first().click();
+  await page.locator('#qqStickerForm [name=enabled]').uncheck();
+  await page.locator('#qqStickerForm button').click();
+  await page.waitForFunction(() => document.querySelector('#qqStickerForm [role=status]').textContent === '已保存');
+  assert.equal(fixture.state.v2.enabled, false);
+  assert.equal(fixture.state.v2.sticker.enabled, false);
+  assert.equal(fixture.state.v2.sticker.syncEnabled, true);
+  await page.locator('#stickerRecords [data-knowledge-index]').first().click();
+  assert.equal(await page.locator('#stickerDescription').inputValue(), '开心的小猫');
+  await page.locator('#stickerTags').fill('开心、期待');
+  await page.locator('#stickerSave').click();
+  await page.waitForFunction(() => document.getElementById('stickerActionStatus').textContent.includes('已保存'));
+  assert.deepEqual(fixture.state.learnedStickers[0].tags, ['开心', '期待']);
+  for (const width of [1440, 760, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `learning UI has no horizontal overflow at ${width}`);
+  }
   assert.deepEqual(blockedRequests, [], 'the UI must not reach external endpoints');
   assert.deepEqual(errors, [], 'browser console and page should be free of errors');
   assert.deepEqual(fixture.unknownRequests, [], 'the offline fixture implements all current console API routes');
-  console.log('PASS owner save/clear, independent test-send lists, desktop-agent controls and offline-only UI');
+  console.log('PASS offline console controls, buffer dashboard, QQ settings, operations filters and learning editors');
 } finally {
   await browser?.close();
   await fixture.close();

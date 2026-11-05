@@ -1926,3 +1926,58 @@ button:active:not(:disabled) {
   #section-memory-organizer .memory-organizer-start label { flex:1 1 100% }
   #section-memory-organizer #memoryOrganizerSession { flex:1 1 100%; max-width:none }
 }
+/* Learning and knowledge management share the console's existing theme tokens. */
+#section-learning .memory-heading, #section-slang .memory-heading, #section-stickers .memory-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+#section-learning .memory-heading > div, #section-slang .memory-heading > div, #section-stickers .memory-heading > div { flex:1; min-width:0; }
+.memory-heading > button { flex-shrink:0; }
+.knowledge-columns { display:grid; grid-template-columns:minmax(0, 1.3fr) minmax(280px, 1fr); gap:24px; margin:20px 0; align-items:start; }
+.knowledge-form { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px; }
+.knowledge-form label { display:flex; flex-direction:column; gap:7px; margin:0; font-size:13px; }
+.knowledge-form .memory-toggle { flex-direction:row; align-items:center; }
+.knowledge-form input:not([type=checkbox]), .knowledge-form textarea, .knowledge-form select { width:100%; box-sizing:border-box; }
+.knowledge-form textarea { min-height:72px; }
+.knowledge-wide { grid-column:1 / -1; }
+.knowledge-editor { border:1px solid var(--border, #8884); border-radius:12px; padding:18px; min-width:0; }
+.knowledge-editor .row { margin-top:16px; }
+.knowledge-filters { flex-wrap:wrap; }
+.knowledge-filters input { min-width:140px; flex:1; }
+.knowledge-filters select { width:auto; flex:0 1 150px; }
+.knowledge-filters button { flex-shrink:0; }
+.knowledge-list { display:grid; gap:10px; margin-bottom:16px; }
+.knowledge-record { text-align:left; padding:14px; border:1px solid var(--border, #8884); border-radius:10px; background:transparent; color:inherit; width:100%; white-space:normal; overflow-wrap:anywhere; }
+.knowledge-record strong { display:block; margin-bottom:6px; }
+.knowledge-record p { margin:6px 0; font-weight:normal; }
+.knowledge-record.active { outline:2px solid var(--accent, #6657d9); outline-offset:-2px; }
+.knowledge-evidence { white-space:pre-wrap; overflow-wrap:anywhere; max-height:350px; overflow:auto; font-size:12px; }
+.learning-summary { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0 24px; }
+.learning-summary span { padding:12px 16px; border:1px solid var(--border, #8884); border-radius:10px; }
+.sticker-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:12px; margin-bottom:16px; }
+.sticker-grid img { display:block; width:100%; height:120px; object-fit:contain; margin-bottom:10px; }
+.sticker-preview { width:100%; max-height:230px; object-fit:contain; margin-bottom:12px; }
+@media (max-width:1000px) { .knowledge-columns { grid-template-columns:1fr; } }
+@media (max-width:600px) {
+  .knowledge-form { grid-template-columns:1fr; }
+  .knowledge-wide { grid-column:auto; }
+  #section-learning .memory-heading, #section-slang .memory-heading, #section-stickers .memory-heading { flex-direction:column; }
+}
+
+/* Grouped QQ settings share the console form and summary styles. */
+form[id^="qq"] fieldset { min-width: 0; margin: 12px 0; padding: 0; border: 0; }
+form[id^="qq"] legend { font-weight: 600; margin-bottom: 8px; }
+form[id^="qq"] .knowledge-form { margin-bottom: 12px; }
+#section-social-v2 .memory-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; }
+#section-social-v2 .memory-heading h2, #section-social-v2 .memory-heading p { margin:0 0 4px; }
+#v2Summary { display:grid; grid-template-columns:repeat(auto-fit, minmax(116px, 1fr)); }
+#v2Summary span { background:var(--surface-subtle); font-size:12px; color:var(--text-secondary); }
+#v2Summary b { display:block; margin-top:6px; color:var(--text-strong); font-size:20px; }
+#v2AllStatesOutput table { width:100%; min-width:0; table-layout:auto; }
+#v2AllStatesOutput small { display:block; overflow-wrap:anywhere; }
+@media (max-width:640px) {
+  #v2AllStatesOutput table, #v2AllStatesOutput tbody { display:block; }
+  #v2AllStatesOutput thead { display:none; }
+  #v2AllStatesOutput tr { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); padding:10px; border-bottom:1px solid var(--border); }
+  #v2AllStatesOutput tr:last-child { border-bottom:0; }
+  #v2AllStatesOutput td { display:block; padding:4px; border:0; white-space:normal; }
+  #v2AllStatesOutput td:first-child { grid-column:1 / -1; }
+  #v2AllStatesOutput td:not(:first-child)::before { content:attr(data-label); display:block; font-size:11px; color:var(--muted); }
+}

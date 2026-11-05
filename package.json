@@ -23,6 +23,8 @@
     "test-vision": "node scripts/test-vision-media.mjs",
     "test-forward": "node scripts/test-forward.mjs",
     "test-stickers": "node scripts/test-stickers.mjs",
+    "test:learning": "node --test scripts/test-chat-learning.mjs",
+    "test:memory-organizer": "node --test scripts/test-memory-organizer.mjs",
     "test-encoding": "node scripts/test-encoding.mjs",
     "test-console": "node --test scripts/test-access.mjs scripts/test-preset-prompt-api.mjs",
     "test:access": "node scripts/test-access.mjs",

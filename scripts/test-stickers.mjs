@@ -9,9 +9,7 @@ import {
   normalizeStickerEntry,
   mergeStickerLibrary,
   findSticker,
-  formatStickerList,
-  buildStickerContext,
-  buildStickerStrategyHint
+  formatStickerList
 } from '../src/sticker-lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,21 +65,16 @@ console.log('## sticker-lib 纯函数');
   ok(q.matched === 1 && q.stickers[0].id === 'b', 'formatStickerList 按备注搜索');
   const q2 = formatStickerList(list, '无语', 10);
   ok(q2.matched === 1 && q2.stickers[0].id === 'c', 'formatStickerList 按 QQ 备注搜索');
-  const ctx = buildStickerContext(list, 8);
-  ok(ctx.includes('笑死') && ctx.includes('生气'), 'buildStickerContext 包含备注');
-  ok(buildStickerStrategyHint().includes('qq_send_sticker'), '策略提示包含发送工具');
+
 }
 
 console.log('## 配置文件');
 {
-  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
-  const tools = cfg.socialV2?.tools ?? {};
-  ok(tools.listStickers === true, 'config listStickers=true');
-  ok(tools.getStickerImage === true, 'config getStickerImage=true');
-  ok(tools.sendSticker === true, 'config sendSticker=true');
-  ok(tools.setStickerRemark === false, 'config setStickerRemark=false（默认禁用）');
-  ok(cfg.socialV2?.sticker?.enabled === true, 'config sticker.enabled=true');
-  ok(!('sendCaptionMaxChars' in (cfg.socialV2?.sticker ?? {})), 'config sticker 不再包含 sendCaptionMaxChars');
+  const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
+  ok(cfg.socialV2.sticker.enabled === true, '示例允许角色使用表情工具');
+  ok(cfg.socialV2.sticker.syncEnabled === true, '示例允许独立同步收藏');
+  ok(cfg.socialV2.sticker.collect.enabled === true, '示例允许角色收藏');
+  ok(!('sendCaptionMaxChars' in cfg.socialV2.sticker), '示例已移除旧配文设置');
 }
 
 console.log('## 表情单气泡约束');
@@ -90,9 +83,7 @@ console.log('## 表情单气泡约束');
   const sendStickerBlock = mcp.slice(mcp.indexOf("'qq_send_sticker'"), mcp.indexOf("'qq_collect_sticker'"));
   ok(!sendStickerBlock.includes('message: z.string()'), 'qq_send_sticker MCP 不再接受 message 参数');
   ok(sendStickerBlock.includes('不能在同一气泡里附带文字'), 'qq_send_sticker 描述强调单气泡');
-  const hint = buildStickerStrategyHint();
-  ok(hint.includes('不能在同一气泡里附带文字'), '策略提示禁止同气泡混文字');
-  ok(!hint.includes('先发一句话再发一张'), '策略提示不再引导“先发一句话再发一张”');
+
 }
 
 console.log('## MCP 工具描述存在性');

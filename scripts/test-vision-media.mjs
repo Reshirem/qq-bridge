@@ -49,18 +49,22 @@ try {
 
 // 3. 桥接端点（可选）
 const consoleTokenFile = path.join(ROOT, 'state', 'console-token');
-const socialV2File = path.join(ROOT, 'state', 'social-v2.json');
+const socialV2File = path.join(ROOT, 'state', 'qq-unread.sqlite');
 const desktopAgentFile = path.join(ROOT, 'state', 'desktop-agent.json');
 if (fs.existsSync(consoleTokenFile) && fs.existsSync(socialV2File) && fs.existsSync(desktopAgentFile)) {
   try {
     const consoleToken = fs.readFileSync(consoleTokenFile, 'utf8').trim();
-    const social = JSON.parse(fs.readFileSync(socialV2File, 'utf8'));
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(socialV2File, { readOnly: true });
+    let cached;
+    try { cached = db.prepare('SELECT source,message FROM unread LIMIT 1').get(); }
+    finally { db.close(); }
     const desktopAgent = JSON.parse(fs.readFileSync(desktopAgentFile, 'utf8'));
     const agentToken = desktopAgent?.agentToken;
-    const conv = social?.conversations ? Object.entries(social.conversations)[0] : null;
+    const conv = cached ? [cached.source, JSON.parse(cached.message)] : null;
     if (conv) {
       const [key, st] = conv;
-      const messageId = st?.recentMessages?.find((m) => m && !m.isSelf)?.messageId || st?.recentMessages?.[0]?.messageId;
+      const messageId = st.messageId;
       if (agentToken && messageId) {
         const url = `http://127.0.0.1:${config.consolePort || 3100}/api/images/message?key=${encodeURIComponent(key)}&messageId=${encodeURIComponent(String(messageId))}`;
         const res = await fetch(url, { headers: { 'x-agent-token': agentToken, 'x-console-token': consoleToken }, signal: AbortSignal.timeout(10000) });

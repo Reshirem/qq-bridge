@@ -133,7 +133,7 @@ test('synthetic payload size comparison (characters, not measured token usage)',
   console.log(`Synthetic 40-message payload: ${before} -> ${after} characters (${(after / before * 100).toFixed(1)}% remaining); minified-only=${minifiedOnly}. This is not a billing/token benchmark.`);
 });
 
-test('MCP validates/forwards read watermarks and wait purposes against an isolated local API', async () => {
+test('MCP validates read watermarks and removes retired wait and cached-history tools', async () => {
   const requests = [];
   const api = http.createServer(async (req, res) => {
     let raw = '';
@@ -172,10 +172,9 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     assert.equal(readSchema.properties.throughSeq.minimum, 0);
     assert.equal(readSchema.properties.throughSeq.maximum, Number.MAX_SAFE_INTEGER);
     assert.equal(readSchema.required.includes('throughSeq'), false);
-    const waitSchema = listed.tools.find((tool) => tool.name === 'qq_wait_for_messages').inputSchema;
-    assert.deepEqual(waitSchema.properties.purpose.enum, ['messages', 'reply']);
-    assert.equal(waitSchema.required.includes('purpose'), false);
-    assert.equal(Object.hasOwn(waitSchema.properties, 'token'), false, 'internal bridge token must not appear in tool schema');
+    assert.equal(listed.tools.some(t => t.name === 'qq_wait_for_messages'), false);
+    assert.equal(listed.tools.some(t => t.name === 'qq_get_recent_messages'), false);
+    assert.equal('gapMode' in listed.tools.find(t => t.name === 'qq_send_message').inputSchema.properties, false);
     const common = { key: 'group:123' };
     const read = await client.callTool({ name: 'qq_get_unread_messages', arguments: common });
     const readText = read.content.find((part) => part.type === 'text').text;
@@ -193,27 +192,6 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
       const invalid = await client.callTool({ name: 'qq_get_unread_messages', arguments: { ...common, afterSeq } });
       assert.equal(invalid.isError, true);
       assert.equal(requests.length, before);
-    }
-
-    // Omission preserves the old wait contract, while reply explicitly selects
-    // the short pre-reply quiet window. Both travel through the real MCP schema.
-    await client.callTool({ name: 'qq_wait_for_messages', arguments: common });
-    assert.equal(requests.at(-1).url, '/api/socialV2/wait');
-    assert.deepEqual(requests.at(-1).body, { key: common.key });
-    assert.equal(requests.at(-1).token, 'f'.repeat(64), 'MCP must attach the bridge-owned token internally');
-    for (const purpose of ['messages', 'reply']) {
-      await client.callTool({ name: 'qq_wait_for_messages', arguments: {
-        ...common, purpose, timeoutMs: 30000, quietMs: 10000, minNewMessages: 1
-      } });
-      assert.deepEqual(requests.at(-1).body, {
-        key: common.key, purpose, timeoutMs: 30000, minNewMessages: 1, quietMs: 10000
-      });
-    }
-    for (const purpose of ['sleep', '', 1, null]) {
-      const before = requests.length;
-      const invalid = await client.callTool({ name: 'qq_wait_for_messages', arguments: { ...common, purpose } });
-      assert.equal(invalid.isError, true);
-      assert.equal(requests.length, before, `invalid wait purpose ${purpose} must not reach the API`);
     }
 
     await client.callTool({ name: 'qq_mark_read', arguments: { ...common, throughSeq: 21 } });
