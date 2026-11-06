@@ -83,7 +83,10 @@ function test(name, fn) {
 try {
   test('shared inserts, quoted IDs, flow YAML and unrelated nested arrays survive repeat setup', () => {
     const source = `# user patch\n- insert:\n    - id: mcp-snowluma\n      name: old\n    - id: custom\n      name: custom-plugin\n      config:\n        empty:\n          []\n        nested:\n          - id: mcp-snowluma-host\n            value: keep\n- insert:\n    - id: 'mcp-snowluma-host' # managed entry\n      name: old\n- {insert: [{id: mcp-web-search-safe, name: old}]}\n`;
-    const f = fixture('structured', source);
+    const plugin = '@deepseek-ai/dsh-mcp-client';
+    const oldAdapter = { id: 'old-qq-adapter', name: plugin, config: { args: ['C:\\old\\qq-bridge\\src\\maa_mcp_server.py'] } };
+    const independent = { id: 'mcp-maa', name: plugin, config: { serverName: 'maa', args: ['-m', 'independent_server'] } };
+    const f = fixture('structured', source + yaml.dump([{ insert: [oldAdapter, independent] }]));
     const originalCustom = yaml.load(source)[0].insert[1];
     for (let i = 0; i < 2; i++) {
       const result = f.run();
@@ -91,6 +94,8 @@ try {
       const doc = yaml.load(fs.readFileSync(f.patchFile, 'utf8'));
       const entries = doc.flatMap((op) => op.insert || []);
       assert.deepEqual(entries.find((entry) => entry.id === 'custom'), originalCustom);
+      assert.ok(!entries.some(entry => entry.id === oldAdapter.id));
+      assert.deepEqual(entries.find(entry => entry.id === independent.id), independent);
       for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-qq-memory']) {
         assert.equal(entries.filter((entry) => entry.id === id).length, 1, `${id} duplicate`);
       }

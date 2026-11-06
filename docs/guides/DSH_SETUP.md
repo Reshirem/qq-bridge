@@ -2,7 +2,7 @@
 
 本文说明如何把唯一的全局 `desktop-agent` preset 与 MCP 工具安装到目标 DSH profile。WebUI 任务和 QQ 注意信号都进入同一个全局数字角色。这里不配置或切换 DSH 运行模式。
 
-可选的 MaaMCP 接入、截图适配和单独的 profile 配置见 [MAAMCP.md](MAAMCP.md)。工具守卫已放行 `mcp__maa__*`；本安装脚本仍只管理下述三个桥接 MCP 条目。
+旧安装升级时，重新对目标 profile 运行 `node scripts/setup-dsh.mjs <profile>` 即可清理引用旧 MaaMCP 适配器的注册项，然后重载 DSH。
 
 ## 安装
 

@@ -4,7 +4,7 @@
 // 功能：
 //   1. 安装唯一的全局 desktop-agent preset
 //      （通过 qq-agent-presets bundle 的 patch 层插入 @deepseek-ai/dsh-agent-preset 行）
-//   2. 在 DSH profile 的 cordis.patch.yml 中挂载四个 MCP server：
+//   2. 在 DSH profile 的 cordis.patch.yml 中挂载三个 MCP server：
 //      mcp-snowluma / mcp-snowluma-host / mcp-qq-memory
 //   3. 在 profile package.json 中注册 qq-agent-presets bundle
 //
@@ -141,7 +141,11 @@ function prepareCordisPatch() {
     if (!Object.hasOwn(operation, 'insert')) { kept.push(operation); continue; }
     if (!Array.isArray(operation.insert)) fatal(`insert must be an array in ${patchFile}; file unchanged`);
     const entries = operation.insert.filter((entry) => {
-      if (!MANAGED_MCP_IDS.includes(entry?.id)) return true;
+      // The old adapter was registered manually. Match its script, not user-chosen MCP names.
+      const legacyAdapter = entry?.name === '@deepseek-ai/dsh-mcp-client'
+        && Array.isArray(entry.config?.args)
+        && entry.config.args.some(arg => typeof arg === 'string' && /(?:^|[\\/])src[\\/]maa_mcp_server\.py$/i.test(arg));
+      if (!MANAGED_MCP_IDS.includes(entry?.id) && !legacyAdapter) return true;
       removed++;
       return false;
     });

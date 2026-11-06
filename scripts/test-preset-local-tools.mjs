@@ -61,7 +61,6 @@ const DEV_TOOL_PREFIX = /^dev_/;
 /** 全局数字角色允许使用的 MCP 命名空间前缀。 */
 const EXPECTED_SAFE_PREFIXES = [
   'mcp__wincu__',
-  'mcp__maa__',
   'mcp__snowluma__',
   'mcp__snowluma-host__',
 ];
@@ -162,7 +161,7 @@ test('守卫放行全局数字角色 MCP 命名空间与 DSH 网页工具', asyn
         `${id}: MCP 前缀 ${prefix} 应放行`,
       );
     }
-    for (const name of ['ask_user_question', 'todo_write']) {
+    for (const name of ['ask_user_question', 'todo_write', 'mcp__maa__screencap']) {
       assert.ok(typeof fakeTools._guard({ name }) === 'string', `${id}: 已移除的工具应拒绝 ${name}`);
     }
     for (const name of ['web_search', 'web_fetch']) {
