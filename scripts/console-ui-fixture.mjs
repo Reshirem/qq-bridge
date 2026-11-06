@@ -332,6 +332,7 @@ export function makeFixtureState() {
     role: '小鲸鱼', desktopAgentStopped: false,
     learning: { enabled: true, slang: true, stickers: true, minMessages: 20, cooldownMs: 300000, maxWaitMs: 900000, sources: [] },
     slang: [{ id: 'fixture-word', content: '摸鱼', meaning: '工作时偷闲', scope: 'group:123456789', status: 'learned', count: 3, usage: '熟人闲聊', evidence: [{ key: 'group:123456789', userId: '100001', text: '今天忙完了，可以摸鱼一会', time: Date.parse(timestamp) }] }],
+    stickerReviews: [{ id: 'review-1', stickerId: 'fixture-sticker', scope: 'group:123456789', before: { desc: '开心的小猫', tags: ['开心', '赞同'] }, after: { desc: '猫咪点头', tags: ['赞同'] } }],
     learnedStickers: [{ id: 'fixture-sticker', desc: '开心的小猫', tags: ['开心', '赞同'], usage: '回应好消息', scope: 'group:123456789', status: 'learned', usedCount: 2 }],
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
     roleContents: {
@@ -413,6 +414,8 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             const filtered = collection.filter(e => (!query || JSON.stringify(e).includes(query)) && (!scope || e.scope === scope) && (!status || e.status === status));
             return json({ ok: true, items: filtered, total: filtered.length, offset: 0, hasMore: false });
           }
+          case '/api/learning/sticker-reviews': return json({ ok: true, reviews: state.stickerReviews });
+          case '/api/learning/sticker-reviews/image':
           case '/api/learning/stickers/image': {
             res.writeHead(200, { 'content-type': 'image/png' });
             return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=', 'base64'));
@@ -535,6 +538,13 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
         switch (path) {
           case '/api/learning/settings': state.learning = { ...state.learning, ...body }; return json({ ok: true, config: state.learning });
           case '/api/learning/run': return json({ ok: true, running: true });
+          case '/api/learning/sticker-reviews': {
+            const review = state.stickerReviews.find(r => r.id === body.id);
+            if (!review) return json({ ok: false, error: '建议已处理' }, 400);
+            if (body.accept) Object.assign(state.learnedStickers[0], review.after, { status: 'confirmed' });
+            state.stickerReviews = state.stickerReviews.filter(r => r !== review);
+            return json({ ok: true });
+          }
           case '/api/stickers/sync': return json({ ok: true, total: 1 });
           case '/api/slang':
           case '/api/learning/stickers': {

@@ -10,6 +10,9 @@ const copy = value => structuredClone(value);
 const clean = (value, max = 300) => Array.from(String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).slice(0, max).join('');
 const integer = (value, fallback, min, max) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Math.round(Number(value)))) : fallback;
 const fold = value => String(value).normalize('NFKC').toLowerCase();
+export function stickerWording(entry) {
+  return { desc: entry.desc || '', tags: [...(entry.tags || [])] };
+}
 function addUsage(state, usage) {
   state.usage ||= { inputTokens: 0, outputTokens: 0 };
   for (const key of ['inputTokens', 'outputTokens']) state.usage[key] += Math.max(0, Number(usage?.[key]) || 0);
@@ -212,7 +215,52 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
       return copy(state.slang.filter(e => scoped(e, key) && ['learned', 'confirmed'].includes(e.status) && e.meaning && (!q || (matchText ? q.includes(fold(e.content)) : fold(`${e.content} ${e.meaning}`).includes(q))))
         .slice(0, integer(limit, 20, 1, 50)).map(({ id, content, meaning, usage, scope, status, confidence }) => ({ id, content, meaning, usage, scope, status, confidence })));
     },
-    stickers(key) { return copy(state.stickers.filter(e => scoped(e, key) && ['learned', 'confirmed'].includes(e.status))); },
+    stickers(key) {
+      const available = state.stickers.filter(e => scoped(e, key) && ['learned', 'confirmed'].includes(e.status));
+      const byId = new Map();
+      for (const entry of available) if (!byId.has(entry.id) || entry.scope === key) byId.set(entry.id, entry);
+      return copy([...byId.values()]);
+    },
+    favorites(entries) {
+      const notes = new Map((state.favoriteNotes || []).map(note => [note.id, note]));
+      return entries.map(entry => {
+        const note = notes.get(entry.id);
+        return note ? { ...entry, desc: note.desc, tags: [...note.tags] } : entry;
+      });
+    },
+    proposeSticker(entry, input) {
+      const before = stickerWording(entry);
+      const desc = input.desc === undefined ? before.desc : clean(input.desc, 200);
+      if (input.tags !== undefined && !Array.isArray(input.tags)) throw new Error('标签必须是数组');
+      const tags = input.tags === undefined ? before.tags : [...new Set(input.tags.map(tag => clean(tag, 24)).filter(Boolean))].slice(0, 5);
+      const after = { desc, tags };
+      if (!desc && !tags.length) throw new Error('描述与标签不能同时为空');
+      if (JSON.stringify(before) === JSON.stringify(after)) throw new Error('建议与现有描述和标签相同');
+      const next = copy(state);
+      const reviews = next.stickerReviews ||= [];
+      const scope = entry.scope || 'account';
+      if (reviews.some(r => r.stickerId === entry.id && r.scope === scope)) throw new Error('这张表情已有待确认建议');
+      if (reviews.length >= 100) throw new Error('待确认建议已满');
+      reviews.push({ id: crypto.randomUUID(), stickerId: entry.id, scope, before, after });
+      commit(next);
+    },
+    decideStickerReview(id, accept, favorites) {
+      const next = copy(state);
+      const review = next.stickerReviews?.find(r => r.id === id);
+      if (!review) throw new Error('建议已处理，请刷新');
+      if (accept) {
+        const entry = review.scope === 'account' ? favorites.find(e => e.id === review.stickerId)
+          : next.stickers.find(e => e.scope === review.scope && e.id === review.stickerId && ['confirmed', 'learned'].includes(e.status));
+        if (!entry || JSON.stringify(stickerWording(entry)) !== JSON.stringify(review.before)) throw new Error('表情资料已变化，请忽略旧建议并重新核对');
+        if (review.scope === 'account') {
+          next.favoriteNotes = [...(next.favoriteNotes || []).filter(note => note.id !== entry.id), { id: entry.id, ...review.after }];
+        } else {
+          Object.assign(entry, review.after, { status: 'confirmed', updatedAt: new Date().toISOString() });
+        }
+      }
+      next.stickerReviews = next.stickerReviews.filter(r => r.id !== id);
+      commit(next);
+    },
     edit(kind, input) {
       if (!['slang', 'stickers'].includes(kind)) throw new Error('未知知识类型');
       const next = copy(state), list = next[kind];

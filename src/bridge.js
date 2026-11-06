@@ -43,10 +43,11 @@ import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
-import { createAMemorixGateway } from './a-memorix-gateway.js';
-import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig } from './chat-learning.js';
+import { createAMemorixGateway, STICKER_NAMESPACE } from './a-memorix-gateway.js';
+import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig, stickerWording } from './chat-learning.js';
 import { createLearningAssets } from './learning-assets.js';
 import { runLearningHeadless } from './learning-runner.js';
+import { createStickerMemory } from './sticker-memory.js';
 import { handleLearningRequest } from './learning-api.js';
 import { listAMemorixParagraphs } from './a-memorix-readonly.js';
 import {
@@ -1297,11 +1298,13 @@ async function main() {
     if (!entry) throw new Error('本地表情不存在、已停用或不属于当前来源');
     return entry;
   }
-  function combinedStickerList(entries, key, query, count) {
-    const local = chatLearning?.stickers(key) ?? [];
-    return formatStickerList([...local, ...entries], query, count);
+  const reviewsSeen = new Map();
+  function favoriteCatalog() {
+    return chatLearning?.favorites(stickerEntries) ?? stickerEntries;
   }
-
+  function visibleStickers(key) {
+    return [...(chatLearning?.stickers(key) || []), ...favoriteCatalog()];
+  }
   let stickerEntries = [];
   let stickerStoreWritable = true;
   try {
@@ -1312,6 +1315,30 @@ async function main() {
   }
   let stickerSyncedAt = 0; // 上次从 SnowLuma 拉取收藏表情的时间戳（毫秒）
   let lastForcedAgentStickerSync = 0; // AI 强制刷新表情库的最小间隔保护
+
+  const stickerKeyFile = path.join(A_MEMORIX_STATE_DIR, 'secrets', 'sticker-api-key');
+  let stickerApiKey = '';
+  let stickerGateway;
+  function getStickerGateway() {
+    try {
+      const key = fs.readFileSync(stickerKeyFile, 'utf8').trim();
+      if (!key) return null;
+      if (key !== stickerApiKey) {
+        stickerApiKey = key;
+        stickerGateway = createAMemorixGateway({ enabled: true, baseUrl: 'http://127.0.0.1:8080', namespace: STICKER_NAMESPACE, apiKey: key }, { stickerIndex: true });
+      }
+      return stickerGateway;
+    } catch (error) {
+      if (error.code !== 'ENOENT') log('无法读取表情检索凭据：' + error.message);
+      return null;
+    }
+  }
+  const stickerMemory = createStickerMemory({
+    getGateway: getStickerGateway,
+    file: path.join(STATE_DIR, 'sticker-memory-index.json'), log,
+    enabled: () => Boolean(stickerEnabled() && cfg.memory.enabled && chatLearning && stickerStoreWritable && cfg.memory.namespace !== STICKER_NAMESPACE),
+    catalog: () => [...chatLearning.snapshot().stickers.filter(e => ['confirmed', 'learned'].includes(e.status) && e.scope !== 'unassigned'), ...favoriteCatalog()],
+  });
 
   function stickerEnabled() {
     return cfg.socialV2.sticker.enabled;
@@ -1492,7 +1519,7 @@ async function main() {
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    // 与文本发送共用 sendChain，保证“先文字后表情”的真人顺序不被并发工具调用打乱。
+    // 与文本发送共用 sendChain，保证文字和表情依调用顺序下发。
     let sendResolve;
     let sendReject;
     const sendResult = new Promise((resolve, reject) => {
@@ -1531,12 +1558,11 @@ async function main() {
   }
 
   // 修改 QQ 账号里的收藏表情备注（modify_custom_face），并同步本地 desc。
-  async function setStickerRemarkV2(stickerId, remark, { agent = false } = {}) {
+  async function setStickerRemarkV2(stickerId, remark) {
     const synced = await syncStickerLibrary(false);
     const entry = findSticker(synced?.entries ?? stickerEntries, stickerId);
     if (!entry) throw new Error(`找不到表情 ${stickerId}，请先用 qq_list_stickers 获取有效 id`);
     const cleanRemark = String(remark ?? '').trim().slice(0, 50);
-    if (agent && !stickerEnabled()) throw new Error('角色使用表情已关闭');
     const response = await bot.request('modify_custom_face', { emoji_id: entry.id, desc: cleanRemark });
     if (!response || response.status !== 'ok' || response.retcode !== 0) {
       throw new Error(`modify_custom_face 失败: ${response?.wording || response?.retcode || 'unknown'}`);
@@ -3231,7 +3257,6 @@ async function main() {
         if (req.method !== 'GET') {
           const readonlyStore = (!stickerStoreWritable && (url.pathname === '/api/stickers/sync'
               || url.pathname === '/api/stickers/remark'
-              || url.pathname === '/api/socialV2/sticker-remark'
               || url.pathname === '/api/socialV2/collect-sticker')) ? '表情库' : '';
           if (readonlyStore) {
             sendJson({ ok: false, error: `${readonlyStore}处于只读降级状态（启动时加载失败，未覆盖原文件），本次修改不会落盘；请修复 state/ 下的对应文件后重启桥接` }, 503);
@@ -3241,7 +3266,12 @@ async function main() {
         if (await handleLearningRequest({
           req, url, readBody, sendJson, res, headers: SECURITY_HEADERS,
           store: chatLearning, worker: learningWorker, config: cfg.chatLearning,
-          assets: learningAssets, mimeFromBuffer, error: chatLearningError,
+          assets: learningAssets, mimeFromBuffer, error: chatLearningError, favorites: favoriteCatalog,
+          favoriteImage: async id => {
+            const entry = stickerEntries.find(item => item.id === id);
+            if (!entry) throw new Error('QQ 收藏已移除');
+            return (await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES)).buffer;
+          },
           saveConfig: (body) => {
             const next = normalizeLearningConfig({ ...cfg.chatLearning, ...body });
             const file = readJsonSafe(path.join(ROOT, 'config.json'), {}, true);
@@ -5177,12 +5207,18 @@ async function main() {
               sendJson({ ok: false, error: `表情图片无法提供给模型：${prep.error}` }, 413);
               return;
             }
+            const current = visibleStickers(key).find(item => item.id === entry.id);
+            if (!current || current.scope !== entry.scope || !stickerEnabled()) throw new Error('表情条目已变化或已停用');
+            const seenKey = JSON.stringify([desktopAgentSessionId, key, entry.id]);
+            reviewsSeen.delete(seenKey);
+            reviewsSeen.set(seenKey, { scope: current.scope, wording: JSON.stringify(stickerWording(current)), until: Date.now() + 1800000 });
+            if (reviewsSeen.size > 128) reviewsSeen.delete(reviewsSeen.keys().next().value);
             sendJson({
               ok: true,
               key,
               sticker: {
                 id: entry.id,
-                desc: entry.desc || '',
+                ...stickerWording(current),
                 url: entry.url,
                 md5: entry.md5
               },
@@ -5194,21 +5230,18 @@ async function main() {
           }
           return;
         }
-        if (req.method === 'POST' && url.pathname === '/api/socialV2/sticker-remark') {
-          if (!stickerEnabled()) { sendJson({ ok: false, error: '角色使用表情已关闭' }, 403); return; }
-          const body = await readBody();
-          const key = String(body.key ?? '').trim();
-          const stickerId = String(body.stickerId ?? '').trim();
-          if (!key || !stickerId) { sendJson({ ok: false, error: 'key 和 stickerId 不能为空' }, 400); return; }
-          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
-          if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
-          try {
-            const entry = await setStickerRemarkV2(stickerId, String(body.remark ?? ''), { agent: true });
-            log(`[sticker] 修改 QQ 收藏表情备注 ${key}: ${entry.id} -> ${entry.desc}`);
-            sendJson({ ok: true, key, sticker: entry });
-          } catch (error) {
-            sendJson({ ok: false, error: `修改备注失败：${error?.message ?? error}` }, 500);
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/sticker-suggest') {
+          const { key, stickerId, desc, tags } = await readBody();
+          if (!stickerEnabled() || !chatLearning || !/^(group|private):[0-9]+$/.test(key) || !agentTokenOk(key, req.headers['x-agent-token']) || !v2SessionAllowed(key, req.headers['x-agent-token'])) {
+            sendJson({ ok: false, error: '当前会话不能提交表情建议' }, 403); return;
           }
+          try {
+            const entry = visibleStickers(key).find(item => item.id === stickerId);
+            const view = reviewsSeen.get(JSON.stringify([desktopAgentSessionId, key, stickerId]));
+            if (!view || !entry || view.until < Date.now() || view.wording !== JSON.stringify(stickerWording(entry)) || view.scope !== entry.scope) throw new Error('请先重新查看当前表情原图与描述');
+            chatLearning.proposeSticker(entry, { desc, tags });
+            sendJson({ ok: true, pending: true });
+          } catch (error) { sendJson({ ok: false, error: error.message }, 400); }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/send-sticker') {
@@ -5222,7 +5255,7 @@ async function main() {
           if (!key || !stickerId) { sendJson({ ok: false, error: 'key 和 stickerId 不能为空' }, 400); return; }
           // 表情消息只能是一张表情，不能在同一气泡里附带文字说明。
           if (caption) {
-            sendJson({ ok: false, error: '表情消息不能附带文字；请先用 qq_send_message / qq_reply 把想说的话作为单独气泡发送，再单独 qq_send_sticker 发表情' }, 400);
+            sendJson({ ok: false, error: '每张表情单独发一个气泡。需要文字时，可按你想要的顺序单独发' }, 400);
             return;
           }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
@@ -5329,7 +5362,7 @@ async function main() {
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
           try {
             const synced = await syncStickerLibrary(force);
-            const list = combinedStickerList(synced?.entries ?? stickerEntries, key, query, count);
+            const list = await stickerMemory.search(key, query, count, () => stickerEnabled() ? visibleStickers(key) : []);
             sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? stickerSyncedAt, fromCache: synced?.fromCache ?? false });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情列表失败：${error?.message ?? error}` }, 500);
@@ -5355,7 +5388,7 @@ async function main() {
           }
           try {
             const synced = await syncStickerLibrary(force);
-            const list = combinedStickerList(synced?.entries ?? stickerEntries, key, query, count);
+            const list = await stickerMemory.search(key, query, count, () => stickerEnabled() ? visibleStickers(key) : []);
             sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? stickerSyncedAt, fromCache: synced?.fromCache ?? false });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情列表失败：${error?.message ?? error}` }, 500);
@@ -5369,7 +5402,7 @@ async function main() {
           const count = Math.min(500, Math.max(1, Math.min(Number(url.searchParams.get('count')) || 48, maxCount)));
           // 管理页 GET 只读本地缓存，同步通过 POST /api/stickers/sync。
           try {
-            const list = formatStickerList(stickerEntries, query, count);
+            const list = formatStickerList(favoriteCatalog(), query, count);
             sendJson({ ok: true, ...list, syncedAt: stickerSyncedAt, fromCache: true, writable: stickerStoreWritable });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情失败：${error?.message ?? error}` }, 500);
@@ -8574,6 +8607,7 @@ async function main() {
   startConsoleServer();
 
   const learningTimer = setInterval(() => {
+    stickerMemory.sync().catch(error => log('表情索引同步失败：' + error.message));
     if (!learningWorker) return;
     learningWorker.tick().catch(error => log(`后台学习队列失败：${error.message}`)).finally(() => {
       if (!learningWorker.running) {

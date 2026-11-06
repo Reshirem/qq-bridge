@@ -1,5 +1,5 @@
 // Console-only management. The bridge's central token/Origin checks run first.
-export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, mimeFromBuffer, error = '' }) {
+export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, mimeFromBuffer, favorites, favoriteImage, error = '' }) {
   const route = url.pathname;
   if (!(route === '/api/slang' || route.startsWith('/api/slang/') || route.startsWith('/api/learning/'))) return false;
   try {
@@ -20,6 +20,21 @@ export async function handleLearningRequest({ req, url, readBody, sendJson, res,
       if (!store.batch(config, Date.now(), true)) throw new Error('没有符合来源范围的待学习消息');
       void worker.tick(true).catch(() => {});
       sendJson({ ok: true, running: true }, 202);
+    } else if (req.method === 'GET' && route === '/api/learning/sticker-reviews') {
+      sendJson({ ok: true, reviews: store.snapshot().stickerReviews || [] });
+    } else if (req.method === 'POST' && route === '/api/learning/sticker-reviews') {
+      const body = await readBody();
+      if (typeof body.accept !== 'boolean') throw new Error('请选择采纳或忽略');
+      store.decideStickerReview(body.id, body.accept, favorites());
+      sendJson({ ok: true });
+    } else if (req.method === 'GET' && route === '/api/learning/sticker-reviews/image') {
+      const review = store.snapshot().stickerReviews?.find(r => r.id === url.searchParams.get('id'));
+      if (!review) throw new Error('建议已处理');
+      const buffer = review.scope === 'account' ? await favoriteImage(review.stickerId)
+        : assets.read(review.stickerId.slice('learned:'.length));
+      const mime = mimeFromBuffer(buffer);
+      if (!/^image\/(png|jpeg|webp|gif)$/.test(mime)) throw new Error('不支持的图片格式');
+      res.writeHead(200, { ...headers, 'content-type': mime }); res.end(buffer);
     } else if (req.method === 'GET' && route === '/api/learning/stickers/image') {
       const entry = store.snapshot().stickers.find(e => e.id === url.searchParams.get('id') && e.scope === url.searchParams.get('scope'));
       if (!entry) { sendJson({ ok: false, error: '表情不存在' }, 404); return true; }

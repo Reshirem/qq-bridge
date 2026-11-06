@@ -162,6 +162,9 @@ try {
   await page.waitForFunction(() => document.getElementById('slangActionStatus').textContent.includes('已保存'));
   assert.equal(fixture.state.slang[0].meaning, '完成任务后休息一会');
   await page.locator('[data-view="stickers"]').first().click();
+  await page.locator('#stickerReviews button[data-accept=yes]').click();
+  await page.waitForFunction(() => document.getElementById('stickerReviewStatus').textContent === '已采纳');
+  assert.equal(fixture.state.learnedStickers[0].desc, '猫咪点头');
   await page.locator('#qqStickerForm [name=enabled]').uncheck();
   await page.locator('#qqStickerForm button').click();
   await page.waitForFunction(() => document.querySelector('#qqStickerForm [role=status]').textContent === '已保存');
@@ -169,7 +172,7 @@ try {
   assert.equal(fixture.state.v2.sticker.enabled, false);
   assert.equal(fixture.state.v2.sticker.syncEnabled, true);
   await page.locator('#stickerRecords [data-knowledge-index]').first().click();
-  assert.equal(await page.locator('#stickerDescription').inputValue(), '开心的小猫');
+  assert.equal(await page.locator('#stickerDescription').inputValue(), '猫咪点头');
   await page.locator('#stickerTags').fill('开心、期待');
   await page.locator('#stickerSave').click();
   await page.waitForFunction(() => document.getElementById('stickerActionStatus').textContent.includes('已保存'));

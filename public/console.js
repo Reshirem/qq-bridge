@@ -1644,6 +1644,28 @@ for (const kind of ['slang', 'sticker']) {
   });
 }
 document.getElementById('slangNew').addEventListener('click', () => selectKnowledge('slang', null));
+async function refreshStickerReviews() {
+  const box = document.getElementById('stickerReviews');
+  try {
+    const { reviews } = await consoleApiResult('/api/learning/sticker-reviews');
+    const wording = value => esc(value.desc || '无描述') + ' · ' + esc(value.tags.join('、') || '无标签');
+    box.innerHTML = reviews.map(r => `<article class="knowledge-record"><img class="sticker-preview" alt="待复检的原图" loading="lazy" src="/api/learning/sticker-reviews/image?id=${encodeURIComponent(r.id)}"><span class="meta">${esc(r.scope === 'account' ? 'QQ 账号收藏' : r.scope)}</span><p>现有：${wording(r.before)}</p><p>建议：${wording(r.after)}</p><div class="row"><button class="small" data-review="${esc(r.id)}" data-accept="yes">采纳</button><button class="small" data-review="${esc(r.id)}" data-accept="no">忽略</button></div></article>`).join('') || '<p class="meta">暂无待确认建议。</p>';
+  } catch (error) { box.textContent = error.message; }
+}
+document.getElementById('stickerReviews').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-review]');
+  if (!button) return;
+  button.disabled = true;
+  const status = document.getElementById('stickerReviewStatus');
+  try {
+    await consoleApiResult('/api/learning/sticker-reviews', 'POST', { id: button.dataset.review, accept: button.dataset.accept === 'yes' });
+    status.textContent = button.dataset.accept === 'yes' ? '已采纳' : '已忽略';
+    selectKnowledge('sticker', null);
+    await refreshKnowledge('sticker');
+    if (document.getElementById('stickerFavorites').closest('details')?.open) await refreshStickerFavorites();
+  } catch (error) { status.textContent = error.message; }
+  await refreshStickerReviews();
+});
 async function refreshStickerFavorites(sync = false) {
   const status = document.getElementById('stickerFavoritesStatus');
   try {
@@ -2467,7 +2489,7 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   if (page === 'social-v2') refreshQQDashboard();
   if (page === 'operations') { loadV2ToolLog(); loadQQFeedback(); }
   if (page === 'slang') refreshKnowledge('slang');
-  if (page === 'stickers') refreshKnowledge('sticker');
+  if (page === 'stickers') { refreshKnowledge('sticker'); refreshStickerReviews(); }
   closeConsoleSearch();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });

@@ -44,8 +44,8 @@ export function normalizeStickerEntry(raw) {
     md5: String(entry.md5 || '').trim().toUpperCase(),
     desc: sanitizeStickerText(entry.desc, 200),
     source: ['manual', 'ai', 'learned'].includes(entry.source) ? entry.source : 'qq',
+    ...(Array.isArray(entry.tags) ? { tags: entry.tags.map(tag => sanitizeStickerText(tag, 24)).slice(0, 5) } : {}),
     ...(entry.source === 'learned' ? {
-      tags: (Array.isArray(entry.tags) ? entry.tags : []).map(tag => sanitizeStickerText(tag, 24)).slice(0, 5),
       usage: sanitizeStickerText(entry.usage, 200), scope: String(entry.scope || ''),
       usedCount: Math.max(0, Number(entry.usedCount) || 0), lastUsedAt: String(entry.lastUsedAt || ''),
     } : {}),
@@ -185,7 +185,8 @@ export function formatStickerList(entries, query = '', limit = 48) {
     url: e.url,
     desc: e.desc || '',
     source: e.source || 'qq',
-    ...(e.source === 'learned' ? { tags: e.tags, usage: e.usage, scope: e.scope, usedCount: e.usedCount, lastUsedAt: e.lastUsedAt } : {})
+    ...(e.tags ? { tags: e.tags } : {}),
+    ...(e.source === 'learned' ? { usage: e.usage, scope: e.scope, usedCount: e.usedCount, lastUsedAt: e.lastUsedAt } : {})
   }));
   return {
     total: list.length,

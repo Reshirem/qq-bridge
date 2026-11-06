@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 const ORIGINS = new Set(['qq', 'assistant']);
 const SEARCH_MODES = new Set(['SEARCH_MODE_SEARCH', 'SEARCH_MODE_TIME', 'SEARCH_MODE_HYBRID']);
 const DEFAULT_TIMEOUT_MS = 45_000;
+export const STICKER_NAMESPACE = 'qq-bridge-stickers';
 
 function normalizeBaseUrl(value) {
   const url = new URL(String(value || 'http://127.0.0.1:8080').trim());
@@ -48,7 +49,7 @@ function resultError(payload, fallback) {
   return typeof message === 'string' && message.trim() ? message.trim().slice(0, 500) : fallback;
 }
 
-export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetch } = {}) {
+export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetch, stickerIndex = false } = {}) {
   const enabled = config.enabled === true;
   const timeoutMs = Math.max(1000, Math.min(120_000, Number(config.timeoutMs) || DEFAULT_TIMEOUT_MS));
   let baseUrl = '';
@@ -57,6 +58,7 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
   try {
     baseUrl = normalizeBaseUrl(config.baseUrl);
     namespace = normalizeNamespace(config.namespace || 'qq-bridge');
+    if ((namespace === STICKER_NAMESPACE) !== stickerIndex) throw new Error('表情检索与角色长期记忆必须使用各自的空间');
   } catch (error) {
     configError = String(error?.message ?? error);
   }
@@ -118,7 +120,8 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     };
   }
 
-  async function search({ query = '', limit, origin, mode = 'SEARCH_MODE_SEARCH', timeStart, timeEnd, requestTimeoutMs } = {}) {
+  async function search({ query = '', limit, origin, mode = 'SEARCH_MODE_SEARCH', timeStart, timeEnd, requestTimeoutMs, stickerScope } = {}) {
+    if (stickerScope && !stickerIndex) throw new Error('当前空间不支持表情检索');
     const requestedLimit = normalizeLimit(limit, 8, 50);
     const filterOrigin = origin ? memoryOrigin(origin) : '';
     const searchMode = memorySearchMode(mode);
@@ -126,7 +129,8 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
       throw new Error('SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 至少需要 timeStart 或 timeEnd；普通内容检索请使用 SEARCH_MODE_SEARCH');
     }
     const payload = await request('search', {
-      context: context(),
+      context: context(stickerScope ? { conversationId: stickerScope } : {}),
+      ...(stickerScope ? { sharedConversationIds: ['global'] } : {}),
       query: String(query || '').trim().slice(0, 2000),
       limit: filterOrigin ? Math.min(50, requestedLimit * 4) : requestedLimit,
       mode: searchMode,
@@ -155,7 +159,8 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     };
   }
 
-  async function save({ content, origin = 'assistant', metadata = {}, tags = [], participants = [], observedAt, externalId } = {}) {
+  async function save({ content, origin = 'assistant', metadata = {}, tags = [], participants = [], observedAt, externalId, stickerScope } = {}) {
+    if (stickerScope && !stickerIndex) throw new Error('当前空间不支持表情索引');
     const text = String(content || '').trim();
     if (!text) throw new Error('记忆内容不能为空');
     if (text.length > 20_000) throw new Error('记忆内容不能超过 20000 个字符');
@@ -165,9 +170,10 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     const safeParticipants = Array.isArray(participants) ? participants.map((item) => String(item).slice(0, 120)).slice(0, 20) : [];
     const observed = observedAt ? new Date(observedAt).toISOString() : new Date().toISOString();
     const payload = await request('ingest', {
-      context: context({ idempotencyKey: crypto.randomUUID() }),
+      context: context({ idempotencyKey: crypto.randomUUID(), ...(stickerScope ? { conversationId: stickerScope } : {}) }),
       externalId: String(externalId || `qq-bridge:${source}:${crypto.randomUUID()}`),
-      sourceType: source,
+      sourceType: stickerScope ? 'sticker' : source,
+      ...(stickerScope ? { relationExtraction: 'RELATION_EXTRACTION_MODE_DISABLED' } : {}),
       text,
       participants: safeParticipants,
       observedAt: observed,

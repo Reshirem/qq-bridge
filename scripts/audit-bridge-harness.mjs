@@ -26,6 +26,7 @@ import * as learningApi from '../src/learning-api.js';
 import * as memoryOrganizer from '../src/memory-organizer.js';
 import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
+import { createStickerMemory } from '../src/sticker-memory.js';
 import * as memorixGateway from '../src/a-memorix-gateway.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
@@ -228,7 +229,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     unwrap, createTurnCollector,
     qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer,
-    ...modelPrices, ...tokenLedger, ...memorixGateway, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
+    ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     // The fixture must never probe or spawn a host ffmpeg process during startup.

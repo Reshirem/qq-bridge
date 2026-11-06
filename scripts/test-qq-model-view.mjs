@@ -175,7 +175,7 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
     assert.equal(listed.tools.some(t => t.name === 'qq_wait_for_messages'), false);
     assert.equal(listed.tools.some(t => t.name === 'qq_get_recent_messages'), false);
     assert.equal('gapMode' in listed.tools.find(t => t.name === 'qq_send_message').inputSchema.properties, false);
-    for (const name of ['qq_list_stickers', 'qq_get_sticker_image', 'qq_set_sticker_remark']) {
+    for (const name of ['qq_list_stickers', 'qq_get_sticker_image', 'qq_suggest_sticker_edit']) {
       assert.ok(listed.tools.some(tool => tool.name === name), name);
     }
     const stickerSchema = listed.tools.find(tool => tool.name === 'qq_send_sticker')?.inputSchema;

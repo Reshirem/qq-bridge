@@ -184,6 +184,38 @@ function Configure-Bridge([string]$apiKey) {
   [System.IO.File]::WriteAllText($BridgeConfigPath, "$json`r`n", [System.Text.UTF8Encoding]::new($false))
 }
 
+function Test-NamespacePresent([string]$name) {
+  # Windows PowerShell 5.1 treats a missing namespace written to stderr as a
+  # terminating error under ErrorActionPreference=Stop. List succeeds on first run.
+  $json = & $CliPath --config $ConfigPath namespace list | Out-String
+  if ($LASTEXITCODE -ne 0) { throw '无法读取 A_Memorix 空间列表' }
+  $namespaces = ($json | ConvertFrom-Json).namespaces
+  return $name -in @($namespaces | ForEach-Object { $_.namespace_id })
+}
+
+function Initialize-StickerIndex {
+  $name = 'qq-bridge-stickers'
+  $keyPath = Join-Path $SecretRoot 'sticker-api-key'
+  $present = Test-NamespacePresent $name
+  if ($present -and (Test-Path -LiteralPath $keyPath) -and (Get-Item -LiteralPath $keyPath).Length -gt 0) { return }
+  if (-not $present) {
+    $specPath = Join-Path $StateRoot "sticker-namespace-$PID.json"
+    try {
+      $spec = '{"features":{"episodes":false,"personProfiles":false,"relationVectors":false,"sparseRetrieval":true,"allowMetadataOnlyWrite":true},"relationExtraction":{"enabled":false,"defaultEnabled":false}}'
+      [IO.File]::WriteAllText($specPath, $spec, [Text.UTF8Encoding]::new($false))
+      & $CliPath --config $ConfigPath namespace create $name --namespace-config $specPath | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw '无法创建独立的表情检索空间' }
+    } finally {
+      if (Test-Path -LiteralPath $specPath) { Remove-Item -LiteralPath $specPath -Force }
+    }
+  }
+  $result = & $CliPath --config $ConfigPath api-key create $name --label 'qq-bridge sticker index' 2>$null | Out-String
+  if ($LASTEXITCODE -ne 0) { throw '无法创建表情检索密钥' }
+  $key = [string](($result | ConvertFrom-Json).secret)
+  if (-not $key) { throw '表情检索密钥为空' }
+  [IO.File]::WriteAllText($keyPath, $key, [Text.UTF8Encoding]::new($false))
+}
+
 function Invoke-Setup {
   Ensure-Directories
   Ensure-ReleaseFile $WheelPath $WheelName $WheelSha256
@@ -192,8 +224,7 @@ function Invoke-Setup {
   Ensure-ServiceConfig
   Start-Services
 
-  $namespaceInfo = & $CliPath --config $ConfigPath namespace get $Namespace 2>$null | Out-String
-  if ($LASTEXITCODE -ne 0) {
+  if (-not (Test-NamespacePresent $Namespace)) {
     & $CliPath --config $ConfigPath namespace create $Namespace --allow-metadata-only-write --sparse-retrieval | Out-Null
     if ($LASTEXITCODE -ne 0) { throw '创建 qq-bridge namespace 失败' }
   }
@@ -211,12 +242,19 @@ function Invoke-Setup {
     if (-not $apiKey) { throw 'A_Memorix 未返回 namespace API key；密钥没有写入 config.json' }
   }
   Configure-Bridge $apiKey
+  Initialize-StickerIndex
   Write-Output "A_Memorix $ReleaseTag 已启动，namespace=$Namespace，Gateway=http://127.0.0.1:$HttpPort。config.json 已启用长期记忆；请重启 qq-bridge。"
 }
 
 switch ($Action) {
   'setup' { Invoke-Setup }
-  'start' { Start-Services; Write-Output 'A_Memorix 服务已启动。' }
+  'start' {
+    Start-Services
+    if ((Get-Content -LiteralPath $BridgeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json).memory.enabled) {
+      try { Initialize-StickerIndex } catch { Write-Warning "表情检索初始化失败：$_" }
+    }
+    Write-Output 'A_Memorix 服务已启动。'
+  }
   'restart' {
     Stop-ManagedProcess $GatewayPidPath $GatewayPath
     Stop-ManagedProcess $ServerPidPath $CliPath

@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import yaml from 'js-yaml';
 import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig } from '../src/chat-learning.js';
+import { createStickerMemory } from '../src/sticker-memory.js';
 import { createLearningAssets } from '../src/learning-assets.js';
 import { learningPatch, runLearningHeadless } from '../src/learning-runner.js';
 import { apply as guard } from '../src/learning-tool-guard.mjs';
@@ -178,6 +179,68 @@ test('local sticker content deduplication, tag search and explicit scope managem
   assert.throws(() => f.assets.read(asset.hash), /校验失败/);
 });
 
+test('sticker memory resolves semantic hits to current scoped ids and recovers an interrupted ingest', async t => {
+  const f = fixture(t), file = path.join(f.root, 'index.json');
+  let entries = [
+    { id: 'a', scope: 'group:1', source: 'learned', desc: '猫捂脸', tags: ['尴尬'] },
+    { id: 'b', scope: 'group:2', source: 'learned', desc: '猫捂脸', tags: ['尴尬'] },
+    { id: 'c', source: 'qq', desc: '摆手' },
+  ];
+  const records = new Map();
+  let interrupt = true, offline = false;
+  const gateway = {
+    status: () => ({ configured: true }),
+    async save({ externalId, metadata }) {
+      const existed = records.has(externalId);
+      records.set(externalId, { memoryId: externalId, sticker: metadata.stickerId });
+      if (interrupt) { interrupt = false; throw new Error('connection closed after ingest'); }
+      return { storedIds: existed ? [] : [externalId] };
+    },
+    async read({ externalId, memoryId }) { return records.get(externalId || memoryId); },
+    async remove({ memoryId }) { records.delete(memoryId); return { deletedCount: 1 }; },
+    async search({ stickerScope }) {
+      if (offline) throw new Error('unavailable');
+      if (stickerScope) {
+        assert.equal(stickerScope, 'group:1');
+        return { hits: [] };
+      }
+      return { hits: [...records.values()].reverse() };
+    },
+  };
+  const open = () => createStickerMemory({ file, getGateway: () => gateway, enabled: () => true, log() {}, catalog: () => entries });
+  const visible = () => entries.filter(e => !e.scope || e.scope === 'global' || e.scope === 'group:1');
+  await assert.rejects(open().sync(), /connection closed/);
+  const index = open();
+  await index.sync();
+  assert.equal(records.size, 3);
+  const query = async () => (await index.search('group:1', '想缓和气氛', 5, visible)).stickers.map(e => e.id);
+  assert.deepEqual(await query(), ['c', 'a']);
+  entries[0].desc = '小猫跳舞';
+  assert.deepEqual(await query(), ['c']);
+  entries.splice(2, 1);
+  assert.deepEqual(await query(), []);
+  await index.sync();
+  assert.equal(records.size, 2);
+  assert.deepEqual(await query(), ['a']);
+  offline = true;
+  assert.deepEqual((await index.search('group:1', '跳舞', 5, visible)).stickers.map(e => e.id), ['a']);
+});
+
+test('QQ favorite suggestions remain separate until approval and never alter the synced remark', t => {
+  const { store } = fixture(t);
+  const favorites = [{ id: 'qq-a', desc: '', source: 'qq' }];
+  const propose = () => store.proposeSticker(store.favorites(favorites)[0], { tags: ['无奈'], desc: '猫摊手' });
+  propose();
+  const first = store.snapshot().stickerReviews[0].id;
+  assert.equal(store.favorites(favorites)[0].desc, '');
+  store.decideStickerReview(first, false, favorites);
+  propose();
+  const second = store.snapshot().stickerReviews[0].id;
+  assert.throws(() => store.decideStickerReview(second, true, [{ ...favorites[0], desc: '新备注' }]), /变化/);
+  store.decideStickerReview(second, true, store.favorites(favorites));
+  assert.deepEqual(store.favorites(favorites)[0].tags, ['无奈']);
+  assert.equal(favorites[0].desc, '');
+});
 test('learning tool guard blocks everything except the prepared image tool', () => {
   let check;
   guard({ tools: { guard: fn => { check = fn; } } });
@@ -258,6 +321,30 @@ test('HTTP management isolation, source query and safe local sticker send use th
     try {
       createLearningAssets(path.join(hh.temp, 'state/learned-stickers')).put(png);
       await hh.ensureDesktopAgentSession();
+      const consoleServer = hh.startConsoleServer();
+      if (!consoleServer.listening) await new Promise(resolve => consoleServer.once('listening', resolve));
+      try {
+        const state = JSON.parse(fs.readFileSync(path.join(hh.temp, 'state/desktop-agent.json'), 'utf8'));
+        const agent = { 'x-agent-token': state.agentToken, 'x-agent-session-id': state.sessionId };
+        const request = async (route, body, headers = {}) => {
+          const response = await fetch('http://127.0.0.1:' + consoleServer.address().port + route, {
+            method: body ? 'POST' : 'GET', headers: { 'x-console-token': 'fixture-console-token', 'content-type': 'application/json', ...headers },
+            body: body && JSON.stringify(body),
+          });
+          return { status: response.status, data: await response.json() };
+        };
+        const route = '/api/socialV2/sticker-suggest', admin = '/api/learning/sticker-reviews';
+        const suggestion = { key: 'group:456', stickerId: asset.id, desc: '笑到捂脸', tags: ['偷笑'] };
+        assert.equal((await request(route, suggestion, agent)).status, 400);
+        assert.equal((await request('/api/socialV2/sticker-image?' + new URLSearchParams({ key: suggestion.key, stickerId: asset.id }), undefined, agent)).status, 200);
+        assert.equal((await request(route, suggestion, agent)).status, 200);
+        assert.equal((await request(admin, undefined, agent)).status, 403);
+        const review = (await request(admin)).data.reviews[0];
+        assert.equal((await request(admin, { id: review.id, accept: true }, agent)).status, 403);
+        assert.equal((await request(admin, { id: review.id, accept: true })).status, 200);
+        const list = (await request('/api/socialV2/sticker-list', { key: suggestion.key, query: '偷笑' }, agent)).data;
+        assert.equal(list.stickers[0].id, asset.id);
+      } finally { await new Promise(resolve => consoleServer.close(resolve)); }
       const sent = await hh.sendStickerV2('group:456', asset.id);
       assert.equal(sent.messageId, 2);
       assert.equal(sentBody.message[0].data.file, 'base64://' + png.toString('base64'));
