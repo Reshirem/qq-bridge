@@ -3036,6 +3036,19 @@ async function main() {
         res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
         res.end(JSON.stringify(obj, null, 2));
       };
+      // A console preview is passive. Only a completed agent response consumes its rows.
+      const sendQQReadResult = (key, st, result, offered) => {
+        const displayed = new Set(req.headers['x-agent-token'] ? offered : []);
+        const remaining = st.unread.filter(message => !displayed.has(message));
+        if (remaining.length < st.unread.length) {
+          res.once('finish', () => {
+            if (st.bufferId !== socialV2.bufferId) return;
+            try { acknowledgeQQMessages(key, st, displayed, true); }
+            catch (error) { log('保存 QQ 已读记录失败：', error?.message ?? error); }
+          });
+        }
+        sendJson({ ...result, bufferId: st.bufferId, unreadCount: remaining.length, readThroughSeq: readThroughSeqV2(st, remaining) });
+      };
       const readBody = () => new Promise((resolve, reject) => {
         const MAX_BODY_BYTES = 1_000_000;
         const chunks = [];
@@ -4769,10 +4782,12 @@ async function main() {
           // Read oldest first so a backlog larger than one response drains in order.
           const messages = afterSeq === null ? st.unread.slice(0, limit)
             : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
-          const isAgentRead = !!req.headers['x-agent-token'];
-          const readThroughSeq = isAgentRead ? noteModelMessagesV2(st, messages) : readThroughSeqV2(st);
-          if (isAgentRead) acknowledgeDesktopAttentionThrough(key, readThroughSeq);
-          sendJson({ ok: true, key, bufferId: socialV2.bufferId, unreadCount: st.unread.length, nextAfterSeq: messages.at(-1)?.seq ?? afterSeq ?? 0, hasMore: st.unread.some(m => m.seq > (messages.at(-1)?.seq ?? afterSeq ?? 0)), messages: messages.map(withCurrentOwnerIdentity), readThroughSeq, slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? [] });
+          const nextAfterSeq = messages.at(-1)?.seq ?? afterSeq ?? 0;
+          sendQQReadResult(key, st, {
+            ok: true, key, nextAfterSeq, hasMore: st.unread.some(m => m.seq > nextAfterSeq),
+            messages: messages.map(withCurrentOwnerIdentity),
+            slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
+          }, messages);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/conversation-history') {
@@ -4788,9 +4803,10 @@ async function main() {
           const kind = keyMatch[1];
           const id = Number(keyMatch[2]);
           const action = kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history';
+          const st = getSocialV2State(key);
           let anchor;
           if (messageId) {
-            const reference = findQQMessageReference(getSocialV2State(key), messageId);
+            const reference = findQQMessageReference(st, messageId);
             if (reference.kind === 'seq' && !reference.message) {
               sendJson({ ok: false, error: '本地缓存中未找到该消息，请重新读取未读或 SnowLuma 历史' }, 400);
               return;
@@ -4808,8 +4824,12 @@ async function main() {
           }
           try {
             const messages = await readQQHistory(key, count, anchor, reverseOrder);
-            const st = getSocialV2State(key);
-            sendJson({ ok: true, key, bufferId: socialV2.bufferId, source: 'snowluma-history', action, messageId: messageId || null, count: messages.length, messages, readThroughSeq: readThroughSeqV2(st), slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? [], now: Date.now() });
+            const ids = new Set(messages.filter(m => !m.isSelf).map(m => qqMessageId(m.messageId)).filter(Boolean));
+            sendQQReadResult(key, st, {
+              ok: true, key, source: 'snowluma-history', action, messageId: messageId || null,
+              count: messages.length, messages, now: Date.now(),
+              slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
+            }, st.unread.filter(m => ids.has(qqMessageId(m.messageId))));
           } catch (error) {
             sendJson({ ok: false, error: `读取会话历史失败：${error?.message ?? error}` }, 502);
           }
@@ -4915,12 +4935,9 @@ async function main() {
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
           const st = getSocialV2State(key);
-          // 不带 throughSeq 时清空当前全部未读；传入水位时只清理已读取到的位置。
           const throughSeq = requestedReadThroughSeqV2(st, body, !!req.headers['x-agent-token']);
-          const markedCount = acknowledgeMessagesV2(st, throughSeq);
-          st.lastActionAt = Date.now();
-          saveSocialV2State(key);
-          log(`全局数字角色/控制台标记 ${key} 未读已读：${markedCount} 条`);
+          const markedCount = acknowledgeQQMessages(key, st, new Set(st.unread.filter(m => m.seq <= throughSeq)), false);
+          if (markedCount) log(`控制台标记 ${key} 未读已读：${markedCount} 条`);
           sendJson({ ok: true, key, markedCount, unreadCount: st.unread.length, readThroughSeq: readThroughSeqV2(st) });
           return;
         }
@@ -5601,7 +5618,7 @@ async function main() {
             if (info && found) Object.assign(info, forwardFields);
             // 正文本就是 200 字符预览；显式告知截断，避免模型把预览当成全文。
             if (info) info.textTruncated = String(info.text ?? '').length >= 200;
-            sendJson({ ok: true, key, messageId, info });
+            sendQQReadResult(key, st, { ok: true, key, messageId, info }, found ? [found] : []);
           } catch (error) {
             sendJson({ ok: false, error: `获取消息详情失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
           }
@@ -7272,16 +7289,16 @@ async function main() {
     scheduleDesktopAttentionFlush();
   }
 
-  function acknowledgeDesktopAttentionThrough(key, throughSeq) {
+  function acknowledgeDesktopAttentionThrough(key, throughSeq, displayedSeqs = new Set()) {
     if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) return false;
     let acknowledged = false;
     const pending = desktopAttentionQueue.get(key);
-    if (pending && Number.isSafeInteger(pending.seq) && pending.seq <= throughSeq) {
+    if (pending && Number.isSafeInteger(pending.seq) && (pending.seq <= throughSeq || displayedSeqs.has(pending.seq))) {
       desktopAttentionQueue.delete(key);
       acknowledged = true;
     }
     const unresolved = desktopAttentionUnresolved.get(key);
-    if (unresolved && Number.isSafeInteger(unresolved.seq) && unresolved.seq <= throughSeq) {
+    if (unresolved && Number.isSafeInteger(unresolved.seq) && (unresolved.seq <= throughSeq || displayedSeqs.has(unresolved.seq))) {
       desktopAttentionUnresolved.delete(key);
       acknowledged = true;
     }
@@ -7482,8 +7499,7 @@ async function main() {
         stickerCollectTimes: [],
         lastIncomingAt: 0,
         lastUnreadSeq: 0,
-        lastReadThroughSeq: 0,
-        modelSeenSeqs: new Set()
+        readReferences: []
       };
       socialV2.conversations.set(key, st);
     }
@@ -7533,9 +7549,7 @@ async function main() {
             stickerCollectTimes: Array.isArray(val.stickerCollectTimes) ? val.stickerCollectTimes : [],
             lastIncomingAt: Number(val.lastIncomingAt) || 0,
             lastUnreadSeq,
-            lastReadThroughSeq: Number.isSafeInteger(val.lastReadThroughSeq) && val.lastReadThroughSeq >= 0
-              ? Math.min(val.lastReadThroughSeq, lastUnreadSeq) : 0,
-            modelSeenSeqs: new Set()
+            readReferences: []
           };
           socialV2.conversations.set(key, st);
           // 重启后从已持久化的消息与 seenForwardIds 字段重建“本会话见过的 forward id”
@@ -7570,7 +7584,7 @@ async function main() {
   function qqSourceMetadata(key, st) {
     return {
       name: st.name || '', lastAiReplyAt: st.lastAiReplyAt, lastActionAt: st.lastActionAt,
-      lastIncomingAt: st.lastIncomingAt, lastUnreadSeq: st.lastUnreadSeq, lastReadThroughSeq: st.lastReadThroughSeq,
+      lastIncomingAt: st.lastIncomingAt, lastUnreadSeq: st.lastUnreadSeq, lastReadThroughSeq: readThroughSeqV2(st),
       stickerCollectTimes: st.stickerCollectTimes.slice(-500), seenForwardIds: Array.from(seenForwardIds.get(key) || []).slice(-1000),
     };
   }
@@ -8035,38 +8049,29 @@ async function main() {
     });
   }
 
-  // Only messages actually offered to the model authorize cursor-based acknowledgement.
-  // Keep this receipt in memory: after a restart the model must fetch unread again.
-  function readThroughSeqV2(st, additional = []) {
-    const seen = new Set(st.modelSeenSeqs || []);
-    for (const msg of additional) if (Number.isSafeInteger(msg?.seq) && msg.seq > 0) seen.add(msg.seq);
-    const seqs = st.unread.map((m) => m.seq).filter((seq) => Number.isSafeInteger(seq) && seq > 0);
-    const lowestBuffered = seqs.length ? Math.min(...seqs) : Infinity;
-    const lastUnread = Number.isSafeInteger(st.lastUnreadSeq) ? st.lastUnreadSeq : 0;
-    let through = Number.isSafeInteger(st.lastReadThroughSeq) ? st.lastReadThroughSeq : 0;
-    // A seq may be reached only when it was offered to the model, or when the buffer
-    // no longer holds it at all (evicted from the 500-message queue, so it can never be displayed
-    // again). Scoping the skip to the real buffer range is what keeps this from ever
-    // stepping over a still-pending message.
-    through = Math.max(through, Math.min(lastUnread, lowestBuffered - 1));
-    while (through < lastUnread && seen.has(through + 1)) through += 1;
-    return through;
+  // The queue is ordered. Everything before the first pending row was read or evicted.
+  function readThroughSeqV2(st, unread = st.unread) {
+    return unread.length ? unread[0].seq - 1 : st.lastUnreadSeq;
   }
 
-  function noteModelMessagesV2(st, messages) {
-    // Bound receipts by the actual unread buffer; historical/self messages need no receipt.
-    const unread = new Set(st.unread.map((m) => m.seq));
-    st.modelSeenSeqs = new Set([...st.modelSeenSeqs || []].filter((seq) => unread.has(seq)));
-    for (const msg of messages) {
-      if (Number.isSafeInteger(msg?.seq) && msg.seq > 0 && unread.has(msg.seq)) st.modelSeenSeqs.add(msg.seq);
-    }
-    return readThroughSeqV2(st);
+  function acknowledgeQQMessages(key, st, selected, keepReferences) {
+    const matched = st.unread.filter(m => selected.has(m));
+    if (!matched.length) return 0;
+    key = canonicalV2Key(key);
+    const unread = st.unread.filter(m => !selected.has(m));
+    const sequences = new Set(matched.map(m => m.seq));
+    unreadStore.acknowledge(key, qqSourceMetadata(key, { ...st, unread }), sequences);
+    st.unread = unread;
+    // Keep the last page addressable for follow-up quotes and media, including ID-less pokes.
+    if (keepReferences) st.readReferences = st.readReferences.concat(matched).slice(-100);
+    acknowledgeDesktopAttentionThrough(key, readThroughSeqV2(st), sequences);
+    return matched.length;
   }
 
   function requestedReadThroughSeqV2(st, body, isAgent) {
-    if (!Object.prototype.hasOwnProperty.call(body, 'throughSeq')) return null;
-    const seq = body.throughSeq;
     const max = isAgent ? readThroughSeqV2(st) : st.lastUnreadSeq;
+    if (!Object.prototype.hasOwnProperty.call(body, 'throughSeq')) return max;
+    const seq = body.throughSeq;
     if (!Number.isSafeInteger(seq) || seq < 0 || seq > max || seq > st.lastUnreadSeq) {
       const error = new Error('throughSeq 必须是不超过已展示连续消息水位的非负安全整数；请先读取未读消息并使用返回的 readThroughSeq');
       error.statusCode = 400;
@@ -8075,18 +8080,10 @@ async function main() {
     return seq;
   }
 
-  function acknowledgeMessagesV2(st, throughSeq) {
-    const before = st.unread.length;
-    if (throughSeq === null) {
-      // Console clear actions may acknowledge all currently buffered messages at once.
-      st.unread = [];
-      st.lastReadThroughSeq = st.lastUnreadSeq;
-    } else {
-      st.unread = st.unread.filter((m) => !Number.isSafeInteger(m.seq) || m.seq > throughSeq);
-      st.lastReadThroughSeq = Math.max(st.lastReadThroughSeq || 0, throughSeq);
-    }
-    noteModelMessagesV2(st, []);
-    return before - st.unread.length;
+  function qqMessageId(value) {
+    if (typeof value !== 'string' && !Number.isSafeInteger(value)) return null;
+    const id = String(value).trim();
+    return /^-?[1-9]\d*$/.test(id) ? id : null;
   }
 
   async function handleIncoming(kind, id, event, cfg) {
@@ -8144,11 +8141,7 @@ async function main() {
         : (event.sender?.nickname || senderId || '私聊');
       // Unsafe JSON numbers have already lost precision; keep a local reference
       // rather than telling the model that the rounded value is a QQ message ID.
-      const messageId = [event.message_id, event.msg_id].map((value) => {
-        if (typeof value !== 'string' && (typeof value !== 'number' || !Number.isSafeInteger(value))) return null;
-        const text = String(value).trim();
-        return /^-?[1-9]\d*$/.test(text) ? text : null;
-      }).find(Boolean) ?? null;
+      const messageId = qqMessageId(event.message_id) ?? qqMessageId(event.msg_id);
       const sourceName = kind === 'group' ? event.group_name : event.sender?.nickname;
       if (sourceName) getSocialV2State(key).name = String(sourceName).slice(0, 100);
       const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, mediaList, senderId || null, extractForwardIds(event.message ?? []));

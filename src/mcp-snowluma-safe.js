@@ -331,7 +331,7 @@ server.tool(
 // ── 全局 desktop-agent 使用的 SnowLuma QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
-  '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。若刚回复了这个来源，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查，查看对方是否紧接着发来新消息。',
+  '从最早未读开始查看，返回的消息自动计为已读。unreadCount 是本次读取后该会话剩余的未读条数。hasMore=true 时用 nextAfterSeq 翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),
@@ -349,7 +349,7 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取目标会话的 SnowLuma 消息历史（只读）。默认获取最新记录；传 messageId 可从该消息附近继续读取。不自动标记本地未读水位；需要收尾时仍用 qq_get_unread_messages 返回的 readThroughSeq。',
+  '按需读取目标会话的 SnowLuma 消息历史。默认获取最新记录，传 messageId 可从该消息附近继续读取。本页中能按 QQ 消息 ID 对应到本会话未读的来信自动计为已读。更早的积压可用 qq_get_unread_messages 补读。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
@@ -388,7 +388,7 @@ server.tool(
 
 server.tool(
   'qq_mark_read',
-  '将指定会话已查看的未读消息标记为已读。throughSeq 使用最近读取结果的 readThroughSeq，避免清除读取后才到达的新消息；省略 throughSeq 会按旧行为清空当前全部未读，因此推荐始终带上水位。普通群消息会保留在缓冲中，可以主动查看；私聊，以及群里 @ 你、回复或引用你的消息、提到当前人格卡名称或配置关键词，也可能触发 QQ 提醒。',
+  '兼容旧调用，确认指定会话已读到的连续水位。读取消息时桥接已自动记为已读，通常无需再调用。throughSeq 可取读取结果中的 readThroughSeq，省略时使用当前已读水位。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     throughSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('本次确认已读的消息水位，使用已查看结果中的 readThroughSeq；不会清除更晚到达的消息')
@@ -572,7 +572,7 @@ server.tool(
 
 server.tool(
   'qq_get_message_detail',
-  '按 QQ 消息 ID 或本地 seq 查看单条消息的发送者、引用信息与正文（只读）。使用 id:QQ消息ID 或 seq:本地序号来区分两者。正文最多返回 200 字符，textTruncated=true 表示被截断。单条详情不推进未读水位，需要确认已读时请读取未读消息。',
+  '按 id:QQ消息ID 或 seq:本地序号查看单条消息的发送者、引用信息与正文。正文最多返回 200 字符，textTruncated=true 表示被截断。返回本地未读消息的详情时，只将这一条计为已读。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数')

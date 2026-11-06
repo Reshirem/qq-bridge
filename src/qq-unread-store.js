@@ -13,6 +13,7 @@ export function openQQUnreadStore(file) {
   const saveMeta = db.prepare('INSERT OR REPLACE INTO sources VALUES (?, ?)');
   const newest = db.prepare('SELECT max(seq) AS seq FROM unread WHERE source=?');
   const prune = db.prepare('DELETE FROM unread WHERE source=? AND seq < ?');
+  const remove = db.prepare('DELETE FROM unread WHERE source=? AND seq=?');
   const append = db.prepare('INSERT INTO unread VALUES (?, ?, ?)');
   const header = db.prepare('INSERT OR REPLACE INTO buffer VALUES (1, ?, ?)');
   function transaction(fn) {
@@ -44,6 +45,12 @@ export function openQQUnreadStore(file) {
       return { bufferId: row.uuid, paused: Boolean(row.paused), conversations };
     },
     save(key, metadata, messages) { transaction(() => writeSource(key, metadata, messages)); },
+    acknowledge(key, metadata, sequences) {
+      transaction(() => {
+        for (const seq of sequences) remove.run(key, seq);
+        saveMeta.run(key, JSON.stringify(metadata));
+      });
+    },
     replace(uuid, paused, sources) {
       transaction(() => {
         db.exec('DELETE FROM unread; DELETE FROM sources;');

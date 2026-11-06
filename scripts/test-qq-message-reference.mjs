@@ -70,6 +70,13 @@ test('an incoming mention remains the same message through reminder, lookup and 
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 12，消息 id:55');
 
+    const partial = await call('/api/socialV2/unread?key=group%3A456&afterSeq=55');
+    assert.deepEqual(partial.data.messages.map(m => m.seq), [56]);
+    assert.equal(partial.data.readThroughSeq, 54);
+    assert.equal(partial.data.unreadCount, 1);
+    assert.equal(h.attentionSnapshot().unresolved.length, 0);
+    const skipped = await call('/api/socialV2/mark-read', { method: 'POST', body: { key: 'group:456', throughSeq: 56 } });
+    assert.equal(skipped.status, 400);
     const detail = await call('/api/socialV2/message-detail?key=group%3A456&messageId=id%3A55');
     assert.equal(detail.status, 200);
     assert.equal(detail.data.info.seq, 56);
@@ -77,6 +84,8 @@ test('an incoming mention remains the same message through reminder, lookup and 
     assert.match(detail.data.info.text, /QQ ID 55 的消息/);
     const local = await call('/api/socialV2/message-detail?key=group%3A456&messageId=seq%3A55');
     assert.equal(local.data.info.messageId, '999');
+    assert.equal(local.data.readThroughSeq, 56);
+    assert.equal(local.data.unreadCount, 0);
     const otherGroup = await call('/api/socialV2/message-detail?key=group%3A789&messageId=id%3A55');
     assert.equal(otherGroup.data.info.text, '另一个群的同号消息');
     const ambiguous = await call('/api/socialV2/message-detail?key=group%3A456&messageId=55');
@@ -102,13 +111,48 @@ test('an incoming mention remains the same message through reminder, lookup and 
     assert.equal(rejected.status, 400);
     assert.equal(h.calls.http.filter((entry) => entry.url.endsWith('/send_group_msg')).length, 1);
 
-    const partial = await call('/api/socialV2/unread?key=group%3A456&afterSeq=55');
-    assert.equal(partial.data.readThroughSeq, 54);
-    assert.equal(h.attentionSnapshot().unresolved.length, 1);
     const unread = await call('/api/socialV2/unread?key=group%3A456&afterSeq=0');
-    assert.equal(unread.data.messages.at(-1).messageId, '55');
+    assert.deepEqual(unread.data.messages, []);
     assert.equal(unread.data.readThroughSeq, 56);
-    assert.equal(h.attentionSnapshot().unresolved.length, 0);
+  } finally { await close(); }
+});
+
+test('history consumes only delivered IDs in this source, across gaps, retries and reopening the store', async () => {
+  const { h, call, close } = await fixture();
+  try {
+    const incoming = (group, id) => h.handleIncomingForTest('group', group, {
+      self_id: 42, user_id: 12, message_id: id, message: [{ type: 'text', data: { text: '消息' } }]
+    });
+    for (const id of [100, 101, 102]) await incoming(456, id);
+    await incoming(789, 100);
+    const route = '/api/socialV2/conversation-history?key=group:456';
+    const entries = [100, 102].map(message_id => ({
+      group_id: 456, message_id, user_id: 12, message: [{ type: 'text', data: { text: '消息' } }]
+    }));
+    const response = { status: 'ok', retcode: 0, data: { messages: entries } };
+    h.bot.request = async () => response;
+    assert.equal((await call(route, { adminOnly: true })).data.unreadCount, 4);
+    h.bot.request = async () => ({ status: 'ok', retcode: 0, data: {} });
+    assert.equal((await call(route)).status, 502);
+    h.bot.request = async () => {
+      await incoming(456, 103);
+      return response;
+    };
+    const history = await call(route);
+    assert.equal(history.data.unreadCount, 3);
+    assert.equal(history.data.readThroughSeq, 54);
+    h.bot.request = async () => response;
+    assert.equal((await call(route)).data.unreadCount, 3);
+    const store = openQQUnreadStore(path.join(h.temp, 'state', 'qq-unread.sqlite'));
+    try {
+      const { conversations } = store.load();
+      assert.deepEqual(conversations['group:456'].unread.map(m => m.messageId), ['999', '101', '103']);
+      assert.deepEqual(conversations['group:789'].unread.map(m => m.messageId), ['100']);
+    } finally { store.close(); }
+    const page = await call('/api/socialV2/unread?key=group:456&limit=2');
+    assert.deepEqual(page.data.messages.map(m => m.seq), [55, 57]);
+    assert.equal(page.data.readThroughSeq, 58);
+    assert.equal(page.data.unreadCount, 1);
   } finally { await close(); }
 });
 

@@ -69,6 +69,7 @@ test('incoming backlog caps at 500, pages without skipping, and reads historical
       const data = await call('/api/socialV2/unread?key=group:456&limit=100&afterSeq=' + after);
       assert.equal(data.messages.length, 100);
       assert.equal(data.messages[0].seq, 21 + page * 100);
+      assert.equal(data.unreadCount, (4 - page) * 100);
       assert.equal(data.hasMore, page < 4);
       after = data.nextAfterSeq;
       assert.equal(data.readThroughSeq, after);
@@ -76,6 +77,7 @@ test('incoming backlog caps at 500, pages without skipping, and reads historical
     // A new message arriving after the last read must survive acknowledgement.
     await h.handleIncomingForTest('group', 456, { user_id: 789, message_id: 521, message: [{ type:'text',data:{text:'后来'} }] });
     await call('/api/socialV2/mark-read', { key: 'group:456', throughSeq: after });
+    assert.equal((await call('/api/socialV2/mark-read', { key: 'group:456' })).markedCount, 0);
     assert.equal(st.unread.length, 1);
     assert.equal(st.unread[0].seq, 521);
     h.bot.request = async (action, params) => {

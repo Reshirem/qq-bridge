@@ -461,7 +461,7 @@
   <form id="qqConversationForm"><fieldset disabled>
     <label>每个字的条间延迟（ms）<input name="delayPerCharMs" type="number" min="0" max="1000" step="1" required></label>
     <p class="meta">模型决定发几条。第一条直接发送，后续每条按该条字数计时，最多等 1000 ms。设为 0 可连续发送。</p>
-    <p class="meta">每个群和私聊最多保留 500 条未读。标记已读后释放，超过容量时移出最早一条。双方聊天历史由角色按需从 SnowLuma 读取。</p>
+    <p class="meta">每个群和私聊最多保留 500 条未读，满后新来信会替换最早一条。角色查看未读、聊天历史或单条详情时，只扣除本次读到的来信。</p>
     <button class="primary">保存对话设置</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
