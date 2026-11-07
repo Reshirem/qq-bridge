@@ -4,6 +4,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isInstalledTool } from './maa-agent.mjs'
 // Shared tool policy implementation loaded by the desktop-agent preset bundle.
 export const name = 'qq-tool-restrict'
 
@@ -204,6 +205,7 @@ export function apply(ctx) {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
+    if (isInstalledTool(name)) return
     if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__', 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
     if (name === 'mcp__web-search-safe__web_search' || name === 'mcp__web-search-safe__web_fetch') {
       return `旧版桥接网页工具 "${name}" 已停用，请使用 DSH 自带的 web_search 或 web_fetch；如未显示，请重启 DSH 并重建会话。`

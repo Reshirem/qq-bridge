@@ -1,0 +1,130 @@
+diff --git a/maa_agent/cli.py b/maa_agent/cli.py
+index c43edf0..131c800 100644
+--- a/maa_agent/cli.py
++++ b/maa_agent/cli.py
+@@ -61,7 +61,8 @@ def main():
+     setup.add_argument('--mumutool', default='/Applications/MuMuPlayer.app/Contents/MacOS/mumutool')
+     sub.add_parser('observe')
+     sub.add_parser('home')
+-    stage = sub.add_parser('stage',help='Open a stage from its current chapter map')
++    sub.add_parser('missions', help='Open the daily/weekly missions page')
++    stage = sub.add_parser('stage',help='Open a main-story stage from home/terminal or a stage on the current map')
+     stage.add_argument('code')
+     nav = sub.add_parser('annihilation')
+     nav.add_argument('--expected-stage',required=True)
+@@ -156,7 +157,12 @@ def main():
+             else:
+                 with device_lock():
+                     vision = Vision(settings)
+-                    result = vision.open_stage(args.code) if args.command == 'stage' else vision.home()
++                    if args.command == 'stage':
++                        result = vision.open_stage(args.code)
++                    elif args.command == 'missions':
++                        result = vision.missions()
++                    else:
++                        result = vision.home()
+                     if args.command == 'annihilation':
+                         folder = RUNTIME / 'navigation' / uuid4().hex
+                         task = {'tasks':[{'type':'Custom','params':{'task_names':['Terminal-Entry']}},
+diff --git a/maa_agent/runner.py b/maa_agent/runner.py
+index 4ae138e..bf7eb4a 100644
+--- a/maa_agent/runner.py
++++ b/maa_agent/runner.py
+@@ -4,6 +4,7 @@ import csv
+ import json
+ import os
+ from pathlib import Path
++import re
+ import subprocess
+ import sys
+ import time
+@@ -113,7 +114,10 @@ def worker(run_id):
+             context = request['context']
+             result.update(before=before, context=context, preflight_passed=False)
+             if context['kind'] == 'copilot':
+-                if before['state'] != 'stage_ready' or context['expected_stage'] not in '\n'.join(before['stage_text']):
++                stage = context['expected_stage']
++                if re.fullmatch(r'(?:[A-Z]+\d*|\d+)-\d+', stage):
++                    result['stage'] = vision.open_stage(stage, initial=before)
++                elif before['state'] != 'stage_ready' or stage not in '\n'.join(before['stage_text']):
+                     raise ValueError('precondition_failed: expected stage must be visible on stage-ready page')
+             elif context['kind'] == 'resume':
+                 parent = json.loads((run_folder(context['parent']) / 'request.json').read_text(encoding='utf-8'))
+diff --git a/maa_agent/vision.py b/maa_agent/vision.py
+index 2cb24db..73fccc9 100644
+--- a/maa_agent/vision.py
++++ b/maa_agent/vision.py
+@@ -38,9 +38,14 @@ def stage_header_evidence(words, metadata):
+             direct_codes.add(code)
+             evidence.append({**word, 'text':code, 'source_text':word['text'], 'source':'stage_header_ocr'})
+     titles = [w for w in header if w['score'] >= .8]
+-    candidates = {(m.get('code'), m.get('name')) for m in metadata
+-                  if isinstance(m.get('code'), str) and m['code'].rpartition('-')[0] in prefixes
+-                  and any(w['text'] == m.get('name') for w in titles)}
++    # The numeric badge can disappear entirely in OCR (e.g. 1-1). Without
++    # a prefix, use only titles read in the title row, unique across all stages.
++    if not prefixes:
++        titles = [w for w in titles if 105 <= w['box'][1] <= 145 and w['score'] >= .9]
++    names = {w['text'] for w in titles}
++    candidates = {(m['code'], m['name']) for m in metadata
++                  if isinstance(m.get('code'), str) and m.get('name') in names
++                  and (not prefixes or m['code'].rpartition('-')[0] in prefixes)}
+     codes = {code for code, _ in candidates}
+     if len(direct_codes) > 1 or len(codes) > 1 or (codes and direct_codes and codes != direct_codes):
+         return []
+@@ -152,17 +157,50 @@ class Vision:
+         x,y,w,h = match['box']
+         wait(self.controller.post_click(x+w//2,y+h//2))
+ 
+-    def open_stage(self, code):
+-        """Open a stage within the current chapter; never press Start Operation."""
+-        if not re.fullmatch(r'[A-Z]+\d*-\d+', code):
++    def run_navigation(self, names):
++        from .runner import execute
++        folder = RUNTIME / 'navigation' / uuid4().hex
++        task = {'tasks': [{'type': 'Custom', 'params': {'task_names': [name]}} for name in names]}
++        result = execute(self.settings, task, folder, 110)
++        if result['executor'] != 'completed':
++            raise ValueError(f'navigation_{result["executor"]}: {folder / "cli.log"}')
++
++    def missions(self):
++        def on_missions(page):
++            return sum(label in page['recognized_text'] for label in ('日常任务', '周常任务', '主线任务')) >= 2
++
++        page = self.observe()
++        if not on_missions(page):
++            if page['state'] != 'home':
++                self.home()
++            self.run_navigation(['Task-Entry'])
++            page = self.observe()
++            if not on_missions(page):
++                raise ValueError(f'missions_not_verified: {page["screenshot"]}')
++        return {**page, 'state': 'missions'}
++
++    def open_stage(self, code, initial=None):
++        """Open a main-story chapter from home/terminal, or select a stage on the map."""
++        if not re.fullmatch(r'(?:[A-Z]+\d*|\d+)-\d+', code):
+             raise ValueError('Invalid stage code')
+         direction = -1
+         previous_codes = None
+         repeated = 0
+         for attempt in range(18):
+-            observation = self.observe()
++            observation = initial if attempt == 0 and initial is not None else self.observe()
++            if attempt == 0 and observation['state'] in ('home', 'terminal'):
++                chapter = re.fullmatch(r'[A-Z]{0,3}(\d{1,2})-\d{1,2}', code)
++                if not chapter:
++                    raise ValueError(f'no_main_story_route: open the chapter map for {code}')
++                names = ['Terminal-Entry'] if observation['state'] == 'home' else []
++                self.run_navigation([*names, 'Episode' + str(int(chapter[1]))])
++                observation = self.observe()
+             if observation['state'] == 'stage_ready':
+-                if any(re.search(re.escape(code) + r'(?!\d)', text) for text in observation['stage_text']):
++                # A numeric chapter can be a suffix of another stage (1-1 in S1-1).
++                # Lettered codes may be joined to the OCR'd "OPERATION" heading.
++                prefix = r'(?<![A-Za-z0-9-])' if code[0].isdigit() else ''
++                title_code = prefix + re.escape(code) + r'(?!\d)'
++                if any(re.search(title_code, text) for text in observation['stage_text']):
+                     return {**observation, 'stage_verified':True}
+                 raise ValueError('different_stage_open: return to chapter map before navigation')
+             if observation['state'] in ('in_battle','formation','failure','settlement','battle_report'):

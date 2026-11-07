@@ -85,6 +85,8 @@
   name: '@deepseek-ai/dsh-tool-web'
 - id: qq-tool-restrict
   name: ./qq-tool-restrict.mjs
+- id: qq-maa-agent
+  name: qq-agent-presets/maa-agent.mjs
 - id: compaction
   name: cordis:group
   group: true

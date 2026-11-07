@@ -110,6 +110,8 @@ node scripts/setup-dsh.mjs
 
 > `setup-dsh.mjs` 安装 `desktop-agent`、`ownerQQ` 关系对象身份标记设置和当前 MCP 工具；不再设置 DSH 运行模式或创建 `state/mode.json`。设置命名空间为 `qq-agent-presets.ownerQQ`。
 
+**可选的明日方舟模块**。安装后，数字角色可以观察模拟器画面、选择本地 Copilot 作业、按运行编号跟进战斗，并根据结算星数或剿灭击杀数核验结果。普通 QQ 安装可以跳过这一步。[安装、准备作业与使用示例](docs/guides/MAA_AGENT.md)
+
 详细步骤见 **[docs/guides/DSH_SETUP.md](docs/guides/DSH_SETUP.md)**。
 
 ## 完整启动流程（从零开始）
