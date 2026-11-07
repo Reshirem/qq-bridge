@@ -12,7 +12,7 @@ import yaml from 'js-yaml';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createAMemorixGateway } from '../src/a-memorix-gateway.js';
-import { createMemoryOrganizerState } from '../src/memory-organizer.js';
+import { createMemoryOrganizerState, organizerTranscriptRecords } from '../src/memory-organizer.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -182,4 +182,47 @@ test('retry keeps the completed checkpoint and blocks later ranges only for the 
   assert.equal(recovered.nextQueued().jobId, 'first');
   assert.equal(recovered.nextQueued().progress.completed, 3);
   assert.equal(recovered.source('source-a').lastProcessedSeq, -1);
+});
+
+test('unread and history can swap text renderings and add a date across midnight', () => {
+  const records = [];
+  function read(tool, message) {
+    const callId = String(records.length);
+    records.push({ seq: records.length, type: 'tool/call', data: { name: tool, callId } });
+    records.push({ seq: records.length, type: 'tool/result', data: { message: { source: { callId },
+      content: [{ type: 'text', text: JSON.stringify({ key: 'group:1', readThroughSeq: 1,
+        messages: [{ messageId: '1', ...message }] }) }] } } });
+  }
+  read('qq_get_unread_messages', { text: '[回复] 好', plain: '好', at: '21:41' });
+  read('qq_get_conversation_history', { text: '好', plain: '[回复] 好', at: '11-02 21:41' });
+  const transcript = organizerTranscriptRecords(records);
+  assert.equal(transcript.incomplete, false);
+  const messages = transcript.events.filter(e => e.kind === 'qq-message');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].message.at, '11-02 21:41');
+  read('qq_get_conversation_history', { text: '另一条', plain: '[回复] 好', at: '11-03 21:41' });
+  assert.match(organizerTranscriptRecords(records).incompleteReasons[0], /at.*text/);
+});
+
+test('receipt uses the final visible answer and ignores tentative markers in reasoning or tool steps', async () => {
+  const h = await bridgeHarness();
+  const records = [];
+  const push = (type, data) => records.push({ seq: records.length, type, data });
+  for (const chunk of [1, 2]) {
+    push('turn/start', { turn: chunk });
+    push('user/message', { content: `整理任务 fixture，当前是第 ${chunk}/2 段` });
+    push('assistant/message', { content: [{ type: 'text', text: 'MEMORY_ORGANIZER_NO_CHANGE' }] });
+    push('tool/call', { name: 'memory_save', callId: 'save', input: { externalId: `qq-bridge:organizer:fixture:chunk-${chunk}:item-1` } });
+    push('tool/result', { message: { toolCallId: 'save', content: [{ type: 'text', text: '{"storedIds":["id"],"skippedIds":[]}' }] } });
+    push('step/start', {});
+    push('assistant/message', { content: [{ type: 'reasoning', text: 'MEMORY_ORGANIZER_NO_CHANGE MEMORY_ORGANIZER_DONE' },
+      { type: 'text', text: chunk === 1 ? 'MEMORY_ORGANIZER_DONE' : '未结束' }] });
+    push('turn/end', { turn: chunk, reason: { kind: 'completed' } });
+  }
+  h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections' ? { asOfSeq: records.length - 1 } : { records } } });
+  try {
+    const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', 'fixture', 2);
+    assert.deepEqual([...receipts.keys()], [1]);
+    assert.deepEqual({ ...receipts.get(1) }, { memoryWrites: 1, newMemories: 1 });
+  } finally { await h.close(); }
 });

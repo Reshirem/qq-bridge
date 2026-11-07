@@ -2507,8 +2507,14 @@ async function main() {
             const match = content.match(/当前是第\s*(\d+)\s*\/\s*(\d+)\s*段/);
             if (match && Number(match[2]) === chunkCount) taskChunk = Number(match[1]);
           }
+        } else if (event?.type === 'step/start') {
+          finalText = '';
         } else if (event?.type === 'assistant/message') {
-          finalText += `\n${memoryOrganizerMessageText(data.message?.content ?? data.content)}`;
+          // Match the headless CLI's final answer. Reasoning and tool calls
+          // can discuss either completion marker before a write actually runs.
+          const content = data.message?.content ?? data.content;
+          finalText = memoryOrganizerMessageText(Array.isArray(content)
+            ? content.filter((block) => block?.type === 'text') : content);
         } else if (event?.type === 'tool/call') {
           const name = organizerToolLeafName(data.name);
           if (!name.startsWith('memory_')) continue;
