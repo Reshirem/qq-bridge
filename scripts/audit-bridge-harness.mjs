@@ -24,6 +24,7 @@ import * as chatLearning from '../src/chat-learning.js';
 import * as learningAssets from '../src/learning-assets.js';
 import * as learningApi from '../src/learning-api.js';
 import * as memoryOrganizer from '../src/memory-organizer.js';
+import { createModelCatalog } from '../src/model-catalog.js';
 import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import { createStickerMemory } from '../src/sticker-memory.js';
@@ -162,7 +163,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   if (connectStart < 0) throw new Error('Cannot locate bridge connection startup in the offline fixture');
   source = source.slice(0, connectStart) + `
   return {
-    closeUnreadStore: () => unreadStore.close(), sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
+    closeUnreadStore: () => { tokenLedger.close(); unreadStore.close(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
     runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, memoryOrganizerPatchText,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
@@ -229,7 +230,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     unwrap, createTurnCollector,
     qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer,
-    ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
+    createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     // The fixture must never probe or spawn a host ffmpeg process during startup.

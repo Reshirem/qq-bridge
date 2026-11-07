@@ -5,7 +5,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pickBucketMs } from '../src/token-ledger.js';
+import { createTokenLedger } from '../src/token-ledger.js';
 import { manualDirCommand } from '../src/state-acl.mjs';
 import { composePresetPromptModules, normalizePresetPromptModules, PRESET_PROMPT_MODULE_DEFINITIONS } from '../src/preset-prompt.js';
 import { DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS, normalizeDesktopAgentPromptTemplates } from '../src/desktop-agent-prompt-templates.js';
@@ -58,265 +58,18 @@ function presetStatusFixture() {
   };
 }
 
-// ── 令牌与花费：离线示例数据 ──────────────────────────────────────────────
-// 字段口径与 src/token-ledger.js 的 summary()/conversation()/recent() 保持一致，
-// 这样控制台渲染路径在离线预览与真实环境走的是同一套形状。
-const USAGE_SYMBOL = '¥';
-const USAGE_PRICE_TABLE = {
-  version: '2026-11-04',
-  currency: 'CNY',
-  symbol: USAGE_SYMBOL,
-  unit: 1e6,
-  peakMultiplier: 2,
-  peakWindows: [[9, 12], [14, 18]],
-  peakWeekdays: [1, 2, 3, 4, 5],
-  holidayCount: 33,
-  models: {
-    'deepseek-flash': { label: 'DeepSeek-V4.1-Flash', off: { cacheHit: 0.02, cacheMiss: 1, cacheWrite: 1, output: 4 } },
-    'deepseek-v4-pro': { label: 'DeepSeek-V4-Pro-0813', off: { cacheHit: 0.15, cacheMiss: 4.5, cacheWrite: 4.5, output: 13.5 } },
-  },
-};
-
-function usageConversationFixture(key, buckets, cost, turns, steps, unattributed = 0) {
-  const input = buckets.cacheMiss + buckets.cacheHit + buckets.cacheWrite;
-  return {
-    key,
-    sessionIds: [`fixture-session-${key.replace(/\W/g, '')}`],
-    sessions: 1,
-    buckets,
-    cost,
-    unattributedCost: unattributed,
-    attributedCost: cost - unattributed,
-    byTier: { peak: cost * 0.4, off: cost * 0.6 },
-    turns,
-    steps,
-    estimated: false,
-    lastAt: Date.parse(timestamp),
-    firstAt: Date.parse(timestamp) - 3600_000,
-    models: ['deepseek-flash'],
-    cacheHitRate: input > 0 ? buckets.cacheHit / input : 0,
+function makeUsageFixture() {
+  const rate = { input:1, cache_read:0.1, cache_write:1.25, output:2, tiers:[] };
+  const catalog = {
+    get: (provider,model) => provider === 'demo' && model === 'priced' ? rate : null,
+    status: () => ({updatedAt:Date.now()}), auto() {}
   };
-}
-
-function usageSummaryFixture() {
-  const conversations = [
-    usageConversationFixture('group:123456789', { cacheMiss: 41230, cacheHit: 1284000, cacheWrite: 0, output: 18420, reasoning: 0 }, 0.2886, 42, 231),
-    usageConversationFixture('private:100001', { cacheMiss: 8600, cacheHit: 210400, cacheWrite: 0, output: 3900, reasoning: 0 }, 0.0467, 9, 48),
-  ];
-  const buckets = conversations.reduce((acc, c) => ({
-    cacheMiss: acc.cacheMiss + c.buckets.cacheMiss,
-    cacheHit: acc.cacheHit + c.buckets.cacheHit,
-    cacheWrite: acc.cacheWrite + c.buckets.cacheWrite,
-    output: acc.output + c.buckets.output,
-    reasoning: 0,
-  }), { cacheMiss: 0, cacheHit: 0, cacheWrite: 0, output: 0, reasoning: 0 });
-  const cost = conversations.reduce((acc, c) => acc + c.cost, 0);
-  const input = buckets.cacheMiss + buckets.cacheHit + buckets.cacheWrite;
-  const turns = conversations.reduce((acc, c) => acc + c.turns, 0);
-  const steps = conversations.reduce((acc, c) => acc + c.steps, 0);
-  return {
-    ok: true,
-    generatedAt: Date.parse(timestamp),
-    priceVersion: USAGE_PRICE_TABLE.version,
-    currency: 'CNY',
-    symbol: USAGE_SYMBOL,
-    nowTier: { model: 'deepseek-flash', label: 'DeepSeek-V4.1-Flash', tier: 'off', tierLabel: '空闲时段', estimated: false },
-    priceTable: USAGE_PRICE_TABLE,
-    totals: {
-      buckets,
-      cost,
-      attributedCost: cost - 0.02,
-      unattributedCost: 0.02,
-      byTier: { peak: cost * 0.4, off: cost * 0.6 },
-      turns,
-      steps,
-      conversations: conversations.length,
-      estimated: false,
-      totalTokens: buckets.cacheMiss + buckets.cacheHit + buckets.cacheWrite + buckets.output,
-      inputTokens: input,
-      cacheHitRate: input > 0 ? buckets.cacheHit / input : 0,
-      avgCostPerTurn: cost / turns,
-      avgCostPerStep: cost / steps,
-    },
-    conversations,
-    ledger: { file: '(fixture)', journalLines: 0, maxLines: 20000, droppedLines: 0, sessions: 3, baselines: 3, samples: steps, lastIngestAt: Date.parse(timestamp), lastCompactedAt: 0, priceVersion: USAGE_PRICE_TABLE.version },
-  };
-}
-
-// 走势图示例数据：24 小时 × 30 分钟 = 48 格，故意留出空白时段。
-// 峰谷档位按**真实规则**推算（周一至周五 9:00-12:00、14:00-18:00 为高峰），
-// 这样示例图看起来和真实使用一致（两条高峰带），而不是人为交替的噪点。
-function usageSeriesFixture(hoursRaw) {
-  const hours = [24, 72, 168, 720].includes(Number(hoursRaw)) ? Number(hoursRaw) : 24;
-  // 桶宽用**生产同一套阶梯**（从 token-ledger 导出），避免预览与线上粒度不一致。
-  const bucketMs = pickBucketMs(hours * 3600 * 1000, 48);
-  // 走势图的锚点固定在一个**工作日**：fixture 的 timestamp 落在周日，按真实峰谷规则
-  // 算出来整条图都是空闲色，示例数据就永远看不到高峰带（离线预览也就失去意义）。
-  // 锚点固定也让截图/断言可复现。
-  const anchor = Date.parse('2026-09-16T08:30:00.000Z'); // 周三
-  const end = Math.floor(anchor / bucketMs) * bucketMs + bucketMs;
-  const start = end - Math.ceil((hours * 3600 * 1000) / bucketMs) * bucketMs;
-  const count = Math.round((end - start) / bucketMs);
-  const isPeakHour = (ms) => {
-    const d = new Date(ms);
-    const day = d.getDay();
-    if (day === 0 || day === 6) return false;
-    const h = d.getHours();
-    return (h >= 9 && h < 12) || (h >= 14 && h < 18);
-  };
-  // 档位要**扫完整个桶**，不能只看首尾：12 小时的桶完全可能把 9:00-12:00 整段包在
-  // 中间，而两端都在空闲区（首尾采样法会把它误判成「空闲」）。
-  const tierOfBucket = (t) => {
-    let sawPeak = false;
-    let sawOff = false;
-    for (let ms = t; ms < t + bucketMs; ms += Math.min(bucketMs, 30 * 60 * 1000)) {
-      if (isPeakHour(ms)) sawPeak = true; else sawOff = true;
-      if (sawPeak && sawOff) return 'mixed';
-    }
-    return sawPeak ? 'peak' : 'off';
-  };
-  const buckets = [];
-  // 桶内按 30 分钟小格累加，而不是"只看桶起点那一小时"：
-  // 粗桶（如 24 小时）起点可能落在深夜，只看起点会让整条 30 天视图全是 0。
-  // 累加也更接近真账本的行为（一个桶 = 该时段所有采样之和）。
-  const subStepMs = Math.min(bucketMs, 30 * 60 * 1000);
-  for (let i = 0; i < count; i += 1) {
-    const t = start + i * bucketMs;
-    let cacheMiss = 0;
-    let cacheHit = 0;
-    let output = 0;
-    let cost = 0;
-    let turns = 0;
-    let steps = 0;
-    for (let ms = t; ms < t + bucketMs; ms += subStepMs) {
-      const hour = new Date(ms).getHours();
-      if (hour < 9 || hour > 23) continue; // 深夜为 0，图上有明显的空白段
-      const wave = (Math.sin((ms - start) / (3 * subStepMs)) + 1) / 2;
-      const cm = Math.round(300 + wave * 1800);
-      const ch = Math.round(6000 + wave * 42000);
-      const out = Math.round(60 + wave * 400);
-      const sub = (cm / 1e6) * 1 + (ch / 1e6) * 0.02 + (out / 1e6) * 4;
-      cacheMiss += cm;
-      cacheHit += ch;
-      output += out;
-      cost += isPeakHour(ms) ? sub * 2 : sub; // 高峰单价 ×2，逐格判定
-      turns += 1;
-      steps += 3 + (Math.floor(ms / subStepMs) % 5);
-    }
-    buckets.push({
-      t,
-      cost,
-      tokens: cacheMiss + cacheHit + output,
-      cacheMiss,
-      cacheHit,
-      cacheWrite: 0,
-      output,
-      turns,
-      steps,
-      tier: tierOfBucket(t),
-      keys: steps > 0 ? ['group:123456789'] : [],
-    });
+  const ledger = createTokenLedger({file:':memory:',catalog});
+  for (const [index,feature] of ['main','memory','learning'].entries()) {
+    ledger.ingestSample({sessionId:'demo-'+feature, feature, provider:'demo', model:index===2 ? 'unknown' : 'priced',
+      turn:1,step:1,seq:1, at:Date.now()-index*3600000,usage:{inputTokens:5000,cacheReadTokens:500,outputTokens:100}});
   }
-  const totals = buckets.reduce((acc, b) => ({
-    cost: acc.cost + b.cost,
-    tokens: acc.tokens + b.tokens,
-    turns: acc.turns + b.turns,
-    steps: acc.steps + b.steps,
-  }), { cost: 0, tokens: 0, turns: 0, steps: 0 });
-  const busiest = buckets.reduce((best, b) => (!best || b.cost > best.cost ? b : best), null);
-  return {
-    ok: true,
-    generatedAt: Date.parse(timestamp),
-    currency: 'CNY',
-    symbol: USAGE_SYMBOL,
-    hours,
-    bucketMs,
-    from: start,
-    to: end,
-    buckets,
-    totals,
-    busiest: busiest ? { t: busiest.t, cost: busiest.cost, tokens: busiest.tokens } : null,
-    estimated: false,
-    countedSamples: buckets.reduce((n, b) => n + b.steps, 0),
-    offChartCost: 0.02,
-    offChartTokens: 18000,
-  };
-}
-
-function usageTurnsFixture(key) {
-  const target = key || 'group:123456789';
-  const base = Date.parse(timestamp);
-  const rows = [];
-  for (let i = 0; i < 6; i += 1) {
-    const buckets = { cacheMiss: 900 + i * 120, cacheHit: 32000 + i * 800, cacheWrite: 0, output: 420 + i * 30, reasoning: 0 };
-    rows.push({
-      sessionId: `fixture-session-${target.replace(/\W/g, '')}`,
-      key: target,
-      turn: 42 - i,
-      steps: 4 + (i % 3),
-      attempts: i === 2 ? 1 : 0,
-      startedAt: base - (i + 1) * 600_000,
-      endedAt: base - i * 600_000,
-      model: 'deepseek-flash',
-      provider: 'deepseek-official',
-      buckets,
-      cost: (buckets.cacheMiss / 1e6) * 1 + (buckets.cacheHit / 1e6) * 0.02 + (buckets.output / 1e6) * 4,
-      tier: i === 1 ? 'peak' : (i === 4 ? 'mixed' : 'off'),
-    });
-  }
-  const cost = rows.reduce((acc, t) => acc + t.cost, 0);
-  return {
-    ok: true,
-    generatedAt: base,
-    currency: 'CNY',
-    symbol: USAGE_SYMBOL,
-    key: target,
-    sessionIds: [`fixture-session-${target.replace(/\W/g, '')}`],
-    sessions: 1,
-    steps: rows.reduce((acc, t) => acc + t.steps, 0),
-    cost,
-    attributedCost: cost,
-    unattributedCost: 0.0123,
-    buckets: rows.reduce((acc, t) => ({
-      cacheMiss: acc.cacheMiss + t.buckets.cacheMiss,
-      cacheHit: acc.cacheHit + t.buckets.cacheHit,
-      cacheWrite: 0,
-      output: acc.output + t.buckets.output,
-      reasoning: 0,
-    }), { cacheMiss: 0, cacheHit: 0, cacheWrite: 0, output: 0, reasoning: 0 }),
-    byTier: { peak: cost * 0.3, off: cost * 0.7 },
-    estimated: false,
-    models: ['deepseek-flash'],
-    turnLimit: 200,
-    // 与 src/token-ledger.js 的 conversation() 一致：`turns` 是**数组**（不是条数）。
-    turns: rows,
-  };
-}
-
-function usageRecentFixture() {
-  const base = Date.parse(timestamp);
-  const rows = [];
-  for (let i = 0; i < 8; i += 1) {
-    rows.push({
-      time: base - i * 45_000,
-      key: i % 3 === 2 ? 'private:100001' : 'group:123456789',
-      sessionId: 'fixture-session',
-      turn: 42 - Math.floor(i / 4),
-      step: 1 + (i % 4),
-      retry: 0,
-      model: 'deepseek-flash',
-      tokens: 34000 + i * 500,
-      cacheMiss: 820 + i * 40,
-      cacheHit: 33000 + i * 400,
-      cacheWrite: 0,
-      output: 260 + i * 12,
-      reasoning: 0,
-      cost: 0.0021 + i * 0.0001,
-      tier: i === 3 ? 'peak' : 'off',
-      estimated: false,
-    });
-  }
-  return rows;
+  return ledger;
 }
 
 export function makeFixtureState() {
@@ -365,6 +118,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
   const file = htmlPath || resolve(projectRoot, 'public/console.html');
   await readFile(file); // Fail early rather than displaying a broken preview.
   const state = makeFixtureState();
+  const usage = makeUsageFixture();
   const requests = [];
   const unknownRequests = [];
   const server = http.createServer(async (req, res) => {
@@ -528,10 +282,10 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               : { hardened: false, path: 'D:\\demo\\qq-bridge\\state', manualCommand: manualDirCommand('D:\\demo\\qq-bridge\\state') }
           });
           // 令牌与花费：全部为离线示例数据，不含任何真实用量。
-          case '/api/tokens/summary': return json(usageSummaryFixture());
-          case '/api/tokens/series': return json(usageSeriesFixture(url.searchParams.get('hours')));
-          case '/api/tokens/turns': return json(usageTurnsFixture(url.searchParams.get('key')));
-          case '/api/tokens/recent': return json({ ok: true, symbol: '¥', entries: usageRecentFixture() });
+          case '/api/tokens/summary': return json(usage.summary());
+          case '/api/tokens/series': return json(usage.series({hours:Number(url.searchParams.get('hours')) || 24}));
+          case '/api/tokens/turns': return json(usage.conversation(url.searchParams.get('key')));
+          case '/api/tokens/recent': return json({ ok: true, symbol:'$', legacySymbol:'¥', entries:usage.recent() });
         }
       }
       if (method === 'POST') {
@@ -649,7 +403,8 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             state.desktopAgentStopped = false;
             return json({ ok: true, sessionId: 'mock-desktop-agent-session', created: true });
           case '/api/restart': return json({ ok: true, message: '离线预览：已模拟重启，实际服务未改变。' });
-          case '/api/tokens/reset': return json({ ok: true });
+          case '/api/tokens/prices/refresh': return json({ ok:true });
+          case '/api/tokens/reset': usage.reset(); return json({ ok:true });
         }
       }
       unknownRequests.push({ method, path });
@@ -659,7 +414,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
     }
   });
   await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolveListen); });
-  return { server, state, requests, unknownRequests, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolveClose => server.close(resolveClose)) };
+  return { server, state, requests, unknownRequests, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolveClose => server.close(() => { usage.close(); resolveClose(); })) };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

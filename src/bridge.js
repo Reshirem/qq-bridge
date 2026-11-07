@@ -41,6 +41,7 @@ import { isFfmpegAvailable } from './ffmpeg-resolve.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
+import { createModelCatalog } from './model-catalog.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import { createAMemorixGateway, STICKER_NAMESPACE } from './a-memorix-gateway.js';
@@ -863,7 +864,7 @@ function loadConfig() {
       timeZone: String(file.memoryOrganizer?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC'),
       cliPath: String(file.memoryOrganizer?.cliPath ?? '').trim()
     },
-    // 价目表覆盖项（可选）。留空即用 src/model-prices.js 的官方默认价。
+    // 只用于首次迁移旧账本。
     pricing: file.pricing ?? null,
     socialV2: qqChannelConfig(file.socialV2),
   };
@@ -1289,7 +1290,16 @@ async function main() {
       const cli = memoryOrganizerCliLaunch();
       const capabilities = await getMemoryOrganizerCliCapabilities(cli);
       const model = { provider: cfg.dsh.provider, model: cfg.dsh.model, ...(cfg.dsh.reasoningEffort ? { reasoningEffort: cfg.dsh.reasoningEffort } : {}) };
-      return runLearningHeadless({ cli, approvalPolicy: capabilities.approvalPolicy, root: ROOT, stateDir: STATE_DIR, model, provider: memoryOrganizerDesktopProvider(model), task, images, signal });
+      return runLearningHeadless({
+        cli, approvalPolicy: capabilities.approvalPolicy, root: ROOT, stateDir: STATE_DIR,
+        model, provider: memoryOrganizerDesktopProvider(model), task, images, signal,
+        onUsage: (sessionId, event) => {
+          try {
+            tokenLedger.ingestSample({ sessionId, feature:'learning', ...model, turn:event.turn,
+              step:event.step, seq:-1, usage:event.usage });
+          } catch (error) { log('后台学习用量记录失败', error.message); }
+        }
+      });
     },
   }) : null;
   function learningSticker(key, id) {
@@ -1638,21 +1648,28 @@ async function main() {
     return unwrap(await modelCatalogInFlight, 'session.modelCatalog');
   }
   const toolCallNames = new Map(); // sessionId -> Map<callId, toolName>：用于结果日志关联工具名
-  // ── Token 用量账本（控制台「令牌与花费」） ───────────────────────────────
-  // 权威总量取 DSH 的 tokenUsage 投影（整条会话日志累计，含桥接启动前的历史），
-  // 逐轮明细由 assistant/message 的 usage 折叠而来；花费在读取时按价目表折算。
-  const priceTable = resolvePriceTable(cfg.pricing);
-  const tokenLedger = createTokenLedger({
-    file: TOKEN_USAGE_FILE,
-    log: (...args) => log(...args),
-    priceTable,
-    // 旧逐 QQ DSH 映射已移除；只把唯一全局数字角色会话归到数字角色。
-    resolveKey: (sessionId) => sessionId === desktopAgentSessionId ? 'desktop-agent' : undefined
+  const modelCatalog = createModelCatalog({
+    file: path.join(STATE_DIR, 'models-dev-prices.json'), persist: atomicWriteJson,
+    fetchCatalog: fetch, log, onRefresh: () => tokenLedger.settle()
   });
+  const oldJobs = memoryOrganizer?.jobs() ?? [];
+  const mainSources = new Set(oldJobs.filter(j => j.kind === 'rest').map(j => j.sourceSessionId));
+  mainSources.add(readJsonSafe(DESKTOP_AGENT_FILE, {})?.sessionId);
+  const memorySessions = new Set(oldJobs.flatMap(j => [j.organizerSessionId, ...(j.organizerSessionIds ?? [])]));
+  const tokenLedger = createTokenLedger({
+    file: path.join(STATE_DIR, 'token-usage.sqlite'), legacyFile: TOKEN_USAGE_FILE,
+    legacyTable: resolvePriceTable(cfg.pricing), catalog: modelCatalog,
+    learningUsage: chatLearning?.snapshot().usage,
+    classifyLegacy: (sid, key) => memorySessions.has(sid) ? 'memory'
+      : mainSources.has(sid) || key === 'desktop-agent' || /^(group|private):/.test(key ?? '') ? 'main' : 'other'
+  });
+  tokenLedger.settle();
+  const refreshModelPrices = () => modelCatalog.auto(tokenLedger.hasUnpriced());
+  refreshModelPrices();
+  setInterval(refreshModelPrices, 3600000).unref();
 
   /** sessionId -> 最近一次已知的实际模型。切换模型会让单价差好几倍，所以按会话记。 */
   const sessionModels = new Map();
-  const nominalModel = () => cfg.dsh?.model || 'deepseek-flash';
 
   function rememberModel(sessionId, selection) {
     const model = selection?.model;
@@ -1688,14 +1705,11 @@ async function main() {
       if (!snapshot) return;
       const selection = snapshot.projections?.values?.modelSelection;
       rememberModel(sessionId, selection?.lastUsed ?? selection?.pending ?? null);
-      const known = sessionModels.get(sessionId);
       tokenLedger.ingestBaseline({
         sessionId,
-        projection: snapshot.projections,
-        at: Date.now(),
-        model: known?.model ?? nominalModel(),
-        provider: known?.provider ?? cfg.dsh?.provider
+        projection: snapshot.projections
       });
+      // Replayed history may precede the selected model. Use the records' own routing evidence.
       tokenLedger.ingestSnapshotRecords({ sessionId, records: snapshot.records });
     } catch (error) {
       log('token 账本：处理会话快照失败', error?.message ?? error);
@@ -1915,6 +1929,36 @@ async function main() {
       return { records, complete: false, error: `DSH 历史缺少事件序号 ${expected}–${throughSeq}` };
     }
     return { records, complete: true, error: '' };
+  }
+
+  async function syncOrganizerUsage(sessionId, selection, throughSeq) {
+    if (!sessionId) return;
+    try {
+      if (!Number.isSafeInteger(throughSeq)) {
+        const projection = unwrap(await withTimeout(api.callUnary('session/projections', { sessionId }),
+          DSH_CONTROL_TIMEOUT_MS, 'session.projections'), 'session.projections');
+        throughSeq = projection?.asOfSeq;
+      }
+      const cursor = tokenLedger.cursor(sessionId);
+      if (!Number.isSafeInteger(throughSeq) || throughSeq <= cursor) return;
+      const range = await readMemoryOrganizerRange(sessionId, cursor, throughSeq);
+      if (!range.complete) throw new Error(range.error);
+      tokenLedger.importMemory(sessionId, range.records, selection, throughSeq);
+    } catch (error) { log('同步记忆整理用量失败', sessionId, error.message); }
+  }
+  async function syncPastOrganizerUsage() {
+    if (!memoryOrganizer) return;
+    const models = new Map();
+    for (const job of memoryOrganizer.jobs()) {
+      for (const sid of [job.organizerSessionId, ...(job.organizerSessionIds ?? [])]) {
+        if (sid) models.set(sid, job.modelSelection);
+      }
+    }
+    if (!models.size) return;
+    const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+    for (const item of list.items ?? []) {
+      if (models.has(item.sessionId)) await syncOrganizerUsage(item.sessionId, models.get(item.sessionId), item.projections?.asOfSeq);
+    }
   }
 
   async function readMemoryOrganizerModel(sessionId) {
@@ -2340,6 +2384,7 @@ async function main() {
           settled = true;
           clearTimeout(deadline);
           if (lineBuffer.trim()) parseEvent(lineBuffer);
+          void syncOrganizerUsage(sessionId, modelSelection);
           if (!sessionId) failure ||= `DSH headless 未创建或恢复整理 Session（退出码 ${code}）`;
           if (code !== 0) failure ||= `DSH headless 退出码 ${code}`;
           const reason = finalEvent && Object.hasOwn(finalEvent, 'reason') ? finalEvent.reason : terminalReason;
@@ -2826,6 +2871,7 @@ async function main() {
           log('全局数字角色运行时已就绪；QQ 消息按需读取，不创建逐会话 DSH 映射');
           if (desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(1000);
           void reconcileDesktopAgentLifecycle();
+          void syncPastOrganizerUsage().catch(error => log('读取历史整理用量失败', error.message));
           void reconcileMemoryOrganizerRestJobs().then(() => scheduleMemoryOrganizerRun(0));
         }
       } else if (dshReady) {
@@ -5486,8 +5532,7 @@ async function main() {
         if (url.pathname === '/api/tokens/summary' || url.pathname.startsWith('/api/tokens/')) {
           if (req.headers['x-agent-token']) { sendJson({ ok: false, error: '该接口仅控制台可用' }, 403); return; }
           if (req.method === 'GET' && url.pathname === '/api/tokens/summary') {
-            const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
-            sendJson({ ...tokenLedger.summary({ limit }), ledger: tokenLedger.stats() });
+            sendJson(tokenLedger.summary());
             return;
           }
           if (req.method === 'GET' && url.pathname === '/api/tokens/series') {
@@ -5506,7 +5551,12 @@ async function main() {
           }
           if (req.method === 'GET' && url.pathname === '/api/tokens/recent') {
             const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 50));
-            sendJson({ ok: true, symbol: priceTable.symbol, entries: tokenLedger.recent(limit) });
+            sendJson({ ok: true, symbol: '$', legacySymbol: tokenLedger.legacySymbol, entries: tokenLedger.recent(limit) });
+            return;
+          }
+          if (req.method === 'POST' && url.pathname === '/api/tokens/prices/refresh') {
+            try { await modelCatalog.refresh(true); sendJson({ ok: true, ...modelCatalog.status() }); }
+            catch (error) { sendJson({ ok:false, error:error.message }, 502); }
             return;
           }
           if (req.method === 'POST' && url.pathname === '/api/tokens/reset') {

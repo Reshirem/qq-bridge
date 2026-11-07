@@ -65,6 +65,14 @@ try {
   ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent' && request.body.message === '离线 UI 契约检查'));
 
+  await page.locator('[data-view="usage"]').first().click();
+  await page.locator('[data-usage-key="memory"]').click();
+  await page.waitForFunction(() => document.getElementById('usageTurnScope').textContent.includes('记忆整理'));
+  await page.locator('#usagePricesRefresh').click();
+  assert.ok(fixture.requests.some(r => r.path === '/api/tokens/prices/refresh' && r.method === 'POST'));
+  assert.match(await page.locator('#usageConversations').innerText(), /后台学习/);
+  assert.match(await page.locator('#metricUsagePerTurn').innerText(), /5,600/);
+
   await page.locator('[data-view="access"]').first().click();
   await page.locator('#snowlumaWarn').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#metricSnowluma').textContent(), '心跳中断');

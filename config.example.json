@@ -67,18 +67,6 @@
     "maxImages": 3,
     "sources": []
   },
-  "pricing": {
-    "models": {
-      "my-relay-model": {
-        "label": "我的中转模型",
-        "off": {
-          "cacheHit": 0.5,
-          "cacheMiss": 3,
-          "output": 9
-        }
-      }
-    }
-  },
   "socialV2": {
     "enabled": true,
     "attentionKeywords": [],

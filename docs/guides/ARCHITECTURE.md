@@ -19,6 +19,8 @@
 
 ## 当前运行行为
 
+- `token-ledger.js` 将主会话、记忆整理和后台学习的用量存入 SQLite。`model-catalog.js` 缓存 models.dev 目录，按服务商和模型提供美元单价，账本保存每次采用的费率与金额。旧 JSONL 账本在一次事务内迁移。详见[令牌与花费](TOKEN_USAGE_CONSOLE.md)。
+
 - `chat-learning.js` 独立持有后台学习队列、证据与知识库，`learning-runner.js` 负责批次专用 DSH headless 进程，`learning-api.js` 提供控制台管理，`learning-assets.js` 保存按内容哈希寻址的本地表情。新消息可自动进入该学习进程；主角色仍仅按需读取 QQ 正文。学习不创建逐 QQ 的聊天会话、不改变角色说话风格，也不调用 QQ 发送或 A_Memorix 工具。运行与持久化约定见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
 
 - `sticker-memory.js` 由桥接把表情目录投影到独立的 A_Memorix 空间。QQ 工具按当前来源把检索命中映射回可发送的稳定 ID。角色复检建议保存在学习库，WebUI 采纳后生效。

@@ -601,15 +601,17 @@
     </section>
 <section id="section-usage" data-page="usage" class="card span-all">
       <h2 data-note="每 3 秒自动同步">令牌与花费</h2>
-      <div class="meta">数据来源是 DSH 会话事件里的 provider usage。<b>累计总量</b>取 <code>tokenUsage</code> 投影（整条会话日志的权威累计，含桥接启动前的历史）；<b>逐轮明细</b>由 <code>assistant/message</code> 的 usage 折叠而来，能追溯到多深取决于会话开场快照带回的历史条数。金额按 DeepSeek 官方价目表折算，区分高峰 / 空闲时段（高峰单价为空闲的 2 倍）。</div>
+      <div class="meta">按主会话、记忆整理和后台学习统计模型用量。美元费用按调用入账时的目录单价估算。</div>
       <div class="overview-summary" id="usageSummary">
-        <div class="metric"><span>总花费</span><strong id="metricUsageCost">—</strong><small id="metricUsageCostHint">读取中…</small></div>
+        <div class="metric"><span>已计价费用</span><strong id="metricUsageCost">—</strong><small id="metricUsageCostHint">读取中…</small></div>
         <div class="metric"><span>累计 token</span><strong id="metricUsageTokens">—</strong><small id="metricUsageTokensHint">输入 / 输出</small></div>
         <div class="metric"><span>缓存命中率</span><strong id="metricUsageHitRate">—</strong><small id="metricUsageHitHint">命中输入 ÷ 总输入</small></div>
-        <div class="metric"><span>平均每轮</span><strong id="metricUsagePerTurn">—</strong><small id="metricUsagePerTurnHint">按已归属回合</small></div>
+        <div class="metric"><span>未计价 token</span><strong id="metricUsagePerTurn">—</strong><small id="metricUsagePerTurnHint">缺价或只有累计用量</small></div>
       </div>
       <div class="row usage-controls">
         <button id="usageRefresh" class="small">刷新</button>
+        <button id="usagePricesRefresh" class="small">刷新模型价格</button>
+        <span class="meta" id="usagePriceStatus" role="status"></span>
         <button id="usageClear" class="small danger">清空账本</button>
         <span class="meta" id="usageMsg">读取中…</span>
       </div>
@@ -621,7 +623,8 @@
         <button class="tag" data-usage-hours="168">近 7 天</button>
         <button class="tag" data-usage-hours="720">近 30 天</button>
         <span class="meta">纵轴</span>
-        <button class="tag active" data-usage-metric="cost">花费</button>
+        <button class="tag active" data-usage-metric="cost">美元费用</button>
+        <button class="tag" data-usage-metric="legacy" hidden>旧账本费用</button>
         <button class="tag" data-usage-metric="tokens">token</button>
       </div>
       <div class="usage-chart-head">
@@ -629,25 +632,20 @@
         <span class="meta" id="usageChartHint">读取中…</span>
       </div>
       <div class="usage-chart" id="usageChart">加载中…</div>
-      <div class="usage-legend">
-        <span><i class="off"></i>空闲时段</span>
-        <span><i class="peak"></i>高峰时段（单价 ×2）</span>
-        <span><i class="mixed"></i>跨时段</span>
-      </div>
       <div class="meta" id="usageChartNote" style="margin-top:6px"></div>
-      <h3 class="usage-h3">按会话（群 / 私聊）</h3>
+      <h3 class="usage-h3">按功能</h3>
       <div class="tool-log-table" id="usageConversations">加载中…</div>
       <h3 class="usage-h3">逐轮花费 <span class="meta" id="usageTurnScope">—</span></h3>
       <div class="row usage-controls">
-        <label class="sr-only" for="usageKeySelect">选择要查看逐轮明细的会话</label>
+        <label class="sr-only" for="usageKeySelect">选择要查看逐轮明细的功能</label>
         <select id="usageKeySelect"></select>
         <button id="usageTurnsLoad" class="small">加载逐轮明细</button>
       </div>
-      <div class="tool-log-table" id="usageTurns">选择会话后加载逐轮明细…</div>
+      <div class="tool-log-table" id="usageTurns">选择功能后加载逐轮明细…</div>
       <details class="settings-group"><summary>最近调用流水（实时，最新 40 条）</summary><div class="settings-content">
       <div class="tool-log-table" id="usageRecent">（空）</div>
       </div></details>
-      <details class="settings-group"><summary>当前生效的价目表</summary><div class="settings-content">
+      <details class="settings-group"><summary>已使用模型的目录单价</summary><div class="settings-content">
       <div id="usagePrices" class="meta">读取中…</div>
       </div></details>
     </section>

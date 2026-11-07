@@ -1827,10 +1827,6 @@ button:active:not(:disabled) {
 #section-usage .usage-key-button { background:none; border:0; padding:0; color:var(--accent); cursor:pointer; font:inherit }
 #section-usage .usage-key-button:hover { text-decoration:underline }
 #section-usage .usage-key-button[aria-pressed="true"] { color:var(--text-strong); font-weight:600 }
-#section-usage .usage-bar-wrap { display:flex; align-items:center; gap:8px; min-width:96px }
-#section-usage .usage-bar-track { flex:1; height:7px; border-radius:4px; background:var(--surface-chip-strong); overflow:hidden }
-#section-usage .usage-bar-fill { display:block; height:100%; border-radius:4px; background:var(--accent); min-width:2px }
-#section-usage .usage-tier { font-size:11px }
 #section-usage .row.usage-controls { margin-top:10px; gap:10px }
 #section-usage select { max-width:260px }
 #section-usage .usage-chart-controls { margin:14px 0 6px }
@@ -1838,22 +1834,11 @@ button:active:not(:disabled) {
 #section-usage .usage-chart-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; margin:10px 0 4px }
 #section-usage .usage-chart-head strong { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums }
 #section-usage .usage-chart svg { display:block; width:100%; height:auto }
-#section-usage .usage-chart .usage-bar-peak { fill:var(--warn-fg-strong) }
-#section-usage .usage-chart .usage-bar-off { fill:var(--accent) }
-#section-usage .usage-chart .usage-bar-mixed { fill:var(--accent-hover) }
+#section-usage .usage-chart .usage-bar { fill:var(--accent) }
 #section-usage .usage-chart .usage-grid { stroke:var(--border-subtle); stroke-width:1 }
 #section-usage .usage-chart .usage-axis { fill:var(--muted); font-size:10px }
 #section-usage .usage-chart .usage-hit { fill:transparent; cursor:default }
 #section-usage .usage-chart .usage-hit:hover { fill:var(--surface-hover) }
-#section-usage .usage-chart .usage-col-hover { fill:var(--text-strong); opacity:.10 }
-#section-usage .usage-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:8px }
-#section-usage .usage-legend span { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted) }
-#section-usage .usage-legend i { width:10px; height:10px; border-radius:3px; display:inline-block }
-#section-usage .usage-legend i.peak { background:var(--warn-fg-strong) }
-#section-usage .usage-legend i.off { background:var(--accent) }
-#section-usage .usage-legend i.mixed { background:var(--accent-hover) }
-
-/* ================= 长期记忆 ================= */
 #section-memory .memory-heading, #section-memory-organizer .memory-heading, #section-memory-settings .memory-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px }
 #section-memory-organizer .memory-heading-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px }
 #section-memory .memory-heading h2, #section-memory-organizer .memory-heading h2, #section-memory-settings .memory-heading h2 { margin-bottom:4px }

@@ -35,7 +35,7 @@
 | `learning-runner.js` / `learning-tool-guard.mjs` / `mcp-learning-images.js` | 独立 DSH 学习进程、只允许本批看图的工具守卫与图片 MCP |
 | `learning-assets.js` | 本地学习表情的内容哈希寻址、读取校验与清理 |
 | `state-acl.mjs` / `sensitive.js` | 本地状态目录 ACL 与敏感内容判断 |
-| `token-ledger.js` / `model-prices.js` | token 用量统计与价格换算 |
+| `token-ledger.js` / `model-catalog.js` / `model-prices.js` | 分功能用量账本、models.dev 目录与旧账迁移 |
 | `preset-prompt.js` / `qq-model-view.js` | preset 提示词和 QQ 消息视图处理 |
 
 `voice-core.js` 与 `voice-tool-*` 脚本供仓库外的独立语音工具共用，不属于当前桥接运行时。修改前先确认该外部工具的调用关系。

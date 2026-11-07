@@ -36,7 +36,7 @@ export function parseLearningResult(text) {
 
 // A separate headless process receives only batch text + an image-only MCP.
 // No QQ, memory, shell, browser or arbitrary file tools are mounted here.
-export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, signal, spawnProcess = spawn, timeoutMs = 300000 }) {
+export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, signal, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
   if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('DSH CLI 路径含不支持的命令字符');
   signal?.throwIfAborted();
   const prefix = path.join(stateDir, `chat-learning-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
@@ -66,6 +66,7 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
           if (type === 'status' && event.phase === 'turn_start') terminalReason = null;
           if (type === 'status' && event.phase === 'turn_end') terminalReason = event.reason;
           if (type === 'status' && event.phase === 'step_end' && event.usage) {
+            onUsage?.(sessionId, event);
             for (const key of ['inputTokens', 'outputTokens']) usage[key] += Math.max(0, Number(event.usage[key]) || 0);
           }
           if (type === 'error') stop('DSH 学习进程报告错误，请检查 DSH 配置');

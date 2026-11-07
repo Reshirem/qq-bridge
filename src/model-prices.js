@@ -1,4 +1,4 @@
-// DeepSeek 官方价目表与峰谷分时判定（桥接侧自行维护）。
+// 历史账本迁移专用。旧表用于复现升级时已经显示的金额。新调用使用 model-catalog.js 的美元报价。
 //
 // 为什么放在桥接里：DSH 自身不做任何货币换算（`dsh-llm-pi-ai` 明写 "no consumer reports
 // spend"），provider 只回 token 数。所以「花多少钱」必须由消费方用价目表算。
