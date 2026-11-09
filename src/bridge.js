@@ -7144,6 +7144,19 @@ async function main() {
     armDesktopAgentRecoveryTimer();
   }
 
+  function deliverAttentionToRunningTurn() {
+    if (desktopAgentLifecycle === 'recovering') {
+      clearDesktopAgentRecoveryTimer();
+      desktopAgentLifecycle = 'active';
+      desktopAgentRecoveryAt = 0;
+      desktopAgentPendingWakeReason = '';
+      saveDesktopAgentState();
+    }
+    if (desktopAgentLifecycle === 'active' && desktopAttentionQueue.size > 0) {
+      scheduleDesktopAttentionFlush(0);
+    }
+  }
+
   function armDesktopAgentRecoveryTimer() {
     clearDesktopAgentRecoveryTimer();
     if (desktopAgentLifecycle !== 'recovering' || desktopAgentRecoveryAt <= 0) return;
@@ -7164,9 +7177,7 @@ async function main() {
         if (epoch !== desktopAgentLifecycleEpoch || desktopAgentLifecycle !== 'recovering') return;
         if (live?.running === true) {
           desktopAgentTurnActive = true;
-          desktopAgentLifecycle = 'active';
-          desktopAgentRecoveryAt = 0;
-          saveDesktopAgentState();
+          deliverAttentionToRunningTurn();
           return;
         }
         desktopAgentTurnActive = false;
@@ -7203,10 +7214,15 @@ async function main() {
       } else if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('no persisted DSH session');
       return;
     }
+    const sessionId = desktopAgentSessionId;
+    const epoch = desktopAgentLifecycleEpoch;
     try {
       const result = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+      if (desktopAgentSessionId !== sessionId || desktopAgentLifecycleEpoch !== epoch) return;
       const live = (Array.isArray(result.items) ? result.items : [])
-        .find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId) ?? null;
+        .find((item) => String(item?.sessionId ?? '') === sessionId) ?? null;
+      // On cold start the persisted session has no event subscription yet.
+      if (live) api.events.follow(sessionId);
       if (desktopAgentLifecycle === 'sleeping') {
         if (live) {
           try { await cancelSleepingSession(); }
@@ -7222,11 +7238,10 @@ async function main() {
         return;
       }
       if (desktopAgentLifecycle === 'resting') {
-        if (live?.running === true) {
-          desktopAgentTurnActive = true;
+        desktopAgentTurnActive = live?.running === true;
+        if (desktopAgentTurnActive) {
           scheduleDesktopAgentRestCancellation(desktopAgentSessionId, desktopAgentLifecycleEpoch, 0);
         } else if (desktopAgentPendingWakeReason === 'qq-attention') {
-          desktopAgentTurnActive = false;
           resumeDesktopAgentRestForAttention();
         }
         if (desktopAgentRestUntil > 0 && desktopAgentRestUntil <= Date.now()) await finishDesktopAgentRest();
@@ -7234,12 +7249,7 @@ async function main() {
       }
       if (live?.running === true) {
         desktopAgentTurnActive = true;
-        if (desktopAgentLifecycle === 'recovering') {
-          clearDesktopAgentRecoveryTimer();
-          desktopAgentLifecycle = 'active';
-          desktopAgentRecoveryAt = 0;
-          saveDesktopAgentState();
-        }
+        deliverAttentionToRunningTurn();
         return;
       }
       desktopAgentTurnActive = false;
@@ -7260,8 +7270,9 @@ async function main() {
         scheduleDesktopAgentRecovery('bridge or DSH restarted before agent_rest');
       }
     } catch (error) {
+      if (desktopAgentSessionId !== sessionId || desktopAgentLifecycleEpoch !== epoch) return;
       log(`全局数字角色生命周期恢复检查失败：${error?.message ?? error}`);
-      if (desktopAgentLifecycle === 'active') scheduleDesktopAgentRecovery('lifecycle reconciliation failed');
+      if (desktopAgentLifecycle === 'active' && !desktopAgentTurnActive) scheduleDesktopAgentRecovery('lifecycle reconciliation failed');
     }
   }
 
@@ -8295,7 +8306,22 @@ async function main() {
           framesThisStream += 1;
           const frame = envelope.payload;
           if (frame.type === 'session/snapshot') {
-            if (frame.sessionId === desktopAgentSessionId) recordSessionSnapshot(frame.sessionId, frame.snapshot);
+            if (frame.sessionId === desktopAgentSessionId) {
+              recordSessionSnapshot(frame.sessionId, frame.snapshot);
+              // A follow stream can reconnect independently of HTTP. Use its
+              // snapshot boundary for rest: a later running turn may be a new
+              // direct DSH prompt whose turn/start is still on this stream.
+              if (desktopAgentLifecycle === 'resting') {
+                const boundary = frame.snapshot?.records?.findLast(({ event }) =>
+                  event?.type === 'turn/start' || event?.type === 'turn/end');
+                if (boundary?.event.type === 'turn/end') {
+                  desktopAgentTurnActive = false;
+                  resumeDesktopAgentRestForAttention();
+                }
+              } else if (desktopAgentLifecycle === 'recovering' || (desktopAgentLifecycle === 'active' && desktopAgentTurnActive)) {
+                await reconcileDesktopAgentLifecycle();
+              }
+            }
             continue;
           }
           if (frame.type === 'session/event') {
@@ -8344,16 +8370,11 @@ async function main() {
                   void (lifecycle === 'sleeping' ? cancelSleepingSession() : api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }))
                     .catch((error) => log('全局数字角色处于 ' + lifecycle + ' 状态时 DSH 意外启动 turn，取消失败：' + (error?.message ?? error)));
                 }, 0).unref?.();
-              } else if (desktopAgentLifecycle === 'recovering') {
-                clearDesktopAgentRecoveryTimer();
-                desktopAgentLifecycle = 'active';
-                desktopAgentRecoveryAt = 0;
-                desktopAgentPendingWakeReason = '';
-                saveDesktopAgentState();
               } else if (desktopAgentLifecycle === 'idle') {
                 desktopAgentLifecycle = 'active';
                 saveDesktopAgentState();
               }
+              deliverAttentionToRunningTurn();
             }
 
             if (event?.type === 'tool/call') {

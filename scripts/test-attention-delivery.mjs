@@ -12,11 +12,11 @@ function fakeTimers() {
     },
     clearTimeout(timer) { timers.delete(timer); },
     has(ms) { return [...timers].some((timer) => timer.ms === ms); },
-    run(ms) {
-      const timer = [...timers].find((item) => item.ms === ms);
+    run(ms, tolerance = 0) {
+      const timer = [...timers].find((item) => Math.abs(item.ms - ms) <= tolerance);
       assert.ok(timer, `no timer scheduled for ${ms} ms`);
       timers.delete(timer);
-      timer.fn();
+      return timer.fn();
     },
   };
 }
@@ -39,7 +39,7 @@ async function fixture() {
   h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId, running, blank: false }] } } });
   h.setDesktopAgentLifecycle('active');
   h.setDesktopAgentTurnActive(true);
-  return { h, clock, setRunning(value) { running = value; } };
+  return { h, clock, sessionId, setRunning(value) { running = value; } };
 }
 
 test('active turn receives QQ metadata at its next step; read messages need no reminder', async () => {
@@ -177,6 +177,66 @@ test('signals remain queued without reminders during recovery', async () => {
     assert.equal(h.attentionSnapshot().queue.length, 1);
     assert.equal(h.attentionSnapshot().reminderScheduled, false);
     assert.equal(clock.has(60_000), false);
+  } finally { await h.close(); }
+});
+
+// Deliver one frame through the real event loop, then hold the fake stream open.
+async function deliverFrame(h, frame) {
+  const consumed = deferred();
+  h.api.events.mux = async function* () {
+    yield { payload: frame };
+    consumed.resolve();
+    await new Promise(() => {});
+  };
+  void h.pumpMux();
+  await consumed.promise;
+}
+
+for (const resumedBy of ['turn/start', 'retry deadline', 'DSH reconnect']) {
+  test(`a running session picks up QQ queued during recovery on ${resumedBy}`, async () => {
+    const { h, clock, sessionId } = await fixture();
+    try {
+      h.setDesktopAgentTurnActive(false);
+      h.scheduleDesktopAgentRecovery();
+      h.queueDesktopAttentionSignal(signal());
+      assert.equal(h.attentionSnapshot().flushScheduled, false);
+      if (resumedBy === 'turn/start') {
+        await deliverFrame(h, { type: 'session/event', sessionId, event: { type: 'turn/start' } });
+      } else if (resumedBy === 'retry deadline') {
+        // The deadline is derived from Date.now() before the timer is armed.
+        await clock.run(60_000, 1000);
+      } else {
+        h.calls.follows.length = 0;
+        await h.reconcileDesktopAgentLifecycle();
+        assert.deepEqual(h.calls.follows, [sessionId]);
+      }
+      const state = h.attentionSnapshot();
+      assert.equal(state.lifecycle, 'active');
+      assert.equal(state.pendingWakeReason, '');
+      assert.equal(state.flushScheduled, true);
+      clock.run(0);
+      await h.flushAttentionNow();
+      assert.equal(h.calls.prompts.length, 1);
+      assert.equal(h.calls.prompts[0].mode, 'steer');
+      assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:55');
+    } finally { await h.close(); }
+  });
+}
+
+test('a reconnected session stream recovers a missed turn end while QQ is waiting to interrupt rest', async () => {
+  const { h, clock, sessionId, setRunning } = await fixture();
+  try {
+    h.enterDesktopAgentRest();
+    h.queueDesktopAttentionSignal(signal());
+    assert.equal(h.attentionSnapshot().flushScheduled, false);
+    setRunning(false);
+    const records = [{ type: 'event', event: { type: 'turn/end', seq: 10, data: { turn: 1 } } }];
+    await deliverFrame(h, { type: 'session/snapshot', sessionId, snapshot: { records } });
+    assert.equal(h.attentionSnapshot().lifecycle, 'active');
+    clock.run(0);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.match(h.calls.prompts[0].content[0].text, /消息 id:55/);
   } finally { await h.close(); }
 });
 

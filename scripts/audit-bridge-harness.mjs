@@ -169,6 +169,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
     isDshReady() { return dshReady; },
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
+    scheduleDesktopAgentRecovery, reconcileDesktopAgentLifecycle, pumpMux,
     handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
     flushAttentionNow() {
       if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
@@ -178,6 +179,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     attentionSnapshot() {
       return {
         lifecycle: desktopAgentLifecycle,
+        pendingWakeReason: desktopAgentPendingWakeReason,
         restUntil: desktopAgentRestUntil,
         turnActive: desktopAgentTurnActive,
         flushScheduled: !!desktopAttentionFlushTimer,
