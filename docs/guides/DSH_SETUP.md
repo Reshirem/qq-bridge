@@ -14,7 +14,7 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并使用当前 SnowLuma MCP 工具集；工具访问不限于提醒来源。`ownerQQ` 是可选的 QQ 账号身份锚点，消息以发送者 QQ 号匹配它；不按发送者名称或群名片判断。模型可用 `qq_get_owner_identity` 查询当前号码或未配置状态。未设置时，QQ 来源不能确认 owner，但不影响工具访问。该字段不授权桥接管理操作。可在控制台“访问与安全”中设置或清除，保存后本地设置优先；在首次通过控制台保存前，仍兼容 DSH 设置的 `qq-agent-presets.ownerQQ`。DSH 运行模式字段不参与运行。
+Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并使用当前 SnowLuma MCP 工具集；工具访问不限于提醒来源。`ownerQQ` 是可选的 QQ 账号身份锚点，消息以发送者 QQ 号匹配它；不按发送者名称或群名片判断。模型可用 `qq_get_owner_identity` 查询当前号码或未配置状态。未设置时，QQ 来源不能确认 owner，但不影响工具访问。该字段不授权桥接管理操作。可在控制台“系统运维 → 访问设置”中设置或清除，保存后本地设置优先；在首次通过控制台保存前，仍兼容 DSH 设置的 `qq-agent-presets.ownerQQ`。DSH 运行模式字段不参与运行。
 
 长期记忆为可选能力。Windows 上可在仓库根目录运行：
 
@@ -108,7 +108,7 @@ npm start
 
 同一面板下方的“运行时提示模板”维护桥接侧具体事件使用的文本：人格卡模板只负责格式化 persona 固定前缀内的动态卡片；QQ 来源提醒、休息到期/QQ 打断/异常恢复仍附加在对应会话消息中；长期记忆摘要只在新建或重建会话的首次提示中出现。这些模板保存在 `config.json` 的 `desktopAgent.promptTemplates`，保存后下一次提示词组装或对应事件即使用新内容。默认固定前缀包含人格卡变量；删除它后当前人格卡不会自动注入。若 DSH 报 `unknown prompt variable`，确认 preset 和新版 `qq-agent-presets` 已安装并重启 DSH。
 
-在 DSH 的「插件 → 网页搜索」中配置提供方和所需凭据。`desktop-agent` 预设加载 `tool-web` 插件并沿用其默认配置，自动注册 `web_search` 和 `web_fetch`；实际是否可用还取决于所选提供方的就绪状态。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。预设变更后重启 DSH 并在桥接 WebUI「会话控制」中重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
+在 DSH 的「插件 → 网页搜索」中配置提供方和所需凭据。`desktop-agent` 预设加载 `tool-web` 插件并沿用其默认配置，自动注册 `web_search` 和 `web_fetch`；实际是否可用还取决于所选提供方的就绪状态。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。预设变更后重启 DSH 并在桥接 WebUI「主会话」中重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
 
 ## 验证
 

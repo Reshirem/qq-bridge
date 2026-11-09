@@ -107,7 +107,7 @@ QQ 未读每来源最多 500 条。获授权的角色读取请求完成响应后
 | --- | --- | --- |
 | 原子写 | `atomicWriteJson/Text()` | 唯一随机临时名 + rename（Windows EPERM 退避重试），不会写坏配置 |
 | 敏感配置替换 | `atomicWriteConfigJson()` | 先创建空临时文件并收紧 ACL，再写入内容后原子替换 `config.json`，避免临时副本继承仓库根目录宽松权限 |
-| Windows ACL 收紧 | `hardenStateDirAcl()` + `scripts/harden-state-acl.mjs` | Windows 上 `mode: 0o600` 是**空操作**，因此启动时切断 `state/` 的继承链，只保留当前用户/SYSTEM/Administrators。改 ACL 需要 WRITE_DAC —— **目录属主通常本来就有，所以一般不弹 UAC**；失败时用 `Start-Process -Verb RunAs` 提权重试一次（`--elevated` 短路自身，杜绝递归），再失败就打印可复制命令并**以 0 退出、绝不阻断启动**。控制台「访问与安全」页显示告警条与「重新检测」按钮 |
+| Windows ACL 收紧 | `hardenStateDirAcl()` + `scripts/harden-state-acl.mjs` | Windows 上 `mode: 0o600` 是**空操作**，因此启动时切断 `state/` 的继承链，只保留当前用户/SYSTEM/Administrators。改 ACL 需要 WRITE_DAC —— **目录属主通常本来就有，所以一般不弹 UAC**；失败时用 `Start-Process -Verb RunAs` 提权重试一次（`--elevated` 短路自身，杜绝递归），再失败就打印可复制命令并**以 0 退出、绝不阻断启动**。控制台「系统运维 → 访问设置」页显示告警条与「重新检测」按钮 |
 | 令牌不回显 | 日志/活动/工具日志 | 控制台令牌只打前 6 位；活动日志与工具调用参数过 `redactSensitiveText` / `redactSensitive`（递归处理 JSON 字符串叶子） |
 | 令牌只发回环 | `dsh-client.ensureAuth()` | DSH launch token 换 Cookie 时必须放进 URL，因此**默认拒绝非回环 baseUrl**；远程部署需显式 `dsh.allowRemote: true` |
 | 路径校验（读点） | `plugins/qq-agent-presets/lib/index.js` 的人格卡 provider | DSH 每次组装 system prompt 时验证人格名格式，并用 `realpath` 确认卡片文件仍位于 `roles/` 目录内；`state/current-role.json` 是本地可编辑状态文件，不能作为路径信任边界 |

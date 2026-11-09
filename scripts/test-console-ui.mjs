@@ -38,6 +38,31 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('dialog', dialog => dialog.accept());
+  async function openPage(view) {
+    const tab = page.locator('.section-tabs [data-view="' + view + '"]');
+    const group = await tab.count() ? await tab.evaluate(el => el.closest('nav').dataset.group) : view;
+    await page.locator('#mainNav [data-view="' + group + '"]').click();
+    if (group !== view) await tab.click();
+  }
+  await page.goto(fixture.url + '/?view=overview');
+  await page.locator('#modules[aria-busy="false"]').waitFor();
+  assert.equal(await page.locator('.module').count(), 4);
+  await page.getByRole('button', { name: '待确认', exact: true }).click();
+  assert.equal(await page.locator('#tasks .task').count(), 1);
+  await page.locator('#tasks .task').click();
+  await page.waitForFunction(() => document.activeElement?.id === 'stickerReviews');
+  await page.goBack();
+  await page.getByRole('button', { name: '异常', exact: true }).click();
+  await page.locator('#tasks .task').filter({ hasText: '记忆整理失败' }).click();
+  await page.locator('.memory-organizer-job[open] button', { hasText: '重试' }).waitFor();
+  assert.match(await page.locator('.memory-organizer-job[open]').innerText(), /模型请求超时/);
+  await page.goBack();
+  await page.locator('#qq-list .qq-row').first().click();
+  await page.waitForFunction(() => document.activeElement?.matches('#v2AllStatesOutput tbody tr'));
+  await page.goBack();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile overview fits the viewport');
+  await page.setViewportSize({ width: 1440, height: 1000 });
   fixture.state.snowluma = { connected: true, degraded: true, silent: true, good: true, hint: '测试网关心跳中断' };
   await page.goto(fixture.url);
   await page.waitForFunction(() => document.getElementById('desktopAgentStatus')?.textContent.length > 0);
@@ -45,9 +70,12 @@ try {
   assert.equal(await page.locator('#section-desktop-agent').count(), 1, 'the global desktop-agent controls are present');
   assert.equal(await page.locator('#sessionList, #pendingList, #aiNotifyTarget, #dshSessionRefresh').count(), 0,
     'per-QQ session mapping and notification controls are absent');
-  assert.match(await page.locator('[data-view="sessions"]').first().textContent(), /会话控制/);
+  assert.match(await page.locator('[data-view="sessions"]').first().textContent(), /主会话/);
 
-  await page.locator('[data-view="sessions"]').first().click();
+  await openPage('sessions');
+  await page.getByText('我先看看桌面状态。', { exact: true }).waitFor();
+  await page.locator('#desktopAgentHistoryOlder').click();
+  await page.getByText('请按当前角色在这个长期会话里自然活动。', { exact: true }).waitFor();
   await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/api/console/desktop-agent') && response.request().method() === 'POST'),
     page.locator('#desktopAgentStart').click(),
@@ -65,15 +93,18 @@ try {
   ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent' && request.body.message === '离线 UI 契约检查'));
 
-  await page.locator('[data-view="usage"]').first().click();
+  await openPage('usage');
   await page.locator('[data-usage-key="memory"]').click();
   await page.waitForFunction(() => document.getElementById('usageTurnScope').textContent.includes('记忆整理'));
-  await page.locator('#usagePricesRefresh').click();
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/tokens/prices/refresh') && response.request().method() === 'POST'),
+    page.locator('#usagePricesRefresh').click(),
+  ]);
   assert.ok(fixture.requests.some(r => r.path === '/api/tokens/prices/refresh' && r.method === 'POST'));
   assert.match(await page.locator('#usageConversations').innerText(), /后台学习/);
   assert.match(await page.locator('#metricUsagePerTurn').innerText(), /5,600/);
 
-  await page.locator('[data-view="access"]').first().click();
+  await openPage('maintenance');
   await page.locator('#snowlumaWarn').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#metricSnowluma').textContent(), '心跳中断');
   assert.equal(await page.locator('#snowlumaWarnHint').textContent(), fixture.state.snowluma.hint);
@@ -85,6 +116,7 @@ try {
   fixture.state.snowluma = { connected: true, degraded: false, good: true };
   await page.locator('#refreshConsole').click();
   await page.locator('#snowlumaWarn').waitFor({ state: 'hidden' });
+  await openPage('access');
   await page.waitForFunction(() => document.getElementById('ownerQQ').value === '100001');
   assert.equal(await page.locator('#secInterceptNotify, #secSave').count(), 0, 'the obsolete interception notification control is absent');
   assert.equal(await page.locator('#section-whitelist #wlGroups').count(), 0, 'test-send lists are not presented as agent access controls');
@@ -94,12 +126,13 @@ try {
   const ownerSave = fixture.requests.filter(request => request.path === '/api/whitelist').at(-1);
   assert.deepEqual(ownerSave.body, { ownerQQ: '123456' }, 'saving owner does not rewrite test-send lists');
 
-  await page.locator('[data-view="operations"]').first().click();
+  await openPage('operations');
   await page.locator('#qqFailuresOnly').check();
   await page.waitForFunction(() => document.getElementById('v2ToolLogMsg').textContent.includes('1 项'));
   assert.match(await page.locator('#v2ToolLogOutput').innerText(), /消息定位已失效/);
   assert.doesNotMatch(await page.locator('#v2ToolLogOutput').innerText(), /qq_get_unread_messages/);
   assert.match(await page.locator('#v2FeedbackOutput .err').innerText(), /错误/);
+  await openPage('maintenance');
   await page.locator('#section-test-send summary').click();
   await page.locator('#wlGroups').fill('123456789, 555');
   await page.locator('#wlSave').click();
@@ -107,13 +140,13 @@ try {
   const listSave = fixture.requests.filter(request => request.path === '/api/whitelist').at(-1);
   assert.equal(Object.hasOwn(listSave.body, 'ownerQQ'), false, 'saving test-send lists does not change the owner');
 
-  await page.locator('[data-view="access"]').first().click();
+  await openPage('access');
   await page.locator('#ownerQQ').fill('');
   await page.locator('#ownerQQSave').click();
   await page.waitForFunction(() => document.getElementById('ownerQQMsg').textContent.includes('已清除'));
   assert.deepEqual(fixture.requests.filter(request => request.path === '/api/whitelist').at(-1).body, { ownerQQ: '' });
 
-  await page.locator('[data-view="persona"]').click();
+  await openPage('persona');
   await page.waitForFunction(() => document.getElementById('desktopPromptPreview')?.value.includes('人格卡定义你的具体身份和形态'));
   assert.equal(await page.locator('#desktopPromptPreset').count(), 0, 'there is no obsolete multi-preset selector');
   assert.match(await page.locator('#desktopPromptStatus').textContent(), /数字角色/);
@@ -124,7 +157,7 @@ try {
   await promptToggles.first().uncheck();
   await page.locator('#desktopPromptCancel').click();
 
-  await page.locator('[data-view="social-v2"]').click();
+  await openPage('social-v2');
   await Promise.all([
     page.waitForResponse(response => response.url().includes('/api/socialV2/states?names=1')),
     page.locator('#v2StatesList').click(),
@@ -137,6 +170,7 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'buffer dashboard fits width ' + width);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await openPage('qq-settings');
   await page.locator('#qqConversationForm [name=delayPerCharMs]').fill('25');
   await page.locator('#qqConversationForm button').click();
   await page.waitForFunction(() => document.querySelector('#qqConversationForm [role=status]').textContent === '已保存');
@@ -147,6 +181,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#qqReminderForm [role=status]').textContent === '已保存');
   assert.equal(fixture.state.v2.enabled, false);
   assert.equal(fixture.state.v2.sticker.enabled, true);
+  await openPage('social-v2');
   await page.locator('details').filter({ has: page.locator('#v2ResetBtn') }).locator('summary').click();
   await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/api/socialV2/reset') && response.request().method() === 'POST'),
@@ -155,13 +190,13 @@ try {
   assert.ok(fixture.requests.some(request => request.path === '/api/socialV2/reset'), 'cache reset stays separate from the global session');
 
   await page.waitForFunction(() => document.querySelector('#v2AllStatesOutput').textContent.includes('暂无缓冲消息'));
-  await page.locator('[data-view="learning"]').first().click();
+  await openPage('learning');
   await page.waitForFunction(() => document.getElementById('learningStatus').textContent.includes('已启用'));
   await page.locator('#learningSources').fill('group:123456789');
   await page.locator('#learningSave').click();
   await page.waitForFunction(() => document.getElementById('learningActionStatus').textContent.includes('已保存'));
   assert.deepEqual(fixture.state.learning.sources, ['group:123456789']);
-  await page.locator('[data-view="slang"]').first().click();
+  await openPage('slang');
   await page.locator('#slangRecords [data-knowledge-index]').first().click();
   assert.equal(await page.locator('#slangContent').inputValue(), '摸鱼');
   await page.locator('#slangMeaning').fill('完成任务后休息一会');
@@ -169,7 +204,7 @@ try {
   await page.locator('#slangSave').click();
   await page.waitForFunction(() => document.getElementById('slangActionStatus').textContent.includes('已保存'));
   assert.equal(fixture.state.slang[0].meaning, '完成任务后休息一会');
-  await page.locator('[data-view="stickers"]').first().click();
+  await openPage('stickers');
   await page.locator('#stickerReviews button[data-accept=yes]').click();
   await page.waitForFunction(() => document.getElementById('stickerReviewStatus').textContent === '已采纳');
   assert.equal(fixture.state.learnedStickers[0].desc, '猫咪点头');
@@ -189,10 +224,48 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `learning UI has no horizontal overflow at ${width}`);
   }
+  await openPage('memory');
+  await page.locator('#memoryQuery').fill('书架');
+  await page.locator('#memorySearch').click();
+  await page.locator('#memoryResults summary').first().click();
+  await page.locator('#memoryResults [data-memory-index]').click();
+  await page.waitForFunction(() => document.getElementById('memoryId').value === 'demo-first');
+  await page.locator('#memoryContent').fill('书架已经整理。');
+  await page.locator('#memoryReplace').click();
+  await page.waitForFunction(() => document.getElementById('memoryEditorStatus').textContent === '已保存修改');
+  assert.equal(await page.locator('#memoryId').inputValue(), fixture.state.memoryRecords[0].memoryId);
+  await page.locator('#memoryDelete').click();
+  await page.waitForFunction(() => document.getElementById('memoryEditorStatus').textContent === '已删除');
+  assert.equal(fixture.state.memoryRecords.length, 0);
+
+  await openPage('memory-settings');
+  await page.waitForFunction(() => document.getElementById('memoryNamespace').value === 'demo');
+  await page.locator('#memoryNamespace').fill('保留草稿');
+  await openPage('model');
+  await openPage('memory-settings');
+  assert.equal(await page.locator('#memoryNamespace').inputValue(), '保留草稿');
+
+  await page.locator('#themeToggle').click();
+  await page.reload();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  assert.equal(await page.locator('.section-tabs:not([hidden]) [aria-current=page]').getAttribute('data-view'), 'memory-settings');
+  await page.locator('#consoleSearch').fill('黑话');
+  await page.locator('#searchResults button').first().click();
+  assert.equal(new URL(page.url()).hash, '#slang');
+  await page.goBack();
+  assert.equal(new URL(page.url()).hash, '#memory-settings');
+
+  // All primary and secondary destinations also need to fit a narrow viewport.
+  const routes = await page.locator('[data-page]').evaluateAll(els => [...new Set(els.map(el => el.dataset.page))]);
+  for (const view of routes) {
+    await openPage(view);
+    assert.ok(await page.locator('[data-page="' + view + '"]').first().isVisible());
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile layout fits: ' + view);
+  }
   assert.deepEqual(blockedRequests, [], 'the UI must not reach external endpoints');
   assert.deepEqual(errors, [], 'browser console and page should be free of errors');
   assert.deepEqual(fixture.unknownRequests, [], 'the offline fixture implements all current console API routes');
-  console.log('PASS offline console controls, buffer dashboard, QQ settings, operations filters and learning editors');
+  console.log('PASS 16 console views, overview deep links, memory edits, session and QQ controls, learning, navigation and mobile layout');
 } finally {
   await browser?.close();
   await fixture.close();

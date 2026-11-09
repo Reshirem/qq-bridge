@@ -19,51 +19,86 @@
 })();
 </script>
 <link rel="stylesheet" href="/console.css">
+<link rel="stylesheet" href="/overview.css">
 </head>
 <body>
-  <div class="bg-decor" aria-hidden="true"></div>
   <a class="skip-link" href="#mainContent">跳到主要内容</a>
-  <aside class="sidebar" aria-label="控制台导航">
-    <a href="#overview" class="brand"><span class="brand-mark" aria-hidden="true">q<span>↗</span></span><span>QQ Bridge<small>DeepSeek Harness 控制台</small></span></a>
-    <div class="nav-label">工作空间</div>
-    <nav id="mainNav">
-      <button data-view="overview" class="nav-item active" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>数字角色</button>
-      <button data-view="sessions" class="nav-item"><span class="nav-icon" aria-hidden="true">☷</span>会话控制</button>
-      <button data-view="persona" class="nav-item"><span class="nav-icon" aria-hidden="true">◉</span>数字角色提示词</button>
-      <div class="nav-label">长期记忆</div>
-      <button data-view="memory" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>检索与记录</button>
-      <button data-view="memory-organizer" class="nav-item"><span class="nav-icon" aria-hidden="true">↻</span>整理进度</button>
-      <button data-view="memory-settings" class="nav-item"><span class="nav-icon" aria-hidden="true">⚙</span>设置</button>
-      <div class="nav-label">QQ 通道</div>
-      <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>提醒与消息</button>
-      <button data-view="slang" class="nav-item"><span class="nav-icon" aria-hidden="true">▤</span>黑话记录</button>
-      <button data-view="stickers" class="nav-item"><span class="nav-icon" aria-hidden="true">▧</span>表情包</button>
-      <button data-view="learning" class="nav-item"><span class="nav-icon" aria-hidden="true">↻</span>后台学习</button>
-
-      <div class="nav-label">系统与管理</div>
-      <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
-      <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
-      <button data-view="operations" class="nav-item"><span class="nav-icon" aria-hidden="true">⌘</span>调试与运维</button>
+  <aside class="sidebar">
+    <a href="#overview" class="brand"><b aria-hidden="true">q<span>b</span></b> QQ Bridge</a>
+    <nav id="mainNav" aria-label="主导航">
+      <a href="#overview" data-view="overview">运行总览</a>
+      <a href="#sessions" data-view="sessions">主会话</a>
+      <a href="#social-v2" data-view="social-v2">QQ 消息</a>
+      <a href="#memory" data-view="memory">长期记忆</a>
+      <a href="#learning" data-view="learning">学习与素材</a>
+      <a href="#usage" data-view="usage">令牌与花费</a>
+      <a href="#operations" data-view="operations">系统运维</a>
     </nav>
-    <div class="sidebar-bottom"><span class="local-dot"></span>本地控制台<small>QQ ↔ DeepSeek Harness</small></div>
   </aside>
-  <div class="workspace">
+  <main id="mainContent" tabindex="-1">
     <header class="topbar">
-      <div class="breadcrumb"><span id="breadcrumbSection">工作空间</span><span>/</span><span id="breadcrumbPage">运行总览</span></div>
-      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
-    </header>
-    <main id="mainContent" tabindex="-1">
-      <div class="page-heading"><div><div class="eyebrow">qq-bridge / 本地控制台</div><h1 id="pageTitle">数字角色</h1><p id="pageDescription">查看运行状态，或前往会话控制启动自主探索。</p></div>
-        <div class="search-wrap"><label class="sr-only" for="consoleSearch">搜索功能或参数</label><input id="consoleSearch" type="search" placeholder="搜索功能或参数…" autocomplete="off" aria-controls="searchResults" aria-expanded="false"><div id="searchResults" class="search-results" hidden></div></div>
+      <div class="breadcrumb"><span>控制台</span><span aria-hidden="true">/</span><span id="breadcrumbPage">运行总览</span></div>
+      <div class="topbar-actions"><span id="previewNotice" hidden>离线演示数据</span><span id="statusText" role="status">连接中</span>
+        <button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式">☾</button>
       </div>
-      <div id="connectionAlert" class="connection-alert" role="alert" hidden></div>
-      <section id="section-desktop-agent" data-page="sessions" class="card desktop-agent-card">
+    </header>
+    <div class="page-heading"><h1 id="pageTitle">运行总览</h1>
+      <div class="page-actions"><div class="search-wrap"><label class="sr-only" for="consoleSearch">搜索功能或参数</label>
+        <input id="consoleSearch" type="search" placeholder="搜索功能…" autocomplete="off" aria-controls="searchResults" aria-expanded="false">
+        <div id="searchResults" class="search-results" hidden></div></div><button id="refreshConsole" type="button">刷新</button></div>
+    </div>
+    <nav class="section-tabs" data-group="sessions" aria-label="主会话" hidden>
+      <a href="#sessions" data-view="sessions">会话与记录</a>
+      <a href="#persona" data-view="persona">人格与提示词</a>
+      <a href="#model" data-view="model">模型设置</a>
+    </nav>
+    <nav class="section-tabs" data-group="social-v2" aria-label="QQ 消息" hidden>
+      <a href="#social-v2" data-view="social-v2">消息来源</a>
+      <a href="#qq-settings" data-view="qq-settings">提醒与发送</a>
+    </nav>
+    <nav class="section-tabs" data-group="memory" aria-label="长期记忆" hidden>
+      <a href="#memory" data-view="memory">检索与记录</a>
+      <a href="#memory-organizer" data-view="memory-organizer">整理任务</a>
+      <a href="#memory-settings" data-view="memory-settings">服务设置</a>
+    </nav>
+    <nav class="section-tabs" data-group="learning" aria-label="学习与素材" hidden>
+      <a href="#learning" data-view="learning">学习队列</a>
+      <a href="#slang" data-view="slang">黑话记录</a>
+      <a href="#stickers" data-view="stickers">表情包</a>
+    </nav>
+    <nav class="section-tabs" data-group="operations" aria-label="系统运维" hidden>
+      <a href="#operations" data-view="operations">日志与反馈</a>
+      <a href="#maintenance" data-view="maintenance">诊断与维护</a>
+      <a href="#access" data-view="access">访问设置</a>
+    </nav>
+    <div id="connectionAlert" class="connection-alert" role="alert" hidden></div>
+    <div class="grid">
+    <div id="dashboard" data-page="overview" class="span-all"><section aria-labelledby="modules-title">
+      <h2 id="modules-title">模块状态</h2>
+      <div id="modules" class="modules" aria-busy="true"></div>
+    </section>
+    <div class="columns">
+      <section class="panel" aria-labelledby="tasks-title">
+        <div class="panel-head"><h2 id="tasks-title">待处理事项 <small id="task-count"></small></h2></div>
+        <div id="filters" role="group" aria-label="筛选待处理事项">
+          <button data-filter="all" aria-pressed="true">全部</button>
+          <button data-filter="issue" aria-pressed="false">异常</button>
+          <button data-filter="review" aria-pressed="false">待确认</button>
+        </div>
+        <div id="tasks"><p class="empty">正在读取待办…</p></div>
+      </section>
+      <section class="panel" aria-labelledby="qq-title">
+        <div class="panel-head"><h2 id="qq-title">QQ 消息动态</h2><a class="more" href="/#social-v2">全部来源 ↗</a></div>
+        <div id="qq-list"><p class="empty">正在读取来源…</p></div>
+      </section>
+    </div>
+    <p id="sync-status" role="status">读取中</p></div>
+      <section id="section-desktop-agent" data-page="sessions" hidden class="card desktop-agent-card">
         <div class="desktop-agent-heading">
-          <div><div class="eyebrow">全局 DSH 会话</div><h2>全局数字角色</h2></div>
+          <h2>会话任务</h2>
           <span class="meta" id="desktopAgentStatus" role="status">正在检查会话…</span>
         </div>
         <p class="meta err" id="desktopAgentMediaWarning" role="status" hidden></p>
-        <p class="meta desktop-agent-intro">这是唯一的长期 DSH 会话。尚未创建时，启动自主探索或发送任务会自动创建它。点“启动自主探索”即可开始自主活动并选择关注点；也可以输入明确任务。电脑、QQ 和其他已开放工具都可按需使用，QQ 只是消息渠道之一。</p>
         <label for="desktopAgentMessage">给数字角色一个具体任务（可选）</label>
         <textarea id="desktopAgentMessage" maxlength="20000" placeholder="可以留空并直接启动自主探索；也可以写一个具体任务。"></textarea>
         <div class="row desktop-agent-actions">
@@ -73,7 +108,7 @@
           <button id="desktopAgentRefresh" class="small">刷新状态</button>
           <span class="meta" id="desktopAgentMessageStatus" role="status"></span>
         </div>
-        <p class="meta desktop-agent-note">每个回合结束前，数字角色应调用 agent_rest 并在 1～5 分钟内选择休息时长；到期后恢复一轮。直接在 DSH 对话中发消息、提交 WebUI 任务或收到有效 QQ 提醒，都可提前结束普通休息。已配置的 ownerQQ 可以私聊发送 <code>/睡觉</code> 进入长时间睡眠，期间取消 QQ 提醒和自动唤醒；发送 <code>/起床</code> 恢复。睡眠状态跨桥接重启保留。“停止自主运行”会取消当前及排队任务并持久停止自动唤醒；再次从此页面启动或提交任务即可恢复。快捷键 <kbd>Ctrl</kbd> + <kbd>Enter</kbd> 可发送具体任务。</p>
+        <p class="meta">Ctrl + Enter 发送任务。普通休息可由任务或 QQ 提醒打断。睡眠由 ownerQQ 私聊发送 <code>/起床</code> 解除。</p>
         <details class="settings-group desktop-agent-management">
           <summary>会话管理</summary>
           <div class="settings-content">
@@ -82,23 +117,11 @@
           </div>
         </details>
       </section>
-      <div id="overviewSummary" class="overview-summary span-all" data-page="overview">
-        <div class="metric"><span>DSH 连接</span><strong id="metricDsh">连接中</strong><small id="metricDshHint">等待服务响应</small></div>
-        <div class="metric"><span>SnowLuma 上游</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
-        <div class="metric"><span>数字角色会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
-        <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复/引用、关键词</small></div>
-      </div>
-      <section class="card span-all" data-page="overview">
-        <h2>控制全局数字角色</h2>
-        <p class="meta">会话控制、启动自主探索或发送具体任务。</p>
-        <button class="small" data-view="sessions" data-target="desktopAgentStart">打开会话控制 →</button>
-      </section>
-      <div class="grid">
-<section id="section-activity" data-page="overview" class="card">
+<section id="section-activity" data-page="operations" hidden class="card span-all">
       <h2>活动日志（最近 100 条）</h2>
       <pre id="activity">（空）</pre>
     </section>
-<section id="section-persona" data-page="persona" class="card span-all">
+<section id="section-persona" data-page="persona" hidden class="card span-all">
       <h2>数字角色提示词与人格</h2>
       <div class="meta">当前人格：<span id="roleText">-</span></div>
 
@@ -110,7 +133,7 @@
           <li><b>运行时提示模板</b>：人格卡模板格式化 persona 前缀中的当前卡片；QQ 提醒、休息恢复和记忆摘要仍按场景进入会话消息。</li>
           <li><b>会话事件记录</b>：可按页查看 DSH 持久化的消息、工具调用和回合事件。</li>
         </ol>
-        <p>固定前缀保存或首次安装新版人格卡变量后，需重启 DSH 并重建全局会话。之后切换、编辑、清除或删除人格卡，以及修改人格卡模板，都会在下一次模型请求时生效；人格卡保留在 persona 固定前缀中，不随普通历史压缩丢失。记忆开场摘要仍只在新会话首次提示时附加。会话记录是 DSH 已保存的事件，不代表发给模型的最终完整内容；推理过程不会在此展示。</p>
+        <p>固定前缀保存或首次安装新版人格卡变量后，需重启 DSH 并重建全局会话。之后切换、编辑、清除或删除人格卡，以及修改人格卡模板，都会在下一次模型请求时生效。人格卡保留在 persona 固定前缀中，记忆开场摘要只在新会话首次提示时附加。</p>
       </div>
 
       <h3>人格列表 <span class="meta" id="roleListHint"></span></h3>
@@ -120,7 +143,7 @@
         <summary>编辑人格提示词</summary>
         <div class="settings-content">
           <div class="meta" id="roleEditorMeta">当前是「新建」模式：填好名称与内容后点「新建人格」。</div>
-          <div class="meta">建议人格卡不超过 6000 字符（以中文为主约 3600 tokens）。这是软建议；超出时只提醒，仍会完整保存并加入 DSH persona 固定前缀。Token 数只粗估卡片正文，不含其他固定前缀；实际值以模型用量为准。</div>
+          <div class="meta">建议人格卡在 6000 字符以内。下方显示正文的估算 token 数，超出建议长度仍可保存。</div>
           <label>人格名（中文 / 字母 / 数字 / 横线）</label>
           <input type="text" id="newRoleName" placeholder="如：猫娘">
           <label>人格提示词（Markdown）</label>
@@ -215,9 +238,10 @@
         </div>
       </details>
 
-      <h3 class="layer-heading">当前数字角色会话记录 <span class="meta" id="desktopAgentHistoryStatus">尚未加载</span></h3>
-      <div class="meta">读取当前数字角色会话的持久事件，包括已保存的消息、工具和回合记录；不会读取其它会话。推理过程、内部尝试详情和流式片段会隐藏。</div>
-      <div class="meta">此记录可用于核对会话实际保存了什么，但不等同于最终模型请求：运行环境可能整理或压缩上下文。上方可查看当前配置的固定提示词。</div>
+    </section>
+    <section id="section-session-history" data-page="sessions" hidden class="card">
+      <h2>主会话记录 <span class="meta" id="desktopAgentHistoryStatus">尚未加载</span></h2>
+      <div class="meta">按时间查看这次会话已保存的消息、工具调用和回合记录。</div>
       <div class="row context-history-controls" style="margin-top:10px">
         <button id="desktopAgentHistoryRefresh" class="small">刷新记录</button>
         <button id="desktopAgentHistoryOlder" class="small" hidden disabled>加载更早记录</button>
@@ -226,7 +250,7 @@
         <div class="empty-state"><strong>尚未读取会话记录</strong><p>点击“刷新记录”查看当前数字角色会话。</p></div>
       </div>
     </section>
-<section id="section-memory" data-page="memory" class="card span-all">
+<section id="section-memory" data-page="memory" hidden class="card span-all">
       <div class="memory-heading">
         <div><h2>记忆检索与记录</h2><p id="memoryStatus" class="meta" role="status">正在检查 A_Memorix…</p></div>
         <button id="memoryRefreshStatus" class="small">刷新状态</button>
@@ -287,7 +311,7 @@
         </div>
       </details>
     </section>
-<section id="section-memory-organizer" data-page="memory-organizer" class="card span-all">
+<section id="section-memory-organizer" data-page="memory-organizer" hidden class="card span-all">
       <div class="memory-heading">
         <div><h2>独立记忆整理</h2><p id="memoryOrganizerStatus" class="meta" role="status">正在读取整理队列…</p></div>
         <div class="memory-heading-actions">
@@ -319,7 +343,7 @@
         <button id="memoryOrganizerNextPage" class="small">下一页</button>
       </div>
     </section>
-<section id="section-learning" data-page="learning" class="card span-all">
+<section id="section-learning" data-page="learning" hidden class="card span-all">
   <div class="memory-heading"><div><h2>后台学习</h2><p class="meta">从新收到的聊天中学习黑话，并识别 QQ 标记的表情图片。每次只分析一个来源，学到的内容默认留在该来源内。</p></div><button id="learningRefresh" class="small">刷新状态</button></div>
   <p id="learningStatus" role="status" class="meta">正在读取…</p>
   <div id="learningSummary" class="learning-summary"></div>
@@ -335,7 +359,7 @@
   <p class="meta">学习使用当前配置的 DSH 模型，会产生额外模型用量。没有新消息时不会调用模型；默认每批最多 30 条消息、3 张表情，至少间隔 5 分钟。关闭学习会取消当前批次，保留队列和已有记录。这里的开关独立于数字角色的休息与停止。</p>
   <div class="row"><button id="learningSave" class="primary">保存学习设置</button><button id="learningRun" class="small">立即分析一批</button><span id="learningActionStatus" class="meta" role="status"></span></div>
 </section>
-<section id="section-slang" data-page="slang" class="card span-all">
+<section id="section-slang" data-page="slang" hidden class="card span-all">
   <div class="memory-heading"><div><h2>黑话记录</h2><p class="meta">保留词义、使用场景和原文证据。自动学得的词义仍可能有误；人工确认或拒绝后，后台不会覆盖判断。</p></div><button id="slangNew" class="small">新增词条</button></div>
   <div class="row knowledge-filters"><input id="slangQuery" type="text" aria-label="搜索黑话" placeholder="搜索词条或含义"><input id="slangScopeFilter" type="text" aria-label="筛选黑话来源" placeholder="来源，如 group:123"><select id="slangStatusFilter" aria-label="筛选黑话状态"><option value="">全部状态</option><option value="candidate">待确认</option><option value="learned">自动学得</option><option value="confirmed">人工确认</option><option value="rejected">已拒绝</option></select><button id="slangSearch" class="small">搜索 / 刷新</button></div>
   <div class="knowledge-columns"><div><div id="slangRecords" class="knowledge-list"></div><div class="row"><button id="slangPrevious" class="small">上一页</button><span id="slangPage" class="meta"></span><button id="slangNext" class="small">下一页</button></div></div>
@@ -347,7 +371,7 @@
     </div><p class="meta">global 表示公开通用词。旧版来源不明的记录需补充来源后才能供角色查询。</p><div class="row"><button id="slangSave" class="primary">保存</button><button id="slangDelete" class="small danger" disabled>删除</button></div><p id="slangActionStatus" class="meta" role="status"></p><details><summary>查看证据</summary><pre id="slangEvidence" class="knowledge-evidence">暂无证据</pre></details></div>
   </div>
 </section>
-<section id="section-stickers" data-page="stickers" class="card span-all">
+<section id="section-stickers" data-page="stickers" hidden class="card span-all">
   <div class="memory-heading"><div><h2>表情包</h2><p class="meta">后台识别并收录的本地表情。按情绪和场景查找，保留原动图。</p></div><button data-view="learning" class="small">学习设置</button></div>
   <div class="row knowledge-filters"><input id="stickerQuery" type="text" aria-label="搜索表情" placeholder="搜索描述、情绪或场景"><input id="stickerScopeFilter" type="text" aria-label="筛选表情来源" placeholder="来源，如 group:123"><select id="stickerStatusFilter" aria-label="筛选表情状态"><option value="">全部状态</option><option value="learned">自动学得</option><option value="confirmed">人工确认</option><option value="rejected">已停用</option></select><button id="stickerSearch" class="small">搜索 / 刷新</button></div>
   <div class="knowledge-columns"><div><div id="stickerRecords" class="sticker-grid"></div><div class="row"><button id="stickerPrevious" class="small">上一页</button><span id="stickerPage" class="meta"></span><button id="stickerNext" class="small">下一页</button></div></div>
@@ -370,7 +394,7 @@
   </fieldset></form>
   <details class="settings-group"><summary>QQ 账号收藏表情</summary><p class="meta">与本地学习库分开管理；角色可以同时检索和发送两种表情。同步只读取 QQ 收藏列表。</p><div class="row"><button id="stickerFavoritesRefresh" class="small">读取缓存</button><button id="stickerFavoritesSync" class="small">从 QQ 同步</button><span id="stickerFavoritesStatus" class="meta" role="status"></span></div><div id="stickerFavorites" class="knowledge-list"></div></details>
 </section>
-<section id="section-memory-settings" data-page="memory-settings" class="card span-all">
+<section id="section-memory-settings" data-page="memory-settings" hidden class="card span-all">
       <div class="memory-heading">
         <div><h2>长期记忆设置</h2><p id="memorySettingsGatewayStatus" class="meta" role="status">正在检查 A_Memorix…</p></div>
         <button id="memorySettingsRefreshStatus" class="small">刷新状态</button>
@@ -386,7 +410,7 @@
           <div class="memory-config-grid">
             <label class="memory-toggle" for="memoryEnabled"><input id="memoryEnabled" type="checkbox"> 启用长期记忆</label>
             <label for="memoryBaseUrl">A_Memorix Gateway 地址<input id="memoryBaseUrl" type="url" maxlength="2048" placeholder="http://127.0.0.1:8080"></label>
-            <label for="memoryNamespace">Namespace<input id="memoryNamespace" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9._-]{0,127}" placeholder="qq-bridge"></label>
+            <label for="memoryNamespace">Namespace<input id="memoryNamespace" type="text" maxlength="128" pattern="[a-z0-9][a-z0-9._\-]{0,127}" placeholder="qq-bridge"></label>
             <label for="memoryApiKey">Namespace API Key（留空不变）<input id="memoryApiKey" type="password" maxlength="4096" autocomplete="new-password" placeholder="留空保留已保存的密钥"></label>
             <label class="memory-toggle" for="memoryClearApiKey"><input id="memoryClearApiKey" type="checkbox"> 清除已保存的 namespace 密钥</label>
             <label for="memoryTimeoutSeconds">请求超时（秒）<input id="memoryTimeoutSeconds" type="number" min="1" max="120" step="1"></label>
@@ -435,7 +459,7 @@
         </div>
       </details>
     </section>
-<section id="section-social-v2" data-page="social-v2" class="card span-all">
+<section id="section-social-v2" data-page="social-v2" hidden class="card span-all">
   <div class="memory-heading"><div><h2>消息缓冲</h2><p class="meta">查看哪些群和私聊有新消息，以及角色最近何时回复。</p></div><button id="v2StatesList" class="small">刷新来源与状态</button></div>
   <div id="v2Summary" class="learning-summary"></div>
   <p id="v2ActivityStatus" class="meta" role="status">正在读取…</p>
@@ -445,7 +469,7 @@
     <button id="v2ResetBtn" class="small danger">清空 QQ 消息缓存</button><span id="v2ResetMsg" class="meta" role="status"></span>
   </details>
 </section>
-<section data-page="social-v2" class="card span-all">
+<section data-page="qq-settings" hidden class="card">
   <h2>提醒规则</h2>
   <form id="qqReminderForm"><fieldset disabled>
     <label class="memory-toggle"><input type="checkbox" name="enabled"> 允许 QQ 消息提醒角色</label>
@@ -456,7 +480,7 @@
     <button class="primary">保存提醒规则</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
-<section data-page="social-v2" class="card span-all">
+<section data-page="qq-settings" hidden class="card">
   <h2>分条发送与未读</h2>
   <form id="qqConversationForm"><fieldset disabled>
     <label>每个字的条间延迟（ms）<input name="delayPerCharMs" type="number" min="0" max="1000" step="1" required></label>
@@ -465,20 +489,20 @@
     <button class="primary">保存对话设置</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
-<section id="section-whitelist" data-page="access" class="card span-all">
+<section id="section-whitelist" data-page="access" hidden class="card span-all">
       <h2>关系对象 QQ</h2>
       <label for="ownerQQ">QQ 号（ownerQQ）</label>
       <input type="text" id="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="填写 QQ 号，留空则清除">
-      <div class="meta">用于识别消息发送者的 QQ 账号。QQ 来源触发的回合只有全部提醒都来自此账号时，才可跨会话使用 QQ 工具；该字段不授予桥接管理接口权限。具体关系与称谓由人格卡和双方表达决定。</div>
+      <div class="meta">角色用这个账号识别关系对象，并验证私聊中的睡眠与起床命令。具体关系和称谓由人格卡及双方交流决定。</div>
       <div class="meta">保存后立即生效，并以本页面设置为准；留空可清除，不会被 DSH 的同名设置重新覆盖。</div>
       <div class="row" style="margin-top:10px">
         <button id="ownerQQSave">保存 QQ 号</button>
         <span class="meta" id="ownerQQMsg" role="status"></span>
       </div>
     </section>
-<section id="section-dsh" data-page="overview" class="card span-all">
+<section id="section-dsh" data-page="model" hidden class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
-      <p class="meta">数字角色可使用 DSH 的网页搜索与抓取；请在 DSH 的「插件 → 网页搜索」配置搜索服务和所需密钥。更新桥接预设后，需重启 DSH 并在「会话控制」重建会话。</p>
+      <p class="meta">数字角色可使用 DSH 的网页搜索与抓取；请在 DSH 的「插件 → 网页搜索」配置搜索服务和所需密钥。更新桥接预设后，需重启 DSH 并在「主会话」重建会话。</p>
       <div class="meta">模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
       <div class="row" style="margin-top:10px">
         <label for="dshModelSelect">DSH 可用模型</label>
@@ -511,24 +535,21 @@
       <div class="meta" id="dshEffortNote"></div>
       <div class="meta" id="dshEffortSideEffect"></div>
     </section>
-<section id="section-security" data-page="access" class="card">
+<section id="section-security" data-page="access" hidden class="card">
       <h2>安全状态</h2>
-      <div class="meta">控制台仅在本机访问，并需要访问令牌。QQ 工具发送消息时会执行敏感内容检查并记录工具审计。</div>
+      <div class="meta">控制台仅在本机访问，登录需要访问令牌。</div>
+      <div id="stateDirStatus" class="meta" role="status">正在读取目录权限…</div>
       <div id="stateDirWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
         <b>⚠️ state/ 目录权限未收紧</b>
-        <div class="meta" style="margin:4px 0">Windows 上改文件权限需要管理员身份，本次启动没能收紧 <code id="stateDirPath"></code>。它里面的控制台令牌、SnowLuma 令牌、全局数字角色令牌与 QQ 消息缓存，本机任何已登录用户都可能读到。</div>
-        <div class="meta">两种做法：① 用<b>管理员身份</b>打开终端执行下面这条命令（一次即可，可复制）；② 或者<b>用管理员身份重启桥接</b>，让它自己收紧。做完点下面的按钮复检。</div>
+        <div class="meta" style="margin:4px 0">桥接未能收紧 <code id="stateDirPath"></code> 的访问权限。此目录保存本地令牌与 QQ 消息缓存。</div>
+        <div class="meta">在本机终端执行下方命令后可重新检测。</div>
         <pre id="stateDirCmd" style="user-select:all;overflow:auto;margin:4px 0;padding:6px;background:rgba(127,127,127,.12);border-radius:4px"></pre>
         <button id="stateDirReharden" class="small">重新检测</button>
         <span class="meta" id="stateDirMsg"></span>
       </div>
-      <div id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
-        <b>⚠️ QQ 网关健康提醒</b>
-        <div class="meta" style="margin:4px 0" id="snowlumaWarnHint"></div>
-        <div class="meta" id="snowlumaWarnDiag">最近一个上游事件包：<b id="snowlumaWarnPkt">unknown</b>；SnowLuma 自评接收链路：<b id="snowlumaWarnGood">unknown</b>。</div>
-      </div>
+
     </section>
-<section id="section-token" data-page="access" class="card">
+<section id="section-token" data-page="access" hidden class="card">
       <h2>控制台访问令牌</h2>
       <div class="meta">用于打开本控制台 / 调用管理 API 的令牌。可手动输入新令牌保存，或留空生成随机令牌。修改后当前页面会自动使用新令牌。</div>
       <input type="password" id="consoleTokenInput" placeholder="输入新令牌（至少 16 位），留空则生成随机" autocomplete="new-password">
@@ -538,12 +559,12 @@
         <span class="meta" id="consoleTokenMsg"></span>
       </div>
     </section>
-<section data-page="operations" class="card span-all">
+<section data-page="operations" hidden class="card span-all">
   <div class="memory-heading"><div><h2>工具调用日志</h2><p class="meta">查看角色调用工具的时间、参数和返回的错误。</p></div><button id="v2ToolLogLoad" class="small">刷新日志</button></div>
   <div class="row"><label class="memory-toggle"><input type="checkbox" id="qqFailuresOnly"> 只看失败</label><button id="v2ToolLogClear" class="small danger">清空日志</button><span id="v2ToolLogMsg" class="meta" role="status"></span></div>
   <div id="v2ToolLogOutput" class="tool-log-table"></div>
 </section>
-<section data-page="operations" class="card span-all">
+<section data-page="operations" hidden class="card span-all">
   <h2>角色主动反馈</h2><p class="meta">角色主动报告的困惑和需要协助的事项显示在这里。错误级反馈会标红。</p>
   <div class="row"><button id="v2FeedbackLoad" class="small">刷新反馈</button><button id="v2FeedbackClear" class="small danger">清空反馈</button><span id="v2FeedbackMsg" class="meta" role="status"></span></div>
   <div id="v2FeedbackOutput" class="knowledge-list"></div>
@@ -552,7 +573,18 @@
     <button class="small">保存反馈设置</button> <span class="meta" role="status"></span>
   </fieldset></form></details>
 </section>
-<section id="section-test-send" data-page="operations" class="card">
+      <div id="overviewSummary" class="overview-summary span-all" data-page="maintenance" hidden>
+        <div class="metric"><span>DSH 连接</span><strong id="metricDsh">连接中</strong><small id="metricDshHint">等待服务响应</small></div>
+        <div class="metric"><span>SnowLuma 上游</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
+        <div class="metric"><span>数字角色会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
+        <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复/引用、关键词</small></div>
+        <div class="span-all" id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
+        <b>⚠️ QQ 网关健康提醒</b>
+        <div class="meta" style="margin:4px 0" id="snowlumaWarnHint"></div>
+        <div class="meta" id="snowlumaWarnDiag">最近一个上游事件包：<b id="snowlumaWarnPkt">unknown</b>；SnowLuma 自评接收链路：<b id="snowlumaWarnGood">unknown</b>。</div>
+        </div>
+      </div>
+<section id="section-test-send" data-page="maintenance" hidden class="card">
       <h2>测试发送</h2>
       <div class="row">
         <select id="tsKind" style="width:100px">
@@ -567,11 +599,11 @@
         <button id="tsSend">发送测试</button>
         <span class="meta" id="tsMsg2"></span>
       </div>
-      <div class="meta">控制台测试发送受 allow/deny 限制；数字角色的 QQ 工具校验全局令牌和工具调用审计，不受 agent_rest 状态限制。</div>
+      <div class="meta">发送真实 QQ 消息，目标需符合下方的测试发送名单。</div>
       <details class="settings-group" style="margin-top:10px">
         <summary>测试发送目标名单</summary>
         <div class="settings-content">
-          <div class="meta">仅限制此处的控制台测试发送。拒绝名单优先；允许名单为空时，是否放行由 config.json 的 allowAllWhenEmpty 决定。</div>
+          <div class="meta">拒绝名单优先。允许名单为空时，是否放行由 config.json 的 allowAllWhenEmpty 决定。</div>
           <label for="wlGroups">允许的群号（逗号分隔）</label>
           <input type="text" id="wlGroups" placeholder="123456789, 123456">
           <label for="wlPrivate">允许的私聊 QQ（逗号分隔）</label>
@@ -587,7 +619,7 @@
         </div>
       </details>
     </section>
-<section id="section-maintenance" data-page="operations" class="card">
+<section id="section-maintenance" data-page="maintenance" hidden class="card">
       <h2>桥接控制</h2>
       <div class="row">
         <button id="restartBtn" class="danger">重启桥接</button>
@@ -599,7 +631,7 @@
       </div>
       <div class="meta">由守护窗口启动时，重启后 5 秒自动恢复。</div>
     </section>
-<section id="section-usage" data-page="usage" class="card span-all">
+<section id="section-usage" data-page="usage" hidden class="card span-all">
       <h2 data-note="每 3 秒自动同步">令牌与花费</h2>
       <div class="meta">按主会话、记忆整理和后台学习统计模型用量。美元费用按调用入账时的目录单价估算。</div>
       <div class="overview-summary" id="usageSummary">
@@ -650,13 +682,10 @@
       </div></details>
     </section>
       </div>
-      <div class="overview-footnote" data-page="overview"><span id="accessSummary">正在读取访问范围…</span><button class="text-button" data-view="access">管理访问范围 →</button></div>
-      <footer class="page-footer"><span>QQ Bridge · 连接日常，保持自主</span><span id="lastUpdated">等待首次同步</span></footer>
-    </main>
-  </div>
+  </main>
   <div class="toast" id="consoleToast" role="status" hidden></div>
   <noscript><div class="connection-alert">控制台需要启用 JavaScript 才能加载状态及保存设置。</div></noscript>
 
-<script src="/console.js" defer></script>
+<script src="/console.js" defer type="module"></script>
 </body>
 </html>

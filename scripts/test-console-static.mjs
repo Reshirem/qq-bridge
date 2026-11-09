@@ -1,6 +1,7 @@
 // 控制台静态校验：在无法跑 Playwright 的环境里，替代性地检查 HTML/JS 结构契约。
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,7 +26,8 @@ ok(views.length > 0 && JSON.stringify(views) === JSON.stringify(pages), 'data-vi
 console.log('## JS 语法');
 const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((s) => s.trim());
 try {
-  for (const source of [...scripts, consoleJs]) new Function(source);
+  for (const source of scripts) new Function(source);
+  for (const file of ['console.js', 'overview.js']) execFileSync(process.execPath, ['--check', path.join(ROOT, 'public', file)]);
   ok(true, '内联引导与控制台脚本语法可解析', `${consoleJs.length} 字符`);
 } catch (e) { ok(false, '控制台脚本语法', e.message); }
 ok(/<link[^>]+href="\/console\.css"/.test(html), '页面从独立静态文件加载样式');

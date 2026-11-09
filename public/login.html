@@ -11,13 +11,13 @@
 * { box-sizing: border-box; }
 body {
   min-height: 100vh; margin: 0; padding: 24px; display: grid; place-items: center;
-  color: #202635; background: radial-gradient(ellipse at top left, #e7ecff 0, transparent 44%), #f5f7fb;
+  color: #202635; background: #f4f5f1;
 }
 .login-card {
-  width: min(100%, 420px); padding: 36px; border: 1px solid #dfe4ed; border-radius: 20px;
-  background: rgba(255,255,255,.94); box-shadow: 0 24px 70px rgba(34,48,80,.12);
+  width: min(100%, 420px); padding: 36px; border: 1px solid #d8ddd6; border-radius: 12px;
+  background: rgba(255,255,255,.94); box-shadow: 0 6px 22px rgba(35,68,49,.06);
 }
-.brand { color: #4d6bfe; font-size: 12px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+.brand { color: #236849; font-size: 12px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
 h1 { margin: 12px 0 8px; font-size: 25px; letter-spacing: -.025em; }
 .intro { margin: 0 0 26px; color: #657087; font-size: 14px; line-height: 1.65; }
 label { display: block; margin-bottom: 8px; color: #47536b; font-size: 13px; font-weight: 650; }
@@ -25,19 +25,20 @@ input {
   width: 100%; height: 46px; padding: 0 13px; border: 1px solid #cfd7e5; border-radius: 10px;
   outline: none; color: #202635; background: #fff; font: inherit; font-size: 15px;
 }
-input:focus { border-color: #7188ff; box-shadow: 0 0 0 4px rgba(77,107,254,.13); }
+input:focus { border-color: #43815c; box-shadow: 0 0 0 4px rgba(49,128,87,.13); }
 button {
   width: 100%; min-height: 46px; margin-top: 16px; border: 0; border-radius: 10px;
-  color: white; background: #4d6bfe; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+  color: white; background: #236849; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
 }
-button:hover { background: #405de5; }
+button:hover { background: #194f37; }
 button:disabled { cursor: wait; opacity: .7; }
 .message { min-height: 22px; margin: 12px 0 0; color: #b33535; font-size: 13px; line-height: 1.5; }
 .foot { margin: 18px 0 0; color: #8993a5; font-size: 12px; text-align: center; }
 @media (prefers-color-scheme: dark) {
-  body { color: #edf1fb; background: radial-gradient(ellipse at top left, #202b50 0, transparent 46%), #101522; }
-  .login-card { border-color: #2d3850; background: rgba(25,32,47,.96); box-shadow: 0 24px 70px rgba(0,0,0,.3); }
-  .intro, label { color: #aab4c8; }
+  body { color: #edf1fb; background: #18201f; }
+  .login-card { border-color: #2d3850; background: #222e2b; box-shadow: 0 24px 70px rgba(0,0,0,.3); }
+  .brand { color: #a6dcbd; }
+  .intro, label { color: #a7b9ae; }
   input { border-color: #3b4965; color: #edf1fb; background: #111827; }
   .foot { color: #7f8ba2; }
 }
@@ -74,7 +75,10 @@ document.getElementById('loginForm').addEventListener('submit', async (event) =>
       body: JSON.stringify({ token: input.value.trim() })
     });
     if (response.status === 204) {
-      location.replace('/');
+      const url = new URL(location.href);
+      url.searchParams.delete('login');
+      history.replaceState(null, '', url);
+      location.reload();
       return;
     }
     const result = await response.json().catch(() => ({}));

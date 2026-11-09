@@ -3345,9 +3345,9 @@ async function main() {
             return next;
           },
         })) return;
-        if (req.method === 'GET' && (url.pathname === '/console.css' || url.pathname === '/console.js')) {
-          const isStyleSheet = url.pathname === '/console.css';
-          const assetPath = path.join(ROOT, 'public', isStyleSheet ? 'console.css' : 'console.js');
+        if (req.method === 'GET' && ['/console.css', '/console.js', '/overview.css', '/overview.js'].includes(url.pathname)) {
+          const isStyleSheet = url.pathname.endsWith('.css');
+          const assetPath = path.join(ROOT, 'public', url.pathname.slice(1));
           try {
             res.writeHead(200, {
               'content-type': isStyleSheet ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',

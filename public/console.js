@@ -1,8 +1,10 @@
+import { refreshOverview } from './overview.js';
+
 async function api(path, method, body) {
   const headers = body ? {'content-type':'application/json'} : {};
   const res = await fetch(path, { method: method || 'GET', headers, body: body ? JSON.stringify(body) : undefined });
   if (res.status === 401) {
-    location.replace('/?login=expired');
+    location.reload();
     throw new Error('控制台登录已失效，正在返回登录页');
   }
   return res.json();
@@ -62,9 +64,7 @@ function renderSnowlumaHealth(sl) {
 async function refresh() {
   try {
     const s = await api('/api/status');
-    document.getElementById('roleText').textContent = s.role || '无';
     updateOverview(s);
-    document.getElementById('activity').textContent = s.activity || '（空）';
   } catch (e) { document.getElementById('statusText').textContent = '连接中断 · 请检查桥接服务'; setConnectionError(e); }
 }
 
@@ -635,12 +635,12 @@ function renderTestSendLists(w) {
   document.getElementById('dnPrivate').value = (w.deny?.private || []).join(', ');
 }
 
-async function refreshWhitelist() {
+async function refreshWhitelist(scope) {
   try {
     const w = await api('/api/whitelist');
     if (w.error) throw new Error(w.error);
-    renderTestSendLists(w);
-    document.getElementById('ownerQQ').value = w.ownerQQ != null ? String(w.ownerQQ) : '';
+    if (scope !== 'owner') renderTestSendLists(w);
+    if (scope !== 'test') document.getElementById('ownerQQ').value = w.ownerQQ != null ? String(w.ownerQQ) : '';
   } catch (error) {
     document.getElementById('ownerQQMsg').textContent = '读取失败：' + error.message;
     document.getElementById('ownerQQMsg').className = 'meta err';
@@ -649,6 +649,7 @@ async function refreshWhitelist() {
 
 let desktopAgentStatusAt = 0;
 let desktopAgentStatusRequest = null;
+let desktopAgentInfo = null;
 let desktopAgentControlsAvailable = false;
 
 async function refreshDesktopAgentStatus(force = false) {
@@ -660,6 +661,7 @@ async function refreshDesktopAgentStatus(force = false) {
     const summaryHint = document.getElementById('metricDesktopAgentHint');
     try {
       const info = await api('/api/console/desktop-agent');
+      desktopAgentInfo = info;
       let label = '正在读取会话状态';
       let tone = 'meta ok';
       let summaryLabel = '已就绪';
@@ -715,6 +717,7 @@ async function refreshDesktopAgentStatus(force = false) {
     } catch (error) {
       status.textContent = '状态读取失败：' + (error?.message || '请求失败');
       status.className = 'meta err';
+      desktopAgentInfo = null;
       summary.textContent = '状态未知';
       summaryHint.textContent = '点击“刷新状态”重试';
       desktopAgentControlsAvailable = false;
@@ -745,6 +748,24 @@ function setDesktopAgentHistoryStatus(text, isError = false) {
   status.className = isError ? 'meta err' : 'meta';
 }
 
+const historyEventLabels = {
+  'user/message': '会话输入', 'assistant/message': '角色发言', 'tool/call': '调用工具',
+  'tool/result': '工具结果', 'turn/start': '回合开始', 'turn/end': '回合结束',
+  'request/header': '模型请求', 'step/start': '步骤开始', 'step/end': '步骤结束'
+};
+
+function historyMessageText(message) {
+  if (typeof message?.text === 'string') return message.text;
+  if (typeof message?.content === 'string') return message.content;
+  if (!Array.isArray(message?.content)) return '';
+  return message.content.map(block => {
+    if (typeof block === 'string') return block;
+    if (block?.type === 'text') return block.text;
+    if (block?.type === 'image') return block.alt || block.name || '［图片］';
+    return '';
+  }).filter(Boolean).join('\n');
+}
+
 function renderDesktopAgentHistory(records, prepend = false) {
   const box = document.getElementById('desktopAgentHistory');
   if (!prepend) box.replaceChildren();
@@ -762,43 +783,46 @@ function renderDesktopAgentHistory(records, prepend = false) {
   const fragment = document.createDocumentFragment();
   for (const record of records) {
     const event = record?.event && typeof record.event === 'object' ? record.event : {};
+    const card = document.createElement('article');
+    card.className = 'context-record';
+    const data = event.data || {};
+    const head = document.createElement('div');
+    head.className = 'context-record-head';
+    const title = document.createElement('strong');
+    title.textContent = historyEventLabels[event.type] || String(event.type || '未知事件');
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = [Number.isSafeInteger(record.seq) && '#' + record.seq,
+      data.turn != null && '回合 ' + data.turn, data.step != null && '步骤 ' + data.step].filter(Boolean).join(' · ');
+    head.append(title, meta);
+    card.append(head);
+    const text = event.type === 'tool/call' ? data.name || data.tool : historyMessageText(data.message);
+    if (typeof text === 'string' && text) {
+      const content = document.createElement('p');
+      content.className = 'history-message';
+      content.textContent = text.length > 900 ? text.slice(0, 900) + '…' : text;
+      card.append(content);
+    }
     const details = document.createElement('details');
-    details.className = 'context-record';
-    if (event.type === 'user/message' || event.type === 'assistant/message') details.open = true;
-
     const summary = document.createElement('summary');
-    const sequence = document.createElement('span');
-    sequence.className = 'context-record-seq';
-    sequence.textContent = Number.isSafeInteger(record.seq) ? `#${record.seq}` : '#?';
-    const type = document.createElement('span');
-    type.className = 'context-record-type';
-    type.textContent = String(event.type ?? '未知事件');
-    summary.append(sequence, type);
-    const eventData = event.data && typeof event.data === 'object' ? event.data : {};
-    const metaParts = [];
-    if (eventData.turn !== undefined) metaParts.push(`turn ${eventData.turn}`);
-    if (eventData.step !== undefined) metaParts.push(`step ${eventData.step}`);
-    if (metaParts.length) {
-      const meta = document.createElement('span');
-      meta.className = 'context-record-meta';
-      meta.textContent = metaParts.join(' · ');
-      summary.appendChild(meta);
-    }
-    details.appendChild(summary);
-
-    const body = document.createElement('pre');
-    body.className = 'context-record-body';
-    body.textContent = JSON.stringify(event, null, 2);
-    details.appendChild(body);
-    if (record.hiddenInternalItems > 0 || record.internalDetailsOmitted) {
-      const note = document.createElement('span');
-      note.className = 'context-record-note';
-      note.textContent = record.internalDetailsOmitted
-        ? '该模型内部事件的详细内容未展示。'
-        : `已隐藏 ${record.hiddenInternalItems} 项推理内容或流式数据。`;
-      details.appendChild(note);
-    }
-    fragment.appendChild(details);
+    summary.textContent = '事件详情';
+    details.append(summary);
+    details.addEventListener('toggle', () => {
+      if (!details.open || details.childElementCount > 1) return;
+      const body = document.createElement('pre');
+      body.className = 'context-record-body';
+      body.textContent = JSON.stringify(event, null, 2);
+      details.append(body);
+      if (record.hiddenInternalItems > 0 || record.internalDetailsOmitted) {
+        const note = document.createElement('span');
+        note.className = 'context-record-note';
+        note.textContent = record.internalDetailsOmitted ? '模型内部事件的详情已隐藏。'
+          : '已隐藏 ' + record.hiddenInternalItems + ' 项推理内容或流式数据。';
+        details.append(note);
+      }
+    });
+    card.append(details);
+    fragment.appendChild(card);
   }
   if (prepend) box.insertBefore(fragment, box.firstChild);
   else box.appendChild(fragment);
@@ -1289,6 +1313,14 @@ for (const [id, fields] of Object.entries(qqSettingsForms)) {
 }
 
 let qqDashboardRequest = 0;
+let handledOverviewTarget = false;
+function takeOverviewTarget(page, key) {
+  const url = new URL(location.href);
+  if (handledOverviewTarget || url.hash !== '#' + page || !url.searchParams.has(key)) return '';
+  handledOverviewTarget = true;
+  return url.searchParams.get(key);
+}
+
 async function refreshQQDashboard(names = false) {
   const namesButton = document.getElementById('v2StatesList');
   if (names) namesButton.disabled = true;
@@ -1318,6 +1350,11 @@ async function refreshQQDashboard(names = false) {
     document.getElementById('v2AllStatesOutput').innerHTML = cells.length
       ? '<table><thead><tr>' + headings.map(label => '<th>' + label + '</th>').join('') + '</tr></thead><tbody>' + cells.join('') + '</tbody></table>'
       : '<p class="meta">暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。</p>';
+    const source = takeOverviewTarget('social-v2', 'source');
+    if (source) {
+      const tr = document.querySelectorAll('#v2AllStatesOutput tbody tr')[rows.findIndex(row => row.key === source)];
+      if (tr) { tr.tabIndex = -1; tr.focus(); }
+    }
   } catch (error) { if (request === qqDashboardRequest) status.textContent = '读取缓冲状态失败：' + error.message; }
   finally { if (names) namesButton.disabled = false; }
 }
@@ -1458,11 +1495,12 @@ document.getElementById('v2ToolLogClear').addEventListener('click', async () => 
 });
 
 function loadSecurity() {
-  api('/api/security').then(r => {
-    // state/ 的 ACL 是否收紧（Windows 上需要管理员权限，未提权时会失败）。
-    // 明确警示 + 给出可复制的命令，而不是让用户以为已经安全。
+  const status = document.getElementById('stateDirStatus');
+  return api('/api/security').then(r => {
+    if (!r.stateDir) throw new Error(r.error || '未取得目录权限状态');
     const warn = document.getElementById('stateDirWarn');
     const hardened = r.stateDir?.hardened;
+    status.textContent = hardened === true ? '状态目录权限已收紧。' : hardened === false ? '状态目录权限需要处理。' : '尚未取得状态目录权限结果。';
     if (hardened === false) {
       document.getElementById('stateDirPath').textContent = r.stateDir?.path || 'state/';
       document.getElementById('stateDirCmd').textContent = r.stateDir?.manualCommand || '';
@@ -1470,13 +1508,13 @@ function loadSecurity() {
     } else {
       warn.style.display = 'none';
     }
-  }).catch(() => {});
+  }).catch(error => { status.textContent = '读取权限状态失败：' + error.message; });
 }
 document.getElementById('stateDirReharden').addEventListener('click', async () => {
   const msg = document.getElementById('stateDirMsg');
   msg.textContent = '检测中…';
   const r = await api('/api/security', 'POST', { rehardenStateDir: true });
-  msg.textContent = r.hardened === true ? '✅ 权限已收紧' : '❌ 仍未收紧（改 ACL 需要管理员权限；请按上面两种做法之一操作后复检）';
+  msg.textContent = r.hardened === true ? '✅ 权限已收紧' : '权限仍未收紧，请查看上方命令。';
   msg.className = r.hardened === true ? 'meta ok' : 'meta err';
   loadSecurity();
 });
@@ -1541,7 +1579,7 @@ async function refreshLearning(loadConfig = true) {
       + (data.dropped ? ` · 队列满时累计跳过 ${data.dropped} 条最早消息` : '');
     document.getElementById('learningSummary').innerHTML = [['待处理消息', data.pending], ['已完成批次', data.runs], ['黑话记录', data.words], ['本地表情', data.pictures], ['累计输入 token', data.usage?.inputTokens || 0], ['累计输出 token', data.usage?.outputTokens || 0]].map(([label, count]) => `<span>${label} <b>${esc(count)}</b></span>`).join('');
     document.getElementById('learningRun').disabled = data.running || !config.enabled || !data.pending;
-    if (currentConsolePage === 'learning') learningPoll = setTimeout(() => refreshLearning(false), 5000);
+    if (!document.hidden && currentConsolePage === 'learning') learningPoll = setTimeout(() => refreshLearning(false), 5000);
   } catch (error) { document.getElementById('learningStatus').textContent = error.message; }
 }
 document.getElementById('learningRefresh').addEventListener('click', () => refreshLearning());
@@ -1651,6 +1689,7 @@ async function refreshStickerReviews() {
     const wording = value => esc(value.desc || '无描述') + ' · ' + esc(value.tags.join('、') || '无标签');
     box.innerHTML = reviews.map(r => `<article class="knowledge-record"><img class="sticker-preview" alt="待复检的原图" loading="lazy" src="/api/learning/sticker-reviews/image?id=${encodeURIComponent(r.id)}"><span class="meta">${esc(r.scope === 'account' ? 'QQ 账号收藏' : r.scope)}</span><p>现有：${wording(r.before)}</p><p>建议：${wording(r.after)}</p><div class="row"><button class="small" data-review="${esc(r.id)}" data-accept="yes">采纳</button><button class="small" data-review="${esc(r.id)}" data-accept="no">忽略</button></div></article>`).join('') || '<p class="meta">暂无待确认建议。</p>';
   } catch (error) { box.textContent = error.message; }
+  if (takeOverviewTarget('stickers', 'focus') === 'reviews') { box.tabIndex = -1; box.focus(); }
 }
 document.getElementById('stickerReviews').addEventListener('click', async event => {
   const button = event.target.closest('button[data-review]');
@@ -1680,19 +1719,11 @@ document.getElementById('stickerFavoritesRefresh').addEventListener('click', () 
 document.getElementById('stickerFavoritesSync').addEventListener('click', () => refreshStickerFavorites(true));
 
 const consolePages = {
-  learning: ['后台学习', '从交流中积累理解。', '按消息批次学习黑话与表情，独立查看进度、范围和用量控制。', 'QQ 通道'],
-  slang: ['黑话记录', '记住词语背后的意思。', '检索含义，核对证据，并按聊天来源管理学到的黑话。', 'QQ 通道'],
-  stickers: ['表情包', '让表情用在合适的场合。', '管理本地学习表情的描述、情绪标签、使用场景与来源。', 'QQ 通道'],
-  overview: ['数字角色', '全局数字角色运行状态', '查看 DSH 与 QQ 通道状态，或前往会话控制启动自主探索。', '工作空间'],
-  sessions: ['会话控制', '控制全局数字角色', '启动或继续唯一的全局 DSH 会话，也可发送具体任务。', '工作空间'],
-  persona: ['数字角色提示词', '维护自主数字角色的固定提示词', '这里可以编辑数字角色的固定提示词和当前人格卡。', '工作空间'],
-  memory: ['检索与记录', '长期记忆 · 检索与记录', '在共享 A_Memorix 中相关度检索或分页浏览全部活动原始记录，并查看、替代或删除记录。', '长期记忆'],
-  'memory-organizer': ['整理进度', '长期记忆 · 独立整理', '查看每天最多一次的休息后自动整理进度，或选择历史 DSH 会话开始整理。', '长期记忆'],
-  'memory-settings': ['记忆设置', '长期记忆设置', '配置 A_Memorix 连接、启动摘要和 Embedding / LLM Provider。', '长期记忆'],
-  'social-v2': ['提醒与消息', 'QQ 消息渠道', '查看各来源的未读情况，管理提醒和对话设置。', 'QQ 通道'],
-  usage: ['令牌与花费', '按功能查看模型用量', '查看主会话、记忆整理和后台学习的令牌用量、费用与模型单价。', '系统与管理'],
-  access: ['访问与安全', '明确边界，安心连接。', '设置关系对象 QQ，查看安全状态并管理控制台访问令牌。', '系统与管理'],
-  operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。', '系统与管理']
+  overview: '运行总览', sessions: '主会话', persona: '人格与提示词', model: '模型设置',
+  'social-v2': 'QQ 消息', 'qq-settings': '提醒与发送',
+  memory: '长期记忆', 'memory-organizer': '整理任务', 'memory-settings': '记忆服务设置',
+  learning: '后台学习', slang: '黑话记录', stickers: '表情包',
+  usage: '令牌与花费', operations: '日志与反馈', maintenance: '诊断与维护', access: '访问设置',
 };
 let memoryHits = [];
 let memoryBrowseMode = false;
@@ -1770,7 +1801,7 @@ function memoryOrganizerTimestamp(value) {
 function scheduleMemoryOrganizerRefresh() {
   clearTimeout(memoryOrganizerPollTimer);
   memoryOrganizerPollTimer = null;
-  if (currentConsolePage !== 'memory-organizer' || !memoryOrganizerData) return;
+  if (document.hidden || currentConsolePage !== 'memory-organizer' || !memoryOrganizerData) return;
   const running = (memoryOrganizerData.jobs || []).some(job => ['queued', 'reading', 'organizing', 'writing'].includes(job.status));
   if (running) memoryOrganizerPollTimer = setTimeout(() => refreshMemoryOrganizer({ silent: true }), 5000);
 }
@@ -1852,6 +1883,12 @@ function renderMemoryOrganizerJobs() {
     return;
   }
   const pageCount = Math.ceil(jobs.length / MEMORY_ORGANIZER_PAGE_SIZE);
+  const selectedJob = takeOverviewTarget('memory-organizer', 'job');
+  const selectedIndex = selectedJob ? jobs.findIndex(job => job.jobId === selectedJob) : -1;
+  if (selectedIndex >= 0) {
+    memoryOrganizerPageIndex = Math.floor(selectedIndex / MEMORY_ORGANIZER_PAGE_SIZE);
+    memoryOrganizerDisclosureState.set(selectedJob, true);
+  }
   const jobIds = new Set(jobs.map(job => job.jobId));
   for (const jobId of memoryOrganizerDisclosureState.keys()) if (!jobIds.has(jobId)) memoryOrganizerDisclosureState.delete(jobId);
   memoryOrganizerPageIndex = Math.min(memoryOrganizerPageIndex, pageCount - 1);
@@ -1944,6 +1981,7 @@ function renderMemoryOrganizerJobs() {
     body.appendChild(updated);
     card.append(summary, body);
     box.appendChild(card);
+    if (job.jobId === selectedJob) summary.focus();
   }
 }
 async function refreshMemoryOrganizer({ silent = false } = {}) {
@@ -2256,7 +2294,7 @@ async function searchMemory() {
     renderMemoryResults(result);
     const modeLabel = mode === 'SEARCH_MODE_HYBRID' ? '关键词 + 时间范围' : mode === 'SEARCH_MODE_TIME' ? '时间范围' : '关键词';
     const degradedHint = result.degraded
-      ? `（检索方式：${result.retrievalMode || '降级模式'}；可到“长期记忆 → 设置”检查 Embedding Provider）`
+      ? `（检索方式：${result.retrievalMode || '降级模式'}；可到“长期记忆 → 服务设置”检查 Embedding Provider）`
       : '';
     status.textContent = `按${modeLabel}检索到 ${memoryHits.length} 条${degradedHint}。`;
     status.className = result.degraded ? 'meta err' : 'meta ok';
@@ -2423,6 +2461,7 @@ async function saveMemory(isReplace) {
     if (!response.ok) throw new Error(response.error || '保存失败');
     const warning = response.result?.warning;
     if (!isReplace) resetMemoryEditor();
+    else if (response.result?.memoryId) document.getElementById('memoryId').value = response.result.memoryId;
     status.textContent = warning ? `已保存，但有提示：${warning}` : (isReplace ? '已保存修改' : '已保存新记忆');
     status.className = warning ? 'meta err' : 'meta ok';
     await searchMemoryIfActive();
@@ -2462,43 +2501,122 @@ function showConsoleToast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toast.hidden = true; }, 4200);
 }
-function setConsolePage(page, { updateHash = true, focus = false, target = '' } = {}) {
+const visitedPages = new Set();
+async function loadPage(page, force = false) {
+  const firstVisit = !visitedPages.has(page);
+  visitedPages.add(page);
+  const loadForms = firstVisit || force;
+  const jobs = [];
+  switch (page) {
+    case 'overview':
+      return refreshOverview({ force, onStatus: updateOverview, onError: setConnectionError });
+    case 'sessions':
+      jobs.push(refreshDesktopAgentStatus(force).then(() => {
+        if (!desktopAgentInfo?.found || !desktopAgentInfo.dshReady) {
+          renderDesktopAgentHistory([]);
+          setDesktopAgentHistoryStatus(desktopAgentInfo?.dshReady ? '暂无可读取的会话' : '等待 DSH 连接');
+          document.getElementById('desktopAgentHistoryOlder').hidden = true;
+        } else if (loadForms || desktopAgentHistoryState.sessionId !== desktopAgentInfo.sessionId) {
+          return loadDesktopAgentHistory(false);
+        }
+      }));
+      break;
+    case 'persona':
+      if (loadForms) jobs.push(refreshRoles(), refreshSimPrompt(), refreshRuntimePromptTemplates());
+      break;
+    case 'model':
+      if (loadForms) jobs.push(refreshDshModel());
+      break;
+    case 'social-v2':
+      jobs.push(refreshQQDashboard());
+      break;
+    case 'qq-settings':
+      if (loadForms) jobs.push(loadQQSettings(page));
+      break;
+    case 'memory':
+      jobs.push(refreshMemoryStatus());
+      break;
+    case 'memory-organizer':
+      jobs.push(refreshMemoryOrganizer());
+      break;
+    case 'memory-settings':
+      jobs.push(refreshMemoryStatus());
+      if (loadForms) jobs.push(refreshMemorySettings());
+      break;
+    case 'learning':
+      jobs.push(refreshLearning(loadForms));
+      break;
+    case 'slang':
+      jobs.push(refreshKnowledge('slang'));
+      break;
+    case 'stickers':
+      jobs.push(refreshKnowledge('sticker'), refreshStickerReviews());
+      if (loadForms) jobs.push(loadQQSettings(page));
+      break;
+    case 'usage':
+      jobs.push(refreshUsage(), refreshUsageChart(), refreshUsageRecent());
+      break;
+    case 'operations':
+      jobs.push(loadV2ToolLog(), loadQQFeedback());
+      if (loadForms) jobs.push(loadQQSettings(page));
+      break;
+    case 'maintenance':
+      jobs.push(refreshDesktopAgentStatus(force));
+      if (loadForms) jobs.push(refreshWhitelist('test'));
+      break;
+    case 'access':
+      if (loadForms) jobs.push(refreshWhitelist('owner'), loadSecurity());
+      break;
+  }
+  await Promise.all([refresh(), ...jobs]);
+}
+
+function setConsolePage(page, { focus = false, target = '' } = {}) {
   if (!Object.hasOwn(consolePages, page)) page = 'overview';
+  const returningToOverview = page === 'overview' && currentConsolePage !== page;
   currentConsolePage = page;
-  document.querySelectorAll('[data-page]').forEach(el => { el.hidden = el.dataset.page !== page; });
-  document.querySelectorAll('#mainNav [data-view]').forEach(button => {
-    const selected = button.dataset.view === page;
-    button.classList.toggle('active', selected);
-    if (selected) button.setAttribute('aria-current', 'page');
-    else button.removeAttribute('aria-current');
-  });
-  document.getElementById('breadcrumbSection').textContent = consolePages[page][3] || '工作空间';
-  document.getElementById('breadcrumbPage').textContent = consolePages[page][0];
-  document.getElementById('pageTitle').textContent = consolePages[page][1];
-  document.getElementById('pageDescription').textContent = consolePages[page][2];
-  document.title = consolePages[page][0] + ' · QQ 桥接控制台';
-  if (updateHash && location.hash !== '#' + page) history.pushState({}, '', '#' + page);
-  if (page === 'overview' || page === 'sessions') refreshDesktopAgentStatus();
-  if (page === 'memory') refreshMemoryStatus();
-  if (page === 'memory-organizer') refreshMemoryOrganizer();
-  else { clearTimeout(memoryOrganizerPollTimer); memoryOrganizerPollTimer = null; }
-  if (page === 'memory-settings') { refreshMemoryStatus(); refreshMemorySettings(); }
+  handledOverviewTarget = false;
   clearTimeout(learningPoll);
-  if (page === 'learning') refreshLearning();
-  if (['social-v2', 'stickers', 'operations'].includes(page)) loadQQSettings(page);
-  if (page === 'social-v2') refreshQQDashboard();
-  if (page === 'operations') { loadV2ToolLog(); loadQQFeedback(); }
-  if (page === 'slang') refreshKnowledge('slang');
-  if (page === 'stickers') { refreshKnowledge('sticker'); refreshStickerReviews(); }
+  clearTimeout(memoryOrganizerPollTimer);
+  const tab = document.querySelector('.section-tabs [data-view="' + page + '"]');
+  const group = tab?.closest('[data-group]').dataset.group || page;
+  document.querySelectorAll('[data-page]').forEach(el => { el.hidden = el.dataset.page !== page; });
+  document.querySelectorAll('.section-tabs').forEach(nav => { nav.hidden = nav.dataset.group !== group; });
+  document.querySelectorAll('nav [data-view]').forEach(link => {
+    const selected = link.dataset.view === (link.closest('#mainNav') ? group : page);
+    if (selected) link.setAttribute('aria-current', link.dataset.view === page ? 'page' : 'location');
+    else link.removeAttribute('aria-current');
+  });
+  const title = consolePages[page];
+  document.getElementById('breadcrumbPage').textContent = title;
+  document.getElementById('pageTitle').textContent = title;
+  document.title = title + ' · QQ Bridge';
   closeConsoleSearch();
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
-    document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    document.getElementById(target || 'mainContent').scrollIntoView({ block: 'start', behavior: 'instant' });
   }
+  void loadPage(page, returningToOverview).catch(setConnectionError);
 }
-document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
-  setConsolePage(button.dataset.view, { focus: true, target: button.dataset.target });
-}));
+
+function navigateTo(url, target = '') {
+  if (url.href !== location.href) history.pushState(null, '', url);
+  setConsolePage(url.hash.slice(1), { focus: true, target });
+}
+
+// Navigate inside one document so form drafts survive drilling into another module.
+document.addEventListener('click', event => {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  const link = event.target.closest('a[href]');
+  const button = event.target.closest('button[data-view]');
+  if (!link && !button) return;
+  const url = new URL(link ? link.href : '/#' + button.dataset.view, location.href);
+  if (url.origin !== location.origin || url.pathname !== '/' || !Object.hasOwn(consolePages, url.hash.slice(1))) return;
+  event.preventDefault();
+  // A static hash link navigates away from any task-specific search parameters.
+  if (link?.getAttribute('href')?.startsWith('#')) url.search = '';
+  navigateTo(url, (link || button).dataset.target);
+});
 document.getElementById('memoryRefreshStatus').addEventListener('click', refreshMemoryStatus);
 document.getElementById('memoryOrganizerRefresh').addEventListener('click', () => refreshMemoryOrganizer());
 document.getElementById('memoryOrganizerCleanup').addEventListener('click', cleanupMemoryOrganizerSessions);
@@ -2536,10 +2654,7 @@ document.getElementById('memorySave').addEventListener('click', () => saveMemory
 document.getElementById('memoryReplace').addEventListener('click', () => saveMemory(true));
 document.getElementById('memoryDelete').addEventListener('click', deleteMemory);
 document.getElementById('memoryClear').addEventListener('click', resetMemoryEditor);
-window.addEventListener('hashchange', () => {
-  const page = location.hash.slice(1);
-  if (Object.hasOwn(consolePages, page) || !page) setConsolePage(page, { updateHash: false });
-});
+window.addEventListener('popstate', () => setConsolePage(location.hash.slice(1)));
 document.querySelector('.skip-link').addEventListener('click', event => {
   event.preventDefault();
   document.getElementById('mainContent').focus();
@@ -2555,11 +2670,12 @@ function updateOverview(status) {
   renderSnowlumaHealth(status.snowluma);
   document.getElementById('metricMode').textContent = status.qqRemindersEnabled === false ? '已关闭' : '按需提醒';
   document.getElementById('metricRole').textContent = '私聊、@、回复/引用、关键词';
-  document.getElementById('accessSummary').textContent = '关系对象 QQ：' + (status.ownerQQ || '未设置');
-  document.getElementById('lastUpdated').textContent = '状态同步于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  document.getElementById('roleText').textContent = status.role || '无';
+  document.getElementById('activity').textContent = status.activity || '（空）';
   document.getElementById('connectionAlert').hidden = true;
 }
 function setConnectionError(error) {
+  document.getElementById('statusText').textContent = '桥接未连接';
   document.getElementById('statusText').className = 'status-badge offline';
   document.getElementById('metricDsh').textContent = '连接中断';
   document.getElementById('metricDsh').className = 'err';
@@ -2575,12 +2691,11 @@ function setConnectionError(error) {
 }
 document.getElementById('refreshConsole').addEventListener('click', async function () {
   this.disabled = true;
-  const jobs = [refresh()];
-  if (currentConsolePage === 'social-v2') jobs.push(refreshQQDashboard());
-  if (currentConsolePage === 'overview') jobs.push(refreshDesktopAgentStatus(true));
-  await Promise.allSettled(jobs);
-  this.disabled = false;
-  if (document.getElementById('connectionAlert').hidden) showConsoleToast('运行状态已刷新');
+  try {
+    await loadPage(currentConsolePage, true);
+  } catch (error) {
+    setConnectionError(error);
+  } finally { this.disabled = false; }
 });
 
 // Attach real accessible names to the original form controls, including paired min/max inputs.
@@ -2607,7 +2722,7 @@ document.getElementById('section-activity').querySelector('h2').dataset.note = '
 
 const searchInput = document.getElementById('consoleSearch');
 const searchResults = document.getElementById('searchResults');
-const featureIndex = [];
+const featureIndex = Object.entries(consolePages).map(([page, label]) => ({ page, label, target: document.querySelector('[data-page="' + page + '"]') }));
 document.querySelectorAll('section[data-page]').forEach(section => {
   const page = section.dataset.page;
   featureIndex.push({ page, label: section.querySelector('h2').textContent, target: section });
@@ -2621,15 +2736,15 @@ searchInput.addEventListener('input', () => {
   const query = searchInput.value.trim().toLowerCase();
   searchResults.replaceChildren();
   if (!query) return closeConsoleSearch();
-  const matches = featureIndex.filter(entry => (consolePages[entry.page][0] + entry.label + entry.target.id).toLowerCase().includes(query)).slice(0,12);
+  const matches = featureIndex.filter(entry => (consolePages[entry.page] + entry.label + entry.target.id).toLowerCase().includes(query)).slice(0,12);
   if (!matches.length) { const empty = document.createElement('p'); empty.textContent = '未找到匹配功能，试试「唤醒」「白名单」或「表情」。'; searchResults.append(empty); }
   matches.forEach(entry => {
     const button = document.createElement('button');
     const title = document.createElement('span'); title.textContent = entry.label;
-    const caption = document.createElement('small'); caption.textContent = consolePages[entry.page][0];
+    const caption = document.createElement('small'); caption.textContent = consolePages[entry.page];
     button.append(title,caption);
     button.addEventListener('click', () => {
-      setConsolePage(entry.page);
+      navigateTo(new URL('/#' + entry.page, location.href));
       let ancestor = entry.target.closest('details');
       while (ancestor) { ancestor.open = true; ancestor = ancestor.parentElement.closest('details'); }
       entry.target.scrollIntoView({ block:'center', behavior:'instant' });
@@ -3048,16 +3163,25 @@ document.getElementById('usageClear').addEventListener('click', async () => {
   refreshUsageRecent();
 });
 
-setConsolePage(location.hash.slice(1), { updateHash:false });
-
-refresh(); refreshRoles(); refreshWhitelist(); loadSecurity(); refreshSimPrompt(); refreshRuntimePromptTemplates(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
-setInterval(() => {
-  refresh();
-  if (currentConsolePage === 'social-v2' && !document.getElementById('v2StatesList').disabled) refreshQQDashboard();
-  if (currentConsolePage === 'overview') refreshDesktopAgentStatus();
-}, 3000);
-// 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
-setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);
+document.getElementById('previewNotice').hidden = document.body.dataset.preview !== 'offline';
+setConsolePage(location.hash.slice(1));
+function pollVisiblePage() {
+  if (document.hidden) return;
+  switch (currentConsolePage) {
+    case 'overview': void loadPage('overview'); break;
+    case 'sessions': void refreshDesktopAgentStatus(); break;
+    case 'social-v2': void refreshQQDashboard(); break;
+    case 'operations': void refresh(); break;
+    case 'usage': void Promise.all([refreshUsage(), refreshUsageChart(), refreshUsageRecent()]); break;
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(learningPoll); clearTimeout(memoryOrganizerPollTimer); }
+  else if (currentConsolePage === 'learning') void refreshLearning(false);
+  else if (currentConsolePage === 'memory-organizer') void refreshMemoryOrganizer({ silent: true });
+  else pollVisiblePage();
+});
+setInterval(pollVisiblePage, 3000);
 // 主题切换（纯前端，不发任何请求；选择写入 localStorage，未选择时跟随系统）
 (function () {
   var root = document.documentElement;

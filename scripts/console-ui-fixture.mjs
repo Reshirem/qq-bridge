@@ -83,6 +83,16 @@ export function makeFixtureState() {
   }));
   return {
     role: '小鲸鱼', desktopAgentStopped: false,
+    snowluma: { connected: true, accountOnline: true, degraded: false, good: true },
+    memorySettings: { enabled: true, namespace: 'demo', baseUrl: 'http://127.0.0.1:8080', apiKeyConfigured: true },
+    memoryProviders: { embedding: { model: 'demo-embedding', dimension: 1024 }, llm: { model: 'demo-model' } },
+    memoryRecords: [{ memoryId: 'demo-first', content: '离线记忆：记得周末整理书架。', metadata: { origin: 'assistant' }, observedAt: timestamp }],
+    memorySequence: 0,
+    organizerSource: { sessionId: 'mock-desktop-agent-session', title: '演示主会话', current: true, updatedAt: timestamp,
+      lastScheduledSeq: 18, lastProcessedSeq: -1, asOfSeq: 25 },
+    organizerJobs: [{ jobId: 'demo-retry', kind: 'rest', sourceSessionId: 'mock-desktop-agent-session',
+      status: 'failed', createdAt: Date.parse(timestamp), updatedAt: Date.parse(timestamp), fromSeq: 0, throughSeq: 18,
+      error: '模型请求超时，已保留分段进度。', progress: { completed: 2, total: 3 }, sourceSessionCurrent: true }],
     learning: { enabled: true, slang: true, stickers: true, minMessages: 20, cooldownMs: 300000, maxWaitMs: 900000, sources: [] },
     slang: [{ id: 'fixture-word', content: '摸鱼', meaning: '工作时偷闲', scope: 'group:123456789', status: 'learned', count: 3, usage: '熟人闲聊', evidence: [{ key: 'group:123456789', userId: '100001', text: '今天忙完了，可以摸鱼一会', time: Date.parse(timestamp) }] }],
     stickerReviews: [{ id: 'review-1', stickerId: 'fixture-sticker', scope: 'group:123456789', before: { desc: '开心的小猫', tags: ['开心', '赞同'] }, after: { desc: '猫咪点头', tags: ['赞同'] } }],
@@ -133,10 +143,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       if (method === 'GET' && ['/', '/console', '/console.html'].includes(path)) {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
           'content-security-policy': "connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'" });
-        res.end(await readFile(file));
+        const markup = await readFile(file, 'utf8');
+        res.end(markup.replace('<body>', '<body data-preview="offline">'));
         return;
       }
-      if (method === 'GET' && ['/console.css', '/console.js'].includes(path)) {
+      if (method === 'GET' && ['/console.css', '/console.js', '/overview.css', '/overview.js'].includes(path)) {
         const asset = path.slice(1);
         res.writeHead(200, {
           'content-type': asset.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',
@@ -169,6 +180,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return json({ ok: true, items: filtered, total: filtered.length, offset: 0, hasMore: false });
           }
           case '/api/learning/sticker-reviews': return json({ ok: true, reviews: state.stickerReviews });
+          case '/api/memory/status': return json({ ok: true, memory: { ...state.memorySettings, serviceInstalled: true, gatewayReachable: true, configured: true } });
+          case '/api/memory/settings': return json({ ok: true, settings: state.memorySettings });
+          case '/api/memory/providers': return json({ ok: true, providers: state.memoryProviders });
+          case '/api/memory/organizer': return json({ ok: true, organizer: { enabled: true, memoryConfigured: true, dshReady: true,
+            sessions: [state.organizerSource], sessionsByDay: {}, jobs: state.organizerJobs, timeZone: 'Asia/Shanghai' } });
           case '/api/learning/sticker-reviews/image':
           case '/api/learning/stickers/image': {
             res.writeHead(200, { 'content-type': 'image/png' });
@@ -381,6 +397,66 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return json({ ok: true, ...state.whitelist });
           }
           case '/api/socialV2/config': state.v2 = qqChannelConfig(state.v2, body); return json({ ok: true, config: state.v2 });
+          case '/api/memory/settings': {
+            const { apiKey, clearApiKey, timeoutSeconds, ...values } = body;
+            Object.assign(state.memorySettings, values, { timeoutMs: timeoutSeconds * 1000,
+              apiKeyConfigured: !clearApiKey && (!!apiKey || state.memorySettings.apiKeyConfigured) });
+            return json({ ok: true, settings: state.memorySettings });
+          }
+          case '/api/memory/providers': {
+            for (const key of ['embedding', 'llm']) {
+              const { apiKey, clearApiKey, ...values } = body[key];
+              state.memoryProviders[key] = { ...values, configured: !!values.model && !!values.endpoint,
+                apiKeyConfigured: !clearApiKey && (!!apiKey || state.memoryProviders[key].apiKeyConfigured) };
+            }
+            return json({ ok: true, restarted: true });
+          }
+          case '/api/memory/service': return json({ ok: true });
+          case '/api/memory/search':
+          case '/api/memory/records/list': {
+            const rows = state.memoryRecords.filter(record => record.content.includes(body.query || '')
+              && (!body.origin || body.origin === 'all' || body.origin === record.metadata.origin)
+              && (!body.timeStart || record.observedAt >= body.timeStart) && (!body.timeEnd || record.observedAt <= body.timeEnd));
+            const offset = Number(body.cursor || 0);
+            const hits = rows.slice(offset, offset + body.limit);
+            const nextCursor = offset + hits.length < rows.length ? String(offset + hits.length) : '';
+            return json({ ok: true, result: { hits, total: rows.length, nextCursor } });
+          }
+          case '/api/memory/read': {
+            const record = state.memoryRecords.find(row => row.memoryId === body.memoryId);
+            return json({ ok: !!record, result: record, error: record ? undefined : '记忆记录不存在' });
+          }
+          case '/api/memory/delete':
+          case '/api/memory/replace':
+          case '/api/memory/save': {
+            if (path !== '/api/memory/save') {
+              const index = state.memoryRecords.findIndex(record => record.memoryId === body.memoryId);
+              if (index < 0) return json({ ok: false, error: '记忆记录不存在' }, 404);
+              state.memoryRecords.splice(index, 1);
+            }
+            if (path === '/api/memory/delete') return json({ ok: true });
+            const memoryId = 'demo-memory-' + ++state.memorySequence;
+            state.memoryRecords.unshift({ ...body, memoryId, metadata: { ...body.metadata, origin: body.origin },
+              observedAt: body.observedAt || new Date().toISOString() });
+            return json({ ok: true, result: { memoryId } });
+          }
+          case '/api/memory/organizer': {
+            if (body.action === 'cleanup') return json({ ok: true, archived: [], skipped: [] });
+            if (body.action === 'start') {
+              const source = state.organizerSource;
+              if (source.sessionId !== body.sessionId || source.asOfSeq <= source.lastScheduledSeq) return json({ ok: false, error: '没有可整理的范围' }, 400);
+              const job = { jobId: 'demo-manual', kind: 'manual', sourceSessionId: source.sessionId, status: 'queued',
+                createdAt: Date.now(), updatedAt: Date.now(), fromSeq: source.lastScheduledSeq, throughSeq: source.asOfSeq };
+              state.organizerJobs.unshift(job);
+              source.lastScheduledSeq = source.asOfSeq;
+              return json({ ok: true, ...job });
+            }
+            const job = state.organizerJobs.find(item => item.jobId === body.jobId);
+            if (body.action !== 'retry' || job?.status !== 'failed') return json({ ok: false, error: '没有可重试的任务' }, 404);
+            job.status = 'queued';
+            job.error = '';
+            return json({ ok: true, job });
+          }
           case '/api/socialV2/tool-log/clear': state.toolLog = []; return json({ ok: true });
           case '/api/socialV2/feedback-clear': state.feedback = []; return json({ ok: true });
           case '/api/socialV2/reset': state.buffers = []; return json({ ok: true });
