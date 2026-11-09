@@ -168,7 +168,9 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     const safeMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {};
     const safeTags = Array.isArray(tags) ? tags.map((item) => String(item).slice(0, 80)).slice(0, 20) : [];
     const safeParticipants = Array.isArray(participants) ? participants.map((item) => String(item).slice(0, 120)).slice(0, 20) : [];
-    const observed = observedAt ? new Date(observedAt).toISOString() : new Date().toISOString();
+    const observationTime = observedAt ? new Date(observedAt) : new Date();
+    if (!Number.isFinite(observationTime.getTime())) throw new Error('observedAt 需要有效的 ISO 日期或日期时间，无法确认时可省略。');
+    const observed = observationTime.toISOString();
     const payload = await request('ingest', {
       context: context({ idempotencyKey: crypto.randomUUID(), ...(stickerScope ? { conversationId: stickerScope } : {}) }),
       externalId: String(externalId || `qq-bridge:${source}:${crypto.randomUUID()}`),

@@ -2246,7 +2246,7 @@ async function main() {
     return pending;
   }
 
-  async function runMemoryOrganizerHeadless(job, task, modelSelection, requestedSessionId, onMemoryWrite) {
+  async function runMemoryOrganizerHeadless(job, task, modelSelection, requestedSessionId, onMemoryWrite, chunkNumber) {
     const cli = memoryOrganizerCliLaunch();
     if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('memoryOrganizer.cliPath 含不支持的命令字符');
     const cliCapabilities = await getMemoryOrganizerCliCapabilities(cli);
@@ -2282,7 +2282,9 @@ async function main() {
         let terminalReason = null;
         let memoryWrites = 0;
         let newMemories = 0;
-        const toolNamesByCallId = new Map();
+        const toolCalls = new Map();
+        const failedSaves = new Map();
+        const itemPrefix = `qq-bridge:organizer:${job.jobId}:chunk-${chunkNumber}:item-`;
         let failure = '';
         let settled = false;
         const deadline = setTimeout(() => {
@@ -2324,21 +2326,31 @@ async function main() {
             const callId = String(event.callId ?? event.toolCallId ?? event.id ?? '');
             const toolName = event.tool ?? event.toolName ?? event.name ?? event.data?.name ?? '';
             const tool = organizerToolLeafName(toolName);
-            if (callId && tool) toolNamesByCallId.set(callId, tool);
+            if (callId && tool) {
+              let input = event.input ?? event.arguments;
+              if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = null; } }
+              const id = input?.externalId;
+              const saveId = tool === 'memory_save' && typeof id === 'string' && id.startsWith(itemPrefix)
+                && /^\d+$/.test(id.slice(itemPrefix.length)) ? id : '';
+              toolCalls.set(callId, { tool, saveId });
+            }
             if (tool === 'memory_save' && typeof onMemoryWrite === 'function') onMemoryWrite();
           } else if (eventType === 'tool_result' || eventType === 'toolresult') {
             const callId = String(event.callId ?? event.toolCallId ?? event.id ?? '');
+            const call = toolCalls.get(callId);
             const tool = organizerToolLeafName(
-              event.tool ?? event.toolName ?? event.name ?? event.data?.name ?? toolNamesByCallId.get(callId) ?? ''
+              event.tool ?? event.toolName ?? event.name ?? event.data?.name ?? call?.tool ?? ''
             );
-            if (callId) toolNamesByCallId.delete(callId);
+            if (callId) toolCalls.delete(callId);
             const status = String(event.status ?? event.result?.status ?? '').toLowerCase();
             const isError = status === 'error' || status === 'failed' || event.isError === true || Boolean(event.error);
             if (tool.startsWith('memory_') && isError) {
               const detail = redactSensitiveText(memoryOrganizerMessageText(event.error ?? event.result ?? event.output ?? event.content)).trim().slice(0, 500);
-              failure ||= `记忆工具 ${tool} 返回失败${detail ? `：${detail}` : ''}`;
+              const message = `记忆工具 ${tool} 返回失败${detail ? `：${detail}` : ''}`;
+              if (tool === 'memory_save' && call?.saveId) failedSaves.set(call.saveId, message);
+              else failure ||= message;
             }
-            if (tool === 'memory_save' && (status === 'completed' || status === 'success' || status === 'succeeded')) {
+            if (!isError && tool === 'memory_save' && (status === 'completed' || status === 'success' || status === 'succeeded')) {
               let result = event.result ?? event.output ?? event.content;
               if (typeof result === 'string') {
                 try { result = JSON.parse(result); } catch { result = null; }
@@ -2348,6 +2360,7 @@ async function main() {
               } else {
                 memoryWrites += 1;
                 newMemories += result.storedIds.length;
+                if (call?.saveId && (result.storedIds.length || result.skippedIds.length)) failedSaves.delete(call.saveId);
               }
             }
           } else if (eventType === 'final') {
@@ -2385,6 +2398,7 @@ async function main() {
           clearTimeout(deadline);
           if (lineBuffer.trim()) parseEvent(lineBuffer);
           void syncOrganizerUsage(sessionId, modelSelection);
+          if (failedSaves.size) failure ||= failedSaves.values().next().value;
           if (!sessionId) failure ||= `DSH headless 未创建或恢复整理 Session（退出码 ${code}）`;
           if (code !== 0) failure ||= `DSH headless 退出码 ${code}`;
           const reason = finalEvent && Object.hasOwn(finalEvent, 'reason') ? finalEvent.reason : terminalReason;
@@ -2541,6 +2555,7 @@ async function main() {
       let taskChunk = null;
       let finalText = '';
       let memoryToolFailure = false;
+      const failedSaves = new Set();
       const pendingCalls = new Map();
       const unconfirmedSaveChunks = new Set();
       const writesInTurn = new Map();
@@ -2569,12 +2584,13 @@ async function main() {
             try { args = JSON.parse(args); } catch { args = null; }
           }
           let chunk = null;
+          let saveId = '';
           if (name === 'memory_save') {
             const match = String(args?.externalId ?? '').match(externalIdPattern);
-            if (match) chunk = Number(match[1]);
+            if (match) { chunk = Number(match[1]); saveId = args.externalId; }
             else if (taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
           }
-          if (callId) pendingCalls.set(callId, { name, chunk });
+          if (callId) pendingCalls.set(callId, { name, chunk, saveId });
         } else if (event?.type === 'tool/result') {
           const message = data.message ?? {};
           const callId = String(message.toolCallId ?? message.source?.callId ?? data.callId ?? '').trim();
@@ -2584,8 +2600,8 @@ async function main() {
           const failed = message.isError === true || data.error != null
             || (Array.isArray(message.content) && message.content.some((block) => block?.isError === true));
           if (failed) {
-            memoryToolFailure = true;
-            if (call.name === 'memory_save' && Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
+            if (call.saveId && call.chunk === taskChunk) failedSaves.add(call.saveId);
+            else memoryToolFailure = true;
             continue;
           }
           if (call.name !== 'memory_save') continue;
@@ -2599,6 +2615,7 @@ async function main() {
             continue;
           }
           const saved = { stored: parsed.result.storedIds.length, skipped: parsed.result.skippedIds.length };
+          if (saved.stored || saved.skipped) failedSaves.delete(call.saveId);
           if (!saveResultsByChunk.has(call.chunk)) saveResultsByChunk.set(call.chunk, []);
           saveResultsByChunk.get(call.chunk).push(saved);
           if (!writesInTurn.has(call.chunk)) writesInTurn.set(call.chunk, []);
@@ -2608,7 +2625,7 @@ async function main() {
       for (const [callId, call] of pendingCalls) {
         if (call.name === 'memory_save' && Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
       }
-      if (!finalText.includes('MEMORY_ORGANIZER_DONE') || memoryToolFailure) return;
+      if (!finalText.includes('MEMORY_ORGANIZER_DONE') || memoryToolFailure || failedSaves.size) return;
       const noChange = finalText.includes('MEMORY_ORGANIZER_NO_CHANGE');
       for (const [chunk, writes] of writesInTurn) {
         if (taskChunk !== chunk || unconfirmedSaveChunks.has(chunk)) continue;
@@ -2762,7 +2779,8 @@ async function main() {
         () => memoryOrganizer.updateJob(activeJob.jobId, {
           status: 'writing',
           progress: { stage: `写入第 ${index + 1}/${chunks.length} 段记忆`, completed: completedChunks, total: chunks.length }
-        })
+        }),
+        index + 1
       );
       if (organizerSessionId && outcome.sessionId !== organizerSessionId) {
         throw new Error('每日整理 Session ID 与任务记录不一致');

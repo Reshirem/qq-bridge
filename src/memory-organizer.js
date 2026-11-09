@@ -344,16 +344,23 @@ function addsDateToQQTime(dated, clock) {
   return typeof clock === 'string' && /^\d{2}-\d{2} (\d{2}:\d{2})$/.exec(dated)?.[1] === clock;
 }
 
-function conflictingQQMessageFields(previous, current, previousTool, currentTool) {
-  // Older history and unread results sometimes placed the same two renderings
-  // of a QQ message in opposite fields.
-  const swappedText = previousTool !== currentTool
-    && [previousTool, currentTool].includes('qq_get_conversation_history')
+function alignQQTextFields(previous, current, previousTool, currentTool) {
+  if (previousTool === currentTool || previous.text === current.text) return current;
+  // A detail read exposes only one rendering. History can put that exact
+  // rendering in plain and the reply without its quotation in text.
+  const detailMatchesAlternate = (previousTool === 'qq_get_message_detail' && previous.plain === undefined
+      && typeof previous.text === 'string' && previous.text === current.plain)
+    || (currentTool === 'qq_get_message_detail' && current.plain === undefined
+      && typeof current.text === 'string' && current.text === previous.plain);
+  const swappedPair = [previousTool, currentTool].includes('qq_get_conversation_history')
     && typeof previous.text === 'string' && typeof previous.plain === 'string'
     && previous.text === current.plain && previous.plain === current.text;
+  return detailMatchesAlternate || swappedPair ? { ...current, text: current.plain, plain: current.text } : current;
+}
+
+function conflictingQQMessageFields(previous, current) {
   return QQ_MESSAGE_CONSISTENCY_FIELDS.filter((field) => {
     if (previous[field] === undefined || current[field] === undefined) return false;
-    if (swappedText && (field === 'text' || field === 'plain')) return false;
     if (field === 'at' && (addsDateToQQTime(current.at, previous.at) || addsDateToQQTime(previous.at, current.at))) return false;
     return JSON.stringify(previous[field]) !== JSON.stringify(current[field]);
   });
@@ -492,14 +499,15 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
               ? `${key}\u0000${bufferId}\u0000seq:${messageSeq}` : '';
           if (identity && seenQQMessages.has(identity)) {
             const previous = seenQQMessages.get(identity);
-            const conflictingFields = conflictingQQMessageFields(previous.message, compact, previous.event.tool, toolLeaf);
+            const aligned = alignQQTextFields(previous.message, compact, previous.event.tool, toolLeaf);
+            const conflictingFields = conflictingQQMessageFields(previous.message, aligned);
             if (conflictingFields.length) {
               markIncomplete(`DSH 事件 ${previous.event.seq} 和 ${seq} 中重复 QQ 消息字段不一致（${conflictingFields.join('、')}）`);
             } else {
               // Detail and list tools expose different optional fields for the
               // same message. Keep the richer union while checking only fields
               // present in both results; sender is a display label, not identity.
-              previous.message = mergeQQMessageFields(previous.message, compact);
+              previous.message = mergeQQMessageFields(previous.message, aligned);
               previous.event.message = sanitize(previous.message);
             }
             continue;

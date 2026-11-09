@@ -169,6 +169,42 @@ test('restart receipts keep completed chunks with a normal missing lookup, but r
   } finally { await h.close(); }
 });
 
+test('live and replayed writes clear a save error only for a confirmed retry of the same item', async () => {
+  const events = [];
+  const h = await bridgeHarness({ globals: { spawn: spawnFixture(events) } });
+  const job = { jobId: 'fixture' };
+  const first = 'qq-bridge:organizer:fixture:chunk-1:item-1';
+  try {
+    for (const [retryId, storedIds, skippedIds, recovered] of [
+      [first, ['saved'], [], true], [first, [], ['already-saved'], true],
+      [first, [], [], false], [first + '0', ['other'], [], false]
+    ]) {
+      const records = [];
+      const push = (type, data) => records.push({ seq: records.length, type, data });
+      events.splice(0, events.length, ...cliEvents({ write: true }).slice(0, 2));
+      push('turn/start', { turn: 1 });
+      push('user/message', { content: '整理任务 fixture，当前是第 1/1 段' });
+      for (const [callId, externalId, error] of [['bad', first, true], ['retry', retryId, false]]) {
+        const result = error ? 'observedAt 无效' : JSON.stringify({ storedIds, skippedIds });
+        events.push({ type: 'tool_call', callId, tool: 'memory_save', input: { externalId } },
+          { type: 'tool_result', callId, status: error ? 'failed' : 'completed', result });
+        push('tool/call', { callId, name: 'memory_save', arguments: JSON.stringify({ externalId }) });
+        push('tool/result', { message: { source: { callId }, isError: error, content: [{ type: 'text', text: result }] } });
+      }
+      events.push(...cliEvents({ write: true }).slice(-2));
+      push('assistant/message', { content: 'MEMORY_ORGANIZER_DONE' });
+      push('turn/end', { turn: 1, reason: { kind: 'completed' } });
+      const run = h.runMemoryOrganizerHeadless(job, 'fixture', model, 'fixture-session', undefined, 1);
+      if (recovered) assert.equal((await run).newMemories, storedIds.length);
+      else await assert.rejects(run, /observedAt 无效/);
+      h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections'
+        ? { asOfSeq: records.length - 1 } : { records } } });
+      const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', job.jobId, 1);
+      assert.equal(receipts.has(1), recovered);
+    }
+  } finally { await h.close(); }
+});
+
 test('retry keeps the completed checkpoint and blocks later ranges only for the affected source', () => {
   let saved;
   const state = createMemoryOrganizerState(null, value => { saved = value; });
@@ -202,6 +238,37 @@ test('unread and history can swap text renderings and add a date across midnight
   assert.equal(messages[0].message.at, '11-02 21:41');
   read('qq_get_conversation_history', { text: '另一条', plain: '[回复] 好', at: '11-03 21:41' });
   assert.match(organizerTranscriptRecords(records).incompleteReasons[0], /at.*text/);
+});
+
+test('detail and history preserve both renderings of a quoted reply in either read order', () => {
+  const body = '好的';
+  const quoted = '[引用 甲：周六见]' + body;
+  const detail = { messageId: '17', text: quoted, userId: '7' };
+  const history = { ...detail, text: body, plain: quoted };
+  function transcript(reads) {
+    const records = reads.flatMap(([tool, message], index) => {
+      const callId = String(index);
+      const payload = tool === 'qq_get_message_detail' ? { info: message } : { messages: [message], readThroughSeq: 1 };
+      return [
+        { seq: 2 * index, type: 'tool/call', data: { name: tool, callId } },
+        { seq: 2 * index + 1, type: 'tool/result', data: { message: { source: { callId },
+          content: [{ type: 'text', text: JSON.stringify({ key: 'group:1', ...payload }) }] } } }
+      ];
+    });
+    return organizerTranscriptRecords(records);
+  }
+  const d = ['qq_get_message_detail', detail];
+  const h = ['qq_get_conversation_history', history];
+  for (const reads of [[d, h, h], [h, d, h]]) {
+    const result = transcript(reads);
+    assert.deepEqual(result.incompleteReasons, []);
+    const messages = result.events.filter(event => event.kind === 'qq-message');
+    assert.equal(messages.length, 1);
+    assert.deepEqual(new Set([messages[0].message.text, messages[0].message.plain]), new Set([body, quoted]));
+  }
+  for (const change of [{ text: '另一条' }, { plain: '[引用 乙：另一个约定]' + body }, { userId: '9' }]) {
+    assert.equal(transcript([d, h, [h[0], { ...history, ...change }]]).incomplete, true);
+  }
 });
 
 test('receipt uses the final visible answer and ignores tentative markers in reasoning or tool steps', async () => {
