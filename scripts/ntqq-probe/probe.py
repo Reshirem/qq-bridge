@@ -2,7 +2,6 @@
 import argparse
 import json
 import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -11,21 +10,9 @@ from pathlib import Path
 
 import frida
 
-from account import active_account
+from account import active_account, main_pid
 
 HERE = Path(__file__).resolve().parent
-
-
-def main_pid():
-    command = ("$p = Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" | "
-               "Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '(?:^| )--type=' }; "
-               "$p | ForEach-Object { $_.ProcessId }")
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command],
-                            check=True, capture_output=True, text=True)
-    pids = result.stdout.split()
-    if len(pids) != 1:
-        raise ValueError("expected one QQ main process; supply --pid for the logged-in QQ")
-    return int(pids[0])
 
 
 def observe(pid, directory, seconds, wait, send_test=None):
@@ -37,6 +24,20 @@ def observe(pid, directory, seconds, wait, send_test=None):
                  f"\nmodule.exports(receiver,{json.dumps(str(directory))},{json.dumps(send_test)}); return; }}")
     guest = ("(function(receiver){ const module = {exports:{}};\n" + body +
              f"\nmodule.exports(receiver,{json.dumps(str(directory))},{seconds}); }})")
+    wrapper = attach_guest(pid, guest, directory, wait)
+    deadline = time.monotonic() + seconds + 4
+    result = directory / "result.json"
+    while time.monotonic() < deadline:
+        if result.is_file():
+            data = json.loads(result.read_text(encoding="utf-8"))
+            if data.get("done"):
+                data["build"] = next((part for part in wrapper.parts if re.fullmatch(r"[\d.]+-\d+", part)), None)
+                return data
+        time.sleep(0.25)
+    raise ValueError("QQ did not finish the observation within the time limit")
+
+
+def attach_guest(pid, guest, directory, wait):
     session = frida.attach(pid)
     arrived = threading.Event()
     status = {}
@@ -61,16 +62,7 @@ def observe(pid, directory, seconds, wait, send_test=None):
             raise ValueError(f"could not enter QQ: {status.get('reason')}")
     finally:
         session.detach()
-    deadline = time.monotonic() + seconds + 4
-    result = directory / "result.json"
-    while time.monotonic() < deadline:
-        if result.is_file():
-            data = json.loads(result.read_text(encoding="utf-8"))
-            if data.get("done"):
-                data["build"] = next((part for part in wrapper.parts if re.fullmatch(r"[\d.]+-\d+", part)), None)
-                return data
-        time.sleep(0.25)
-    raise ValueError("QQ did not finish the observation within the time limit")
+    return wrapper
 
 
 def main():

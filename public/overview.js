@@ -68,11 +68,11 @@ function agentCard(agent) {
 }
 
 function qqCard(bridge, qq) {
-  const health = bridge?.snowluma;
+  const health = bridge?.qqHealth ?? bridge?.snowluma;
   const names = qq?.conversations ?? [];
   const unread = names.reduce((sum, row) => sum + row.unreadCount, 0);
   const queued = names.filter(row => row.attention === 'queued').length;
-  const detail = qq ? unread + ' 条未读 · ' + queued + ' 个来源等待提交' : '未能读取 QQ 消息缓冲';
+  const detail = qq ? unread + (qq.backend === 'native' ? ' 条未读提醒' : ' 条未读') + ' · ' + queued + ' 个来源等待提交' : '未能读取 QQ 消息状态';
   if (!health || !qq) return card('qq', '状态未知', detail);
   if (!health.connected || health.accountOnline === false || health.degraded) {
     const title = !health.connected ? '网关已断开' : health.accountOnline === false ? 'QQ 账号离线' : '连接异常';
@@ -129,7 +129,7 @@ function renderSources(qq) {
     link.href = '/?source=' + encodeURIComponent(row.key) + '#social-v2';
     const meta = element('div', undefined, 'qq-meta');
     const attention = { queued: '提醒待提交', unread: '提醒待读' }[row.attention];
-    meta.append(element('span', '最近来信 ' + time(row.lastIncomingAt)), element('span', [attention, row.unreadCount + ' 条未读'].filter(Boolean).join(' · ')));
+    meta.append(element('span', '最近来信 ' + time(row.lastIncomingAt)), element('span', [attention, row.unreadCount + (qq.backend === 'native' ? ' 条未读提醒' : ' 条未读')].filter(Boolean).join(' · ')));
     link.append(element('strong', row.name || row.key, 'qq-name'), meta);
     return link;
   }) : [element('p', qq ? '还没有收到 QQ 消息。' : 'QQ 来源暂时不可用。', 'empty')]));

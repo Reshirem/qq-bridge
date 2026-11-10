@@ -1,7 +1,6 @@
 """Read committed messages directly from the logged-in Windows QQ account's live database."""
 import argparse
 from contextlib import closing, contextmanager
-from functools import partial
 import json
 from pathlib import Path
 import re
@@ -48,6 +47,8 @@ def message_schema():
     content.field.add(name="kind", number=45002, type=5, label=1)  # int32
     content.field.add(name="text", number=45101, type=12, label=1)  # UTF-8 bytes
     for name, number, field_type in (
+        ("at_type", 45102, 5), ("at_uin", 45103, 4), ("at_uid", 45105, 12),
+        ("quote_uid", 40020, 12), ("quote_seq", 47402, 3), ("private_quote_seq", 47419, 3),
         ("subtype", 45003, 5), ("size", 45405, 3), ("md5", 45406, 12),
         ("face_id", 47601, 5), ("face_label", 47602, 12),
         ("package_id", 80810, 13), ("market_label", 80900, 12), ("emoji_id", 80903, 12),
@@ -202,13 +203,26 @@ def decode_history(rows, cache=None):
 
 
 def run(args):
-    config = json.loads((ROOT / "config.json").read_text("utf-8-sig"))["snowluma"]
-    account = str(local_action(config, "get_login_info", {})["user_id"])
-    if not re.fullmatch(r"[1-9][0-9]*", account):
-        raise ValueError("无法识别当前登录的 QQ 账号")
+    sys.path.insert(0, str(ROOT / "scripts/ntqq-probe"))
+    from account import active_account, main_pid
+    account = active_account(args.tencent_files, main_pid())
+    if not account:
+        raise ValueError("未能从桌面 QQ 定位登录账号和消息库")
     source = (args.tencent_files / account / "nt_qq" / "nt_db" / "nt_msg.db").resolve(strict=True)
     key_dir = ROOT / "state/ntqq-reader/keys"
-    with verified_connection(source, account, key_dir, partial(local_action, config)) as (db, key_status):
+    identity = key_identity(account, key_header(source))
+    if args.import_key:
+        from getpass import getpass
+        key = getpass("输入当前账号的数据库密钥（不回显）: ")
+        with closing(open_live(source, key)):
+            store_key(key_dir, identity, key)
+        return {"keyStatus": "imported"}
+    key = cached_key(key_dir, identity)
+    if not key:
+        raise ValueError("请使用 --import-key 导入本账号的数据库密钥")
+    with closing(open_live(source, key)) as db:
+        key_status = "cached"
+
         info = {"readMode": "live-readonly", "keyStatus": key_status}
         if args.check:
             if db.execute("PRAGMA quick_check(1)").fetchone() != ("ok",):
@@ -231,6 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--source", help="group:群号 或 private:QQ号；省略时仅输出统计")
     parser.add_argument("--before-id", type=int, help="读取比这个同来源 NT 消息 ID 更早的一页")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--import-key", action="store_true", help="验证并由 DPAPI 保存当前账号的数据库密钥")
     parser.add_argument("--check", action="store_true", help="额外运行全库 quick_check")
     args = parser.parse_args()
     if not 1 <= args.limit <= 100 or args.before_id is not None and not args.source:

@@ -1,3 +1,4 @@
+import { openNativeReminders } from '../src/native-reminders.js';
 import { qqChannelConfig } from '../src/qq-channel-config.js';
 // Execute the real bridge initialization/functions against temporary files and fake peers.
 // No production config, QQ connection, DSH process, or persistent home is accessed.
@@ -45,7 +46,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     fs.writeFileSync(fixturePatchFileFor(name), '# audit fixture generated patch\n');
   }
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
-    dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
+    qqBackend: 'snowluma', dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
     consoleToken: 'fixture-console-token', chatLearning: { enabled: false }, ...config,
   }));
@@ -157,13 +158,14 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     return acc;
   }, { out: [], droppingImport: false }).out.join('\n');
   source = source.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(path.join(temp, 'src/bridge.js')).href));
+  source = source.replace("await import('@snowluma/sdk')", '({SnowLumaWebSocketClient:globalThis.SnowLumaWebSocketClient,text:globalThis.text})');
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   // Register the real SDK event handlers before stopping startup at the network boundary.
   const connectStart = source.indexOf('  bot.connect().catch(');
   if (connectStart < 0) throw new Error('Cannot locate bridge connection startup in the offline fixture');
   source = source.slice(0, connectStart) + `
   return {
-    closeUnreadStore: () => { tokenLedger.close(); unreadStore.close(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
+    closeUnreadStore: () => { tokenLedger.close(); closeQQUnreadStore(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, listStickersForV2, getStickerImageData,
     runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, memoryOrganizerPatchText,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
@@ -204,7 +206,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     // 固定桩掉：测试不应该真去 netstat 宿主机。
     execFileSync: () => '',
     // 图片归一化会读取 process.env.FFMPEG_PATH，因此 process 桩需要 env。
-    process: { pid: process.pid, platform: process.platform, kill: process.kill, env: {}, exit: (code) => { throw new Error('unexpected exit ' + code); } },
+    process: { once() {}, pid: process.pid, platform: process.platform, kill: process.kill, env: {}, exit: (code) => { throw new Error('unexpected exit ' + code); } },
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class {
@@ -230,7 +232,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     patchFileFor: fixturePatchFileFor,
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
-    qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
+    openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。

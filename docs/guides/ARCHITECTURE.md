@@ -1,5 +1,9 @@
 # 运行架构与渐进式重构
 
+## QQ 接入方案
+
+QQ 接入方案由启动配置 `qqBackend` 二选一。独立模式持有桌面 QQ 原生消息服务和账号对应的只读 SQLCipher 连接，独立提醒库只记录位置与投递水位。SnowLuma 模式使用 OneBot 事件和它自己的 500 条未读缓存。两者共用桥接的提醒分类、会话重试和出站审计。[运行方式](NTQQ_ATTENTION.md)
+
 ## 当前方向
 
 明日方舟能力由 `desktop-agent` 预设中的可选 Maa-Agent 插件提供。插件在存在本地安装记录时注册常用游戏工具和原生 CLI 入口，按需调用独立虚拟环境的 Python 模块。作业目录用于发现文件，执行工具也接受本地文件路径。作业执行、设备锁和战果记录由上游维护，角色使用同一运行编号查询进度。安装与使用见[明日方舟模块](MAA_AGENT.md)。
@@ -30,7 +34,7 @@
 - QQ 仅接受已配置 `ownerQQ` 的纯文本私聊 `/睡觉` 和 `/起床` 控制睡眠；其他聊天不作为管理命令执行。人格卡和桥接配置通过受保护的 WebUI 管理。关系称谓由人格卡和双方表达决定，单条生活描述、昵称、语气或玩笑不能单独建立主人/owner身份或跨来源账号关联。
 - `ownerQQ` 首次由 WebUI 保存或清除后，本地值优先于 DSH 同名设置；此前的旧安装继续兼容 DSH 设置。账号改变时，缓存消息的身份标记按当前账号计算；QQ 工具访问范围不受该设置影响。
 - 私聊、真正发给机器人的原生 @、已验证的回复/引用、群消息中提到当前选中的人格卡名称，以及配置的 `socialV2.attentionKeywords` 命中会向同一全局会话发送元数据提醒。会话活动时通过 DSH 的 `steer` 送到当前回合的下一步，休息时提前唤醒；提醒不含正文，数字角色可自行决定如何参与。
-- 全局数字角色使用 `mcp-snowluma-safe.js` 的 QQ 工具集，可访问账号中的群聊和私聊，不按提醒来源限制会话。项目工具守卫和桥接 API 仍校验当前 `desktop-agent` 会话与内部凭证；管理接口仅控制台可用，发送继续执行内容检查和审计。聊天隐私提示仍作为模型行为约定，而非会话访问隔离。直接通过 QQ 桌面 UI 发送不经过桥接 API 检查。
+- 全局数字角色使用 `mcp-qq.js` 的 QQ 工具集，可访问账号中的群聊和私聊，不按提醒来源限制会话。项目工具守卫和桥接 API 仍校验当前 `desktop-agent` 会话与内部凭证；管理接口仅控制台可用，发送继续执行内容检查和审计。聊天隐私提示仍作为模型行为约定，而非会话访问隔离。直接通过 QQ 桌面 UI 发送不经过桥接 API 检查。
 - 可选 A_Memorix 记忆的写入、相关度检索、单条读取和删除由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 的常规记忆操作访问同一 namespace。DSH 记忆工具只校验全局 agent token，不受 `agent_rest` 生命周期限制。为支持全量原始记录浏览，已登录的本机 WebUI 还可通过独立适配器只读分页查询该 namespace 的 metadata SQLite `paragraphs` 表；该读取仅供控制台使用，agent-call 白名单不开放此路由。桥接不直接写入 SQLite，也不读取向量库或图文件；调用参数中的记忆正文和搜索词不会进入工具参数日志。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - `dsh-computer-use-win` 提供本机桌面操作能力；数字角色可根据需要观察用户的电脑活动。插件支持部分后台操作和由用户通过 Esc 停止桌面操作；普通鼠标或键盘操作不会自动停止工具。ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
 - DSH 原生 `web_search` / `web_fetch` 由 `@deepseek-ai/dsh-tool-web` 注册，分别调用当前 DSH profile 选择的 `ctx.web` 搜索/抓取提供方；desktop-agent preset 沿用 `tool-web` 的默认配置，默认注册两项。`qq-tool-restrict` 允许这两个 DSH 工具名通过执行守卫，实际是否可调用由 DSH 工具注册和每步提供方就绪状态决定。它与桥接的 `webSearch` / `web-search-safe` 不同；随附的 DSH `http` 抓取提供方允许访问本机和内网地址，不经过桥接 SSRF 防护。
@@ -56,8 +60,7 @@ WebUI 的 QQ 消息仪表盘展示来源缓存、未读与待处理提醒。关�
 
 - `src/autonomy-policy.js`：纯函数形式的 QQ 注意信号分类。
 - `src/dsh-client.js`：DSH API、鉴权和事件流客户端。
-- `src/mcp-snowluma-safe.js`：SnowLuma QQ 工具和桥接 API 的调用端。
-- `src/mcp-host-server.js`：只读的主机/SnowLuma 状态工具。
+- `src/mcp-qq.js` 以 `mcp__qq__*` 注册 QQ 消息、媒体和状态工具，桥接按所选后端执行。
 - 媒体、角色卡、网络抓取、敏感内容和 token 账本等独立模块。
 
 ## 渐进式重构顺序

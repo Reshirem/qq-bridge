@@ -102,13 +102,17 @@ await test('执行期 guard：QQ MCP 与 DSH 网页工具放行，其他未知�
   const diag = path.join(tmpDir, 'diag-guard.log');
   const mod = await loadPlugin(diag);
   const { ctx, calls } = makeCtx({ restrictImpl: () => undefined });
+  ctx.on = (event, handler) => { if (event === 'tools/pre-execute') calls.preExecute = handler; };
   mod.apply(ctx);
   assert.equal(typeof calls.guard, 'function', '必须注册执行期 guard');
   const guard = calls.guard;
-  for (const name of ['mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status', 'web_search', 'web_fetch']) {
+  const unbound = await calls.preExecute({name: 'mcp__qq__qq_send_message'}, () => 'passed');
+  assert.equal(unbound.kind, 'deny');
+  assert.equal(await calls.preExecute({name: 'web_search'}, () => 'passed'), 'passed');
+  for (const name of ['mcp__qq__qq_send_message', 'mcp__qq__qq_status', 'web_search', 'web_fetch']) {
     assert.equal(guard({ name }), undefined, `${name} 应放行`);
   }
-  for (const name of ['ask_user_question', 'todo_write', 'dev_inject_plugin', 'dev_plugin_status', 'pwsh', 'read', 'write', 'dsh_snapshot', 'skill', 'mcp__unknown__screencap']) {
+  for (const name of ['ask_user_question', 'todo_write', 'dev_inject_plugin', 'dev_plugin_status', 'pwsh', 'read', 'write', 'dsh_snapshot', 'skill', 'mcp__unknown__screencap', 'mcp__snowluma__qq_send_message', 'mcp__snowluma-host__snowluma_status']) {
     assert.match(String(guard({ name })), /不在 QQ 桥接白名单内/, `${name} 必须拒绝`);
   }
   assert.match(String(guard({ name: '' })), /工具名无效/);

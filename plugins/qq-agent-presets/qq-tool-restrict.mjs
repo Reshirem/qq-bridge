@@ -1,4 +1,4 @@
-// 全局 desktop-agent 的工具策略：开放 SnowLuma 与 Windows computer-use，
+// 全局 desktop-agent 的工具策略：开放 QQ 渠道与 Windows computer-use，
 // 同时拦截 DSH 的 shell、通用文件、子代理和管理工具。
 //
 import fs from 'node:fs'
@@ -110,7 +110,7 @@ const DESKTOP_AGENT_STATE_FILE = (() => {
   } catch { return '' }
 })()
 
-const QQ_TOOL_PREFIXES = ['mcp__snowluma__', 'mcp__snowluma-host__']
+const QQ_TOOL_PREFIX = 'mcp__qq__'
 
 function currentDesktopAgentSessionId() {
   if (!DESKTOP_AGENT_STATE_FILE) return ''
@@ -190,7 +190,7 @@ export function apply(ctx) {
   if (typeof ctx.on === 'function') {
     ctx.on('tools/pre-execute', async (exec, next) => {
       const name = exec?.name
-      if (typeof name !== 'string' || !QQ_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return next()
+      if (typeof name !== 'string' || !name.startsWith(QQ_TOOL_PREFIX)) return next()
       const expectedSessionId = currentDesktopAgentSessionId()
       const callerSessionId = String(exec?.agent?.id ?? '').trim()
       if (!expectedSessionId || callerSessionId !== expectedSessionId) {
@@ -206,10 +206,10 @@ export function apply(ctx) {
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
     if (SAFE_EXACT.has(name)) return
     if (isInstalledTool(name)) return
-    if (['mcp__wincu__', 'mcp__snowluma__', 'mcp__snowluma-host__', 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
+    if (['mcp__wincu__', QQ_TOOL_PREFIX, 'mcp__qq-memory__'].some((prefix) => name.startsWith(prefix))) return
     if (name === 'mcp__web-search-safe__web_search' || name === 'mcp__web-search-safe__web_fetch') {
       return `旧版桥接网页工具 "${name}" 已停用，请使用 DSH 自带的 web_search 或 web_fetch；如未显示，请重启 DSH 并重建会话。`
     }
-    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（允许 Windows computer-use、SnowLuma QQ、A_Memorix 记忆及 DSH 自带网页工具）`
+    return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（允许 Windows computer-use、QQ、A_Memorix 记忆及 DSH 自带网页工具）`
   })
 }

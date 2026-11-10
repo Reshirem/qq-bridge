@@ -131,14 +131,15 @@ if (scanned.names.size === 0) {
 
 const patch = fs.readFileSync(path.join(PROFILE_DIR, 'cordis.patch.yml'), 'utf8');
 const patchDoc = yaml.load(patch);
-const mcpIds = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert.map((x) => x.id));
-check('profile patch 含 3 个 MCP 且无重复', mcpIds.length === 3 && new Set(mcpIds).size === 3, mcpIds.join(', '));
-const snowlumaEntry = patchDoc.filter((e) => e?.insert).flatMap((e) => e.insert).find((x) => x.id === 'mcp-snowluma');
-check('mcp-snowluma 带 toolCallTimeoutMs=725000', snowlumaEntry?.config?.toolCallTimeoutMs === 725000);
-check('mcp 路径指向本仓库', mcpIds.every((id) => {
-  const e = patchDoc.filter((x) => x?.insert).flatMap((x) => x.insert).find((y) => y.id === id);
-  return String(e.config.args[0]).includes('qq-bridge');
-}));
+const entries = patchDoc.flatMap(op => op.insert || []);
+const managed = entries.filter(entry => ['mcp-qq', 'mcp-qq-memory'].includes(entry.id));
+check('profile 已迁移 QQ 工具', !entries.some(entry => ['mcp-snowluma', 'mcp-snowluma-host'].includes(entry.id)));
+for (const [id, name, script] of [['mcp-qq', 'qq', 'mcp-qq.js'], ['mcp-qq-memory', 'qq-memory', 'mcp-memory-safe.js']]) {
+  const matches = managed.filter(entry => entry.id === id);
+  check(id + ' 在 profile 中注册一次且指向本仓库', matches.length === 1 && matches[0].config?.serverName === name
+    && matches[0].config?.args?.[0] === path.join(ROOT, 'src', script));
+}
+check('mcp-qq 带 toolCallTimeoutMs=725000', managed.find(entry => entry.id === 'mcp-qq')?.config?.toolCallTimeoutMs === 725000);
 
 const pkg = JSON.parse(fs.readFileSync(path.join(PROFILE_DIR, 'package.json'), 'utf8'));
 check('profile bundles 含 qq-agent-presets', pkg.dsh.profile.bundles.includes('qq-agent-presets'));
@@ -174,16 +175,14 @@ const pluginPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugins/qq-agent-p
 check('package-lock.json 顶层 version 与 package.json 一致', lockJson.version === pkgJson.version, `lock=${lockJson.version} pkg=${pkgJson.version}`);
 check('package-lock.json packages[""] version 与 package.json 一致', lockJson.packages?.['']?.version === pkgJson.version, `lock=${lockJson.packages?.['']?.version}`);
 check('qq-agent-presets 插件版本与主包一致', pluginPkg.version === pkgJson.version, `plugin=${pluginPkg.version}`);
-for (const f of ['src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js']) {
-  const m = /new McpServer\(\{[^}]*version:\s*'([^']+)'/.exec(fs.readFileSync(path.join(ROOT, f), 'utf8'));
-  check(`${f} 的 MCP serverInfo.version 与主包一致`, m?.[1] === pkgJson.version, `声明=${m?.[1]} 主包=${pkgJson.version}`);
-}
+const qqServerVersion = /new McpServer\(\{[^}]*version:\s*'([^']+)'/.exec(fs.readFileSync(path.join(ROOT, 'src/mcp-qq.js'), 'utf8'))?.[1];
+check('QQ MCP serverInfo.version 与主包一致', qqServerVersion === pkgJson.version);
 
 // ── 4. 语法检查 ─────────────────────────────────────────────────────────────
 // 注意 spawnSync 在受限环境（DSH 沙箱的 workspace-write）会以 EPERM 失败——
 // 那是**环境**不允许起子进程，不是文件有语法错。这种情况显式记为跳过，
 // 否则会输出一串假失败，把真正的失败淹掉（实测踩过）。
-const SYNTAX_FILES = ['src/bridge.js', 'src/dsh-client.js', 'src/mcp-snowluma-safe.js', 'src/mcp-host-server.js', 'src/mcp-web-search-safe.js', 'src/self-test.js', 'scripts/setup-dsh.mjs'];
+const SYNTAX_FILES = ['src/bridge.js', 'src/dsh-client.js', 'src/mcp-qq.js', 'src/mcp-memory-safe.js', 'src/self-test.js', 'scripts/setup-dsh.mjs'];
 {
   const probe = spawnSync(process.execPath, ['--check', path.join(ROOT, 'src/dsh-client.js')], { encoding: 'utf8' });
   if (probe.error?.code === 'EPERM') {

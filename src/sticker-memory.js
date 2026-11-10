@@ -36,7 +36,7 @@ export function createStickerMemory({ getGateway, file, catalog, enabled, log })
     running = true;
     try {
       const desired = new Map();
-      for (const entry of catalog()) {
+      for (const entry of await catalog()) {
         const doc = document(entry);
         if (doc) desired.set(doc.version, doc);
       }
@@ -85,7 +85,7 @@ export function createStickerMemory({ getGateway, file, catalog, enabled, log })
     }
     // Re-read after asynchronous retrieval. Never return remote descriptions, summaries
     // or hits from removed, edited or out-of-scope catalog entries.
-    const entries = visible();
+    const entries = await visible();
     const literal = formatStickerList(entries, q, 500);
     if (!hits.length) return formatStickerList(entries, q, count);
     const byMemoryId = new Map();

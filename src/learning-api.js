@@ -1,5 +1,5 @@
 // Console-only management. The bridge's central token/Origin checks run first.
-export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, mimeFromBuffer, favorites, favoriteImage, error = '' }) {
+export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, mimeFromBuffer, nativeAccount, favorites, favoriteImage, error = '' }) {
   const route = url.pathname;
   if (!(route === '/api/slang' || route.startsWith('/api/slang/') || route.startsWith('/api/learning/'))) return false;
   try {
@@ -17,7 +17,7 @@ export async function handleLearningRequest({ req, url, readBody, sendJson, res,
     } else if (req.method === 'POST' && route === '/api/learning/run') {
       if (!config.enabled) throw new Error('请先启用后台学习');
       if (worker.running) throw new Error('已有学习任务正在运行');
-      if (!store.batch(config, Date.now(), true)) throw new Error('没有符合来源范围的待学习消息');
+      if (!store.batch({...config,nativeAccount}, Date.now(), true)) throw new Error('没有符合来源范围的待学习消息');
       void worker.tick(true).catch(() => {});
       sendJson({ ok: true, running: true }, 202);
     } else if (req.method === 'GET' && route === '/api/learning/sticker-reviews') {
@@ -25,7 +25,7 @@ export async function handleLearningRequest({ req, url, readBody, sendJson, res,
     } else if (req.method === 'POST' && route === '/api/learning/sticker-reviews') {
       const body = await readBody();
       if (typeof body.accept !== 'boolean') throw new Error('请选择采纳或忽略');
-      store.decideStickerReview(body.id, body.accept, favorites());
+      store.decideStickerReview(body.id, body.accept, await favorites());
       sendJson({ ok: true });
     } else if (req.method === 'GET' && route === '/api/learning/sticker-reviews/image') {
       const review = store.snapshot().stickerReviews?.find(r => r.id === url.searchParams.get('id'));

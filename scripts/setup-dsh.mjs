@@ -4,8 +4,8 @@
 // 功能：
 //   1. 安装唯一的全局 desktop-agent preset
 //      （通过 qq-agent-presets bundle 的 patch 层插入 @deepseek-ai/dsh-agent-preset 行）
-//   2. 在 DSH profile 的 cordis.patch.yml 中挂载三个 MCP server：
-//      mcp-snowluma / mcp-snowluma-host / mcp-qq-memory
+//   2. 在 DSH profile 的 cordis.patch.yml 中挂载两个 MCP server：
+//      mcp-qq / mcp-qq-memory
 //   3. 在 profile package.json 中注册 qq-agent-presets bundle
 //
 // 用法：
@@ -95,13 +95,12 @@ function yamlSingleQuote(s) {
 }
 
 // 由桥接托管的 MCP 条目 id：脚本对这些 id 拥有所有权，可安全地按 id 增删。
-const MANAGED_MCP_IDS = ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe', 'mcp-qq-memory'];
+const MANAGED_MCP_IDS = ['mcp-qq', 'mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe', 'mcp-qq-memory'];
 
 function mcpEntries() {
   const node = process.execPath;
   const servers = {
-    'mcp-snowluma': { serverName: 'snowluma', script: path.join(REPO_ROOT, 'src', 'mcp-snowluma-safe.js'), toolCallTimeoutMs: 725000 },
-    'mcp-snowluma-host': { serverName: 'snowluma-host', script: path.join(REPO_ROOT, 'src', 'mcp-host-server.js') },
+    'mcp-qq': { serverName: 'qq', script: path.join(REPO_ROOT, 'src', 'mcp-qq.js'), toolCallTimeoutMs: 725000 },
     'mcp-qq-memory': { serverName: 'qq-memory', script: path.join(REPO_ROOT, 'src', 'mcp-memory-safe.js'), toolCallTimeoutMs: 150000 },
   };
   let out = '# === qq-bridge MCP BEGIN ===\n';
@@ -169,7 +168,7 @@ function patchCordis({ patchFile, original, text, removed }) {
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 3 条）`);
+  log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 2 条）`);
 }
 
 /**

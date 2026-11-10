@@ -19,6 +19,7 @@
 | --- | --- |
 | [guides/ARCHITECTURE.md](guides/ARCHITECTURE.md) | 当前会话运行模型、代码结构评估与渐进式重构原则 |
 | [guides/NTQQ_HISTORY.md](guides/NTQQ_HISTORY.md) | Windows QQ 原生消息库只读实验、运行命令、覆盖差异和接入条件 |
+| [guides/NTQQ_ATTENTION.md](guides/NTQQ_ATTENTION.md) | 常驻只读连接与 QQ 原生来信的实测、提醒字段和接入顺序 |
 | [guides/NTQQ_SEND.md](guides/NTQQ_SEND.md) | 桌面 QQ 进程内观察器的运行方法、原生收发验证及参考项目许可证 |
 | [guides/MEMORY_ARCHITECTURE.md](guides/MEMORY_ARCHITECTURE.md) | 长期记忆目标、MaiBot/A_Memorix 对齐方式、调用与上下文职责 |
 | [guides/CHAT_LEARNING.md](guides/CHAT_LEARNING.md) | 黑话记录、表情包后台学习、来源范围、资源限制与验证 |

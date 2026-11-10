@@ -1,6 +1,6 @@
 // 安全版 QQ MCP server（stdio）。由 DSH 的 MCP 客户端 spawn。
 //
-// SnowLuma 是 QQ 消息通道：全局桌面 agent 可使用本 MCP 已提供的完整读写工具集。
+// QQ 工具使用桥接选择的消息通道：全局桌面 agent 可使用本 MCP 已提供的完整读写工具集。
 // MCP 自动从 state/desktop-agent.json 读取桥接令牌；发送会记录工具审计。
 // 本 MCP 暴露的范围由这里注册的工具定义决定；没有宣称覆盖 SnowLuma/OneBot 的全部管理 API。
 import fs from 'node:fs';
@@ -35,14 +35,6 @@ function getConfig() {
   return loadConfig();
 }
 
-function getOneBotConfig() {
-  const c = getConfig();
-  return {
-    httpUrl: (c.snowluma?.httpUrl ?? 'http://127.0.0.1:3000').replace(/\/+$/, ''),
-    token: c.snowluma?.accessToken ?? ''
-  };
-}
-
 // 兼容模型把单条消息序列化成 JSON 字符串的情况，例如 "\"你好\"" → "你好"。
 function unquoteJsonString(value) {
   if (typeof value !== 'string') return value;
@@ -60,25 +52,6 @@ function unquoteJsonString(value) {
 // 它们从来没有被任何工具调用（发送一律走桥接的 /api/send/*，由桥接统一构造文本段并做
 // CQ 转义，见 bridge.js 的 onebotSend），属于"看起来在防护、实际是死代码"的假安全。
 // 这里直接删除，避免以后有人以为 MCP 侧还有一道 CQ 转义而放松桥接那一层。
-
-async function onebot(action, params = {}) {
-  const { httpUrl, token } = getOneBotConfig();
-  const res = await fetch(`${httpUrl}/${action}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-    body: JSON.stringify(params),
-    signal: AbortSignal.timeout(15000)
-  });
-  if (!res.ok) {
-    const hint = res.status === 426 ? '；HTTP 426 通常表示 httpUrl 指向了 WebSocket 端口，请检查 config.json 的 snowluma.httpUrl 是否为 OneBot HTTP API 地址' : '';
-    throw new Error(`HTTP ${res.status}${hint}`);
-  }
-  const body = await res.json();
-  if (body.status !== 'ok' || body.retcode !== 0) {
-    throw new Error(`OneBot ${action} 失败: retcode=${body.retcode} ${body.wording ?? ''}`);
-  }
-  return body.data;
-}
 
 // 桥接控制台与全局 desktop-agent 的内部 API：QQ 来源状态在桥接内存态中读写。
 function agentApiBase() {
@@ -182,23 +155,21 @@ function agentHeaders(extra = {}) {
   };
 }
 
-const server = new McpServer({ name: 'snowluma-safe', version: '0.2.1-r1' });
+const server = new McpServer({ name: 'qq', version: '0.2.1-r1' });
 
 // DSH profile 会共享这个 MCP provider，故无法按 agent preset 隐藏不同工具。
-// The global desktop-agent receives the complete SnowLuma tool surface. The bridge
+// The global desktop-agent receives the complete QQ tool surface. The bridge
 // still enforces the global agent credential and audit logging for sends.
 // MCP provider 在 DSH profile 共享，不能按 agent preset 为不同 agent 注册不同 schema。
-// 全局 desktop-agent 使用完整 SnowLuma 工具集，MCP 从桥接持久状态自动获取当前凭证。
+// 全局 desktop-agent 使用完整 QQ 工具集，MCP 从桥接持久状态自动获取当前凭证。
 server.tool(
   'qq_status',
-  '查询 QQ 机器人登录状态与账号信息（只读）。',
+  '查询当前 QQ 通道（native 或 snowluma）、登录账号及在线状态。',
   {},
   async () => {
     try {
-      const login = await onebot('get_login_info');
-      let status = {};
-      try { status = await onebot('get_status'); } catch {}
-      return { content: [{ type: 'text', text: serializeModelData({ ...login, online: status.online, good: status.good }) }] };
+      const status = await agentApi('/api/socialV2/qq-status');
+      return { content: [{ type: 'text', text: serializeModelData(status) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `查询失败：${error?.message ?? error}` }], isError: true };
     }
@@ -221,7 +192,7 @@ server.tool(
 
 server.tool(
   'qq_list_conversations',
-  '按需列出当前 QQ 账号所在的群和好友，帮助你发现可读取或发送消息的 SnowLuma 会话。只返回会话标识和显示名，不自动读取消息正文；用 kind 与 offset/limit 分页。',
+  '按需列出当前 QQ 账号所在的群和好友，帮助你发现可读取或发送消息的 QQ 会话。只返回会话标识和显示名，不自动读取消息正文；用 kind 与 offset/limit 分页。',
   {
     kind: z.enum(['all', 'group', 'private']).optional().describe('来源类型：all（默认）、group 或 private'),
     offset: z.number().int().nonnegative().optional().describe('分页起点，默认 0；用上次返回的 nextOffset 继续'),
@@ -328,10 +299,10 @@ server.tool(
   }
 );
 
-// ── 全局 desktop-agent 使用的 SnowLuma QQ 工具 ───────────────────────────────
+// ── 全局 desktop-agent 使用的 QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
-  '从最早未读开始查看，返回的消息自动计为已读。unreadCount 是本次读取后该会话剩余的未读条数。hasMore=true 时用 nextAfterSeq 翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
+  '独立模式只列待阅读的提醒，普通聊天通过 qq_get_conversation_history 读取。SnowLuma 模式从最早未读消息开始查看。返回的消息自动计为已读。unreadCount 是本次读取后该会话剩余的未读条数。hasMore=true 时用 nextAfterSeq 翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),
@@ -349,7 +320,7 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取目标会话的 SnowLuma 消息历史。默认获取最新记录，传 messageId 可从该消息附近继续读取。本页中能按 QQ 消息 ID 对应到本会话未读的来信自动计为已读。更早的积压可用 qq_get_unread_messages 补读。',
+  '按需读取目标会话的 QQ 消息历史。默认获取最新记录，传 messageId 可从该消息附近继续读取。本页中能按 QQ 消息 ID 对应到本会话未读的来信自动计为已读。待阅读的提醒可用 qq_get_unread_messages 补读。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
@@ -555,7 +526,7 @@ server.tool(
 
 server.tool(
   'qq_get_my_recent_messages',
-  '从 SnowLuma 最新 100 条历史中筛出自己发过的消息。',
+  '从 QQ 最新 100 条历史中筛出自己发过的消息。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 10，最大 50')
@@ -589,7 +560,7 @@ server.tool(
 
 server.tool(
   'qq_get_active_members',
-  '按 SnowLuma 最近 100 条历史统计活跃成员。',
+  '按 QQ 最近 100 条历史统计活跃成员。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回人数，默认 10，最大 20')

@@ -1,5 +1,5 @@
 // 模拟 DSH 的 dsh-mcp-client：以 stdio 拉起桥接的 MCP server，握手并列出工具，
-// 验证三个 MCP server 在新版 DSH 环境下仍能被正常接入（不需要 SnowLuma 在线）。
+// 验证桥接安装的两个 MCP server 在新版 DSH 环境下仍能被正常接入（不需要 SnowLuma 在线）。
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -9,9 +9,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE = process.execPath;
 
 const SERVERS = [
-  { serverName: 'snowluma', expected: 'qq_get_unread_messages', script: 'src/mcp-snowluma-safe.js' },
-  { serverName: 'snowluma-host', expected: 'snowluma_status', script: 'src/mcp-host-server.js' },
-  { serverName: 'web-search-safe', expected: 'web_fetch', script: 'src/mcp-web-search-safe.js' },
+  { serverName: 'qq', expected: 'qq_get_unread_messages', script: 'src/mcp-qq.js' },
+  { serverName: 'qq-memory', expected: 'memory_search', script: 'src/mcp-memory-safe.js' },
 ];
 
 let failures = 0;
@@ -31,6 +30,10 @@ for (const { serverName, script, expected } of SERVERS) {
     console.log(`   ${names.join(', ')}`);
     // 校验 DSH 的命名契约：mcp__<serverName>__<rawName>
     if (!names.includes(expected)) throw new Error('缺少工具 ' + expected);
+    if (serverName === 'qq' && process.env.QQ_BRIDGE_TEST_LIVE === '1') {
+      const result = await client.callTool({ name: 'qq_status', arguments: {} });
+      if (result.isError || !['native', 'snowluma'].includes(JSON.parse(result.content[0].text).backend)) throw new Error('QQ 通道状态查询失败');
+    }
     const bad = names.filter((n) => !/^[A-Za-z0-9_-]{1,64}$/.test(n));
     if (bad.length) { console.log(`   ⚠️ 不符合 DSH 工具名契约: ${bad.join(', ')}`); failures += 1; }
   } catch (error) {

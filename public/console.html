@@ -460,20 +460,27 @@
       </details>
     </section>
 <section id="section-social-v2" data-page="social-v2" hidden class="card span-all">
-  <div class="memory-heading"><div><h2>消息缓冲</h2><p class="meta">查看哪些群和私聊有新消息，以及角色最近何时回复。</p></div><button id="v2StatesList" class="small">刷新来源与状态</button></div>
+  <div class="memory-heading"><div><h2 id="qqSourcesTitle">消息来源</h2><p id="qqSourcesHint" class="meta"></p></div><button id="v2StatesList" class="small">刷新来源与状态</button></div>
   <div id="v2Summary" class="learning-summary"></div>
   <p id="v2ActivityStatus" class="meta" role="status">正在读取…</p>
   <div id="v2AllStatesOutput" class="tool-log-table"></div>
-  <details class="settings-group"><summary>维护消息缓存</summary>
-    <p class="meta">清空所有来源的缓存、读取水位和待处理提醒。历史 QQ 聊天和角色会话仍可继续使用。</p>
-    <button id="v2ResetBtn" class="small danger">清空 QQ 消息缓存</button><span id="v2ResetMsg" class="meta" role="status"></span>
+  <details class="settings-group"><summary id="v2ResetTitle">缓存管理</summary>
+    <p id="v2ResetHint" class="meta"></p>
+    <button id="v2ResetBtn" disabled class="small danger">清空缓存</button><span id="v2ResetMsg" class="meta" role="status"></span>
   </details>
 </section>
 <section data-page="qq-settings" hidden class="card">
+  <h2>QQ 接入方案</h2>
+  <form id="qqBackendForm"><fieldset disabled>
+    <label for="qqBackend">消息通道</label>
+    <select id="qqBackend"><option value="native">独立方案（桌面 QQ）</option><option value="snowluma">SnowLuma</option></select>
+    <p class="meta">独立方案按需读取 QQ 原始消息，只保留提醒位置。切换通道需要重启桥接。</p>
+    <button class="primary">应用并重启桥接</button> <span class="meta" role="status"></span>
+  </fieldset></form>
   <h2>提醒规则</h2>
   <form id="qqReminderForm"><fieldset disabled>
     <label class="memory-toggle"><input type="checkbox" name="enabled"> 允许 QQ 消息提醒角色</label>
-    <p class="meta">私聊、原生 @、回复角色、提到当前人格卡名称或命中下方关键词时，角色会收到消息位置。普通休息可被提醒打断。睡眠时只缓存消息，起床后只接收新的提醒。</p>
+    <p class="meta">私聊、原生 @、回复角色、提到当前人格卡名称或命中下方关键词时，角色会收到消息位置。普通休息可被提醒打断。睡眠期间不会触发会话提醒。</p>
     <label for="v2AttentionKeywords">额外的群聊关键词</label>
     <textarea id="v2AttentionKeywords" name="keywords" rows="2" placeholder="例如角色的另一个昵称，每行一个"></textarea>
     <p class="meta">所有群聊共用。每项 2–64 个字符，最多 50 项。</p>
@@ -485,7 +492,7 @@
   <form id="qqConversationForm"><fieldset disabled>
     <label>每个字的条间延迟（ms）<input name="delayPerCharMs" type="number" min="0" max="1000" step="1" required></label>
     <p class="meta">模型决定发几条。第一条直接发送，后续每条按该条字数计时，最多等 1000 ms。设为 0 可连续发送。</p>
-    <p class="meta">每个群和私聊最多保留 500 条未读，满后新来信会替换最早一条。角色查看未读、聊天历史或单条详情时，只扣除本次读到的来信。</p>
+    <p class="meta">独立方案只缓存触发提醒的消息位置。SnowLuma 为每个群或私聊保留最近 500 条未读。角色阅读后，按实际返回的来信确认已读。</p>
     <button class="primary">保存对话设置</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
@@ -575,7 +582,7 @@
 </section>
       <div id="overviewSummary" class="overview-summary span-all" data-page="maintenance" hidden>
         <div class="metric"><span>DSH 连接</span><strong id="metricDsh">连接中</strong><small id="metricDshHint">等待服务响应</small></div>
-        <div class="metric"><span>SnowLuma 上游</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
+        <div class="metric"><span>QQ 消息通道</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
         <div class="metric"><span>数字角色会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
         <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复/引用、关键词</small></div>
         <div class="span-all" id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">

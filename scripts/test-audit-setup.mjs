@@ -96,11 +96,14 @@ try {
       assert.deepEqual(entries.find((entry) => entry.id === 'custom'), originalCustom);
       assert.ok(!entries.some(entry => entry.id === oldAdapter.id));
       assert.deepEqual(entries.find(entry => entry.id === independent.id), independent);
-      for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-qq-memory']) {
+      for (const id of ['mcp-qq', 'mcp-qq-memory']) {
         assert.equal(entries.filter((entry) => entry.id === id).length, 1, `${id} duplicate`);
       }
       assert.equal(entries.filter((entry) => entry.id === 'mcp-web-search-safe').length, 0, '旧版网页 MCP 应移除');
-      assert.equal(entries.find((entry) => entry.id === 'mcp-snowluma').config.toolCallTimeoutMs, 725000);
+      assert.ok(!entries.some(entry => ['mcp-snowluma', 'mcp-snowluma-host'].includes(entry.id)));
+      const qq = entries.find(entry => entry.id === 'mcp-qq');
+      assert.equal(qq.config.serverName, 'qq');
+      assert.equal(qq.config.toolCallTimeoutMs, 725000);
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');

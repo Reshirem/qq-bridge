@@ -282,10 +282,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               records,
             });
           }
+          case '/api/qq-backend': return json({ok:true, active:state.qqBackend ?? 'snowluma', selected:state.qqBackend ?? 'snowluma'});
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: url.searchParams.get('failed') === '1' ? state.toolLog.filter(e => e.ok === false) : state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
-          case '/api/socialV2/states': return json({ ok: true, enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
+          case '/api/socialV2/states': return json({ ok: true, backend:state.qqBackend ?? 'snowluma', enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
           // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是
           // `icacls DIR /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /T /C` —— 正是那句
@@ -396,6 +397,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             }
             return json({ ok: true, ...state.whitelist });
           }
+          case '/api/qq-backend': { const active = state.qqBackend ?? 'snowluma'; state.qqBackend = body.backend; return json({ok:true,active,selected:body.backend,requiresRestart:active !== body.backend}); }
           case '/api/socialV2/config': state.v2 = qqChannelConfig(state.v2, body); return json({ ok: true, config: state.v2 });
           case '/api/memory/settings': {
             const { apiKey, clearApiKey, timeoutSeconds, ...values } = body;

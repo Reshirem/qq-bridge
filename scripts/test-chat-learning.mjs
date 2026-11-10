@@ -244,7 +244,7 @@ test('QQ favorite suggestions remain separate until approval and never alter the
 test('learning tool guard blocks everything except the prepared image tool', () => {
   let check;
   guard({ tools: { guard: fn => { check = fn; } } });
-  for (const name of ['pwsh', 'plugin_manager', 'mcp__snowluma__qq_send_message', 'mcp__qq-memory__memory_save', '', 'unknown_future_tool']) assert.ok(check({ name }));
+  for (const name of ['pwsh', 'plugin_manager', 'mcp__qq__qq_send_message', 'mcp__qq-memory__memory_save', '', 'unknown_future_tool']) assert.ok(check({ name }));
   assert.equal(check({ name: 'mcp__qq-learning-images__learning_images' }), undefined);
   const patch = yaml.load(learningPatch({ model: { provider: 'test', model: 'test' } }));
   assert.ok(patch.some(p => p.id === 'tool-plugin-manager' && p.disabled));

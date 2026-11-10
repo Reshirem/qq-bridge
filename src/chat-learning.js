@@ -81,7 +81,8 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
     snapshot: () => copy(state),
     enqueue(key, message, config) {
       if (!config.enabled || (!config.slang && !config.stickers) || !KEY.test(key) || message.isSelf || (config.sources.length && !config.sources.includes(key))) return false;
-      const id = `${key}:${message.messageId ? `id:${message.messageId}` : `seq:${message.bufferId}:${message.seq}`}`;
+      const prefix = message.nativeAccount ? 'ntqq:' + message.nativeAccount + ':' : '';
+      const id = prefix + `${key}:${message.messageId ? `id:${message.messageId}` : `seq:${message.bufferId}:${message.seq}`}`;
       if (state.seen.includes(id) || state.queue.some(m => m.id === id)) return false;
       // SnowLuma market stickers can be image segments with subType=0;
       // their emojiId is the explicit sticker marker used by the media fetcher.
@@ -90,7 +91,10 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
       if (!config.slang && !media.length) return false;
       if (!text && !media.length) return false;
       const next = copy(state);
-      next.queue.push({ id, key, text, userId: clean(message.userId, 30), messageId: clean(message.messageId, 40), media: copy(media), time: Date.now() });
+      const reference = {id, key, messageId:clean(message.messageId, 40), time:Date.now()};
+      next.queue.push(message.nativeAccount
+        ? {...reference, nativeAccount:message.nativeAccount, text:'', media:[], imageCount:media.length}
+        : {...reference, text, userId:clean(message.userId, 30), media:copy(media)});
       if (next.queue.length > 1000) { next.dropped += next.queue.length - 1000; next.queue = next.queue.slice(-1000); }
       commit(next);
       return true;
@@ -99,6 +103,7 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
       if (!config.enabled || (!config.slang && !config.stickers) || (!force && now < state.nextRunAt)) return null;
       const groups = new Map();
       for (const message of state.queue) {
+        if ((message.nativeAccount ?? null) !== (config.nativeAccount ?? null)) continue;
         if (!force && (message.attempts || 0) >= 3) continue;
         if (config.sources.length && !config.sources.includes(message.key)) continue;
         if (!groups.has(message.key)) groups.set(message.key, []);
@@ -109,11 +114,11 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
           const selected = [];
           let images = 0;
           for (const message of messages.slice(0, config.batchSize)) {
-            const count = config.stickers ? message.media.length : 0;
+            const count = config.stickers ? (message.imageCount ?? message.media.length) : 0;
             if (selected.length && images + count > config.maxImages) break;
             const selectedMessage = copy(message);
             if (config.stickers) selectedMessage.media = message.media.slice(0, config.maxImages - images);
-            selected.push(selectedMessage); images += selectedMessage.media.length;
+            selected.push(selectedMessage); images += Math.min(count, config.maxImages - images);
           }
           return { key, messages: copy(selected) };
         }
@@ -310,7 +315,7 @@ export const LEARNING_SYSTEM_PROMPT = [
   '只返回严格 JSON：{"slang":[{"content":"词","meaning":"含义","usage":"用法","confidence":0.9,"evidenceIds":["原编号"]}],"stickers":[{"id":"图片编号","isSticker":true,"description":"画面和含义","tags":["开心"],"usage":"使用场景"}]}。黑话最多30条，表情不超过输入图片数；标签最多5个；无结果返回空数组。',
 ].join('\n');
 
-export function createChatLearningWorker({ store, getConfig, prepareImages, analyze, log = () => {} }) {
+export function createChatLearningWorker({ store, getConfig, hydrateBatch, prepareImages, analyze, log = () => {} }) {
   let running = null, controller = null;
   return {
     get running() { return Boolean(running); },
@@ -327,6 +332,7 @@ export function createChatLearningWorker({ store, getConfig, prepareImages, anal
         try {
           signal.throwIfAborted();
           store.started(config);
+          if (hydrateBatch) await hydrateBatch(batch);
           images = config.stickers ? await prepareImages(batch, config, signal) : [];
           signal.throwIfAborted();
           const knownWords = config.slang ? store.query(batch.key, batch.messages.map(m => m.text).join('\n'), { matchText: true }) : [];

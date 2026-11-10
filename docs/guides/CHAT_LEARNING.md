@@ -10,7 +10,7 @@
 
 ## 使用
 
-更新代码后用 `start.bat` 重启 qq-bridge，或先运行 `scripts/a-memorix.ps1 start` 再启动桥接。重新连接 DSH 的 SnowLuma MCP 或重启 DSH，以载入复检工具和新的聊天提示。
+更新代码后用 `start.bat` 重启 qq-bridge，或先运行 `scripts/a-memorix.ps1 start` 再启动桥接。重新连接 DSH 的 QQ MCP 或重启 DSH，以载入复检工具和新的聊天提示。
 
 控制台的 QQ 通道增加三个页面：
 

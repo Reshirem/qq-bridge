@@ -26,7 +26,7 @@
 | `qq-channel-config.js` | QQ 提醒、发送及表情配置的默认值与旧设置迁移 |
 | `autonomy-policy.js` | 不依赖运行时状态的消息唤醒分类规则 |
 | `dsh-client.js` | DSH API、鉴权和事件流客户端 |
-| `mcp-snowluma-safe.js` / `mcp-host-server.js` | 受限 QQ 工具与只读网关状态工具 |
+| `mcp-qq.js` | QQ 消息、媒体和当前通道状态工具 |
 | `mcp-web-search-safe.js` / `web-search.js` / `safe-fetch.js` | 安全搜索、抓取和网络目标校验 |
 | `mcp-memory-safe.js` / `a-memorix-gateway.js` | A_Memorix Gateway 客户端、受全局 agent token 保护的 DSH 记忆工具与共享记忆检索/管理接口 |
 | `media-normalize.js` / `ffmpeg-resolve.js` / `forward.js` | 图片媒体转换、通用 ffmpeg 路径解析与合并转发处理 |

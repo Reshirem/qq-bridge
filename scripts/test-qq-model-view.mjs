@@ -154,7 +154,7 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
     fixture = await fs.mkdtemp(path.join(ROOT, '.tmp-model-view-test-'));
     await fs.mkdir(path.join(fixture, 'src'));
     await fs.mkdir(path.join(fixture, 'state'));
-    await Promise.all(['mcp-snowluma-safe.js', 'qq-model-view.js', 'sensitive.js'].map((name) =>
+    await Promise.all(['mcp-qq.js', 'qq-model-view.js', 'sensitive.js'].map((name) =>
       fs.copyFile(path.join(ROOT, 'src', name), path.join(fixture, 'src', name))));
     await fs.writeFile(path.join(fixture, 'config.json'), JSON.stringify({ consolePort: api.address().port }));
     await fs.writeFile(path.join(fixture, 'state', 'desktop-agent.json'), JSON.stringify({
@@ -162,7 +162,7 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
     }));
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(fixture, 'src', 'mcp-snowluma-safe.js')], cwd: fixture, stderr: 'pipe'
+      args: [path.join(fixture, 'src', 'mcp-qq.js')], cwd: fixture, stderr: 'pipe'
     });
     client = new Client({ name: 'qq-model-view-test', version: '1.0.0' });
     await client.connect(transport);

@@ -61,8 +61,7 @@ const DEV_TOOL_PREFIX = /^dev_/;
 /** 全局数字角色允许使用的 MCP 命名空间前缀。 */
 const EXPECTED_SAFE_PREFIXES = [
   'mcp__wincu__',
-  'mcp__snowluma__',
-  'mcp__snowluma-host__',
+  'mcp__qq__',
 ];
 
 function readPreset(id) {

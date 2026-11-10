@@ -1,6 +1,50 @@
 // Frida bootstrap. Borrow a handle only during an actual wrapper.node N-API call.
 let wrapperCalls = 0;
 let receivers = 0;
+// On an idle desktop QQ there may be no N-API calls at all. Run the existing
+// read-only renderer request once on Electron's own main Node loop. Use public
+// exported functions, never retain a V8 handle outside its originating scope.
+function requestIdleService(qq, source, alreadyRequested, markRequested) {
+  const bind = (name, args, returns = 'pointer') =>
+    new NativeFunction(qq.getExportByName(name), returns, args, { traps: 'none' });
+  const defaultLoop = bind('uv_default_loop', [])();
+  const isolate = bind('?TryGetCurrent@Isolate@v8@@SAPEAV12@XZ', []);
+  const open = bind('??0HandleScope@v8@@QEAA@PEAVIsolate@1@@Z', ['pointer', 'pointer'], 'void');
+  const close = bind('??1HandleScope@v8@@QEAA@XZ', ['pointer'], 'void');
+  const context = bind('?GetCurrentContext@Isolate@v8@@QEAA?AV?$Local@VContext@v8@@@2@XZ', ['pointer', 'pointer']);
+  const environment = bind('?GetCurrentEnvironment@node@@YAPEAVEnvironment@1@V?$Local@VContext@v8@@@v8@@@Z', ['pointer']);
+  const string = bind('?NewFromUtf8@String@v8@@SA?AV?$MaybeLocal@VString@v8@@@2@PEAVIsolate@2@PEBDW4NewStringType@2@H@Z',
+    ['pointer', 'pointer', 'pointer', 'int', 'int']);
+  const compile = bind('?Compile@Script@v8@@SA?AV?$MaybeLocal@VScript@v8@@@2@V?$Local@VContext@v8@@@2@V?$Local@VString@v8@@@2@PEAVScriptOrigin@2@@Z',
+    ['pointer', 'pointer', 'pointer', 'pointer']);
+  const run = bind('?Run@Script@v8@@QEAA?AV?$MaybeLocal@VValue@v8@@@2@V?$Local@VContext@v8@@@2@@Z',
+    ['pointer', 'pointer', 'pointer']);
+  const program = Memory.allocUtf8String('try { (' + source + ')(globalThis); } catch {}');
+  const loopHook = Interceptor.attach(qq.getExportByName('uv_run'), {
+    onEnter(args) {
+      if (alreadyRequested() || !defaultLoop.equals(args[0])) return;
+      const current = isolate();
+      if (current.isNull()) return;
+      const scope = Memory.alloc(128), slot = Memory.alloc(Process.pointerSize);
+      open(scope, current);
+      try {
+        context(current, slot);
+        const ctx = slot.readPointer();
+        if (ctx.isNull() || environment(ctx).isNull()) return;
+        markRequested();
+        string(slot, current, program, 0, -1);
+        const code = slot.readPointer();
+        if (code.isNull()) return;
+        compile(slot, ctx, code, ptr(0));
+        const script = slot.readPointer();
+        if (!script.isNull()) run(script, slot, ctx);
+      } finally {
+        close(scope);
+        if (alreadyRequested()) setImmediate(() => loopHook.detach());
+      }
+    },
+  });
+}
 rpc.exports = {
   counts() { return { wrapperCalls, receivers }; },
   start(source, byteLength) {
@@ -59,6 +103,9 @@ rpc.exports = {
         }
       },
     });
+    // Other QQ builds can still attach on their next ordinary wrapper call
+    // if Electron does not export the optional idle bootstrap entry points.
+    try { requestIdleService(qq, source, () => requested, () => { requested = true; }); } catch {}
     return wrapper.path;
   },
 };

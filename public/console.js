@@ -34,6 +34,13 @@ function renderSnowlumaHealth(sl) {
     hint.textContent = '桥接未上报上游健康状态';
     return;
   }
+  if (sl.mode === 'native') {
+    el.style.display = 'none';
+    strong.textContent = sl.connected ? '独立通道已连接' : '独立通道未连接';
+    strong.className = sl.connected ? 'ok' : 'err';
+    hint.textContent = sl.connected ? (sl.readerReady ? '原库只读连接已就绪' : sl.readerError || '等待读取消息库') : sl.hint;
+    return;
+  }
   const connected = sl.connected === true;
   const degraded = connected && sl.degraded === true;
   const ago = sl.lastPacketAgoMs;
@@ -1271,7 +1278,29 @@ function showQQSettings(form, config) {
   }
   if (form.id === 'qqStickerForm') document.getElementById('stickerFavoritesSync').disabled = !config.sticker.syncEnabled;
 }
+const backendForm = document.getElementById('qqBackendForm');
+async function loadQQBackend() {
+  const result = await consoleApiResult('/api/qq-backend');
+  backendForm.querySelector('fieldset').disabled = false;
+  document.getElementById('qqBackend').value = result.selected;
+  backendForm.querySelector('[role=status]').textContent = '当前使用' + (result.active === 'native' ? '独立方案' : ' SnowLuma');
+}
+backendForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const fieldset = backendForm.querySelector('fieldset');
+  const status = backendForm.querySelector('[role=status]');
+  fieldset.disabled = true;
+  try {
+    const result = await consoleApiResult('/api/qq-backend', 'POST', {backend:document.getElementById('qqBackend').value});
+    if (result.requiresRestart) {
+      const restart = await consoleApiResult('/api/restart', 'POST', {});
+      status.textContent = restart.message;
+    } else status.textContent = '所选方案已在运行';
+  } catch (error) { status.textContent = error.message; }
+  finally { fieldset.disabled = false; }
+});
 async function loadQQSettings(page) {
+  if (page === 'qq-settings') await loadQQBackend();
   const forms = [...document.querySelectorAll('[data-page="' + page + '"] form')].filter(form => qqSettingsForms[form.id]);
   if (!forms.length) return;
   try {
@@ -1331,11 +1360,20 @@ async function refreshQQDashboard(names = false) {
     if (request !== qqDashboardRequest) return;
     const rows = data.conversations.sort((a, b) => b.lastIncomingAt - a.lastIncomingAt);
     const unread = rows.reduce((total, row) => total + row.unreadCount, 0);
+    const native = data.backend === 'native';
+    document.getElementById('qqSourcesTitle').textContent = native ? 'QQ 提醒来源' : '消息缓冲';
+    document.getElementById('qqSourcesHint').textContent = native ? '未读数只统计触发提醒、仍等角色阅读的来信。' : '查看群聊和私聊的未读缓存与最近回复。';
+    document.getElementById('v2ResetTitle').textContent = native ? '维护提醒缓存' : '维护消息缓存';
+    const reset = document.getElementById('v2ResetBtn');
+    reset.textContent = native ? '清空 QQ 提醒缓存' : '清空 QQ 消息缓存';
+    reset.dataset.prompt = native ? '清空当前账号所有未读提醒及其投递进度？' : '清空所有来源的消息缓存、读取水位和待处理提醒？';
+    document.getElementById('v2ResetHint').textContent = native ? '清除当前账号的提醒位置、读取水位和待处理提醒。' : '清空所有来源的消息缓存、读取水位和待处理提醒。';
+    reset.disabled = false;
     const asleep = data.lifecycle === 'sleeping';
     const mode = asleep ? '角色睡眠中' : data.lifecycle === 'stopped' ? '角色已停止' : data.enabled ? '已开启' : '已关闭';
-    const metrics = [['QQ 提醒', mode], ['缓冲来源', rows.length], ['有未读的来源', rows.filter(row => row.unreadCount > 0).length], ['未读消息', unread], ['待处理提醒来源', rows.filter(row => row.attention).length]];
+    const metrics = [['QQ 提醒', mode], ['缓冲来源', rows.length], ['有未读的来源', rows.filter(row => row.unreadCount > 0).length], [data.backend === 'native' ? '未读提醒' : '未读消息', unread], ['待处理提醒来源', rows.filter(row => row.attention).length]];
     document.getElementById('v2Summary').innerHTML = metrics.map(([label, value]) => '<span>' + label + ' <b>' + esc(value) + '</b></span>').join('');
-    status.textContent = (data.nameError || '') + (asleep ? '睡眠期间收到的消息只进入缓存。' : '') + '更新于 ' + new Date().toLocaleTimeString();
+    status.textContent = (data.nameError || '') + (asleep ? '睡眠期间暂停提醒。' : '') + '更新于 ' + new Date().toLocaleTimeString();
     const when = value => value ? esc(new Date(value).toLocaleString()) : '—';
     const headings = ['来源', '未读', '提醒', '最近来信', '最近回复'];
     const cells = rows.map(row => {
@@ -1349,7 +1387,7 @@ async function refreshQQDashboard(names = false) {
     });
     document.getElementById('v2AllStatesOutput').innerHTML = cells.length
       ? '<table><thead><tr>' + headings.map(label => '<th>' + label + '</th>').join('') + '</tr></thead><tbody>' + cells.join('') + '</tbody></table>'
-      : '<p class="meta">暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。</p>';
+      : '<p class="meta">' + (native ? '暂无提醒来源。收到符合提醒规则的来信后，会在这里显示。' : '暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。') + '</p>';
     const source = takeOverviewTarget('social-v2', 'source');
     if (source) {
       const tr = document.querySelectorAll('#v2AllStatesOutput tbody tr')[rows.findIndex(row => row.key === source)];
@@ -1456,8 +1494,8 @@ document.getElementById('v2ToolLogOutput').addEventListener('click', (ev) => {
 });
 
 document.getElementById('v2StatesList').addEventListener('click', () => refreshQQDashboard(true));
-document.getElementById('v2ResetBtn').addEventListener('click', async () => {
-  if (!confirm('清空所有来源的消息缓存、读取水位和待处理提醒？')) return;
+document.getElementById('v2ResetBtn').addEventListener('click', async event => {
+  if (!confirm(event.currentTarget.dataset.prompt)) return;
   const msg = document.getElementById('v2ResetMsg');
   try {
     await consoleApiResult('/api/socialV2/reset', 'POST', {});
@@ -2667,7 +2705,7 @@ function updateOverview(status) {
   document.getElementById('metricDsh').textContent = status.dshReady ? '已连接' : '未连接';
   document.getElementById('metricDsh').className = status.dshReady ? 'ok' : 'err';
   document.getElementById('metricDshHint').textContent = status.dshReady ? '桥接状态已同步' : '请检查 DSH 是否运行';
-  renderSnowlumaHealth(status.snowluma);
+  renderSnowlumaHealth(status.qqHealth ?? status.snowluma);
   document.getElementById('metricMode').textContent = status.qqRemindersEnabled === false ? '已关闭' : '按需提醒';
   document.getElementById('metricRole').textContent = '私聊、@、回复/引用、关键词';
   document.getElementById('roleText').textContent = status.role || '无';

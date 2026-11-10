@@ -72,13 +72,13 @@ test('empty searches are rejected without calling the transport', async () => {
 });
 
 /**
- * 用假 transport 加载 mcp-snowluma-safe.js，拿到它的工具回调。
+ * 用假 transport 加载 mcp-qq.js，拿到它的工具回调。
  * 只需要把 fetch（桥接 API / OneBot HTTP）、McpServer、zod、两个本地纯模块塞进上下文。
  */
-function loadSnowlumaTools(fetchImpl, fixtureConfig = null) {
+function loadQQTools(fetchImpl, fixtureConfig = null) {
   const tools = new Map();
   // vm 里没有 ESM 的 import.meta，把模块顶部的 __dirname 推导整段替换成固定值。
-  const source = fs.readFileSync(new URL('../src/mcp-snowluma-safe.js', import.meta.url), 'utf8')
+  const source = fs.readFileSync(new URL('../src/mcp-qq.js', import.meta.url), 'utf8')
     .replace(/^import .*;\r?\n/gm, '')
     .replace("const __dirname = path.dirname(fileURLToPath(import.meta.url));", "const __dirname = '/fixture/src';")
     .replace('await server.connect(new StdioServerTransport());', 'server.connect(new StdioServerTransport());');
@@ -132,7 +132,7 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null) {
 // "[object Object]"（r3 的已知未修项里就有一条线上记录：qq_wait_for_messages 报
 // `error: "\"Error: [object Object]\""`）。必须序列化成可读文本。
 test('object-shaped bridge errors are rendered readably, not as [object Object]', async () => {
-  const callTool = loadSnowlumaTools(async () => Response.json(
+  const callTool = loadQQTools(async () => Response.json(
     { ok: false, error: { code: 'send/rejected', message: '消息含敏感信息，已阻止发送' } },
     { status: 200 },
   ));
@@ -147,7 +147,7 @@ test('object-shaped bridge errors are rendered readably, not as [object Object]'
 // agentApi 若不检查 body.ok，就会把「被拦截」当成「发送成功」报给模型 ——
 // 模型据此认为消息已发出，既不再重试也不告诉用户，是典型的静默错误。
 test('a bridge 200 with ok:false is reported to the model as a failure', async () => {
-  const callTool = loadSnowlumaTools(async () => Response.json(
+  const callTool = loadQQTools(async () => Response.json(
     { ok: false, error: '消息含敏感信息，已阻止发送' },
     { status: 200 },
   ));
@@ -157,7 +157,7 @@ test('a bridge 200 with ok:false is reported to the model as a failure', async (
 });
 
 test('single-runtime MCP tools hide internal credentials and expose bounded session reads', async () => {
-  const callTool = loadSnowlumaTools(async () => Response.json({ ok: false, error: '目标不在当前模式允许范围内' }, { status: 403 }));
+  const callTool = loadQQTools(async () => Response.json({ ok: false, error: '目标不在当前模式允许范围内' }, { status: 403 }));
   assert.equal(callTool.has('qq_list_groups'), false, 'group listing tool must stay absent');
   assert.equal(callTool.has('qq_get_group_history'), false, 'direct group history tool must stay absent');
   assert.equal(callTool.has('qq_get_group_members'), true, 'bounded group members must be registered');
@@ -170,7 +170,7 @@ test('single-runtime MCP tools hide internal credentials and expose bounded sess
 test('denied group reads never reveal the group allowlist', async () => {
   const fixtureConfig = { allow: { groups: ['111111', '222222'] } };
   const calls = [];
-  const callTool = loadSnowlumaTools(async (url) => {
+  const callTool = loadQQTools(async (url) => {
     calls.push(String(url));
     if (String(url).includes('/api/socialV2/group-members')) {
       return Response.json({ ok: false, error: '目标不在当前模式允许范围内' }, { status: 403 });

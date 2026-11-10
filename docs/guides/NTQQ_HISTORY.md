@@ -1,6 +1,6 @@
 # 直接读取 Windows QQ 历史
 
-在 Windows 上，`scripts/ntqq_history.py` 可以查询当前登录账号的 `nt_msg.db`。默认只报告群聊和私聊的记录数。给定来源后，输出该来源的消息，最新在前，可继续向前翻页。QQ 和 SnowLuma 保持登录，桥接和 DSH 无需启动。此脚本独立于角色会话、未读水位和记忆整理。
+在 Windows 上，`scripts/ntqq_history.py` 可以查询当前登录账号的 `nt_msg.db`。默认只报告群聊和私聊的记录数。给定来源后，输出该来源的消息，最新在前，可继续向前翻页。QQ 保持登录，诊断脚本直接按 QQ 打开的数据库识别账号。此脚本独立于角色会话、未读水位和记忆整理。
 
 ## 使用
 
@@ -15,7 +15,7 @@ $reader = '.\state\ntqq-reader\venv\Scripts\python.exe'
 
 将示例号码换成实际群号或好友 QQ 号。下一页沿用同一来源，另传 `--before-id` 和上一页最后一行的 `nativeId`。时间相同的记录按主键排序。此 ID 是原生库行标识，不能直接用于 SnowLuma 的发送、引用或未读确认。聊天正文只随有来源的查询输出。
 
-新机器需要 Windows x64、可安装 wheel 的 Python（本机验证为 3.12），以及在本机提供 `request_decrypt_key` 的 SnowLuma OneBot HTTP 服务。按项目的 `config.json` 设置地址和令牌，再运行：
+新机器需要 Windows x64、可安装 wheel 的 Python（本机验证为 3.12），以及当前账号可用的数据库密钥。在仓库根目录运行：
 
 ```powershell
 py -3.12 -m venv state\ntqq-reader\venv
@@ -30,7 +30,7 @@ py -3.12 -m venv state\ntqq-reader\venv
 
 QQDecrypt 的解密工具会导出剥除文件头的中间库和明文 SQLite 库，适合离线分析。它的 Linux 研究记录观察到同一账号多次登录时数据库密钥相同，已有库的 `key_meta` 通常也保持稳定。本读取器用该标识复用经过验证的密钥。查询历史时直接访问原库，取完一页消息便关闭读事务，再解析图片和视频缓存。[QQDecrypt 解密流程](https://github.com/QQBackup/QQDecrypt/blob/main/docs/decrypt/decrypt_db.md) · [密钥研究](https://github.com/QQBackup/QQDecrypt/blob/main/docs/research/NTQQ-Linux-DB-Key-Research.md)
 
-1. 每次启动用 SnowLuma 查询登录账号，从本机消息库读出 `key_meta`。密钥按“账号 + key_meta”区分，使用 Windows 当前用户的 DPAPI 加密保存在 `state/ntqq-reader/keys`。首次遇到该组合、缓存丢失或无法解密时，才向 SnowLuma 取密钥。若 SQLCipher 用缓存密钥打开时返回 `SQLITE_NOTADB`，再取一次并验证；文件被锁、WAL 缺失等错误不会触发重新取钥。只有成功打开并验证消息表结构后才写入缓存。输出的 `keyStatus` 为 `cached` 或 `fetched`。取钥时只把含标识的 175 字节文件头临时交给 SnowLuma，避免其读取整个主库。[SnowLuma 上游实现](https://github.com/SnowLuma/SnowLuma/pull/69)
+1. 按 Windows 报告的 QQ 进程和文件句柄识别账号，再用账号与原库 `key_meta` 定位已验证的 DPAPI 密钥。若密钥尚未导入，可用 `--import-key` 输入密钥并验证。独立通道全程无需调用 SnowLuma。
 2. 读取器加载 `state/ntqq-reader/ntqq_vfs.dll`，通过 SQLCipher 直接打开 QQ 原文件。该 SQLite 文件系统适配器只对主库读取偏移加 1024 字节，并相应调整可见长度。主库和 WAL 的文件句柄都只读；共享内存索引使用 Windows SQLite 的 `readonly_shm=1`。WAL 页位置和操作系统锁使用原生 Win32 VFS。每次查询持有一个读事务，能看到事务开始时已经提交的消息。源库不产生副本，源文件的写入、删除及创建均不属于该 VFS 的读路径。[SQLite WAL 并发读取](https://sqlite.org/wal.html)
 3. 平时按需解密并核验访问的页。需要检查整库时传 `--check`，显式运行 `quick_check`。QQ 的 WAL 或共享内存索引不可用时，本次读取报错。VFS 一次编译即可复用；构建脚本下载并核验 SQLite 接口头文件，运行时使用 sqlcipher3 自带的 SQLCipher 引擎。[上游解密参数](https://github.com/QQBackup/nt_msg_db_util/blob/master/1.decrypt.py)
 4. 群聊使用 `group_msg_table`，私聊使用 `c2c_msg_table`，两者都按 `40030` 匹配目标。通过 `40800` 正文内的有序 Protobuf 段提取文本和媒体引用。未识别或损坏的正文显式标记；当前输出不解析 @ 对象或引用目标。[上游消息结构](https://github.com/QQBackup/nt_msg_db_util/blob/master/db_docs/c2c_msg_table/40800.md)
@@ -59,6 +59,8 @@ QQDecrypt 的解密工具会导出剥除文件头的中间库和明文 SQLite �
 - 对抽查的 200 条群消息，按原生群内序号、群号和 SnowLuma 群消息事件名计算出的 OneBot ID 全部命中。14 条 OneBot 引用消息均有原生引用段。该样本只验证了引用段的存在。私聊 ID 的映射、引用指向谁、原生 @ 与手打文本的区别还需单独核验。
 
 接入时优先给角色提供**按来源向前补查历史**的入口，查到的消息带来源和原生 ID。OneBot 实时事件继续驱动未读、@ 和引用唤醒。
+
+2026-11-10 后续实测已核对数据库中原生 @ 的目标和引用作者，也测了复用连接检测新提交的开销。桥接通过 QQ 接入方案选择数据源。具体字段、延迟和切换前的验证项见[常驻直读与角色提醒](NTQQ_ATTENTION.md)。
 
 ## 原库只读耗时
 

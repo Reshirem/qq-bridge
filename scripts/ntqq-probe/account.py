@@ -1,4 +1,5 @@
 """Match QQ's PID to an open account database via the Windows Restart Manager."""
+import subprocess
 import ctypes as c
 from ctypes import wintypes as w
 
@@ -49,3 +50,15 @@ def active_account(root, pid):
         if db.is_file() and pid in users_of(db):
             matches.append(account.name)
     return matches[0] if len(matches) == 1 else None
+
+
+def main_pid():
+    command = ("$p = Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" | "
+               "Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '(?:^| )--type=' }; "
+               "$p | ForEach-Object { $_.ProcessId }")
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command],
+                            check=True, capture_output=True, text=True)
+    pids = result.stdout.split()
+    if len(pids) != 1:
+        raise ValueError("expected one QQ main process; supply --pid for the logged-in QQ")
+    return int(pids[0])

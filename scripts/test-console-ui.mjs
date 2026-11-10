@@ -190,6 +190,16 @@ try {
   assert.ok(fixture.requests.some(request => request.path === '/api/socialV2/reset'), 'cache reset stays separate from the global session');
 
   await page.waitForFunction(() => document.querySelector('#v2AllStatesOutput').textContent.includes('暂无缓冲消息'));
+  await openPage('qq-settings');
+  await page.locator('#qqBackend').selectOption('native');
+  await Promise.all([
+    page.waitForResponse(r => r.url().endsWith('/api/restart') && r.request().method() === 'POST'),
+    page.locator('#qqBackendForm button').click(),
+  ]);
+  assert.equal(fixture.state.qqBackend, 'native');
+  await openPage('social-v2');
+  await page.waitForFunction(() => document.getElementById('v2ResetBtn').textContent === '清空 QQ 提醒缓存');
+  assert.match(await page.locator('#v2Summary').innerText(), /未读提醒/);
   await openPage('learning');
   await page.waitForFunction(() => document.getElementById('learningStatus').textContent.includes('已启用'));
   await page.locator('#learningSources').fill('group:123456789');
