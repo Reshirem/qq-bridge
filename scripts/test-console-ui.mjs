@@ -248,6 +248,19 @@ try {
   await page.waitForFunction(() => document.getElementById('memoryEditorStatus').textContent === '已删除');
   assert.equal(fixture.state.memoryRecords.length, 0);
 
+  fixture.state.memoryRecords = Array.from({ length: 21 }, (_, index) => ({
+    memoryId: `shelf-${index + 1}`, content: `书架记录 ${index + 1}`, metadata: { origin: 'assistant' },
+  }));
+  for (const [button, expectedPage, firstId] of [
+    ['memoryBrowseAll', 1, 'shelf-1'], ['memoryNextPage', 2, 'shelf-11'], ['memoryNextPage', 3, 'shelf-21'],
+    ['memoryPreviousPage', 2, 'shelf-11'], ['memoryPreviousPage', 1, 'shelf-1'],
+  ]) {
+    await page.locator('#' + button).click();
+    await page.locator('#memoryPageLabel').filter({ hasText: `第 ${expectedPage}/3 页` }).waitFor();
+    assert.equal(await page.locator('#memoryResults summary code').first().textContent(), firstId);
+  }
+  assert.ok(await page.locator('#memoryPreviousPage').isDisabled());
+
   await openPage('memory-settings');
   await page.waitForFunction(() => document.getElementById('memoryNamespace').value === 'demo');
   await page.locator('#memoryNamespace').fill('保留草稿');

@@ -2360,7 +2360,7 @@ async function browseAllMemory({ pageIndex = 0, navigate = false } = {}) {
     resetMemoryBrowsePaging();
     renderMemoryResults({ hits: [] });
     pageIndex = 0;
-  } else if (!memoryBrowseCursors[pageIndex]) {
+  } else if (pageIndex >= memoryBrowseCursors.length) {
     if (pageIndex !== memoryBrowseCursors.length || !memoryBrowseNextCursor) return;
     memoryBrowseCursors.push(memoryBrowseNextCursor);
   }
