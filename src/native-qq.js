@@ -171,12 +171,13 @@ export class NativeQQ extends EventEmitter {
       return {messages:await this.call('history',{...query,peer:await this.peer(kind,id)})};
     }
     if (action === 'send_group_msg' || action === 'send_private_msg') {
+      const call = this.call;
       const peer = await this.peer(action === 'send_group_msg' ? 'group' : 'private',p.group_id ?? p.user_id);
       const message = [];
       for (const seg of p.message) {
         message.push(seg.type === 'at' ? {...seg,data:{...seg.data,uid:await this.uid(seg.data.qq)}} : seg);
       }
-      return this.call('send',{peer,message});
+      return call('send',{peer,message});
     }
     return this.call(action,p);
   }

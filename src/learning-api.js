@@ -1,5 +1,5 @@
 // Console-only management. The bridge's central token/Origin checks run first.
-export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, marketPacks, mimeFromBuffer, nativeAccount, favorites, favoriteImage, error = '' }) {
+export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, marketPacks, mimeFromBuffer, nativeAccount, checkMarketPack, favorites, favoriteImage, error = '' }) {
   const route = url.pathname;
   if (!(route === '/api/slang' || route.startsWith('/api/slang/') || route.startsWith('/api/learning/'))) return false;
   try {
@@ -8,6 +8,12 @@ export async function handleLearningRequest({ req, url, readBody, sendJson, res,
       sendJson({ ok: true, ...await marketPacks.search((url.searchParams.get('query') || '').trim()) });
     } else if (route === '/api/learning/market-packs/detail' && req.method === 'GET') {
       sendJson({ ok: true, pack: await marketPacks.detail(url.searchParams.get('id')) });
+    } else if (route === '/api/learning/market-packs/availability' && req.method === 'GET') {
+      const id = url.searchParams.get('id');
+      const entries = id && store.marketStickers(id);
+      if (!entries?.length) throw Error('请先收录这个商城包');
+      const native = checkMarketPack ? await checkMarketPack(id, entries.map(item => item.faceId)) : null;
+      sendJson({ok: true, native});
     } else if (route === '/api/learning/market-packs/image' && req.method === 'GET') {
       const buffer = await marketPacks.preview(url.searchParams.get('id'), url.searchParams.get('face'));
       res.writeHead(200, { ...headers, 'content-type': mimeFromBuffer(buffer) }); res.end(buffer);

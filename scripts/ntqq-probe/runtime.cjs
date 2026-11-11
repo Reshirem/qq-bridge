@@ -67,9 +67,18 @@ module.exports = function startChannel(receiver, endpoint) {
     if (!row) throw Error('QQ 当前会话中找不到此消息');
     return row;
   }
+  async function marketResources(packId, faceIds) {
+    const response = checked(await svc.getMarketEmoticonEncryptKeys(Number(packId), faceIds));
+    if (!(response.encryptKeyMap instanceof Map)) throw Error('QQ 未返回商城表情发送资料');
+    const resources = new Map();
+    for (const [id, value] of response.encryptKeyMap) {
+      if (typeof value === 'string' && value.length) resources.set(String(id).toLowerCase(), value);
+    }
+    return resources;
+  }
   async function sendMessage(p) {
     const elements = [];
-    let temp;
+    let stickerFormat;
     const tag = String(svc.generateMsgUniqueId(p.peer.chatType, String(Date.now())));
     if (!number(tag)) throw Error('QQ 未生成发送标识');
     let timer;
@@ -85,6 +94,15 @@ module.exports = function startChannel(receiver, endpoint) {
           elements.push({ elementType: 7, elementId: '', replyElement: { replayMsgSeq: String(row.msgSeq),
             replayMsgId: String(row.msgId), senderUin: String(row.senderUin), senderUidStr: row.senderUid,
             replyMsgTime: String(row.msgTime), sourceMsgIdInRecords: String(row.msgId) } });
+        } else if (seg.type === 'mface') {
+          const resources = await marketResources(d.emoji_package_id, [d.emoji_id]);
+          const key = resources.get(d.emoji_id);
+          // No message has been submitted yet. The bridge can use the local picture in this case.
+          if (!key) return {marketResourceMissing: true};
+          elements.push({elementType: 11, elementId: '', marketFaceElement: {
+            emojiPackageId: Number(d.emoji_package_id), emojiId: d.emoji_id, key, faceName: d.summary,
+          }});
+          stickerFormat = 'marketFace';
         } else if (seg.type === 'image') {
           if (!String(d.file).startsWith('base64://')) throw Error('QQ 图片需要原始字节');
           const bytes = Buffer.from(d.file.slice(9), 'base64');
@@ -95,12 +113,26 @@ module.exports = function startChannel(receiver, endpoint) {
           const size = gif ? {width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8)}
             : process.mainModule.require('electron').nativeImage.createFromBuffer(bytes).getSize();
           if (!size.width || !size.height) throw Error('QQ 无法识别这张图片');
-          temp = fs.mkdtempSync(path.join(load('os').tmpdir(), 'qq-bridge-image-'));
-          const sourcePath = path.join(temp, 'image.' + ext);
-          fs.writeFileSync(sourcePath, bytes);
-          elements.push({elementType: 2, elementId: '', picElement: {sourcePath, fileName: path.basename(sourcePath), fileSize: String(bytes.length),
-            picType: gif ? 2000 : png ? 1001 : webp ? 1002 : 1000, picSubType: 1, picWidth: size.width, picHeight: size.height,
-            md5HexStr: crypto.createHash('md5').update(bytes).digest('hex'), original: true, thumbPath: new Map(), summary: '[表情]' }});
+          const md5HexStr = crypto.createHash('md5').update(bytes).digest('hex');
+          const fileName = md5HexStr + '.' + ext;
+          const picSubType = 1;
+          const sourcePath = svc.getRichMediaFilePathForGuild({
+            elementType: 2, elementSubType: picSubType, fileName, md5HexStr,
+            downloadType: 1, thumbSize: 0, needCreate: true, file_uuid: '',
+          });
+          if (!sourcePath || !path.isAbsolute(sourcePath)) throw Error('QQ 未返回表情原图保存位置');
+          // QQ can still need the original after it reports the send result.
+          if (!fs.existsSync(sourcePath) || !fs.readFileSync(sourcePath).equals(bytes)) {
+            fs.mkdirSync(path.dirname(sourcePath), {recursive: true});
+            const part = sourcePath + '.' + crypto.randomUUID() + '.tmp';
+            try {
+              fs.writeFileSync(part, bytes);
+              fs.renameSync(part, sourcePath);
+            } finally { fs.rmSync(part, {force: true}); }
+          }
+          elements.push({elementType: 2, elementId: '', picElement: {sourcePath, fileName, fileSize: String(bytes.length),
+            picType: gif ? 2000 : png ? 1001 : webp ? 1002 : 1000, picSubType, picWidth: size.width, picHeight: size.height,
+            md5HexStr, original: true, thumbPath: new Map(), summary: d.summary || '[表情]' }});
         } else throw Error('QQ 直连未支持此发送元素');
       }
       if (socket.destroyed || String(globalThis.authData?.uin) !== account) throw Error('QQ 连接已关闭');
@@ -109,15 +141,18 @@ module.exports = function startChannel(receiver, endpoint) {
         timer = setTimeout(() => reject(Error('QQ 发送回执超时，投递结果未知')), 12000);
       });
       const [, receipt] = await Promise.all([svc.sendMsg('0', {...p.peer, guildId: tag}, elements, new Map()).then(checked), delivered]);
-      return receipt;
+      return stickerFormat ? {...receipt, stickerFormat} : receipt;
     } finally {
       slides.delete(tag); clearTimeout(timer);
-      if (temp) fs.rmSync(temp, {recursive: true, force: true});
     }
   }
   async function perform(action, p) {
     if (String(globalThis.authData?.uin) !== account) throw Error('QQ 登录账号已切换');
     if (action === 'get_login_info') return {user_id: account, nickname: self.nickName || self.nickname || ''};
+    if (action === 'market_pack_availability') {
+      const resources = await marketResources(p.packId, p.faceIds);
+      return {available: p.faceIds.filter(id => resources.has(id)).length, total: p.faceIds.length};
+    }
     if (action === 'history') {
       const res = p.ids ? await svc.getMsgsByMsgId(p.peer,p.ids)
         : await svc.getMsgsIncludeSelf(p.peer, p.anchor || '0', p.count, p.older);

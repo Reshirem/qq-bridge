@@ -1789,6 +1789,13 @@ function renderMarketPack(pack) {
   marketEl('Detail').hidden = false;
   marketEl('PackTitle').textContent = pack.name;
   marketEl('PackMeta').textContent = `ID ${pack.id} · ${pack.items.length} 张 · ${pack.installed ? '已收录' : '收录前预览'}`;
+  if (pack.installed) {
+    void consoleApiResult(marketBase + '/availability?' + new URLSearchParams({id: pack.id})).then(({native}) => {
+      if (marketPack === pack && native) marketEl('PackMeta').textContent += ` · QQ 原生可发 ${native.available}/${native.total} 张`;
+    }).catch(() => {
+      if (marketPack === pack) marketEl('PackMeta').textContent += ' · 暂时无法查询 QQ 发送状态';
+    });
+  }
   const action = marketEl('PackAction');
   action.className = pack.installed ? 'small danger' : 'primary';
   action.textContent = pack.installed ? '移除整包' : '收录整包';

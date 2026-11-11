@@ -1581,39 +1581,41 @@ async function main() {
       if (!/^\d+$/.test(at)) throw new Error('atUserId 必须是正整数 QQ 号，且不能为 all');
       segments.push({ type: 'at', data: { qq: at } });
     }
-    // 在桥接内完成带 DNS 固定、逐跳校验和大小限制的下载；不能把 URL 交给网关重新抓取。
-    let image;
-    try {
-      image = learned ? { buffer: learningAssets.read(learned.hash) } : await readFavoriteImage(entry);
-    } catch (error) {
-      throw new Error(`表情 ${entry.id} 的图片下载失败（QQ CDN 网络异常或地址已失效）：${error?.message ?? error}`);
-    }
-    segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64') } });
+    const nativeMarket = native && learned?.source === 'market';
+    const summary = nativeMarket ? (learned.name ? `[${learned.name}]` : '[商城表情]') : '';
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
-    const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
-    // 与文本发送共用 sendChain，保证文字和表情依调用顺序下发。
-    let sendResolve;
-    let sendReject;
-    const sendResult = new Promise((resolve, reject) => {
-      sendResolve = resolve;
-      sendReject = reject;
-    });
-    sendChain = sendChain.then(async () => {
-      try {
-        assertSendAllowed();
-        checkStickerUse(stickerRef);
-        if (learned) learningSticker(key, stickerRef); // Recheck after the queued send delay.
-        const body = await onebotHttpAction(action, params);
-        sendResolve(body.data);
-      } catch (error) {
-        sendReject(error);
+    const target = kind === 'private' ? {user_id: Number(id)} : {group_id: Number(id)};
+    async function sendSegment(segment) {
+      assertSendAllowed();
+      checkStickerUse(stickerRef);
+      if (learned) learningSticker(key, stickerRef);
+      const body = await onebotHttpAction(action, {...target, message: [...segments, segment]});
+      return body.data;
+    }
+    const sendResult = sendChain.then(async () => {
+      if (nativeMarket) {
+        const result = await sendSegment({type: 'mface', data: {
+          emoji_package_id: learned.packId, emoji_id: learned.faceId, summary,
+        }});
+        if (result?.marketResourceMissing !== true) return result;
       }
+      let image;
+      try {
+        image = learned ? {buffer: learningAssets.read(learned.hash)} : await readFavoriteImage(entry);
+      } catch (error) {
+        throw new Error(`无法读取表情 ${entry.id} 的图片：${error?.message ?? error}`);
+      }
+      const data = {file: 'base64://' + image.buffer.toString('base64')};
+      if (summary) data.summary = summary;
+      const sent = await sendSegment({type: 'image', data});
+      return nativeMarket ? {...sent, stickerFormat: 'image'} : sent;
     });
+    sendChain = sendResult.catch(() => {});
     const data = await sendResult;
     if (learned) {
       try { chatLearning.used(learned.id, learned.scope); } catch (error) { log(`表情已发送，但使用统计保存失败：${error.message}`); }
     }
-    return { entry, messageId: data?.message_id ?? null };
+    return { entry, messageId: data?.message_id ?? null, ...(data?.stickerFormat && { stickerFormat: data.stickerFormat }) };
   }
 
   // 修改 QQ 账号里的收藏表情备注（modify_custom_face），并同步本地 desc。
@@ -3406,6 +3408,7 @@ async function main() {
           req, url, readBody, sendJson, res, headers: SECURITY_HEADERS,
           store: chatLearning, worker: learningWorker, config: cfg.chatLearning, nativeAccount:native ? selfUserId || 'offline' : null,
           assets: learningAssets, marketPacks, mimeFromBuffer, error: chatLearningError, favorites: favoriteCatalog,
+          checkMarketPack: native ? (packId, faceIds) => bot.raw('market_pack_availability', {packId, faceIds}) : null,
           favoriteImage: async id => {
             const entry = (await favoriteCatalog()).find(item => item.id === id);
             if (!entry) throw new Error('QQ 收藏已移除');
@@ -5470,7 +5473,8 @@ async function main() {
             saveSocialV2State(key);
             log(`[sticker] 工具发送表情 ${key}: ${sent.entry?.id || stickerId}`);
             appendActivity(`${key} [sticker] 工具发送表情：${label}`);
-            sendJson({ ok: true, key, sticker: sent.entry, sent: 1, failed: 0, quoted: quotedInfo });
+            sendJson({ ok: true, key, sticker: sent.entry, messageId: sent.messageId,
+              ...(sent.stickerFormat && { stickerFormat: sent.stickerFormat }), sent: 1, failed: 0, quoted: quotedInfo });
           } catch (error) {
             log(`[sticker] 工具发送表情失败 ${key}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `发送表情失败：${error?.message ?? error}` }, error.statusCode ?? 500);

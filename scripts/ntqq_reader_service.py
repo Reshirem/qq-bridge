@@ -40,7 +40,8 @@ def format_row(db, table, peer, row, account, self_uid):
         elif kind == "face":
             data = {"id": item.get("faceId")}
         elif kind == "marketFace":
-            kind, data = "mface", {"emoji_id": item.get("emojiId"), "emoji_package_id": item.get("packageId")}
+            kind, data = "mface", {"emoji_id": item.get("emojiId"), "emoji_package_id": item.get("packageId"),
+                                   "summary": item.get("label", "")}
         else:
             data = {}
         segments.append({"type": kind, "data": data})

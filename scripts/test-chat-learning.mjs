@@ -61,6 +61,38 @@ function learned(batch, meaning = '工作时偷闲') {
   return { slang: [{ content: '摸鱼', meaning, confidence: 0.95, evidenceIds: [batch.messages[0].id] }], stickers: [] };
 }
 
+test('native market sends need no chat sample or local image and only fall back before submission', async t => {
+  const {store, assets} = fixture(t);
+  const faceId = 'b'.repeat(32), packId = '123';
+  store.addMarketPack({id: packId, name: '测试包'}, [{faceId, ...assets.put(png), name: '点头', tags: []}]);
+  const [sticker] = store.marketStickers(packId);
+  const segments = [];
+  let response = {stickerFormat: 'marketFace', message_id: '1'};
+  const h = await bridgeHarness({config: {qqBackend: 'native'},
+    files: {'state/chat-learning.json': {...store.snapshot(), marketAnalysis: {}}},
+    onebot: {request(action, params) {
+      if (action !== 'send_private_msg') return;
+      const [segment] = params.message;
+      segments.push(segment.type);
+      if (segment.type === 'image') return {data: {message_id: '2'}};
+      assert.equal(segment.data.emoji_id, faceId);
+      assert.equal(segment.data.emoji_package_id, packId);
+      if (response instanceof Error) throw response;
+      return {data: response};
+    }},
+  });
+  t.after(() => h.close());
+  h.bot.account = '42'; h.bot.health = {connected: true}; h.bot.emit('open');
+  const send = () => h.sendStickerV2('private:123', sticker.id);
+  assert.equal((await send()).stickerFormat, 'marketFace');
+  createLearningAssets(path.join(h.temp, 'state/learned-stickers')).put(png);
+  response = {marketResourceMissing: true};
+  assert.equal((await send()).stickerFormat, 'image');
+  response = Error('QQ 发送回执超时');
+  await assert.rejects(send(), /回执超时/);
+  assert.deepEqual(segments, ['mface', 'mface', 'image', 'mface']);
+});
+
 test('pack analysis retries atomically, retains original wording and manual edits in the shared index', async t => {
   const { store, assets, root } = fixture(t);
   const ids = ['a'.repeat(32), 'b'.repeat(32)];
@@ -441,7 +473,10 @@ test('HTTP management isolation, source query and safe local sticker send use th
           assert.equal((await image(active)).status, 200);
           assert.equal((await request(route, { ...suggestion, stickerId: inactive }, agent)).status, 403);
           assert.equal((await request('/api/socialV2/send-sticker', { key, stickerId: inactive }, agent)).status, 403);
-          assert.equal((await hh.sendStickerV2(key, active)).entry.id, active);
+          const receipt = await request('/api/socialV2/send-sticker', { key, stickerId: active }, agent);
+          assert.equal(receipt.status, 200);
+          assert.equal(receipt.data.sticker.id, active);
+          assert.equal(receipt.data.messageId, 2);
         }
         await configure({ marketEnabled: true });
       } finally { await new Promise(resolve => consoleServer.close(resolve)); }
