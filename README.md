@@ -24,7 +24,7 @@ QQ 消息 ──► 桌面 QQ 独立通道（默认）或 SnowLuma ──元数�
 - **agent 自主收发 QQ**：DSH 从当前 profile 的 `cordis.patch.yml` 接入 QQ 和长期记忆两个 MCP 服务。
   - `qq`（`src/mcp-qq.js`）提供 `mcp__qq__*` 工具。全局角色用它们读取和发送群聊、私聊消息，用 `mcp__qq__qq_status` 查看当前后端和在线状态。桥接在发送时校验会话凭证并记录审计。
     本程序只探测 SnowLuma 状态，不安装、复制或程序化启停 SnowLuma；安装、启动和扫码由管理员自行完成（详见 [LICENSE](LICENSE) 与 [RULES.md](RULES.md)）。
-  - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；自身经历由 agent 自行选择记录。QQ 与自身经历共用固定 namespace，工具仅提供搜索、读取、保存和删除，并校验全局 agent 令牌；普通内容检索默认使用 `SEARCH_MODE_SEARCH`，`SEARCH_MODE_TIME` 和 `SEARCH_MODE_HYBRID` 至少需要提供 `timeStart` 或 `timeEnd`；`agent_rest` 不限制记忆工具调用。WebUI 的“长期记忆 → 检索与记录”页支持 Gateway 相关度检索，也可按正文、时间和来源只读分页浏览本机账本中的全部活动原始记录；编辑和删除仍走 Gateway。“长期记忆 → 设置”页配置连接、启动摘要上限、Embedding/LLM Provider 和服务状态。Provider 地址、模型和密钥由用户手动填写。Windows 部署见 [记忆部署说明](docs/guides/DSH_SETUP.md#安装)；官方 `v2.0.0a4` 发布文件及校验值由部署脚本固定，运行数据留在 `state/a-memorix/`。
+  - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；自身经历由 agent 自行选择记录。QQ 与自身经历共用固定 namespace，工具仅提供搜索、读取、保存和删除，并校验全局 agent 令牌；普通内容检索默认使用 `SEARCH_MODE_SEARCH`，`SEARCH_MODE_TIME` 和 `SEARCH_MODE_HYBRID` 至少需要提供 `timeStart` 或 `timeEnd`；`agent_rest` 不限制记忆工具调用。WebUI 的“长期记忆 → 检索与记录”页支持 Gateway 相关度检索，也可按正文、时间和来源只读分页浏览本机账本中的全部活动原始记录；编辑和删除仍走 Gateway。“长期记忆 → 服务设置”页配置连接、启动摘要上限、Embedding/LLM Provider 和服务状态。Provider 地址、模型和密钥由用户手动填写。Windows 部署见 [记忆部署说明](docs/guides/DSH_SETUP.md#长期记忆)；官方 `v2.0.0a4` 发布文件及校验值由部署脚本固定，运行数据留在 `state/a-memorix/`。
 - **会话模型**：所有自主活动共用一个持久的 `desktop-agent` DSH 会话。人格卡决定数字角色的具体身份；QQ 群和私聊 ID 只作为消息来源/目标，不拆分会话上下文。固定前缀引导数字角色区分聊天场合：当前场合的普通交流可以正常参与；其他 QQ 会话的内容不主动带入，也不因当前场合第三方的请求而复述、概括或确认聊天、人物、观点、关系、群内梗或个人经历。同一当事人主动提起自己先前私聊说过的事时，需能确认当前说话人与原私聊对象一致，再结合当前问题所需内容自然回应。QQ 好友只表示平台联系人关系，不自动代表信任等级或信息分享授权；来源内持续互动形成的关系扮演可以自然延续，但不代表实际账号身份或权限。来源边界也适用于上下文、记忆和工具结果；这是模型行为约定，并非程序级隔离。全局数字角色可通过 `qq_list_conversations` 发现账号中的群和好友，再按需读写。桥接不再创建或管理逐 QQ DSH 会话。
 - **全局数字角色活动**：WebUI 的“主会话”页可启动/继续自主探索、提交任务或持久停止；QQ 私聊、原生 @、已验证回复/引用、群消息中提到当前选中的人格卡名称或 `socialV2.attentionKeywords` 命中，也会向同一个全局会话发送元数据提醒。默认提醒包含会话标识、消息定位（`id:` 为 QQ 消息 ID；没有 QQ 消息 ID 时为 `seq:本地序号@缓存标识`）和合并数量；多条提醒合并时定位最后一条，完整内容按需读取。查看、引用或获取图片时保留完整定位；旧式纯数字若与本地序号产生歧义，会提示使用前缀。清空 QQ 消息缓存后，之前的本地序号提醒会失效，避免指向新消息。独立模式按账号保留待处理提醒的位置、投递进度和确认状态。SnowLuma 模式的投递队列保存在内存中。活动回合中的提醒会送到 DSH 下一步，休息期间可提前唤醒。普通群消息可通过 QQ 历史工具按需查看。每个活动回合以 `agent_rest` 结束：休息 1 至 5 分钟后恢复一轮；未读的 QQ 提醒会在后续休息期间每分钟检查一次，最多补发一次；指数退避恢复时不补发。漏掉休息调用时按指数退避恢复，最长间隔 30 分钟。WebUI 停止会取消当前/排队任务并阻断自动恢复，只有 WebUI 手动任务能解除。
 - **提示词维护**：全局数字角色固定使用技术 preset `desktop-agent`；WebUI 按用途拆分编辑固定前缀，支持逐个添加、命名、启用或删除自定义模块。模块源配置在 `dsh/agent-presets/desktop-agent/prompt-modules.json`，生成的完整前缀写入 `agent.cordis.yml` 并同步 `plugins/qq-agent-presets/` bundle patch。必要的会话、安全和回合收尾模块不能关闭；固定前缀中的模块开关只控制提示词文本，实际工具能力仍由各自设置控制。保存固定前缀后需重启 DSH，并重建全局会话才能获得新版前缀。当前人格卡由 `qq-agent-presets` 在每次提示词组装时动态加入 DSH persona 固定前缀，普通历史压缩不会移除它；切换、编辑或清除后在下一次模型请求时更新。首次部署这项前缀变量时，仍需重启 DSH 并重建全局会话。
@@ -67,6 +67,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 
 | 字段 | 说明 |
 | --- | --- |
+| `qqBackend` | `native`（默认）使用桌面 QQ，`snowluma` 使用 OneBot。WebUI「QQ 消息 → 提醒与发送」可切换并重启桥接。 |
 | `dsh.baseUrl` | 固定 DSH API 地址及自动发现的回退地址，默认 `http://127.0.0.1:3080` |
 | `dsh.autoDetectPort` | 默认 `true`。Windows DSH 桌面版可能动态分配 API 端口；桥接启动时及 DSH 离线后会从其本机监听端口中识别 API。未发现时继续定期搜索，并检查配置的 `baseUrl`；就绪后连接事件流。发现的端口只在内存中使用，不写回配置。匹配到多个 API 且 `baseUrl` 不在其中时暂停连接，需指定目标地址并重启桥接 |
 | `dsh.provider` / `dsh.model` / `dsh.reasoningEffort` | DSH 会话使用的模型/推理强度；可在 WebUI“DSH 模型与思考强度”中从模型目录选择或手动填写 Provider / Model ID |
@@ -83,13 +84,13 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `webSearch.provider` | 联网搜索后端：`auto`（默认，优先 DeepSeek、失败回退 Bing）/ `deepseek`（仅 DeepSeek，无凭据时报错）/ `bing` |
 | `webSearch.apiKeyEnv` / `apiKey` | 搜索凭据的环境变量名（默认 `DEEPSEEK_API_KEY`）/ 直接写死 key（不推荐）。都不设置时读 DSH 的 `$DSH_HOME/.credentials.yaml` 里同名 ref |
 | `webSearch.baseURL` / `model` / `maxUses` / `maxResults` | 搜索端点（默认 `https://api.deepseek.com/anthropic/v1`，必须 https 且解析到公网）、模型（默认 `deepseek-v4-flash`）、单次搜索最多用几次工具、返回条数上限 |
-| `allow.private` / `allow.groups` | 控制台直接测试发送的目标白名单；全局数字角色会话的 SnowLuma 工具不受其限制 |
+| `allow.private` / `allow.groups` | 控制台直接测试发送的目标白名单；全局数字角色会话的 QQ 工具不受其限制 |
 | `socialV2.attentionKeywords` | 可选关键词数组。匹配群聊正文时只给全局 agent 发元数据提醒，不把正文注入提示词；空数组关闭关键词提醒 |
 | `ownerQQ` | 可选的 QQ 账号身份锚点，也用于验证私聊睡眠命令；具体关系和称谓由当前人格卡及双方表达决定。可在控制台“系统运维 → 访问设置”中设置或清除；保存后本地配置优先于 DSH 的同名设置。旧安装在首次通过控制台保存之前仍兼容 DSH 的 `qq-agent-presets.ownerQQ` |
 | `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
 | `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | 可选 A_Memorix 长期记忆。默认关闭；部署本机 HTTP/JSON Gateway 并创建 namespace 后，可在 WebUI 配置连接地址、namespace、密钥和使用上限；API key 只保存在不入库的 `config.json`。 |
 | `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | A_Memorix 请求超时与新会话首次注入摘要的条数/字符上限；默认 `45000` ms、`6` 条、`2500` 字符。配置与维护说明见 [长期记忆方案](docs/guides/MEMORY_ARCHITECTURE.md) |
-| `deny.*` | 控制台直接测试发送的目标拒绝名单；全局数字角色会话具有完整 SnowLuma 读写能力 |
+| `deny.*` | 控制台直接测试发送的目标拒绝名单；全局数字角色会话通过所选通道读写 QQ |
 
 > 测试发送名单在控制台“系统运维 → 诊断与维护 → 测试发送”中配置；`allowAllWhenEmpty` 只影响对应允许名单为空时是否放行。它们不限制全局 desktop-agent；数字角色可以访问账号中的群聊和私聊。`ownerQQ` 用于识别账号和验证睡眠命令，不限制工具访问范围。QQ MCP 自动附加桥接内部凭证，令牌不暴露给模型。
 
@@ -103,9 +104,11 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 
 桥接和控制台能跑起来还不够，DSH 端还需要安装 `desktop-agent` preset，并挂载 MCP 工具。启用电脑操作能力还要求 DSH profile 已启用 `dsh-computer-use-win`。**单机新装同样必须执行这一步**，装完还要**重启 DSH**：
 
-```bash
-node scripts/setup-dsh.mjs
+```powershell
+node scripts/setup-dsh.mjs desktop
 ```
+
+使用 Web profile 时把 `desktop` 换成 `web`。
 
 > `setup-dsh.mjs` 安装 `desktop-agent`、`ownerQQ` 关系对象身份标记设置和当前 MCP 工具；不再设置 DSH 运行模式或创建 `state/mode.json`。设置命名空间为 `qq-agent-presets.ownerQQ`。
 
@@ -115,55 +118,23 @@ node scripts/setup-dsh.mjs
 
 ## 完整启动流程（从零开始）
 
-共 6 步。安装并启动桥接后，DSH 和所选 QQ 后端可稍后启动；桥接会在后台等待连接。Windows DSH 桌面版的 API 端口可能动态变化，桥接启动及断线时会自动发现；固定端口部署使用 `dsh.baseUrl`。
+1. 安装 DSH 并启动一次实际使用的 profile。在 DSH 中配置一个可用的模型。桥接需要 Node.js 22.13 或更高版本。
+2. 获取仓库，在 Windows PowerShell 中创建本地配置。
 
-1. **启动 DSH**
-   确认 DSH 桌面版或 Web 服务正在运行。`3080` 是固定地址部署的默认值；Windows 桌面版的动态 API 端口由桥接启动时识别，所以应先开 DSH，再启动桥接。
-
-2. **装桥接并复制配置**
-   ```bash
+   ```powershell
    git clone https://github.com/Reshirem/qq-bridge.git
    cd qq-bridge
    npm install
+   Copy-Item config.example.json config.json
    ```
-   Windows CMD 用 `copy config.example.json config.json`，其他平台用 `cp config.example.json config.json`。
-   全局角色通过 QQ 工具查看消息。符合提醒规则的来信会将消息位置送到角色会话。`allow.private` 和 `allow.groups` 用于控制台直接测试发送。
 
-3. **装 DSH 端（preset + MCP），然后重启 DSH**
-   ```bash
-   node scripts/setup-dsh.mjs
-   ```
-   装完**必须重启 DSH**——preset 与 MCP 只在 DSH 启动时加载。
-   跳过这步桥接不会崩，但 QQ 注意信号或 WebUI 任务拿不到 `desktop-agent` preset，桥接会**拒绝建会话**（有意的安全设计：绝不回退到 DSH 默认 preset）。
+3. 选择一个 QQ 后端。**独立方案（默认）**使用同机已登录的 Windows x64 桌面 QQ。安装 Frida 和数据库读取器、导入账号密钥，运行只读命令确认能打开原库。[独立方案安装与验收](docs/guides/NTQQ_ATTENTION.md#新机器安装)
 
-4. **准备 QQ 后端**
-   - 默认独立方案使用已登录的 Windows 桌面 QQ。按[独立通道安装说明](docs/guides/NTQQ_ATTENTION.md#新机器安装)准备依赖和账号密钥，然后直接执行第 6 步。
-   - 选择 SnowLuma 时，在 `config.json` 设置 `"qqBackend": "snowluma"`，再按下面的步骤安装。
-   - 下载：<https://github.com/SnowLuma/SnowLuma/releases/latest> 选 `SnowLuma-v<版本>-win-x64.zip`（完整版，自带 Node 运行时；Lite 版需本机 Node 22.13+）
-   - 解压到任意目录（例如 `C:\SnowLuma`），双击 `launcher.bat`
+   **SnowLuma 方案**在 `config.json` 设置 `"qqBackend": "snowluma"`。启动 SnowLuma 的 `launcher.bat`，按其启动日志打开管理页面并登录 QQ。开启 OneBot WebSocket 服务端和 HTTP API，将两个地址与配置的令牌填入 `snowluma.wsUrl`、`snowluma.httpUrl`、`snowluma.accessToken`。示例端口分别为 3001 和 3000。[SnowLuma 发布页](https://github.com/SnowLuma/SnowLuma/releases/latest)
+4. 在仓库根目录将角色预设与 MCP 工具安装到正在使用的 DSH profile。桌面版运行 `node scripts/setup-dsh.mjs desktop`，Web 版运行 `node scripts/setup-dsh.mjs web`。完成后退出并重新打开 DSH。
+5. Windows 运行 `.\start.bat` 启动守护进程，也可用 `npm start` 前台运行。打开 `http://127.0.0.1:3100`，使用配置的控制台令牌登录，自动生成的令牌在 `state/console-token`。在「系统运维 → 诊断与维护」核对 DSH 和 QQ 消息通道。独立模式应显示「独立通道已连接」及「原库只读连接已就绪」，SnowLuma 模式查看网关和心跳状态。[DSH 验证与排错](docs/guides/DSH_SETUP.md#验证)
 
-5. **配置 SnowLuma（仅 SnowLuma 模式）**
-   - 打开启动日志里的 WebUI 地址（README 写的是 `http://localhost:5099`，以你启动日志里实际打印的为准）
-   - 用**启动日志中的初始密码**登录，按引导：同意条款 → 设置密码 → 接入 QQ 进程（扫码登录）
-   - 在 WebUI 里配置 OneBot 连接：开启 **WebSocket 服务端** 和 **HTTP API**，分别记下**端口**（默认 WS `3001`、HTTP `3000`）和 **accessToken**（若配置了）
-   - 回到 `config.json` 填好 `snowluma` 段；如需关键词提醒，可配置 `socialV2.attentionKeywords`：
-
-     ```json
-     "snowluma": {
-       "wsUrl": "ws://127.0.0.1:3001",
-       "httpUrl": "http://127.0.0.1:3000",
-       "accessToken": "你在 WebUI 里配置的 token（没配置就留空）"
-     }
-     ```
-
-   `wsUrl` 是 OneBot **WebSocket** 端口，`httpUrl` 是 OneBot **HTTP API** 端口（不要填成同一个 WS 端口，否则 MCP 工具会报 HTTP 426）。
-
-6. **启动桥接**
-   ```bash
-   npm start          # 前台运行（崩溃不自动重启）
-   ```
-   看到 `SnowLuma 已连接` 且 DSH 就绪即成功；然后私聊机器人，或在群聊中 @ 机器人测试。桥接会向同一个全局 desktop-agent 会话发送不含正文的提醒。
-   Windows 想要「崩溃自动重启」请改用 `start.bat`（见下节）。
+已有安装升级时请保留原配置和会话数据，按实际后端与 profile 操作。[从旧版升级](docs/guides/DSH_SETUP.md#从旧版升级)
 
 ## 运行与运维
 
@@ -175,7 +146,7 @@ npm start          # 或双击 start.bat（守护模式：崩溃自动重启，�
 - **桥接只能运行一个实例**（有单实例锁，重复启动会被拒绝并提示"已有实例在运行"）
 - **用 start.bat 启动**（守护模式），窗口别关——桥接崩溃会在 5 秒后自动拉起
 - 桥接异常/消息无反应时：双击 `restart.bat`（自动杀旧实例 → 清理锁 → 重新启动守护）
-- **DSH 重启后的处理**：DSH Web 通常可由桥接每 5 秒探活并自动重连。Windows DSH 桌面版重启后可能换 API 端口；此时重启桥接以重新发现端口。DSH 不可用期间消息正文仍在桥接缓冲，元数据提醒按会话聚合在内存队列（最多 50 个来源）；DSH 恢复后补投。桥接进程退出会丢失未投递的内存提醒；会话休息截止时间、恢复退避和停止态保存在 `state/desktop-agent.json`。
+- **DSH 重启后**，桥接重新探测 API 端口并接续原角色会话。独立模式按账号保存提醒位置和确认进度，SnowLuma 模式保存未读缓存，尚未投递的提醒队列位于内存。会话休息截止时间、恢复退避和停止状态保存在 `state/desktop-agent.json`。
 - 修改 `config.json` / `roles/` / `state/current-role.json` 后重启桥接生效；修改 `dsh/agent-presets/`（改完要跑 `node scripts/build-agent-preset-patches.mjs` 重新生成 bundle patch）或 MCP 配置后重启 DSH 生效
 
 日志示例：
@@ -241,10 +212,7 @@ qq-bridge/
 
 ## SnowLuma 上游健康（「连上了但收不到消息」）
 
-「注入」在这个技术栈里只发生在一处：**SnowLuma 用原生组件挂进 QQ 客户端进程**（它自己日志里叫
-`[Hook]`，载体是安装目录的 `native/snowluma-win32-x64.{dll,node}`）。**本桥接没有任何原生/注入面**
-（依赖全为纯 JS，源码里没有 `.dll` / `.node` / FFI / 进程注入），也不启动、不控制 SnowLuma 或 QQ ——
-因此桥接无法修复 QQ 客户端内的 Hook 故障。桥接会展示上游健康信号，帮助区分网关连接问题和 QQ 接收链路问题。
+SnowLuma 模式通过 OneBot 连接网关，由 SnowLuma 自己的原生组件接入 QQ。以下诊断针对该模式。默认独立模式由桥接通过 Frida 接入桌面 QQ，其连接与数据库状态见[独立通道验收](docs/guides/NTQQ_ATTENTION.md#启动后核对)。
 
 ### 已知行为：连上了 ≠ 收得到
 
@@ -261,10 +229,9 @@ WARN [Hook] process enumeration timed out after 4000ms (worker abandoned)
 
 1. **主信号**：`meta_event/heartbeat` 载荷里的 `status.good`，用于判断 SnowLuma 的 QQ 接收链路是否正常。兜底是定时查询 `get_status`；若运行时提供账号会话上下线事件，也会一并显示。事件包到达时间只能证明进程和 WebSocket 仍有活动，不能单独证明 QQ 接收正常。
    `get_login_info` 只用于读取账号身份，不作为接收健康信号。
-2. 判定退化时：日志打**明确指向 SnowLuma `[Hook]`** 的警告、控制台「运行总览」出现 `SnowLuma 上游` 卡片、
-   「系统运维 → 诊断与维护」页出现网关告警，`GET /api/status` 的 `snowluma` 字段给出 `degraded` / `good` / `hint`。
+2. 网关报告接收异常或心跳中断时，「运行总览」的 QQ 消息卡片显示异常状态。「系统运维 → 诊断与维护」的 QQ 消息通道给出具体原因。
 
-排查顺序：控制台查看 `SnowLuma 上游` 卡片，再查看 SnowLuma 的 `logs/snowluma-*.log` 中 `[Hook]` 相关日志。
+排查时可将「系统运维 → 诊断与维护」的状态与 SnowLuma 日志 `logs/snowluma-*.log` 中的 `[Hook]` 记录对照。
 
 ### SnowLuma 连接注意事项
 
@@ -273,7 +240,7 @@ SnowLuma 需要启用 OneBot v11 HTTP 和 WebSocket。HTTP 与 WebSocket 可以�
 若控制台显示网关已连接但没有收到 QQ 事件，先检查 SnowLuma 登录状态和自身日志中的 hook 报错。若要固定连接到指定网关，可在配置中设置 `snowluma.followDiscoveredEndpoint` 为 `false`；这时桥接仍可更新 token，但不会覆盖 `wsUrl`。
 ## 已知限制
 
-- agent 回复在回合结束时一次性发送（不做流式逐字转发）；回复超过 `socialV2.send.maxMessageChars`（默认 500 字，可用 `social.maxReplyChars` 调整）自动按句读/URL 边界分段
+- 角色通过 QQ 发送工具选择每条消息的内容。多条发送间隔由 `socialV2.send.delayPerCharMs` 决定，每条最多等待 1000 ms。
 - 图片及部分表情可以通过安全下载接入多模态模型；视频和其它不支持的媒体类型不做内容解析
 - 当前桥接运行时不提供 QQ 语音发送、接收或转写能力
 - agent 的 Markdown 回复会转成纯文本（链接保留 `文字 (url)` 形式）

@@ -4,7 +4,7 @@
 
 ## 使用
 
-本机已在 `state\ntqq-reader\venv` 装好依赖。从 qq-bridge 根目录运行：
+新机器先按独立通道说明安装读取器、构建 VFS 并导入数据库密钥。然后在 qq-bridge 根目录运行下面的只读诊断命令。[新机器安装](NTQQ_ATTENTION.md#新机器安装)
 
 ```powershell
 $reader = '.\state\ntqq-reader\venv\Scripts\python.exe'
@@ -15,16 +15,7 @@ $reader = '.\state\ntqq-reader\venv\Scripts\python.exe'
 
 将示例号码换成实际群号或好友 QQ 号。下一页沿用同一来源，另传 `--before-id` 和上一页最后一行的 `nativeId`。时间相同的记录按主键排序。此 ID 是原生库行标识，不能直接用于 SnowLuma 的发送、引用或未读确认。聊天正文只随有来源的查询输出。
 
-新机器需要 Windows x64、可安装 wheel 的 Python（本机验证为 3.12），以及当前账号可用的数据库密钥。在仓库根目录运行：
-
-```powershell
-py -3.12 -m venv state\ntqq-reader\venv
-.\state\ntqq-reader\venv\Scripts\python.exe -m pip install --only-binary=:all: -r scripts\ntqq-requirements.txt
-.\state\ntqq-reader\venv\Scripts\python.exe -m pip install --only-binary=:all: ziglang==0.13.0
-.\state\ntqq-reader\venv\Scripts\python.exe -B scripts\build_ntqq_vfs.py
-```
-
-默认从用户文档目录的 `Tencent Files\当前账号\nt_qq\nt_db` 查找消息库。重定向了文档目录或自选了 QQ 数据目录时，用 `--tencent-files` 指定 `Tencent Files` 文件夹的完整路径。当前实验需要 QQ 在线打开该库，并有可读取的 WAL 索引。
+默认在 `%USERPROFILE%\Documents\Tencent Files\当前账号\nt_qq\nt_db` 查找消息库。重定向了文档目录或自选了 QQ 数据目录时，命令行诊断可用 `--tencent-files` 指定 `Tencent Files` 的完整路径。常驻读取器使用默认路径。两种读取方式都需要 QQ 在线打开该库，并有可读取的 WAL 索引。
 
 ## 在线读取
 

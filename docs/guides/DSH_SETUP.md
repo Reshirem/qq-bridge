@@ -2,7 +2,18 @@
 
 本文说明如何把唯一的全局 `desktop-agent` preset 与 MCP 工具安装到目标 DSH profile。WebUI 任务和 QQ 注意信号都进入同一个全局数字角色。这里不配置或切换 DSH 运行模式。
 
-旧安装升级时，重新对目标 profile 运行 `node scripts/setup-dsh.mjs <profile>` 即可清理引用旧 MaaMCP 适配器的注册项，然后重载 DSH。
+新机器可以从 [README 的完整启动流程](../../README.md#完整启动流程从零开始) 开始。下面按目标 DSH profile 说明升级、安装与验证。
+
+## 从旧版升级
+
+1. 在原仓库目录运行 `git pull --ff-only` 和 `npm install`。沿用现有 `config.json` 和 `state/`，其中保存角色会话、提醒、学习成果和记忆数据。
+2. 在重启桥接前确认 `config.json` 的 `qqBackend`。旧配置缺少这个字段时新版会启动 `native`。要继续沿用 OneBot，请显式设置 `"qqBackend": "snowluma"`。要切到独立方案，先准备原生依赖和当前账号的密钥。两套后端各自保留自己的提醒或未读数据，切换不会把旧未读转换成另一套的计数。[独立通道安装](NTQQ_ATTENTION.md#新机器安装)
+3. 在仓库根目录运行 `node scripts/setup-dsh.mjs desktop`（Web profile 用 `web`，自定义 profile 用实际名称）。脚本移除旧的 `mcp-snowluma`、`mcp-snowluma-host` 等桥接注册项，安装 `mcp-qq` 和 `mcp-qq-memory`。
+4. 等当前角色回合结束，完整退出并重新打开 DSH，然后用原来的方式重启 qq-bridge。桥接会接续原角色会话，工具名迁移本身无需重建会话。旧会话历史可能仍出现 `mcp__snowluma__*`。在新回合用 `mcp__qq__qq_status` 查看实际后端，并核对这次调用的回执。[验证](#验证)
+
+以后单独切换 QQ 后端时，在 WebUI「QQ 消息 → 提醒与发送」选择方案并点击「应用并重启桥接」。两种后端共用一套角色工具。通过 `start.bat` 运行时守护窗口会自动拉起桥接，前台运行则需再次执行 `npm start`。
+
+仅更新 WebUI 静态文件（例如长期记忆「浏览全部」的翻页修复）时，更新仓库后刷新浏览器即可。
 
 ## 安装
 
@@ -14,7 +25,20 @@ cd qq-bridge
 npm install
 ```
 
-Windows CMD 可用 `copy config.example.json config.json` 创建配置文件。使用 SnowLuma 方案时填写 OneBot 的 `snowluma.wsUrl` / `snowluma.httpUrl` 和需要的 `snowluma.accessToken`。全局 desktop-agent 可读取账号的群/好友目录并使用当前 QQ MCP 工具集；工具访问不限于提醒来源。`ownerQQ` 是可选的 QQ 账号身份锚点，消息以发送者 QQ 号匹配它；不按发送者名称或群名片判断。模型可用 `qq_get_owner_identity` 查询当前号码或未配置状态。未设置时，QQ 来源不能确认 owner，但不影响工具访问。该字段不授权桥接管理操作。可在控制台“系统运维 → 访问设置”中设置或清除，保存后本地设置优先；在首次通过控制台保存前，仍兼容 DSH 设置的 `qq-agent-presets.ownerQQ`。DSH 运行模式字段不参与运行。
+首次安装时在 Windows PowerShell 运行 `Copy-Item config.example.json config.json`。桌面 QQ 独立方案是默认值。SnowLuma 方案需设置 `qqBackend` 为 `snowluma`，并填写 OneBot 的 WebSocket、HTTP 和令牌。准备好所选通道后，将工具安装到实际使用的 profile。[选择 QQ 后端](../../README.md#完整启动流程从零开始) · [安装角色预设与工具](#安装角色预设与工具)
+
+`ownerQQ` 用于按 QQ 号识别主人和验证私聊睡眠命令。在「系统运维 → 访问设置」保存后使用本地配置，旧安装首次保存前兼容 DSH 的 `qq-agent-presets.ownerQQ`。
+
+### 按需启用的功能
+
+| 功能 | 部署与检查 |
+| --- | --- |
+| 长期记忆、记忆整理、表情语义检索 | 运行下节的 A_Memorix 安装命令，在「长期记忆 → 服务设置」检查 Gateway。表情使用独立的 `qq-bridge-stickers` 空间。已有本机记忆部署启用时，运行 `a-memorix.ps1 start` 会检查并补建表情空间和密钥。[表情检索与复检](CHAT_LEARNING.md#聊天时选图与复检) |
+| 黑话与表情后台学习 | 默认启用，使用 DSH headless 和所配置的模型。在「学习与素材 → 学习队列」选择来源、查看失败或重试。GIF 抽帧需要 FFmpeg。[后台学习](CHAT_LEARNING.md) · [图片与动图依赖](#图片与动图依赖) |
+| 令牌与花费 | 随桥接运行。价格从 models.dev 获取，在「令牌与花费」可手动刷新。已入账的金额保留当时的单价。[用量与计价](TOKEN_USAGE_CONSOLE.md) |
+| Maa-Agent 游戏工具 | 准备 ADB、maa-cli、MaaCore 和目标设备后单独安装，运行 `node scripts/maa-agent.mjs doctor` 检查设备与资源。[Maa-Agent 安装](MAA_AGENT.md#安装) |
+
+### 长期记忆
 
 长期记忆为可选能力。Windows 上可在仓库根目录运行：
 
@@ -36,35 +60,33 @@ powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 stop
 
 Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过 `setup` 安装，启动器会先尝试启动 Gateway 和记忆服务；启动失败会显示警告，但不会阻止桥接运行。直接使用 `npm start` 时，需先单独运行脚本的 `start` 操作。
 
-如果在桥接运行期间首次运行了 `setup`，重启一次 qq-bridge 以读取脚本写入的 namespace 凭据。之后无需改 `config.json`，可在 WebUI「长期记忆 → 设置 → 桥接连接与启动摘要」中设置启用状态、本机 Gateway 地址、已创建的 namespace、namespace API key、请求超时和首次摘要上限。Gateway 地址只允许本机回环地址；切换 namespace 前需先在 A_Memorix 中创建它。保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态；未配置时桥接仍可正常运行，WebUI 会显示连接状态。
+如果在桥接运行期间首次运行了 `setup`，重启一次 qq-bridge 以读取脚本写入的 namespace 凭据。之后无需改 `config.json`，可在 WebUI「长期记忆 → 服务设置 → 桥接连接与启动摘要」中设置启用状态、本机 Gateway 地址、已创建的 namespace、namespace API key、请求超时和首次摘要上限。Gateway 地址只允许本机回环地址；切换 namespace 前需先在 A_Memorix 中创建它。保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态；未配置时桥接仍可正常运行，WebUI 会显示连接状态。
 
-启用后可在 WebUI「长期记忆 → 设置 → A_Memorix 模型服务」中手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机受 ACL 保护的 `state/a-memorix/secrets/`，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
+启用后可在 WebUI「长期记忆 → 服务设置 → A_Memorix 模型服务」中手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机受 ACL 保护的 `state/a-memorix/secrets/`，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
 
 长期记忆启用且 `memoryOrganizer.enabled` 未设为 `false` 时，主会话成功休息后每天最多排队运行一次独立记忆整理，日期按 `memoryOrganizer.timeZone` 计算；当天后续休息产生的内容会在下一个可触发日接续整理。它通过 DSH 随附的 `dsh --profile headless` 执行，并按同一时区每天复用一条整理 Session；整理模型跟随触发时主会话的模型选择，A_Memorix 的 Embedding / LLM Provider 是另一套配置。Windows 下桥接会先检查标准 DSH Desktop 安装目录 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`，并直接启动其底层 `DeepSeek Harness.exe` 的 Node CLI 入口，避免带空格的安装路径经过 `cmd.exe` 解析；找不到时再尝试 `PATH` 中的 `dsh`。如使用其他安装位置，可在 `config.json` 的 `memoryOrganizer.cliPath` 指定 CLI 路径，或设置 `DSH_CLI_PATH`。桥接读取当前 Desktop profile 中所选 provider 的配置，只把该 provider 和当前模型放入本次 headless patch；当它使用 `apiKeyEnv` 时，会在这个进程内启用 DSH 本地凭据解析器，密钥值不会复制进 patch 或日志。其他 DSH 工具在整理进程中关闭，模型只保留长期记忆 MCP 工具。对于依赖 Desktop OAuth 登录态而非 DSH 本地凭据引用的 provider，仍需单独确认 headless 是否支持。
 
-整理任务与游标保存在 `state/memory-organizer.json`，其中也持久记录已自动排队的日期，避免桥接重启后同一天再次触发。WebUI“长期记忆 → 整理进度”可以查看任务、重试失败任务，或选择历史 DSH 会话并整理到点击时的日志末尾。首次启用长期记忆时，桥接会把尚未排队的历史休息边界合并到最新边界，每日最多排队一次。读取到截断、不完整或缺少连续序号的记录时，任务会失败并保留游标；检查 DSH headless 与 A_Memorix 凭据、确认错误后可在页面重试。历史会话整理仅依据它们自身可读取的 DSH 记录，不会另外读取 QQ 消息库。实际安装版 CLI 的 Node 入口和 `--help` 已确认可运行；完整整理与 Gateway 写入仍需观察当前任务结果。
+整理进度保存于 `state/memory-organizer.json`。在「长期记忆 → 整理任务」可查看已完成分段、重试失败任务，或为历史 DSH 会话创建任务。同一来源的后续任务会等待前一条处理成功。修复模型、凭据或 Gateway 后，重试会核对持久记录并从已完成分段继续。[整理与写入回执](MEMORY_ARCHITECTURE.md)
+
+### DSH 地址与端口
 
 Windows DSH 桌面版可能动态分配 Web API 端口。`dsh.autoDetectPort` 默认开启，桥接启动时和 DSH 离线后会搜索由 DeepSeek Harness 进程持有、经 API 确认的本机监听端口。桥接可以先于 DSH 启动；未发现时继续定期搜索并检查 `dsh.baseUrl`（默认 `http://127.0.0.1:3080`），发现并确认可用后再连接事件流。发现的 URL 只在内存中使用，不写回 `config.json`；DSH 重启换端口时会自动切换并恢复会话订阅。非 Windows、远程地址或关闭自动发现时使用配置地址。如果匹配到多个可用 API 且 `dsh.baseUrl` 不在其中，桥接会暂停连接而不猜测；指定目标地址并重启桥接即可。
 
 这个 API 端口由 DSH 本身开放；profile 里的 MCP 插件通过 stdio 启动，不另开 API 端口。桥接控制台的 `consolePort` 是独立端口，默认固定为 `3100`，占用时会报错退出。
 
-运行安装脚本：
+### 安装角色预设与工具
 
-```bash
-node scripts/setup-dsh.mjs
-```
+在仓库根目录执行与正在运行的 DSH profile 对应的**一条**命令。
 
-默认使用 `web` profile；若使用另一个 profile，可传单个 profile 目录名：
+| 实际 profile | 命令 |
+| --- | --- |
+| Windows 桌面版 `desktop` | `node scripts/setup-dsh.mjs desktop` |
+| Web 版 `web` | `node scripts/setup-dsh.mjs web` |
+| 自定义 profile | 将最后一个参数换成实际目录名 |
 
-```bash
-node scripts/setup-dsh.mjs <profile>
-```
+省略参数时脚本使用 `web`。
 
-也可通过 `DSH_HOME` 指定 DSH 根目录：
-
-```bash
-DSH_HOME=/path/to/.dsh node scripts/setup-dsh.mjs <profile>
-```
+DSH 使用自定义根目录时，在同一 PowerShell 窗口先设置 `$env:DSH_HOME` 为实际目录，再运行对应的安装命令。
 
 脚本会：
 
@@ -102,7 +124,7 @@ npm start
 
 该写法只对当前 PowerShell 窗口及其启动的进程生效。若通过 `start.bat` 启动，脚本会在未设置 `FFMPEG_PATH` 时自动检查仓库旁边的 `..\ffmpeg\bin\ffmpeg.exe`；其它安装位置请在 Windows 用户环境变量中设置 `FFMPEG_PATH`。修改环境变量后重新打开启动窗口并重启桥接。图片工具失败时，数字角色会收到具体原因；缺少 FFmpeg 时应向用户说明部署依赖未配置。
 
-固定前缀在 WebUI“全局数字角色”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个内置模块都可单独编辑或关闭，提示词内容由用户自行决定。编辑时也可以逐个添加自定义模块，为其填写名称和正文、单独启用或删除；自定义模块会追加在固定前缀末尾并持久保存。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。保存固定前缀或首次安装新版 `qq-agent-presets` 后，需重启 DSH 并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
+固定前缀在 WebUI“全局数字角色”面板中按用途分模块维护。模块源文件是 `dsh/agent-presets/desktop-agent/prompt-modules.json`，组合后的内容写入 `agent.cordis.yml` 并生成 bundle patch。每个内置模块都可单独编辑或关闭，提示词内容由用户自行决定。编辑时也可以逐个添加自定义模块，为其填写名称和正文、单独启用或删除；自定义模块会追加在固定前缀末尾并持久保存。开关只控制提示词文本：长期记忆实际是否可用仍由 WebUI“长期记忆”页管理，`agent_rest` 仍负责正常结束活动回合。已有角色要加载修改后的固定前缀时，需重启 DSH 并在桥接 WebUI 选择“重建会话以加载新提示词”。桥接会先确认当前没有活动回合，再归档旧 session 并创建新的 `desktop-agent` session；DSH 中的旧会话历史会保留。
 
 当前选中的 `roles/<名称>.md` 人格卡通过 `qq-agent-presets` 注册的 `{{qq_bridge_active_role_card}}` 运行时变量加入 DSH `persona.prefix`。变量在每次提示词组装时读取当前选择和完整卡片内容，因此切换、清除、改名、删除或编辑后，下一次模型请求使用新状态；persona 固定前缀不会随普通对话历史压缩而摘要掉。人格卡会占用每次请求的 system prompt token。建议卡片控制在 6000 字符以内；超出时控制台显示软提醒和 token 估算，仍完整保存和载入。没有选中卡片时变量为空，数字角色继续使用固定前缀中的通用定位。
 
@@ -111,6 +133,10 @@ npm start
 在 DSH 的「插件 → 网页搜索」中配置提供方和所需凭据。`desktop-agent` 预设加载 `tool-web` 插件并沿用其默认配置，自动注册 `web_search` 和 `web_fetch`；实际是否可用还取决于所选提供方的就绪状态。搜索把查询交给 DSH 当前选择的 `ctx.web` 搜索提供方并返回来源；抓取把指定 URL 交给当前抓取提供方读取正文。DSH 会附加对应的用法提示，并标明网页内容是不可信数据。这个配置不控制桥接自己的 `webSearch` / `web-search-safe`。预设变更后重启 DSH 并在桥接 WebUI「主会话」中重建全局会话；如果 DSH 选择 `http` 抓取提供方，它允许访问本机和内网地址，不受桥接 SSRF 防护约束。
 
 ## 验证
+
+**核对当前部署。** 登录 WebUI，在「系统运维 → 诊断与维护」查看 DSH 和 QQ 消息通道。进入已有角色会话，让它调用一次 `mcp__qq__qq_status`。成功回执的 `backend` 应与所选的 `native` 或 `snowluma` 对应。
+
+在 DSH、桥接和原角色会话均已就绪后，仓库根目录的 `npm run probe:tools` 可只读核对 DSH 实际加载的 QQ 注册和当前角色最近一次新工具回执。脚本不触发模型调用。若提示尚无回执，在角色调用后再查，并核对时间是否晚于本次重启。
 
 可以先运行不依赖在线 DSH 的回归：
 
@@ -124,27 +150,27 @@ node scripts/test-audit-setup-guards.mjs
 
 确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局数字角色应看到 `mcp__wincu__*`、完整的 `mcp__qq__*` 和 `mcp__qq-memory__*`。`web_search` 与 `web_fetch` 由 DSH `tool-web` 行的 `search` / `fetch` 配置控制，本仓库 preset 默认启用；是否提供给当前模型步骤还取决于 DSH 当前提供方的就绪状态。`ask_user_question` 和 `todo_write` 不再由 `desktop-agent` 挂载。shell、通用文件工具、子代理或 Harness 管理工具也不应出现。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
-如要核验 DSH 在线 API，可运行 `npm run verify:dsh`（默认 `web` profile），或通过 `DSH_PROFILE` 指定 profile；也可直接运行 `node scripts/verify-dsh-current.mjs <profile>`。其中部分检查需要正在运行且可访问的 DSH。不要把该在线核验与上述离线检查混为一谈。
+进一步检查 DSH API 时，桌面版可运行 `node scripts/verify-dsh-current.mjs desktop`，Web 版可运行 `npm run verify:dsh`。该脚本会创建临时测试会话。只查看现有角色工具回执可使用上面的 `probe:tools`。
 
 ## 常见问题
 
-- **QQ 信号没有启动全局会话**：确认 SnowLuma 事件进入桥接，且私聊或群聊原生 @ / 验证回复 / 配置关键词符合注意信号规则；普通群消息只缓冲。再检查 DSH preset 清单是否包含 `desktop-agent`。
+- **QQ 来信没有唤醒角色**。先在「系统运维 → 诊断与维护」确认当前后端已连接，再看「QQ 消息 → 提醒与发送」的开关和群聊触发词。核对角色是否睡眠或已停止，以及 `desktop-agent` 是否出现在 DSH 的预设清单。
 - **数字角色会话不可用**：确认 `desktop-agent` 已出现在 DSH preset 清单，且 DSH profile 中的 `dsh-computer-use-win` 已启用；更新 bundle 后重启 DSH，再从 WebUI 提交任务或触发一条 QQ 注意信号。
 - **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 已注册 `qq-agent-presets`，然后重启 DSH。
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否包含 `mcp-qq`、`mcp-qq-memory` 两个条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
 - **preset 未出现**：检查 `qq-agent-presets` bundle 是否注册并安装，再运行 `node scripts/build-agent-preset-patches.mjs --check`；修改源文件后需重新生成 patch 并重启 DSH。
 - **401 / Cookie 鉴权失败**：确认 `DSH_HOME` 指向当前 DSH 根目录且本机凭据可读。`dsh.authToken` 通常应留空；详见根目录 README 的配置说明。
-- **DSH Desktop 重启后桥接连不上**：桌面版可能在重启时换 API 端口；确认 DSH 已启动，再重启桥接触发端口重新发现。
+- **DSH Desktop 重启后桥接连不上**。默认启用端口自动发现，桥接会重新查找桌面版 API。如果配置了固定地址、禁用了自动发现或发现多个 API，核对 `dsh.baseUrl` 和 `dsh.autoDetectPort` 后重启桥接。
 - **SnowLuma 收不到 QQ 事件**：桥接只探测 OneBot 网关，不启动或控制 SnowLuma。检查 SnowLuma 自己的日志、QQ 登录状态以及 OneBot HTTP/WebSocket 配置。
 
 ## 唤醒与消息读取模型
 
 - 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局数字角色发不含消息正文的提醒；是否处理由 agent 自行判断。
-- 普通群消息正文保存在桥接侧，不会自动注入模型。全局 agent 可先用 `qq_list_conversations` 发现群/好友，再按需调用消息、历史或成员读取工具。
+- 普通群消息可以通过历史工具按需读取。独立模式保留提醒的位置和确认状态，SnowLuma 模式为每个来源保留最多 500 条未读。
 - 不靠长等待工具维持在线。每个活动回合必须以 `agent_rest` 作为最后一个工具调用；休息限定为 1 至 5 分钟，省略时为 5 分钟，超出范围自动调整。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
 - 交流可能还有后续时可先按需等待；休息到期后会发起新的模型回合，数字角色可以按需访问 QQ。频繁定时恢复会增加模型调用。
 - 回合未调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟递增恢复尝试，之后最长每 30 分钟尝试一次。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。
 - 工具等待、读取和发送都由当前 agent 回合主动决定；回合文本不会自动转发到 QQ。
-- 全局数字角色通过 QQ MCP 发送时自动使用全局 agent 令牌，任意合法群/私聊 key 均可用；`agent_rest` 不限制休息或停止状态中的后续工具调用，发送仍接受速率限制与审计。若数字角色通过 QQ 桌面界面操作，行为不经过这些桥接 API 检查。
+- 全局数字角色通过 QQ MCP 发送时自动使用全局 agent 令牌，任意合法群/私聊 key 均可用；`agent_rest` 不限制休息或停止状态中的后续工具调用，发送仍接受内容检查并记录审计。若数字角色通过 QQ 桌面界面操作，行为不经过这些桥接 API 检查。
 
 更多权限与安全约束见 [RULES.md](../../RULES.md)。

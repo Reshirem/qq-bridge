@@ -4,14 +4,7 @@
 
 ## 运行只读原型
 
-在 Windows x64 上登录桌面 QQ，从 qq-bridge 根目录运行。新机器先装可选的诊断依赖。
-
-```powershell
-py -3.12 -m venv state\ntqq-probe\venv
-.\state\ntqq-probe\venv\Scripts\python.exe -m pip install --only-binary=:all: frida==17.24.1
-```
-
-本机已装好，可直接运行观察器。
+新机器先按独立通道安装说明准备 Frida 环境。需要单独诊断 QQ 回调时，登录桌面 QQ，从 qq-bridge 根目录运行观察器。正常启动桥接会自动接入 QQ。[新机器安装](NTQQ_ATTENTION.md#新机器安装)
 
 ```powershell
 .\state\ntqq-probe\venv\Scripts\python.exe -B scripts\ntqq-probe\probe.py --seconds 90
@@ -40,7 +33,7 @@ $target = @('--peer', '<对方QQ号>', '--uid', '<对方NT UID>', '--sample-id',
 
 ## 源码与许可证
 
-观察器和加载脚本由 qq-bridge 自行实现。NapCat 和 lite-tools 用于核对 QQ 接口名、参数和事件含义，项目没有引入两者的源码、二进制或运行服务。核对的 NapCat 版本采用 Limited Redistribution License for NapCat，lite-tools 采用 AGPL-3.0。Frida 是这里实际安装的可选诊断依赖，安装在独立 Python 环境，Python 绑定及核心的上游许可证为 wxWindows Library Licence 3.1。[NapCat 许可证](https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/LICENSE) · [lite-tools 许可证](https://github.com/xiyuesaves/lite-tools/blob/c9ea751e81735419ba1a44a677e261216a9cba61/LICENSE) · [Frida Python 许可证](https://github.com/frida/frida-python/blob/17.24.1/COPYING) · [Frida Core 许可证](https://github.com/frida/frida-core/blob/17.24.1/COPYING)
+观察器和加载脚本由 qq-bridge 自行实现。NapCat 和 lite-tools 用于核对 QQ 接口名、参数和事件含义，项目没有引入两者的源码、二进制或运行服务。核对的 NapCat 版本采用 Limited Redistribution License for NapCat，lite-tools 采用 AGPL-3.0。独立通道和诊断观察器使用同一个 Frida 虚拟环境，Python 绑定及核心的上游许可证为 wxWindows Library Licence 3.1。[NapCat 许可证](https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/LICENSE) · [lite-tools 许可证](https://github.com/xiyuesaves/lite-tools/blob/c9ea751e81735419ba1a44a677e261216a9cba61/LICENSE) · [Frida Python 许可证](https://github.com/frida/frida-python/blob/17.24.1/COPYING) · [Frida Core 许可证](https://github.com/frida/frida-core/blob/17.24.1/COPYING)
 
 ## 本机能验证到哪一步
 
@@ -72,7 +65,7 @@ $target = @('--peer', '<对方QQ号>', '--uid', '<对方NT UID>', '--sample-id',
 
 **回执能说明什么。** QQ 会先返回提交结果，再用 `onMsgInfoListUpdate` 通知消息状态。发送端应按本次关联标识和原生消息 ID 对齐回执。上游类型还区分了成功但没有服务器序号的状态，其在本机的具体表现待测。超时保留“结果未知”，避免切回 SnowLuma 后同一句发两遍。QQ 报告发送成功与收件人已读也是两件事。[发送实现][send] · [发送状态定义][status]
 
-当前已验证的组合覆盖登录账号、收藏列表、原生群消息监听，以及指定私聊的文字和纯 GIF 发送回执。群聊发送、原生 @、引用回复和角色工具接入仍待验证。原生历史查询与数据库直读都可以保留，首次取得数据库密钥仍是单独的接入工作。
+在本轮命令行原型实验中，已验证登录账号、收藏列表、原生群消息监听，以及指定私聊的文字和纯 GIF 发送回执。后续桥接接入情况和运行依赖见[独立通道说明](NTQQ_ATTENTION.md)。
 
 ## 发送方式的取舍
 
@@ -91,7 +84,7 @@ $target = @('--peer', '<对方QQ号>', '--uid', '<对方NT UID>', '--sample-id',
 2. 从一条纯文本验证投递。记录提交结果，按本次发送的关联标识匹配 QQ 的状态更新，保存原生消息 ID，并在测试接收端确认消息出现。上游在提交后等待对应的 `onMsgInfoListUpdate`。超时后结果可能未知，先核对状态，再决定是否重试。同一条文本可能重复出现，不能仅凭正文判定哪次成功。[NapCat 的发送与回执](https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-core/apis/msg.ts#L244-L279)
 3. 再验证纯图片表情独立成一条消息、原生 @、引用回复。学习到的本地表情有文件可交给 QQ 制作图片元素；QQ 收藏仍依赖桥接的收藏同步；引用还要把接收端的 OneBot ID 解析到同一会话里的原生消息。原生 ID 按字符串保存。两条发送路径可以共用现有的顺序队列，分别保留各自的消息标识。[图片元素实现](https://github.com/xiyuesaves/lite-tools/blob/c9ea751e81735419ba1a44a677e261216a9cba61/src/renderer/utils/nativeCall.ts#L15-L108) · [桥接表情发送](../../src/bridge.js) · [原生历史与 ID 的核验范围](NTQQ_HISTORY.md)
 
-如果希望沿用已打开的桌面 QQ，并逐步减少协议端依赖，优先验证可选桌面插件。单独替换发送端后，实时收信、提醒、收藏同步，以及历史读取器识别登录账号和首次取密钥，仍各有自己的 SnowLuma 依赖。
+以上为选型阶段的验证步骤。当前独立通道已经将 QQ 来信、提醒、收藏和历史接入同一角色工具集。部署条件、支持范围和首次导入数据库密钥的步骤见[独立通道说明](NTQQ_ATTENTION.md)。
 
 [bootstrap]: https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-framework/napcat.cjs#L89-L169
 [ready]: https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-framework/napcat.ts#L94-L188

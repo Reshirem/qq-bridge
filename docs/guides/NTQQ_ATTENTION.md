@@ -14,11 +14,39 @@
 
 ### 新机器安装
 
-安装 [QQ 原生服务依赖](NTQQ_SEND.md#运行只读原型) 中的 Frida 独立环境，再安装 [只读原库依赖](NTQQ_HISTORY.md#使用) 中的 SQLCipher、Protobuf 和 VFS。QQ 数据库密钥按账号与当前 Windows 用户保存在 DPAPI 中。已有密钥可直接复用。首次使用可在 QQ 登录后运行下列命令，按提示输入已取得的数据库密钥。该命令直接检验原库，输入内容不会回显或进入命令行参数。
+在运行桥接的 Windows x64 电脑上，用同一 Windows 用户登录一个桌面 QQ 主进程，安装 64 位 Python 3.12。从 **qq-bridge 仓库根目录**打开 PowerShell。桥接启动时按下面两个固定路径查找 Python。 下例用 `py -3.12` 选择解释器。若未安装 `py` 启动器，可将两处 `py -3.12` 换成指向 64 位 Python 3.12 的 `python`，或 PowerShell 写法 `& 'C:\实际安装目录\python.exe'`。
+
+先准备实时收发所用的 Frida 环境。项目已在 QQ `9.9.36-53644` 验证这一组合。
 
 ```powershell
-.\state\ntqq-reader\venv\Scripts\python.exe -B scripts\ntqq_history.py --import-key
+py -3.12 -m venv state\ntqq-probe\venv
+.\state\ntqq-probe\venv\Scripts\python.exe -m pip install --only-binary=:all: frida==17.24.1
 ```
+
+再准备历史和媒体读取器。最后一条命令下载并校验 SQLite 头文件，在 `state\ntqq-reader\` 生成 `ntqq_vfs.dll`。
+
+```powershell
+py -3.12 -m venv state\ntqq-reader\venv
+$reader = '.\state\ntqq-reader\venv\Scripts\python.exe'
+& $reader -m pip install --only-binary=:all: -r scripts\ntqq-requirements.txt
+& $reader -m pip install --only-binary=:all: ziglang==0.13.0
+& $reader -B scripts\build_ntqq_vfs.py
+```
+
+首次使用需准备**当前 QQ 账号的数据库密钥**。已有密钥可以直接导入。需要首次取钥时，可参考 QQDecrypt 的 Windows 教程并核对其验证版本。本项目的读取器接受已取得的密钥，导入时会实际开库核验。[Windows NTQQ 取钥说明](https://github.com/QQBackup/QQDecrypt/blob/0dba968ebcb9ba23a68571780eb6b53687f77493/docs/decrypt/extract/NTQQ%20%28Windows%29.md)
+
+```powershell
+& $reader -B scripts\ntqq_history.py --import-key
+& $reader -B scripts\ntqq_history.py
+```
+
+第一条命令在终端内隐藏输入，成功返回 `keyStatus: imported`。第二条只报告读取模式、密钥状态和记录条数，预期为 `live-readonly`、`cached`。以后在同一台机器、同一 Windows 用户下，读取器按 QQ 账号和数据库头标识复用 `state\ntqq-reader\keys\` 中的 DPAPI 密钥。已有有效缓存的安装可以直接执行第二条。
+
+### 启动后核对
+
+1. 运行桥接，打开 WebUI「系统运维 → 诊断与维护」，在「QQ 消息通道」确认出现「独立通道已连接」和「原库只读连接已就绪」。前者表示 QQ 收发服务已连接，后者表示数据库查询可用。
+2. 若 QQ 已连接但原库未就绪，检查上面第二条命令能否读库，以及 QQ 是否打开 `%USERPROFILE%\Documents\Tencent Files\<QQ号>\nt_qq\nt_db\nt_msg.db` 和对应 WAL。常驻读取器目前固定使用这个数据目录。诊断命令的 `--tencent-files` 只对当次命令生效。QQ 保持连接时，读取器失败后约 30 秒再试。
+3. 在「QQ 消息 → 消息来源」查看待阅读提醒。独立模式下普通群消息可从历史读取，未读提醒为零也可以有新聊天。原角色调用 `mcp__qq__qq_status` 可核对后端为 `native`。[DSH 工具验收](DSH_SETUP.md#验证)
 
 独立模式已对照真实的群聊、私聊历史、按 ID 定位、来信、群成员与收藏图片。发送使用当前 QQ 的提交结果和状态回执，超时不会自动重发。群/私聊拍一拍和合并转发详情尚未接入 QQ 原生接口。这些调用会明确返回未支持。
 
