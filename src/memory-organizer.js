@@ -387,7 +387,7 @@ function containsTruncationMarker(value) {
  * Build a model-facing evidence list from persisted, user-visible session events.
  * Calls are retained for context, but only successful tool results carry returned data.
  */
-export function organizerTranscriptRecords(records, { sanitize = (value) => value } = {}) {
+export function organizerTranscriptRecords(records, { sanitize = (value) => value, legacyChunkLayout = false } = {}) {
   const ordered = (Array.isArray(records) ? records : [])
     .filter((record) => record && typeof record === 'object')
     .slice()
@@ -420,6 +420,7 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
       const name = String(event.data?.name ?? 'unknown-tool');
       const args = parseJsonText(event.data?.arguments ?? event.data?.input ?? null);
       if (callId) toolCalls.set(callId, { name, args });
+      if (!legacyChunkLayout && normalizedToolName(name) === 'qq_list_stickers') continue;
       events.push({ seq, time: Number(event?.time) || undefined, kind: 'tool-call', name, arguments: sanitize(args) });
       continue;
     }
@@ -429,6 +430,8 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
       const call = toolCalls.get(callId);
       const name = call?.name ?? String(message?.source?.toolName ?? message?.name ?? 'unknown-tool');
       if (callId) toolCalls.delete(callId);
+      const toolLeaf = normalizedToolName(name);
+      if (!legacyChunkLayout && toolLeaf === 'qq_list_stickers') continue;
       const content = (Array.isArray(message.content) ? message.content : []).map((block) => {
         if (!block || typeof block !== 'object') return block;
         return block.type === 'text'
@@ -440,7 +443,6 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
       if (containsTruncationMarker(result) || (event?.surfaceOp && event.surfaceOp !== 'append')) {
         markIncomplete(`DSH 事件 ${seq} 的工具结果含截断标记或被替换`);
       }
-      const toolLeaf = normalizedToolName(name);
       const resultValue = content.length === 1 ? content[0] : content;
       const resultObject = resultValue && typeof resultValue === 'object' && !Array.isArray(resultValue)
         ? resultValue : null;

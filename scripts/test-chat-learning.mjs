@@ -9,6 +9,8 @@ import yaml from 'js-yaml';
 import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig } from '../src/chat-learning.js';
 import { createStickerMemory } from '../src/sticker-memory.js';
 import { createLearningAssets } from '../src/learning-assets.js';
+import { createMarketPacks } from '../src/market-packs.js';
+import { analyzeMarketPack } from '../src/market-analysis.js';
 import { learningPatch, runLearningHeadless } from '../src/learning-runner.js';
 import { apply as guard } from '../src/learning-tool-guard.mjs';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
@@ -28,9 +30,74 @@ function fixture(t) {
 function enqueue(store, key = 'group:123', messageId = '1', text = '今天又开始摸鱼了', media = []) {
   return store.enqueue(key, { messageId, plain: text, media, userId: '456' }, config);
 }
+
+test('manual market packs commit as a group, keep annotations on retry, and remain usable with learning off', async t => {
+  const { store, file, assets } = fixture(t);
+  const faces = ['a'.repeat(32), 'b'.repeat(32)];
+  let fail = true;
+  const packs = createMarketPacks({ store, assets, knownIds: async () => ['123'],
+    manifest: async id => ({ id, name: '测试包', imgs: faces.map((id, i) => ({ id, name: ['害羞', '睡觉'][i], keywords: [] })) }),
+    image: async id => { if (fail && id === faces[1]) throw Error('中断'); return png; },
+  });
+  const [match] = (await packs.search('测试')).packs;
+  assert.equal(match.id, '123');
+  assert.equal((await packs.search('https://zb.vip.qq.com/hybrid/emoticonmall/detail?id=123')).packs[0].installed, false);
+  await assert.rejects(packs.install('123'), /中断/);
+  assert.deepEqual(store.stickers('private:1'), []);
+  fail = false;
+  await Promise.all([packs.install('123'), packs.install('123')]);
+  const [first, second] = store.marketStickers('123');
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(await packs.preview('123', faces[0]), png);
+  store.edit('stickers', { id: first.id, originalScope: 'global', desc: '不好意思地低头' });
+  await packs.install('123');
+  assert.equal(createChatLearningStore(file).stickers('group:2')[0].desc, '不好意思地低头');
+  store.proposeSticker(first, { desc: '一条待确认建议' });
+  packs.remove('123');
+  assert.equal(store.snapshot().stickerReviews.length, 0);
+  assert.deepEqual(store.stickers('group:2'), []);
+});
 function learned(batch, meaning = '工作时偷闲') {
   return { slang: [{ content: '摸鱼', meaning, confidence: 0.95, evidenceIds: [batch.messages[0].id] }], stickers: [] };
 }
+
+test('pack analysis retries atomically, retains original wording and manual edits in the shared index', async t => {
+  const { store, assets, root } = fixture(t);
+  const ids = ['a'.repeat(32), 'b'.repeat(32)];
+  let partial = true;
+  const packs = createMarketPacks({ store, assets, knownIds: async () => [], image: async () => png,
+    manifest: async id => ({ id, name: '光龙', imgs: ids.map((id, index) => ({ id, name: ['害羞', '思考'][index], keywords: ['原标签'] })) }),
+    analyze: (items, signal) => analyzeMarketPack(items, { signal, prepare: async () => ({ ok: true, buffer: png, mimeType: 'image/png' }),
+      run: async (task, images) => {
+        assert.equal(JSON.parse(task).stickers[1].keywords[0], '原标签');
+        assert.equal(images.length, 2);
+        return { stickers: items.slice(0, partial ? 1 : 2).map((_, i) => ({ id: i + 1, description: '低下头', usage: '回应夸奖', tags: ['腼腆'] })) };
+      },
+    }),
+  });
+  await packs.install('123'); await packs.resume();
+  assert.equal(store.marketAnalysis('123').status, 'failed');
+  const [first] = store.marketStickers('123');
+  assert.equal(first.desc, '害羞');
+  store.edit('stickers', { id: first.id, originalScope: 'global', desc: '我写的解释', tags: ['我选的标签'] });
+  partial = false;
+  await packs.queueAnalysis('123'); await packs.resume();
+  const [manual, automatic] = store.marketStickers('123');
+  assert.equal(store.marketAnalysis('123').status, 'complete');
+  assert.equal(manual.desc, '我写的解释');
+  assert.equal(automatic.desc, '低下头');
+  assert.deepEqual(automatic.tags, ['腼腆']);
+  assert.deepEqual(automatic.originalTags, ['原标签']);
+  const docs = [];
+  const gateway = { status: () => ({ configured: true }), save: async doc => { docs.push(doc); return { storedIds: [doc.externalId] }; },
+    search: async () => ({ hits: docs.map(d => ({ memoryId: d.externalId })) }) };
+  const catalog = () => store.stickers('private:1');
+  const memory = createStickerMemory({ enabled: () => true, getGateway: () => gateway, catalog, file: path.join(root, 'index.json'), log() {} });
+  await memory.sync();
+  assert.match(docs[1].content, /商城原释义：思考、原标签/);
+  assert.match(docs[1].content, /低下头.*回应夸奖/);
+  assert.equal((await memory.search('private:1', '表达腼腆', catalog)).stickers[1].id, automatic.id);
+});
 
 test('source-scoped learning persists evidence, deduplicates and protects reviewed meanings', t => {
   const f = fixture(t);
@@ -213,8 +280,10 @@ test('sticker memory resolves semantic hits to current scoped ids and recovers a
   const index = open();
   await index.sync();
   assert.equal(records.size, 3);
-  const query = async () => (await index.search('group:1', '想缓和气氛', 5, visible)).stickers.map(e => e.id);
+  const search = () => index.search('group:1', '想缓和气氛', visible);
+  const query = async () => (await search()).stickers.map(e => e.id);
   assert.deepEqual(await query(), ['c', 'a']);
+  assert.deepEqual((await search()).stickers[0], { id: 'c', desc: '摆手' });
   entries[0].desc = '小猫跳舞';
   assert.deepEqual(await query(), ['c']);
   entries.splice(2, 1);
@@ -222,8 +291,12 @@ test('sticker memory resolves semantic hits to current scoped ids and recovers a
   await index.sync();
   assert.equal(records.size, 2);
   assert.deepEqual(await query(), ['a']);
+  entries.push(...Array.from({ length: 7 }, (_, i) => ({ id: 'x' + i, desc: '测试' + i, source: 'qq' })));
+  await index.sync();
+  assert.equal((await search()).stickers.length, 5);
   offline = true;
-  assert.deepEqual((await index.search('group:1', '跳舞', 5, visible)).stickers.map(e => e.id), ['a']);
+  await assert.rejects(index.search('group:1', '跳舞', visible), /unavailable/);
+  await assert.rejects(index.search('group:1', '  ', visible), /query/);
 });
 
 test('QQ favorite suggestions remain separate until approval and never alter the synced remark', t => {
@@ -315,6 +388,8 @@ test('HTTP management isolation, source query and safe local sticker send use th
     const store = createChatLearningStore(path.join(storeRoot, 'learning.json'));
     enqueue(store, 'group:456'); const batch = store.batch(config, Date.now(), true);
     store.complete(batch, { slang: [], stickers: [{ id: asset.id, isSticker: true, description: '测试表情', tags: ['开心'] }] }, [{ ...asset, evidence: { key: batch.key } }], config);
+    const faceId = 'a'.repeat(32), marketId = 'market:123:' + faceId;
+    store.addMarketPack({ id: '123', name: '商城示例' }, [{ faceId, hash: asset.hash, name: '开心', desc: '开心', tags: [] }]);
     const hh = await bridgeHarness({ files: { 'state/chat-learning.json': store.snapshot() }, globals: {
       fetch: async (_url, init) => { sentBody = JSON.parse(init.body); return { ok: true, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 2 } }) }; },
     } });
@@ -334,6 +409,10 @@ test('HTTP management isolation, source query and safe local sticker send use th
           return { status: response.status, data: await response.json() };
         };
         const route = '/api/socialV2/sticker-suggest', admin = '/api/learning/sticker-reviews';
+        assert.equal((await request('/api/learning/stickers')).data.total, 1);
+        assert.equal((await request('/api/learning/market-packs')).data.packs[0].count, 1);
+        assert.equal((await request('/api/learning/market-packs/remove', { id: '123' }, agent)).status, 403);
+        assert.equal((await request('/api/socialV2/sticker-image?' + new URLSearchParams({ key: 'group:456', stickerId: marketId }), undefined, agent)).status, 200);
         const suggestion = { key: 'group:456', stickerId: asset.id, desc: '笑到捂脸', tags: ['偷笑'] };
         assert.equal((await request(route, suggestion, agent)).status, 400);
         assert.equal((await request('/api/socialV2/sticker-image?' + new URLSearchParams({ key: suggestion.key, stickerId: asset.id }), undefined, agent)).status, 200);
@@ -342,12 +421,31 @@ test('HTTP management isolation, source query and safe local sticker send use th
         const review = (await request(admin)).data.reviews[0];
         assert.equal((await request(admin, { id: review.id, accept: true }, agent)).status, 403);
         assert.equal((await request(admin, { id: review.id, accept: true })).status, 200);
-        const list = (await request('/api/socialV2/sticker-list', { key: suggestion.key, query: '偷笑' }, agent)).data;
-        assert.equal(list.stickers[0].id, asset.id);
+        const updated = JSON.parse(fs.readFileSync(path.join(hh.temp, 'state/chat-learning.json'), 'utf8')).stickers.find(item => item.id === asset.id);
+        assert.equal(updated.desc, suggestion.desc);
+        assert.deepEqual(updated.tags, suggestion.tags);
+        const search = await request('/api/socialV2/sticker-list', { key: suggestion.key, query: '偷笑' }, agent);
+        assert.equal(search.status, 503);
+        assert.match(search.data.error, /表情记忆索引/);
+        const configure = sticker => request('/api/socialV2/config', { sticker });
+        for (const [active, inactive] of [[marketId, asset.id], [asset.id, marketId]]) {
+          const key = suggestion.key;
+          await configure({ regularEnabled: active === asset.id, marketEnabled: active === marketId, syncEnabled: false });
+          assert.deepEqual(Array.from(await hh.visibleStickers(key), e => e.id), [active]);
+          const image = id => request('/api/socialV2/sticker-image?' + new URLSearchParams({ key, stickerId: id }), undefined, agent);
+          assert.equal((await image(inactive)).status, 403);
+          assert.equal((await image(active)).status, 200);
+          assert.equal((await request(route, { ...suggestion, stickerId: inactive }, agent)).status, 403);
+          assert.equal((await request('/api/socialV2/send-sticker', { key, stickerId: inactive }, agent)).status, 403);
+          assert.equal((await hh.sendStickerV2(key, active)).entry.id, active);
+        }
+        await configure({ marketEnabled: true });
       } finally { await new Promise(resolve => consoleServer.close(resolve)); }
       const sent = await hh.sendStickerV2('group:456', asset.id);
       assert.equal(sent.messageId, 2);
       assert.equal(sentBody.message[0].data.file, 'base64://' + png.toString('base64'));
+      assert.equal((await hh.sendStickerV2('group:999', marketId)).entry.source, 'market');
+      assert.equal(sentBody.message[0].type, 'image');
       await assert.rejects(hh.sendStickerV2('group:999', asset.id), /不属于当前来源/);
     } finally { await hh.close(); }
   } finally {

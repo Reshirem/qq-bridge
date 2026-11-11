@@ -10,6 +10,12 @@ const copy = value => structuredClone(value);
 const clean = (value, max = 300) => Array.from(String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).slice(0, max).join('');
 const integer = (value, fallback, min, max) => Number.isFinite(Number(value)) ? Math.max(min, Math.min(max, Math.round(Number(value)))) : fallback;
 const fold = value => String(value).normalize('NFKC').toLowerCase();
+function validStickerIdentity(e) {
+  if (!e || !/^[a-f0-9]{64}$/.test(e.hash)) return false;
+  if (e.source !== 'market') return e.id === `learned:${e.hash}`;
+  return /^[1-9]\d{0,9}$/.test(e.packId) && /^[a-f0-9]{32}$/.test(e.faceId) && typeof e.packName === 'string'
+    && e.scope === 'global' && e.id === `market:${e.packId}:${e.faceId}`;
+}
 export function stickerWording(entry) {
   return { desc: entry.desc || '', tags: [...(entry.tags || [])] };
 }
@@ -58,7 +64,7 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
   if (initial) {
     const validScope = scope => KEY.test(scope) || scope === 'global' || scope === 'unassigned';
     if (initial.slang.some(e => !e || typeof e.id !== 'string' || !e.content || !validScope(e.scope) || !STATUSES.has(e.status) || !Array.isArray(e.evidence))
-      || initial.stickers.some(e => !e || !/^learned:[a-f0-9]{64}$/.test(e.id) || e.id !== `learned:${e.hash}` || !validScope(e.scope) || !STATUSES.has(e.status) || !Array.isArray(e.tags))
+      || initial.stickers.some(e => !validStickerIdentity(e) || !validScope(e.scope) || !STATUSES.has(e.status) || !Array.isArray(e.tags))
       || initial.queue.some(e => !e || !KEY.test(e.key) || typeof e.id !== 'string' || typeof e.text !== 'string' || !Array.isArray(e.media) || !Number.isFinite(e.time))
       || initial.seen.some(id => typeof id !== 'string')) throw new Error('聊天学习库条目损坏，拒绝覆盖原文件');
   }
@@ -193,7 +199,7 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
         let entry = next.stickers.find(e => e.id === image.id && e.scope === batch.key);
         if (entry?.status === 'rejected' || entry?.status === 'confirmed') continue;
         if (!entry) {
-          if (next.stickers.length >= 300) throw new Error('本地表情库已达 300 条，请在控制台清理后重试');
+          if (next.stickers.filter(e => e.source !== 'market').length >= 300) throw new Error('本地表情库已达 300 条，请在控制台清理后重试');
           entry = { id: image.id, hash: image.hash, scope: batch.key, createdAt: now, source: 'learned', usedCount: 0 };
           next.stickers.push(entry);
         }
@@ -225,6 +231,65 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
       const byId = new Map();
       for (const entry of available) if (!byId.has(entry.id) || entry.scope === key) byId.set(entry.id, entry);
       return copy([...byId.values()]);
+    },
+    marketStickers(packId) {
+      return copy(state.stickers.filter(e => e.source === 'market' && (!packId || e.packId === packId)));
+    },
+    addMarketPack(pack, items) {
+      if (state.stickers.some(e => e.source === 'market' && e.packId === pack.id)) return;
+      const next = copy(state), now = new Date().toISOString();
+      for (const item of items) next.stickers.push({
+        ...item, originalTags: [...(item.originalTags || item.tags)], id: `market:${pack.id}:${item.faceId}`, packId: pack.id, packName: pack.name,
+        source: 'market', scope: 'global', status: 'confirmed', usedCount: 0, createdAt: now, updatedAt: now,
+      });
+      (next.marketAnalysis ||= {})[pack.id] = { token: crypto.randomUUID(), status: 'queued' };
+      commit(next);
+    },
+    marketAnalysis(packId) {
+      return copy(state.marketAnalysis?.[packId] || { status: 'idle' });
+    },
+    nextMarketAnalysis() {
+      for (const [id, job] of Object.entries(state.marketAnalysis || {})) {
+        if (job.status === 'queued' || job.status === 'running') return { id, token: job.token };
+      }
+      return null;
+    },
+    queueMarketAnalysis(packId) {
+      if (!state.stickers.some(e => e.source === 'market' && e.packId === packId)) throw new Error('请先收录整包');
+      if (['running', 'queued'].includes(state.marketAnalysis?.[packId]?.status)) return;
+      const next = copy(state);
+      (next.marketAnalysis ||= {})[packId] = { token: crypto.randomUUID(), status: 'queued' };
+      commit(next);
+    },
+    updateMarketAnalysis({ id, token }, status, { notes, error } = {}) {
+      if (state.marketAnalysis?.[id]?.token !== token) return;
+      const next = copy(state);
+      if (status === 'complete') {
+        const byFace = new Map(notes.map(note => [note.faceId, note]));
+        for (const entry of next.stickers.filter(e => e.source === 'market' && e.packId === id)) {
+          const note = byFace.get(entry.faceId);
+          if (!note) throw new Error('整包解释缺少原图对应的编号');
+          const edited = entry.marketNoteEdited ?? (entry.updatedAt !== entry.createdAt);
+          entry.originalTags = note.originalTags;
+          entry.marketNoteEdited = edited;
+          entry.marketInterpretation = {
+            desc: clean(note.description, 200), tags: [...new Set(note.tags.map(tag => clean(tag, 24)).filter(Boolean))].slice(0, 5),
+            usage: clean(note.usage, 200),
+          };
+          if (!edited) Object.assign(entry, entry.marketInterpretation);
+          else if (!entry.usage) entry.usage = entry.marketInterpretation.usage;
+        }
+      }
+      next.marketAnalysis[id] = { token, status, ...(error ? { error: clean(error, 400) } : {}) };
+      commit(next);
+    },
+    removeMarketPack(packId) {
+      const next = copy(state);
+      next.stickers = next.stickers.filter(e => e.source !== 'market' || e.packId !== packId);
+      if (next.stickers.length === state.stickers.length) throw new Error('该商城包尚未收录');
+      next.stickerReviews = (next.stickerReviews || []).filter(r => !r.stickerId.startsWith(`market:${packId}:`));
+      if (next.marketAnalysis) delete next.marketAnalysis[packId];
+      commit(next);
     },
     favorites(entries) {
       const notes = new Map((state.favoriteNotes || []).map(note => [note.id, note]));
@@ -261,6 +326,7 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
           next.favoriteNotes = [...(next.favoriteNotes || []).filter(note => note.id !== entry.id), { id: entry.id, ...review.after }];
         } else {
           Object.assign(entry, review.after, { status: 'confirmed', updatedAt: new Date().toISOString() });
+          if (entry.source === 'market') entry.marketNoteEdited = true;
         }
       }
       next.stickerReviews = next.stickerReviews.filter(r => r.id !== id);
@@ -273,6 +339,7 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
       if (input.id && !entry) throw new Error('记录不存在或来源已经改变，请刷新');
       if (!entry && kind !== 'slang') throw new Error('不能手工添加没有图片文件的表情');
       const scope = String(input.scope ?? entry?.scope ?? '').trim();
+      if (entry?.source === 'market' && scope !== 'global') throw new Error('手动收录的商城包属于角色的通用表情');
       if (!KEY.test(scope) && scope !== 'global' && !(entry?.scope === 'unassigned' && scope === 'unassigned')) throw new Error('来源必须是 group:群号、private:QQ号或 global');
       const status = String(input.status ?? entry?.status ?? 'confirmed');
       if (!STATUSES.has(status)) throw new Error('未知状态');
@@ -289,12 +356,14 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
         entry.desc = clean(input.desc ?? entry.desc, 200);
         if (!entry.desc) throw new Error('表情描述不能为空');
         entry.tags = (Array.isArray(input.tags) ? input.tags : entry.tags).map(t => clean(t, 24)).filter(Boolean).slice(0, 5);
+        if (entry.source === 'market') entry.marketNoteEdited = true;
       }
       Object.assign(entry, { scope, status, usage: clean(input.usage ?? entry.usage), updatedAt: new Date().toISOString() });
       commit(next); return copy(entry);
     },
     remove(kind, id, scope) {
       if (!['slang', 'stickers'].includes(kind)) throw new Error('未知知识类型');
+      if (kind === 'stickers' && id.startsWith('market:')) throw new Error('请在商城表情页按包移除');
       const next = copy(state);
       next[kind] = next[kind].filter(e => !(e.id === id && (kind === 'slang' || e.scope === scope)));
       commit(next);

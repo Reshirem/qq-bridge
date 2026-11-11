@@ -220,6 +220,21 @@ test('retry keeps the completed checkpoint and blocks later ranges only for the 
   assert.equal(recovered.source('source-a').lastProcessedSeq, -1);
 });
 
+test('sticker lookups are excluded before checking result truncation, while sticker sends remain evidence', () => {
+  const records = [
+    { seq: 1, type: 'tool/call', data: { callId: 'lookup', name: 'mcp__snowluma__qq_list_stickers', arguments: { count: 100 } } },
+    { seq: 2, type: 'tool/result', data: { message: { source: { callId: 'lookup' }, content: [{ type: 'text', text: '旧目录[truncated]' }] } } },
+    { seq: 3, type: 'tool/result', data: { message: { source: { toolName: 'mcp__qq__qq_list_stickers' }, content: [{ type: 'text', text: '候选' }] } } },
+    { seq: 4, type: 'tool/call', data: { callId: 'send', name: 'mcp__qq__qq_send_sticker', arguments: { stickerId: 'chosen' } } },
+    { seq: 5, type: 'tool/result', data: { message: { source: { callId: 'send' }, content: [{ type: 'text', text: '{"messageId":"42"}' }] } } }
+  ];
+  const transcript = organizerTranscriptRecords(records);
+  assert.equal(transcript.incomplete, false);
+  assert.deepEqual(transcript.events.map(event => event.seq), [4, 5]);
+  assert.equal(transcript.events[1].result.messageId, '42');
+  assert.deepEqual(organizerTranscriptRecords(records, { legacyChunkLayout: true }).events.map(event => event.seq), [1, 2, 3, 4, 5]);
+});
+
 test('unread and history can swap text renderings and add a date across midnight', () => {
   const records = [];
   function read(tool, message) {

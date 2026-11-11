@@ -73,7 +73,8 @@
     "attentionKeywords": [],
     "send": { "delayPerCharMs": 20 },
     "sticker": {
-      "enabled": true,
+      "regularEnabled": true,
+      "marketEnabled": true,
       "syncEnabled": true,
       "syncTtlMs": 60000,
       "maxListCount": 100,

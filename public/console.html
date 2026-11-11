@@ -64,7 +64,8 @@
     <nav class="section-tabs" data-group="learning" aria-label="学习与素材" hidden>
       <a href="#learning" data-view="learning">学习队列</a>
       <a href="#slang" data-view="slang">黑话记录</a>
-      <a href="#stickers" data-view="stickers">表情包</a>
+      <a href="#stickers" data-view="stickers">聊天表情</a>
+      <a href="#market-stickers" data-view="market-stickers">商城表情</a>
     </nav>
     <nav class="section-tabs" data-group="operations" aria-label="系统运维" hidden>
       <a href="#operations" data-view="operations">日志与反馈</a>
@@ -372,7 +373,15 @@
   </div>
 </section>
 <section id="section-stickers" data-page="stickers" hidden class="card span-all">
-  <div class="memory-heading"><div><h2>表情包</h2><p class="meta">后台识别并收录的本地表情。按情绪和场景查找，保留原动图。</p></div><button data-view="learning" class="small">学习设置</button></div>
+  <div class="memory-heading"><div><h2>聊天表情</h2><p class="meta">后台从聊天中学到的表情。按情绪和场景查找，保留原动图。</p></div><button data-view="learning" class="small">学习设置</button></div>
+  <form id="qqStickerForm"><fieldset disabled><legend>角色与 QQ 收藏</legend>
+    <div class="knowledge-form">
+      <label class="memory-toggle"><input name="regularEnabled" type="checkbox"> 允许角色使用普通表情</label>
+      <label class="memory-toggle"><input name="syncEnabled" type="checkbox"> 允许从 QQ 同步账号收藏</label>
+      <label class="memory-toggle"><input name="collect" type="checkbox"> 允许角色将聊天图片加入 QQ 收藏</label>
+    </div><p class="meta">普通表情包括从聊天中学到的表情和 QQ 账号收藏。</p>
+    <button class="primary">保存表情设置</button> <span class="meta" role="status"></span>
+  </fieldset></form>
   <div class="row knowledge-filters"><input id="stickerQuery" type="text" aria-label="搜索表情" placeholder="搜索描述、情绪或场景"><input id="stickerScopeFilter" type="text" aria-label="筛选表情来源" placeholder="来源，如 group:123"><select id="stickerStatusFilter" aria-label="筛选表情状态"><option value="">全部状态</option><option value="learned">自动学得</option><option value="confirmed">人工确认</option><option value="rejected">已停用</option></select><button id="stickerSearch" class="small">搜索 / 刷新</button></div>
   <div class="knowledge-columns"><div><div id="stickerRecords" class="sticker-grid"></div><div class="row"><button id="stickerPrevious" class="small">上一页</button><span id="stickerPage" class="meta"></span><button id="stickerNext" class="small">下一页</button></div></div>
     <div class="knowledge-editor"><h3>表情详情</h3><img id="stickerPreview" class="sticker-preview" alt="所选表情预览" hidden><p id="stickerEditorHint" class="meta">选择一张表情查看和编辑。</p><div class="knowledge-form">
@@ -384,15 +393,37 @@
   </div>
   <h3>角色的修正建议</h3>
   <div id="stickerReviews" class="knowledge-list"></div><p id="stickerReviewStatus" class="meta" role="status"></p>
-  <form id="qqStickerForm"><fieldset disabled><legend>角色与 QQ 收藏</legend>
-    <div class="knowledge-form">
-      <label class="memory-toggle"><input name="enabled" type="checkbox"> 允许角色使用表情工具</label>
-      <label class="memory-toggle"><input name="syncEnabled" type="checkbox"> 允许从 QQ 同步账号收藏</label>
-      <label class="memory-toggle"><input name="collect" type="checkbox"> 允许角色将聊天图片加入 QQ 收藏</label>
-    </div><p class="meta">角色使用表情的开关同时控制本地表情和 QQ 收藏。后台识别新表情的开关在本页上方的「学习设置」。</p>
-    <button class="primary">保存表情设置</button> <span class="meta" role="status"></span>
-  </fieldset></form>
   <details class="settings-group"><summary>QQ 账号收藏表情</summary><p class="meta">与本地学习库分开管理；角色可以同时检索和发送两种表情。同步只读取 QQ 收藏列表。</p><div class="row"><button id="stickerFavoritesRefresh" class="small">读取缓存</button><button id="stickerFavoritesSync" class="small">从 QQ 同步</button><span id="stickerFavoritesStatus" class="meta" role="status"></span></div><div id="stickerFavorites" class="knowledge-list"></div></details>
+</section>
+<section id="section-market-stickers" data-page="market-stickers" hidden class="card span-all">
+  <div id="marketBrowse">
+    <h2>商城表情</h2>
+    <p class="meta">按包名搜索本机 QQ 见过的商城包，也可以粘贴商城分享链接或包 ID。</p>
+    <form id="qqMarketStickerForm"><fieldset disabled><legend>角色使用</legend>
+      <label class="memory-toggle"><input name="marketEnabled" type="checkbox"> 允许角色使用商城表情</label>
+      <p class="meta">开启后，角色可以在任意会话中检索、查看和发送这里收录的表情。</p>
+      <button class="primary">保存商城表情设置</button> <span class="meta" role="status"></span>
+    </fieldset></form>
+    <form id="marketSearchForm" class="row knowledge-filters">
+      <input id="marketQuery" type="search" aria-label="包名、商城分享链接或包 ID" placeholder="包名、商城分享链接或包 ID">
+      <button type="submit" class="primary">查找表情包</button><button type="button" id="marketShowInstalled" class="small">已收录的包</button>
+    </form>
+    <h3 id="marketListTitle">已收录的包</h3><div id="marketPackList" class="market-pack-list"></div>
+  </div>
+  <div id="marketDetail" hidden>
+    <button type="button" id="marketBack" class="small">返回包列表</button>
+    <div class="memory-heading">
+      <div><h2 id="marketPackTitle"></h2><p id="marketPackMeta" class="meta"></p></div>
+      <div class="row"><button id="marketAnalyze" type="button" class="small" hidden>分析整包</button><button id="marketPackAction" type="button"></button></div>
+    </div>
+    <div class="market-analysis-feedback">
+      <p id="marketAnalysisStatus" class="meta" role="status"></p>
+      <progress id="marketAnalysisProgress" aria-labelledby="marketAnalysisStatus" hidden></progress>
+      <p id="marketAnalysisError" role="alert" hidden></p>
+    </div>
+    <div id="marketPackItems" class="market-item-grid"></div>
+  </div>
+  <p id="marketStatus" class="meta" role="status" aria-live="polite"></p>
 </section>
 <section id="section-memory-settings" data-page="memory-settings" hidden class="card span-all">
       <div class="memory-heading">

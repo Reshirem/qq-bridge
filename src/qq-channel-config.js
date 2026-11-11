@@ -3,7 +3,7 @@
 const defaults = {
   send: { delayPerCharMs: 20 },
   feedback: { maxLength: 500 },
-  sticker: { enabled: true, syncEnabled: true, syncTtlMs: 60000, maxListCount: 100 },
+  sticker: { syncEnabled: true, syncTtlMs: 60000, maxListCount: 100 },
 };
 
 function settings(schema, saved, changes) {
@@ -43,6 +43,12 @@ export function qqChannelConfig(saved = {}, changes = {}) {
   for (const [key, schema] of Object.entries(defaults)) {
     config[key] = settings(schema, saved[key], changes[key]);
   }
+  // Old files and clients have one switch for all role stickers.
+  for (const key of ['regularEnabled', 'marketEnabled']) {
+    config.sticker[key] = [changes.sticker?.[key], changes.sticker?.enabled,
+      saved.sticker?.[key], saved.sticker?.enabled, true].find(value => typeof value === 'boolean');
+  }
+  config.sticker.enabled = config.sticker.regularEnabled || config.sticker.marketEnabled;
   // Before the two switches were separated, disabling stickers disabled sync too.
   config.sticker.syncEnabled = settings({ syncEnabled: saved.sticker?.enabled !== false },
     saved.sticker, changes.sticker).syncEnabled;

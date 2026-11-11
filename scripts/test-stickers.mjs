@@ -71,7 +71,7 @@ console.log('## sticker-lib 纯函数');
 console.log('## 配置文件');
 {
   const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
-  ok(cfg.socialV2.sticker.enabled === true, '示例允许角色使用表情工具');
+  ok(cfg.socialV2.sticker.regularEnabled === true && cfg.socialV2.sticker.marketEnabled === true, '示例允许角色使用普通和商城表情');
   ok(cfg.socialV2.sticker.syncEnabled === true, '示例允许独立同步收藏');
   ok(cfg.socialV2.sticker.collect.enabled === true, '示例允许角色收藏');
   ok(!('sendCaptionMaxChars' in cfg.socialV2.sticker), '示例已移除旧配文设置');

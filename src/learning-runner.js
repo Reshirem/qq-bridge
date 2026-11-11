@@ -5,11 +5,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { LEARNING_SYSTEM_PROMPT } from './chat-learning.js';
+import { MARKET_ANALYSIS_PROMPT, MARKET_PAGE_SIZE } from './market-analysis.js';
 
-export function learningPatch({ model, provider, imageServer, imageManifest, nodePath = process.execPath }) {
+export function learningPatch({ model, provider, imageServer, imageManifest, mode = 'chat', nodePath = process.execPath }) {
   const operations = [
     { id: 'agent-default-model', config: model },
-    { id: 'system-prompt', config: { personaPrefix: LEARNING_SYSTEM_PROMPT } },
+    { id: 'system-prompt', config: { personaPrefix: mode === 'market' ? MARKET_ANALYSIS_PROMPT : LEARNING_SYSTEM_PROMPT } },
     { id: 'session-title-llm', disabled: true },
     { insert: [{ id: 'qq-learning-tool-guard', name: fileURLToPath(new URL('./learning-tool-guard.mjs', import.meta.url)).replaceAll('\\', '/') }] },
   ];
@@ -28,23 +29,23 @@ export function learningPatch({ model, provider, imageServer, imageManifest, nod
   return yaml.dump(operations, { lineWidth: -1, noRefs: true });
 }
 
-export function parseLearningResult(text) {
+export function parseLearningResult(text, mode = 'chat') {
   const result = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, '$1'));
-  if (!result || !Array.isArray(result.slang) || !Array.isArray(result.stickers)) throw new Error('学习模型没有返回 slang / stickers JSON');
+  if (!result || (mode !== 'market' && !Array.isArray(result.slang)) || !Array.isArray(result.stickers)) throw new Error('学习模型返回的 JSON 格式不正确');
   return result;
 }
 
 // A separate headless process receives only batch text + an image-only MCP.
 // No QQ, memory, shell, browser or arbitrary file tools are mounted here.
-export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, signal, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
+export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, mode = 'chat', signal, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
   if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('DSH CLI 路径含不支持的命令字符');
   signal?.throwIfAborted();
   const prefix = path.join(stateDir, `chat-learning-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
   const patch = `${prefix}.yml`, manifest = `${prefix}.json`;
   fs.mkdirSync(stateDir, { recursive: true });
   try {
-    fs.writeFileSync(manifest, JSON.stringify(images), { mode: 0o600 });
-    fs.writeFileSync(patch, learningPatch({ model, provider, imageServer: path.join(root, 'src', 'mcp-learning-images.js'), imageManifest: images.length ? manifest : null }), { mode: 0o600 });
+    fs.writeFileSync(manifest, JSON.stringify(mode === 'market' ? { mode, images } : images), { mode: 0o600 });
+    fs.writeFileSync(patch, learningPatch({ model, provider, mode, imageServer: path.join(root, 'src', 'mcp-learning-images.js'), imageManifest: images.length ? manifest : null }), { mode: 0o600 });
     return await new Promise((resolve, reject) => {
       const child = spawnProcess(cli.command, [...cli.args, '--profile', 'headless', '--patch', patch, ...(approvalPolicy ? ['--approval-policy', 'never'] : []), '--json', '-'], {
         cwd: root, env: { ...process.env, ...cli.env }, shell: cli.shell, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -52,6 +53,7 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
       let buffer = '', final = null, terminalReason = null, sessionId = '', failure = '', imageRead = false, outputBytes = 0;
       const usage = { inputTokens: 0, outputTokens: 0 };
       const imageCalls = new Set();
+      const seenPages = new Set(), pages = Math.ceil(images.length / MARKET_PAGE_SIZE);
       const stop = reason => { failure ||= reason; child.kill(); };
       const onAbort = () => stop('后台学习已取消');
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -77,7 +79,11 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
           }
           if (type === 'tool_result' && imageCalls.has(String(event.callId ?? event.toolCallId ?? event.id ?? '')) && event.status === 'completed' && !event.error && !event.isError) {
             if (/image unavailable|image admission rejected/i.test(String(event.result))) stop('DSH 未能接收学习图片，拒绝保存未经看图的结果');
-            else imageRead = true;
+            else {
+              imageRead = true;
+              const page = /^QQ_PACK_PAGE=(\d+)\b/.exec(String(event.result));
+              if (page && Number(page[1]) >= 1 && Number(page[1]) <= pages) seenPages.add(Number(page[1]));
+            }
           }
           if (type === 'final') final = event;
         } catch { stop('DSH 学习事件不是合法 JSON'); }
@@ -105,7 +111,8 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
           // newer projections also carry it on final. Explicit null is not completion.
           const reason = final && Object.hasOwn(final, 'reason') ? final.reason : terminalReason;
           if (code !== 0 || !sessionId || !final || reason?.kind !== 'completed') throw new Error(`DSH 学习未正常完成（退出码 ${code}）`);
-          const result = parseLearningResult(final.text);
+          const result = parseLearningResult(final.text, mode);
+          if (mode === 'market' && seenPages.size !== pages) throw new Error(`模型仅读取了 ${seenPages.size}/${pages} 页表情图`);
           if (result.stickers.length && !imageRead) throw new Error('模型未成功看图，拒绝保存表情描述');
           resolve({ ...result, sessionId, usage });
         } catch (error) { error.usage = usage; reject(error); }

@@ -1,13 +1,16 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { formatStickerList } from './sticker-lib.js';
 import { writeLearningJson } from './chat-learning.js';
 
 // The catalog owns the image, permissions and current description. A_Memorix owns
 // a rebuildable text index. Its paragraph hashes depend solely on paragraph text.
 function document(entry) {
   const scope = entry.scope || 'global';
-  const text = [entry.desc, ...(entry.tags || []), entry.usage].filter(Boolean).join(' · ');
+  let text = [entry.desc, ...(entry.tags || []), entry.usage].filter(Boolean).join(' · ');
+  if (entry.source === 'market') {
+    const original = [...new Set([entry.name, ...(entry.originalTags || [])].filter(Boolean))].join('、');
+    text = [entry.packName, original && '商城原释义：' + original, text].filter(Boolean).join('\n');
+  }
   if (!text) return null;
   const identity = JSON.stringify([scope, entry.id, text]);
   const version = crypto.createHash('sha256').update(identity).digest('hex');
@@ -67,39 +70,34 @@ export function createStickerMemory({ getGateway, file, catalog, enabled, log })
     } finally { running = false; }
   }
 
-  async function search(key, query, count, visible) {
+  async function search(key, query, visible) {
     const q = String(query || '').trim();
-    let hits = [];
-    const gateway = q && healthy && enabled() ? getGateway() : null;
-    if (gateway?.status().configured) {
-      try {
-        const result = await gateway.search({ query: q, stickerScope: key, limit: 50, requestTimeoutMs: 3500 });
-        hits = result.hits;
-        // v2.0.0a4 can return an empty scoped search even for indexed paragraphs.
-        // Only stable ids present in the live, scoped catalog may leave this process.
-        if (!hits.length) {
-          const broader = await gateway.search({ query: q, limit: 50, requestTimeoutMs: 3500 });
-          hits = broader.hits;
-        }
-      } catch (error) { log('表情语义检索暂不可用：' + error.message); }
+    if (!q) throw new Error('请用 query 描述想用表情表达的意思');
+    const gateway = healthy && enabled() ? getGateway() : null;
+    if (!gateway?.status().configured) throw new Error('表情记忆索引尚未就绪，请检查 A_Memorix 表情检索配置');
+    const options = { query: q, limit: 50, requestTimeoutMs: 3500 };
+    let { hits } = await gateway.search({ ...options, stickerScope: key });
+    // v2.0.0a4 can miss indexed paragraphs in scoped search. The broader
+    // search stays in the sticker namespace and uses the same visibility check.
+    if (!hits.length) {
+      ({ hits } = await gateway.search(options));
     }
-    // Re-read after asynchronous retrieval. Never return remote descriptions, summaries
-    // or hits from removed, edited or out-of-scope catalog entries.
-    const entries = await visible();
-    const literal = formatStickerList(entries, q, 500);
-    if (!hits.length) return formatStickerList(entries, q, count);
+    if (!hits.length) return { stickers: [] };
     const byMemoryId = new Map();
-    for (const entry of entries) {
+    for (const entry of await visible()) {
       const doc = document(entry);
       const id = doc && records[doc.version];
       if (id) byMemoryId.set(id, entry);
     }
-    const ranked = new Map();
-    for (const item of [...literal.stickers, ...hits.map(hit => byMemoryId.get(hit.memoryId)).filter(Boolean)]) {
-      if (!ranked.has(item.id)) ranked.set(item.id, item);
+    const candidates = new Map();
+    for (const hit of hits) {
+      const entry = byMemoryId.get(hit.memoryId);
+      if (!entry || candidates.has(entry.id)) continue;
+      const wording = [...new Set([entry.source === 'market' && entry.name, entry.desc, entry.usage].filter(Boolean))].join(' · ');
+      candidates.set(entry.id, { id: entry.id, desc: wording || (entry.tags || []).join('、') });
+      if (candidates.size === 5) break;
     }
-    const list = formatStickerList([...ranked.values()], '', count);
-    return { ...list, total: entries.length };
+    return { stickers: [...candidates.values()] };
   }
   return { sync, search };
 }

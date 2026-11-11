@@ -471,6 +471,7 @@ test('sticker tools and QQ favorites sync can be toggled independently without a
     assert.equal((await sync()).status, 200);
     await settings({ enabled: true, syncEnabled: false });
     assert.equal((await sync()).status, 403);
-    assert.equal((await list()).data.stickers.length, 1);
+    assert.equal((await list()).status, 400);
+    assert.equal((await call('/api/socialV2/sticker-list?key=group:456&query=hello')).status, 503);
   } finally { await close(); }
 });

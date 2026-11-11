@@ -1264,7 +1264,8 @@ document.getElementById('desktopAgentMessage').addEventListener('keydown', event
 const qqSettingsForms = {
   qqReminderForm: { enabled: 'enabled', keywords: 'attentionKeywords' },
   qqConversationForm: { delayPerCharMs: 'send.delayPerCharMs' },
-  qqStickerForm: { enabled: 'sticker.enabled', syncEnabled: 'sticker.syncEnabled', collect: 'sticker.collect.enabled' },
+  qqStickerForm: { regularEnabled: 'sticker.regularEnabled', syncEnabled: 'sticker.syncEnabled', collect: 'sticker.collect.enabled' },
+  qqMarketStickerForm: { marketEnabled: 'sticker.marketEnabled' },
   qqFeedbackForm: { maxLength: 'feedback.maxLength' },
 };
 
@@ -1756,11 +1757,177 @@ async function refreshStickerFavorites(sync = false) {
 document.getElementById('stickerFavoritesRefresh').addEventListener('click', () => refreshStickerFavorites());
 document.getElementById('stickerFavoritesSync').addEventListener('click', () => refreshStickerFavorites(true));
 
+const marketEl = name => document.getElementById('market' + name);
+const marketBase = '/api/learning/market-packs';
+let marketPack = null, marketListQuery = '', marketViewRequest = 0;
+let marketAnalysisPoll;
+let marketItemsPending = false;
+function marketStatus(message) { marketEl('Status').textContent = message; }
+async function showMarketList(query = '') {
+  clearTimeout(marketAnalysisPoll);
+  const request = ++marketViewRequest;
+  marketPack = null;
+  marketListQuery = query;
+  marketEl('Browse').hidden = false;
+  marketEl('Detail').hidden = true;
+  marketEl('ListTitle').textContent = query ? '搜索结果' : '已收录的包';
+  const list = marketEl('PackList');
+  list.replaceChildren();
+  marketStatus(query ? '正在查找商城包…' : '正在读取…');
+  try {
+    const { packs, unavailable } = await consoleApiResult(marketBase + '?' + new URLSearchParams({ query }));
+    if (request !== marketViewRequest) return;
+    list.innerHTML = packs.map(p => `<button type="button" data-pack="${esc(p.id)}"><strong>${esc(p.name)}</strong><span class="meta">${esc(p.count)} 张 · ID ${esc(p.id)}${p.installed ? ' · 已收录' : ''}</span></button>`).join('');
+    const result = packs.length ? '' : query ? '没有匹配的包，可粘贴商城分享链接或包 ID。' : '还没有手动收录的商城包。';
+    marketStatus([result, unavailable ? `${unavailable} 个本机包暂未取得商城资料。` : ''].filter(Boolean).join(' '));
+  } catch (error) { if (request === marketViewRequest) marketStatus(error.message); }
+}
+function renderMarketPack(pack) {
+  clearTimeout(marketAnalysisPoll);
+  marketPack = pack;
+  marketEl('Browse').hidden = true;
+  marketEl('Detail').hidden = false;
+  marketEl('PackTitle').textContent = pack.name;
+  marketEl('PackMeta').textContent = `ID ${pack.id} · ${pack.items.length} 张 · ${pack.installed ? '已收录' : '收录前预览'}`;
+  const action = marketEl('PackAction');
+  action.className = pack.installed ? 'small danger' : 'primary';
+  action.textContent = pack.installed ? '移除整包' : '收录整包';
+  action.disabled = false;
+  renderMarketItems(pack);
+  renderMarketAnalysis(pack);
+}
+function marketAnalysisError(message = '') {
+  const error = marketEl('AnalysisError');
+  error.textContent = message;
+  error.hidden = !message;
+}
+function renderMarketAnalysis(pack) {
+  const status = pack.analysis?.status || 'idle';
+  const busy = status === 'running' || status === 'queued';
+  const analyze = marketEl('Analyze');
+  analyze.hidden = !pack.installed;
+  analyze.disabled = busy;
+  analyze.textContent = ({ queued: '等待分析', running: '正在分析', complete: '重新分析整包', failed: '重试整包分析' })[status] || '分析整包';
+  const messages = { idle: '尚未分析', queued: '整包分析已排队', running: '模型正在对照整包画面和商城释义', complete: `已完成整包分析，共 ${pack.items.length} 张`, failed: '整包分析失败' };
+  marketEl('AnalysisStatus').textContent = pack.installed ? messages[status] : '收录后会自动分析整包。';
+  marketEl('AnalysisProgress').hidden = !busy;
+  marketAnalysisError(status === 'failed' ? pack.analysis.error : '');
+  if (busy) watchMarketAnalysis(pack);
+}
+function renderMarketItems(pack) {
+  marketItemsPending = false;
+  marketEl('PackItems').innerHTML = pack.items.map((item, i) => {
+    const image = marketBase + '/image?' + new URLSearchParams({ id: pack.id, face: item.faceId });
+    return `<article class="market-item" data-item="${i}"><img loading="lazy" src="${esc(image)}" alt="${esc(item.name || item.desc)}"><strong>${esc(item.name)}</strong>
+      ${item.originalTags?.length ? `<p class="meta">商城关键词 · ${esc(item.originalTags.join('、'))}</p>` : ''}
+      <p><span class="meta">注解 </span><span class="market-note">${esc(item.desc)}</span></p><p class="market-tags meta">${esc(item.tags.join(' · '))}</p>
+      ${item.usage ? `<p><span class="meta">用法 </span>${esc(item.usage)}</p>` : ''}
+      ${item.marketNoteEdited && item.marketInterpretation?.desc && item.marketInterpretation.desc !== item.desc ? `<p class="meta">模型初注 · ${esc(item.marketInterpretation.desc)}</p>` : ''}
+      ${pack.installed ? '<button type="button" class="small" data-edit-note>编辑注解</button>' : ''}</article>`;
+  }).join('');
+}
+function updateMarketAnalysis(pack, latest) {
+  if (pack.installed !== latest.installed) { renderMarketPack(latest); return; }
+  pack.analysis = latest.analysis;
+  if (latest.analysis?.status === 'complete') {
+    pack.items = latest.items;
+    // Let open note editors finish before replacing their cards.
+    if (marketEl('PackItems').querySelector('form')) marketItemsPending = true;
+    else renderMarketItems(pack);
+  }
+  renderMarketAnalysis(pack);
+}
+function watchMarketAnalysis(pack) {
+  clearTimeout(marketAnalysisPoll);
+  marketAnalysisPoll = setTimeout(async () => {
+    if (marketPack !== pack || currentConsolePage !== 'market-stickers') return;
+    try {
+      const { pack: latest } = await consoleApiResult(marketBase + '/detail?id=' + encodeURIComponent(pack.id));
+      if (marketPack !== pack || currentConsolePage !== 'market-stickers') return;
+      updateMarketAnalysis(pack, latest);
+    } catch (error) { if (marketPack === pack) { marketAnalysisError('读取分析状态失败：' + error.message); watchMarketAnalysis(pack); } }
+  }, 3000);
+}
+marketEl('Analyze').addEventListener('click', async () => {
+  const pack = marketPack;
+  if (!pack?.installed) return;
+  marketEl('Analyze').disabled = true;
+  try {
+    const result = await consoleApiResult(marketBase + '/analyze', 'POST', { id: pack.id });
+    if (pack === marketPack) { updateMarketAnalysis(pack, result.pack); marketStatus(''); }
+  } catch (error) {
+    if (pack === marketPack) { marketEl('Analyze').disabled = false; marketAnalysisError('提交整包分析失败：' + error.message); }
+  }
+});
+marketEl('SearchForm').addEventListener('submit', event => {
+  event.preventDefault();
+  void showMarketList(marketEl('Query').value.trim());
+});
+marketEl('ShowInstalled').addEventListener('click', () => { marketEl('Query').value = ''; void showMarketList(); });
+marketEl('Back').addEventListener('click', () => void showMarketList(marketListQuery));
+marketEl('PackList').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-pack]');
+  if (!button) return;
+  const request = ++marketViewRequest;
+  marketStatus('正在读取整包…');
+  try {
+    const { pack } = await consoleApiResult(marketBase + '/detail?id=' + encodeURIComponent(button.dataset.pack));
+    if (request === marketViewRequest) { renderMarketPack(pack); marketStatus(''); marketEl('Back').focus(); }
+  } catch (error) { if (request === marketViewRequest) marketStatus(error.message); }
+});
+marketEl('PackAction').addEventListener('click', async () => {
+  const pack = marketPack;
+  if (!pack || (pack.installed && !confirm(`移除「${pack.name}」以及这包表情的本地注解？`))) return;
+  const request = ++marketViewRequest;
+  marketEl('PackAction').disabled = true;
+  marketStatus(pack.installed ? '正在移除…' : '正在保存整包原图…');
+  try {
+    const result = await consoleApiResult(marketBase + (pack.installed ? '/remove' : '/install'), 'POST', { id: pack.id });
+    if (request !== marketViewRequest) return;
+    if (pack.installed) await showMarketList(marketListQuery);
+    else { renderMarketPack(result.pack); marketStatus('已收录整包，可以逐张编辑注解。'); }
+  } catch (error) { if (request === marketViewRequest) { marketStatus(error.message); marketEl('PackAction').disabled = false; } }
+});
+marketEl('PackItems').addEventListener('click', event => {
+  const button = event.target.closest('[data-edit-note]');
+  if (!button) return;
+  const card = button.closest('[data-item]'), pack = marketPack, item = pack.items[Number(card.dataset.item)];
+  const form = document.createElement('form');
+  form.innerHTML = `<label>注解<textarea required maxlength="200">${esc(item.desc)}</textarea></label><label>标签<input value="${esc(item.tags.join('、'))}"></label><div class="row"><button class="small primary">保存</button><button type="button" class="small">取消</button></div>`;
+  button.hidden = true;
+  card.append(form);
+  form.querySelector('textarea').focus();
+  const close = () => {
+    form.remove();
+    button.hidden = false;
+    if (marketItemsPending && !marketEl('PackItems').querySelector('form')) {
+      renderMarketItems(pack);
+      marketEl('PackItems').querySelector(`[data-item="${card.dataset.item}"] [data-edit-note]`)?.focus();
+    } else button.focus();
+  };
+  form.querySelector('[type="button"]').onclick = close;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const submit = form.querySelector('button');
+    submit.disabled = true;
+    try {
+      const { entry } = await consoleApiResult('/api/learning/stickers', 'POST', { id: item.id, originalScope: 'global',
+        desc: form.querySelector('textarea').value, tags: form.querySelector('input').value.split(/[,，、\n]/).map(t => t.trim()).filter(Boolean) });
+      if (pack !== marketPack) return;
+      Object.assign(pack.items.find(current => current.id === item.id), entry);
+      card.querySelector('.market-note').textContent = entry.desc;
+      card.querySelector('.market-tags').textContent = entry.tags.join(' · ');
+      close(); marketStatus('注解已保存。');
+    } catch (error) { if (marketPack === pack) marketStatus(error.message); }
+    finally { submit.disabled = false; }
+  };
+});
+
 const consolePages = {
   overview: '运行总览', sessions: '主会话', persona: '人格与提示词', model: '模型设置',
   'social-v2': 'QQ 消息', 'qq-settings': '提醒与发送',
   memory: '长期记忆', 'memory-organizer': '整理任务', 'memory-settings': '记忆服务设置',
-  learning: '后台学习', slang: '黑话记录', stickers: '表情包',
+  learning: '后台学习', slang: '黑话记录', stickers: '聊天表情', 'market-stickers': '商城表情',
   usage: '令牌与花费', operations: '日志与反馈', maintenance: '诊断与维护', access: '访问设置',
 };
 let memoryHits = [];
@@ -2590,6 +2757,11 @@ async function loadPage(page, force = false) {
     case 'stickers':
       jobs.push(refreshKnowledge('sticker'), refreshStickerReviews());
       if (loadForms) jobs.push(loadQQSettings(page));
+      break;
+    case 'market-stickers':
+      if (loadForms) jobs.push(loadQQSettings(page));
+      if (!marketPack || force) jobs.push(showMarketList(marketListQuery));
+      else if (['queued', 'running'].includes(marketPack.analysis?.status)) { clearTimeout(marketAnalysisPoll); watchMarketAnalysis(marketPack); }
       break;
     case 'usage':
       jobs.push(refreshUsage(), refreshUsageChart(), refreshUsageRecent());

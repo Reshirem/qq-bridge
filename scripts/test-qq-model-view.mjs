@@ -182,6 +182,14 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
     assert.ok(stickerSchema, 'qq_send_sticker is available');
     assert.equal('message' in stickerSchema.properties, false, 'stickers use a separate bubble');
     const common = { key: 'group:123' };
+    const lookup = listed.tools.find(tool => tool.name === 'qq_list_stickers').inputSchema;
+    assert.deepEqual(Object.keys(lookup.properties).sort(), ['key', 'query']);
+    assert.ok(lookup.required.includes('query'));
+    const beforeLookup = requests.length;
+    assert.equal((await client.callTool({ name: 'qq_list_stickers', arguments: { ...common, query: ' ' } })).isError, true);
+    assert.equal(requests.length, beforeLookup);
+    await client.callTool({ name: 'qq_list_stickers', arguments: { ...common, query: '想缓和气氛' } });
+    assert.deepEqual(requests.at(-1).body, { ...common, query: '想缓和气氛' });
     const sticker = { ...common, stickerId: 'fixture-sticker', replyToMessageId: 'id:21' };
     const sentSticker = await client.callTool({ name: 'qq_send_sticker', arguments: sticker });
     assert.notEqual(sentSticker.isError, true);

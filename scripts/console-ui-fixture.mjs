@@ -94,6 +94,9 @@ export function makeFixtureState() {
       status: 'failed', createdAt: Date.parse(timestamp), updatedAt: Date.parse(timestamp), fromSeq: 0, throughSeq: 18,
       error: '模型请求超时，已保留分段进度。', progress: { completed: 2, total: 3 }, sourceSessionCurrent: true }],
     learning: { enabled: true, slang: true, stickers: true, minMessages: 20, cooldownMs: 300000, maxWaitMs: 900000, sources: [] },
+    marketPack: { id: '123', name: '商城测试包', installed: false, items: [
+      { faceId: 'a'.repeat(32), id: 'market:123:' + 'a'.repeat(32), name: '点头', desc: '点头', tags: ['赞同'] },
+    ] },
     slang: [{ id: 'fixture-word', content: '摸鱼', meaning: '工作时偷闲', scope: 'group:123456789', status: 'learned', count: 3, usage: '熟人闲聊', evidence: [{ key: 'group:123456789', userId: '100001', text: '今天忙完了，可以摸鱼一会', time: Date.parse(timestamp) }] }],
     stickerReviews: [{ id: 'review-1', stickerId: 'fixture-sticker', scope: 'group:123456789', before: { desc: '开心的小猫', tags: ['开心', '赞同'] }, after: { desc: '猫咪点头', tags: ['赞同'] } }],
     learnedStickers: [{ id: 'fixture-sticker', desc: '开心的小猫', tags: ['开心', '赞同'], usage: '回应好消息', scope: 'group:123456789', status: 'learned', usedCount: 2 }],
@@ -171,6 +174,20 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       }
       if (method === 'GET') {
         switch (path) {
+          case '/api/learning/market-packs': {
+            const pack = state.marketPack, q = url.searchParams.get('query');
+            const match = q ? pack.name.includes(q) || pack.id === q : pack.installed;
+            return json({ ok: true, packs: match ? [{ id: pack.id, name: pack.name, count: pack.items.length, installed: pack.installed }] : [] });
+          }
+          case '/api/learning/market-packs/detail': {
+            const pack = state.marketPack;
+            if (pack.analysis?.status === 'queued') pack.analysis = { status: 'running' };
+            else if (pack.analysis?.status === 'running') {
+              pack.analysis = { status: 'complete' };
+              Object.assign(pack.items[0], { originalTags: ['赞同'], desc: '点头赞同', usage: '回应对方的意见' });
+            }
+            return json({ ok: true, pack });
+          }
           case '/api/learning/status': return json({ ok: true, config: state.learning, running: false, pending: 12, runs: 4, words: state.slang.length, pictures: state.learnedStickers.length, dropped: 0 });
           case '/api/slang':
           case '/api/learning/stickers': {
@@ -185,6 +202,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           case '/api/memory/providers': return json({ ok: true, providers: state.memoryProviders });
           case '/api/memory/organizer': return json({ ok: true, organizer: { enabled: true, memoryConfigured: true, dshReady: true,
             sessions: [state.organizerSource], sessionsByDay: {}, jobs: state.organizerJobs, timeZone: 'Asia/Shanghai' } });
+          case '/api/learning/market-packs/image':
           case '/api/learning/sticker-reviews/image':
           case '/api/learning/stickers/image': {
             res.writeHead(200, { 'content-type': 'image/png' });
@@ -316,10 +334,20 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             state.stickerReviews = state.stickerReviews.filter(r => r !== review);
             return json({ ok: true });
           }
+          case '/api/learning/market-packs/install':
+          case '/api/learning/market-packs/analyze': {
+            state.marketPack.installed = true;
+            state.marketPack.analysis = { status: 'queued' };
+            return json({ ok: true, pack: state.marketPack });
+          }
+          case '/api/learning/market-packs/remove':
+            state.marketPack.installed = false;
+            delete state.marketPack.analysis;
+            return json({ ok: true });
           case '/api/stickers/sync': return json({ ok: true, total: 1 });
           case '/api/slang':
           case '/api/learning/stickers': {
-            const list = path === '/api/slang' ? state.slang : state.learnedStickers;
+            const list = path === '/api/slang' ? state.slang : body.id?.startsWith('market:') ? state.marketPack.items : state.learnedStickers;
             let entry = list.find(e => e.id === body.id);
             if (!entry) { entry = { id: `fixture-${list.length + 1}`, evidence: [], count: 0 }; list.push(entry); }
             Object.assign(entry, { ...body, id: entry.id });
