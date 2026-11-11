@@ -104,11 +104,14 @@ test('source-scoped learning persists evidence, deduplicates and protects review
   assert.ok(enqueue(f.store)); assert.equal(enqueue(f.store), false);
   enqueue(f.store, 'group:123', '2');
   const batch = f.store.batch(config);
-  f.store.complete(batch, learned(batch), [], config);
+  const cited = learned(batch);
+  cited.slang[0].evidenceIds = [batch.messages[0].messageId, batch.messages[0].id];
+  f.store.complete(batch, cited, [], config);
   assert.equal(f.store.query('group:123', '摸鱼')[0].meaning, '工作时偷闲');
   assert.deepEqual(f.store.query('group:999', '摸鱼'), []);
   assert.equal(f.store.snapshot().slang[0].evidence[0].text, '今天又开始摸鱼了');
   const entry = f.store.snapshot().slang[0];
+  assert.deepEqual(entry.evidence.map(e => e.id), [batch.messages[0].id]);
   f.store.edit('slang', { id: entry.id, status: 'confirmed', meaning: '人工确认的解释' });
   enqueue(f.store, 'group:123', '3');
   const next = f.store.batch(config, Date.now(), true);
@@ -133,6 +136,7 @@ test('invalid evidence aborts the whole transaction without consuming messages',
   assert.throws(() => store.complete(batch, result, [], config), /证据/);
   assert.deepEqual(store.snapshot(), before);
   result.slang.pop(); result.slang[0].content = '没有出现的词';
+  result.slang[0].evidenceIds = [batch.messages[0].messageId];
   assert.throws(() => store.complete(batch, result, [], config), /原文/);
   assert.deepEqual(store.snapshot(), before);
 });
@@ -171,7 +175,7 @@ test('threshold, wait, source selection, image budget and durable failure backof
   for (let i = 0; i < 3; i++) store.failed('test failure', config, batch);
   const automatic = store.batch(config, Date.now() + 3600000);
   assert.deepEqual(automatic.messages.map(m => m.messageId), ['3']);
-  assert.equal(store.batch(config, Date.now(), true).messages[0].messageId, '1');
+  assert.deepEqual(store.batch(config, Date.now(), true).messages.map(m => m.messageId), ['1', '2']);
 });
 
 test('worker runs once, retains new arrivals during analysis, and cancellation does not commit', async t => {
