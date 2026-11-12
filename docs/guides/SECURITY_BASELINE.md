@@ -56,7 +56,7 @@
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容检查和工具调用审计 |
-| 动态 ACL | sticker / image media helpers | 贴纸只能发 QQ 收藏库或当前来源可用的本地学习表情；学习表情校验专用目录 realpath 与内容哈希。其他图片只能读 SnowLuma home 内的本地文件（realpath 复核防符号链接逃逸） |
+| 动态 ACL | sticker / image media helpers | 贴纸只能发 QQ 收藏库或当前来源可用的本地学习表情；学习表情校验专用目录 realpath 与内容哈希。本机图片按所选后端限制到 SnowLuma home 或已登录 QQ 账号的 nt_data，均以 realpath 复核防止符号链接逃逸 |
 | **只探测、不部署** | `mcp-qq.js` | `qq_status` 查询桥接选定的 QQ 通道和登录状态。SnowLuma EULA §5.4 要求将其并入第三方安装包或 Docker 镜像、通过自动化脚本部署时事先取得书面授权；原生组件属专有组件。本程序不安装、不复制、不打包或程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
 
 ### 2.1 桌面应用范围（提示词边界）
@@ -226,7 +226,7 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 
 独立模式下，桥接在登录用户权限下通过 Frida 将仓库内的固定运行代码加载到 QQ 主进程，由本机命名管道收发 QQ 事件和工具请求。桥接为每次运行生成管道名称和握手令牌。SnowLuma 模式使用 OneBot。另有按需运行的观察器，可报告账号、收藏标识及来信计数。[诊断工具](NTQQ_SEND.md)
 
-原生 QQ 图片工具仅在会话令牌、来源策略和原消息定位通过后，才会按该消息内匹配的媒体元素 ID 请求 QQ 下载。桥接不接收任意媒体 URL 或本机目标路径；文件路径由 QQ 缓存索引解析，普通图片和图片表情原件还需匹配消息 MD5，输出前继续执行图片格式、字节数和像素限制。商城表情只从 QQ 的固定市场表情缓存目录读取预览图。
+原生 QQ 图片工具仅在会话令牌、来源策略和原消息定位通过后，才会按该消息内匹配的媒体元素 ID 请求 QQ 下载。桥接不接收任意媒体 URL 或本机目标路径；文件路径由 QQ 缓存索引解析，普通图片和图片表情原件还需匹配消息 MD5，输出前继续执行图片格式、字节数和像素限制。商城表情的本机预览只从 QQ 固定市场表情缓存目录读取，缺失时沿用受 SSRF 与大小限制保护的 CDN 回退。图片 GET 是按需缓存填充的例外：只允许 QQ 将原消息图片下载到本账号 nt_data，不能指定任意写入路径；消息正文历史查询仍只读。
 
 独立的发送测试命令在 QQ 核对账号及目标私聊后，可以发送一条固定测试文字或一张经过 MD5 校验的 QQ 收藏原图。每个动作在调用 QQ 之前原子创建本地尝试记录，收到回执后保存结果。日志含私聊标识与消息 ID，位于 Git 忽略的 `state/ntqq-probe/send-tests/`。
 

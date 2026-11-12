@@ -165,6 +165,8 @@ export class NativeQQ extends EventEmitter {
       let file = await this.read('media', image);
       if (!file && hasMd5 && marketFace) file = await this.read('media', {type:'marketFace', emojiId, packageId});
       if (file) return {file};
+      // Market faces use their local preview or the bridge's existing CDN fallback.
+      if (!hasMd5) return {file:null};
 
       const key = String(p.key ?? '').trim();
       const messageId = String(p.messageId ?? '').trim();
@@ -174,12 +176,15 @@ export class NativeQQ extends EventEmitter {
       const peer = await this.peer(match[1], match[2]);
       await this.call('fetch_message_image', {
         peer, messageId,
-        ...(hasMd5 ? {md5} : {}),
-        ...(marketFace ? {emojiId, emojiPackageId:packageId} : {}),
+        md5,
       }, 30000);
-      file = await this.read('media', image);
-      if (!file && hasMd5 && marketFace) file = await this.read('media', {type:'marketFace', emojiId, packageId});
-      return {file:file || null};
+      const deadline = Date.now() + 12000;
+      do {
+        file = await this.read('media', image);
+        if (file) return {file};
+        await new Promise(resolve => setTimeout(resolve, 250));
+      } while (!this.closed && this.read && Date.now() < deadline);
+      throw Error('QQ 未能在规定时间内完成图片缓存');
     }
     if (action === 'get_group_msg_history' || action === 'get_friend_msg_history') {
       const kind = action === 'get_group_msg_history' ? 'group' : 'private';

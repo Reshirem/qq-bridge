@@ -6407,15 +6407,7 @@ async function main() {
             failures.push(`get_image url: ${error?.message ?? error}`);
           }
         }
-        if (typeof obj.file === 'string' && !obj.file.startsWith('base64://') && fs.existsSync(obj.file) && isSafeLocalMediaPath(obj.file)) {
-          const stat = fs.statSync(obj.file);
-          if (stat.size > MAX_MEDIA_BYTES) {
-            log(`本地图片文件超限，已跳过（${Math.round(stat.size / 1024)}KB）`);
-          } else {
-            const accepted = acceptImageBuffer(fs.readFileSync(obj.file), '本地图片');
-            if (accepted) return accepted;
-          }
-        }
+
       } catch (error) {
         failures.push(`get_image: ${error?.message ?? error}`);
       }

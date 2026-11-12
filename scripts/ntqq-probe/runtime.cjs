@@ -82,79 +82,30 @@ module.exports = function startChannel(receiver, endpoint) {
     if (!peer || ![1, 2].includes(Number(peer.chatType)) || !peer.peerUid ||
         !/^-?[1-9]\d{0,19}$/.test(messageId)) throw Error('QQ 图片定位信息无效');
     const digest = String(p.md5 ?? '').toLowerCase();
-    const hasMd5 = /^[a-f0-9]{32}$/.test(digest);
-    const hasMarketFace = /^[a-f0-9]{16,64}$/i.test(String(p.emojiId ?? '')) &&
-      /^[1-9]\d{0,18}$/.test(String(p.emojiPackageId ?? ''));
-    if (!hasMd5 && !hasMarketFace) throw Error('QQ 图片标识无效');
+    if (!/^[a-f0-9]{32}$/.test(digest)) throw Error('QQ 图片标识无效');
     const row = await original(peer, messageId);
-    const elements = row.elements || [];
-    const picture = hasMd5 && elements.find(item => item.picElement && String(item.picElement.md5HexStr).toLowerCase() === digest);
-    const market = hasMarketFace && elements.find(item => item.marketFaceElement &&
-      String(item.marketFaceElement.emojiId).toLowerCase() === String(p.emojiId).toLowerCase() &&
-      String(item.marketFaceElement.emojiPackageId) === String(p.emojiPackageId));
-    const marketFace = !picture && !!market;
-    const element = picture || market;
-    if (!element || !element.elementId) throw Error('QQ 原消息中找不到对应的图片元素');
+    const element = (row.elements || []).find(item => item.picElement &&
+      String(item.picElement.md5HexStr).toLowerCase() === digest);
+    if (!element?.elementId) throw Error('QQ 原消息中找不到对应的图片元素');
     if (typeof svc.getRichMediaElement !== 'function') throw Error('当前 QQ 不支持按原消息下载图片');
+    const root = path.join(os.homedir(), 'Documents', 'Tencent Files', account, 'nt_qq', 'nt_data');
+    const target = element.picElement.sourcePath;
+    const relative = typeof target === 'string' && path.isAbsolute(target) ? path.relative(root, target) : '..';
+    const sticker = Number(element.picElement.picSubType) === 1;
+    if (!sticker && (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))) {
+      throw Error('QQ 返回的图片缓存位置无效');
+    }
     const result = await svc.getRichMediaElement({
+      downSourceType: 1,
       msgId: String(row.msgId), peerUid: String(peer.peerUid), chatType: Number(peer.chatType),
-      elementId: String(element.elementId), downSourceType: 1, downloadType: 1,
+      elementId: String(element.elementId), downloadType: 1,
+      // Ordinary images need QQ's original destination; stickers choose their own cache.
+      ...(sticker ? {} : {thumbSize: 0, filePath: target}),
     });
     if (result?.result != null) checked(result);
-
-    if (!marketFace) {
-      const pic = element.picElement;
-      const ext = /\.(?:jpe?g|png|gif|webp)$/i.exec(String(pic.fileName ?? ''))?.[0]?.toLowerCase() || '.jpg';
-      const fileName = digest + ext;
-      const target = svc.getRichMediaFilePathForGuild({
-        elementType: 2, elementSubType: Number(pic.picSubType) || 0, fileName,
-        md5HexStr: digest, downloadType: 1, thumbSize: 0, needCreate: true,
-        file_uuid: String(pic.file_uuid ?? pic.fileUuid ?? ''),
-      });
-      if (!target || !path.isAbsolute(target)) throw Error('QQ 未返回图片缓存位置');
-      const expected = Number(pic.fileSize);
-      const deadline = Date.now() + 12000;
-      let lastSize = -1, stableChecks = 0;
-      while (Date.now() < deadline) {
-        try {
-          const stat = fs.statSync(target);
-          if (stat.isFile() && stat.size > 0 && (!Number.isFinite(expected) || expected <= 0 || stat.size === expected)) {
-            stableChecks = stat.size === lastSize ? stableChecks + 1 : 0;
-            if (stableChecks >= 1) return {cached: true};
-            lastSize = stat.size;
-          } else {
-            lastSize = -1;
-            stableChecks = 0;
-          }
-        } catch {}
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      throw Error('QQ 未能在规定时间内完成图片缓存');
-    }
-    const emojiId = String(p.emojiId).toLowerCase();
-    const target = path.join(os.homedir(), 'Documents', 'Tencent Files', account, 'nt_qq', 'nt_data',
-      'Emoji', 'marketface', String(p.emojiPackageId), emojiId + '_aio.png');
-    const deadline = Date.now() + 12000;
-    let lastSize = -1, stableChecks = 0;
-    while (Date.now() < deadline) {
-      try {
-        const stat = fs.statSync(target);
-        if (stat.isFile() && stat.size > 0) {
-          stableChecks = stat.size === lastSize ? stableChecks + 1 : 0;
-          if (stableChecks >= 1) return {cached:true};
-          lastSize = stat.size;
-        } else {
-          lastSize = -1;
-          stableChecks = 0;
-        }
-      } catch {
-        lastSize = -1;
-        stableChecks = 0;
-      }
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    throw Error('QQ 未能在规定时间内完成商城表情预览缓存');
+    return {requested: true};
   }
+
   async function sendMessage(p) {
     const elements = [];
     let stickerFormat;
