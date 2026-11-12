@@ -173,6 +173,56 @@ test('invalid evidence aborts the whole transaction without consuming messages',
   assert.deepEqual(store.snapshot(), before);
 });
 
+test('slang evidence and context matching tolerate spacing while preserving original evidence', t => {
+  for (const [text, content] of [['又不是 k 头赛', 'k头'], ['又不是 Ｋ\u3000头赛', 'k头'], ['又不是k头赛', 'k 头']]) {
+    const { store } = fixture(t);
+    enqueue(store, 'group:123', '1', text);
+    const batch = store.batch(config, Date.now(), true);
+    const result = { slang: [{ content, meaning: '抢走击败目标的最后一击', confidence: 0.9, evidenceIds: [batch.messages[0].id] }], stickers: [] };
+    store.complete(batch, result, [], config);
+    assert.equal(store.snapshot().slang[0].evidence[0].text, text);
+    assert.equal(store.query('group:123', '又不是 K 头赛', { matchText: true }).length, 1);
+    assert.equal(store.query('group:999', '又不是 K 头赛', { matchText: true }).length, 0);
+  }
+});
+
+test('spacing tolerance does not accept paraphrases, templates, punctuation changes or uncited text', t => {
+  const { store } = fixture(t);
+  enqueue(store, 'group:123', '1', '弟弟也干了，又不是 k-头赛');
+  enqueue(store, 'group:123', '2', '全家桶');
+  const batch = store.batch(config, Date.now(), true), before = store.snapshot();
+  for (const content of ['XXX也干了', '兄弟也干了', 'k头', '全家桶']) {
+    const result = { slang: [{ content, meaning: '测试', evidenceIds: [batch.messages[0].id] }], stickers: [] };
+    assert.throws(() => store.complete(batch, result, [], config), /原文/);
+    assert.deepEqual(store.snapshot(), before);
+  }
+  assert.throws(() => store.complete(batch, { slang: [{ content: '全家桶', evidenceIds: ['group:999:id:2'] }], stickers: [] }, [], config), /证据/);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('paused native slang batches can recover with sticker learning disabled without reading images', async t => {
+  const { store } = fixture(t);
+  const slangOnly = { ...config, stickers: false, nativeAccount: '42' };
+  store.enqueue('group:123', { nativeAccount: '42', messageId: '1', plain: '又不是 k 头赛', media: [{ kind: 'sticker' }] }, slangOnly);
+  const batch = store.batch(slangOnly, Date.now(), true);
+  for (let i = 0; i < 3; i++) store.failed('黑话证据校验失败', slangOnly, batch);
+  const worker = createChatLearningWorker({ store, getConfig: () => slangOnly,
+    hydrateBatch: async batch => { batch.messages[0].text = '又不是 k 头赛'; },
+    prepareImages: async () => { assert.fail('sticker learning is disabled'); },
+    analyze: async (task, images) => {
+      assert.deepEqual(images, []);
+      const batch = JSON.parse(task);
+      assert.deepEqual(batch.images, []);
+      return { slang: [{ content: 'k头', meaning: '抢走击败目标的最后一击', confidence: 0.9, evidenceIds: [batch.messages[0].id] }], stickers: [] };
+    },
+  });
+  assert.equal(await worker.tick(), null, 'automatic retries stay paused');
+  assert.equal((await worker.tick(true))?.words, 1);
+  assert.equal(store.snapshot().queue.length, 0);
+  assert.equal(store.snapshot().lastError, '');
+  assert.equal(store.snapshot().stickers.length, 0);
+});
+
 test('legacy import remains unassigned; corrupt stores and failed writes preserve bytes and in-memory state', t => {
   const f = fixture(t), legacy = path.join(f.root, 'slang.json');
   const original = JSON.stringify([{ content: '摸鱼', meaning: '旧解释', status: 'confirmed', evidence: [{ text: '旧证据' }] }]);
