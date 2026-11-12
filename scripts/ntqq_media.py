@@ -54,6 +54,9 @@ class MediaCache:
         if not digest:
             return {}
         package = item.get("packageId")
+        if market and (not re.fullmatch(r"[0-9a-f]{16,64}", str(digest), re.I)
+                       or not re.fullmatch(r"[1-9]\d{0,18}", str(package or ""))):
+            return {}
         key = (kind, digest, package)
         if key in self.results:
             return self.results[key]
@@ -86,3 +89,20 @@ class MediaCache:
                 continue
         self.results[key] = found
         return found
+
+
+def resolve_media(cache, params):
+    if params.get("type") == "marketFace":
+        emoji_id = str(params.get("emojiId", "")).lower()
+        package_id = str(params.get("packageId", ""))
+        if not re.fullmatch(r"[0-9a-f]{16,64}", emoji_id) or not re.fullmatch(r"[1-9]\d{0,18}", package_id):
+            raise ValueError("无效的商城表情标识")
+        files = cache.resolve({"type": "marketFace", "emojiId": emoji_id, "packageId": package_id})
+        return files.get("thumbnail")
+    if params.get("type", "image") != "image":
+        raise ValueError("未知的媒体类型")
+    digest = str(params.get("md5", "")).lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", digest):
+        raise ValueError("无效的图片标识")
+    files = cache.resolve({"type": "image", "md5": digest})
+    return files.get("original") or files.get("thumbnail")

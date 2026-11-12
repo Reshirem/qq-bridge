@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ntqq_history import ROOT, TABLES, MsgBody, decode_segments, open_live
 from ntqq_key import cached_key, key_header, key_identity
-from ntqq_media import MediaCache
+from ntqq_media import MediaCache, resolve_media
 
 
 def format_row(db, table, peer, row, account, self_uid):
@@ -135,11 +135,7 @@ def main():
             request = json.loads(line)
             try:
                 if request["action"] == "media":
-                    digest = request["params"].get("md5", "").lower()
-                    if not re.fullmatch("[0-9a-f]{32}", digest):
-                        raise ValueError("无效的图片标识")
-                    files = MediaCache(base / "nt_data").resolve({"type": "image", "md5": digest})
-                    result = files.get("original") or files.get("thumbnail")
+                    result = resolve_media(MediaCache(base / "nt_data"), request["params"])
                 else:
                     db.execute("BEGIN")
                     try:

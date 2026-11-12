@@ -30,12 +30,12 @@ function rpcStream(output, input, notification) {
   }
   input.once('close', close);
   output.on('error', close);
-  return (action, params = {}) => new Promise((resolve, reject) => {
+  return (action, params = {}, timeoutMs = 15000) => new Promise((resolve, reject) => {
     if (closed || !output.writable) return reject(Error('QQ 通道未连接'));
     const id = ++next;
     const timer = setTimeout(() => {
-      pending.delete(id); reject(Error('QQ 请求超时，发送操作的投递结果未知'));
-    }, 15000);
+      pending.delete(id); reject(Error('QQ 请求超时，操作结果未知'));
+    }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     output.write(JSON.stringify({ id, action, params }) + '\n');
   });
@@ -155,7 +155,31 @@ export class NativeQQ extends EventEmitter {
     }
     if (action === 'get_image') {
       if (!this.read) throw Error('QQ 媒体库尚未连接');
-      return {file:await this.read('media', {md5:p.file})};
+      const md5 = String(p.file ?? '').toLowerCase();
+      const emojiId = String(p.emojiId ?? '').toLowerCase();
+      const packageId = String(p.emojiPackageId ?? '');
+      const hasMd5 = /^[a-f0-9]{32}$/.test(md5);
+      const marketFace = /^[a-f0-9]{16,64}$/.test(emojiId) && /^[1-9]\d{0,18}$/.test(packageId);
+      if (!hasMd5 && !marketFace) return {file:null};
+      const image = hasMd5 ? {type:'image', md5} : {type:'marketFace', emojiId, packageId};
+      let file = await this.read('media', image);
+      if (!file && hasMd5 && marketFace) file = await this.read('media', {type:'marketFace', emojiId, packageId});
+      if (file) return {file};
+
+      const key = String(p.key ?? '').trim();
+      const messageId = String(p.messageId ?? '').trim();
+      if (!key && !messageId) return {file:null};
+      const match = /^(group|private):([1-9]\d{0,18})$/.exec(key);
+      if (!match || !/^-?[1-9]\d{0,19}$/.test(messageId)) return {file:null};
+      const peer = await this.peer(match[1], match[2]);
+      await this.call('fetch_message_image', {
+        peer, messageId,
+        ...(hasMd5 ? {md5} : {}),
+        ...(marketFace ? {emojiId, emojiPackageId:packageId} : {}),
+      }, 30000);
+      file = await this.read('media', image);
+      if (!file && hasMd5 && marketFace) file = await this.read('media', {type:'marketFace', emojiId, packageId});
+      return {file:file || null};
     }
     if (action === 'get_group_msg_history' || action === 'get_friend_msg_history') {
       const kind = action === 'get_group_msg_history' ? 'group' : 'private';

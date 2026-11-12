@@ -11,11 +11,16 @@
 //
 // 本文件不访问网络：CDN 下载用注入的 safeFetchBuffer 桩，搜索只测纯函数与参数校验。
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
+import { NativeQQ } from '../src/native-qq.js';
+import startNativeRuntime from './ntqq-probe/runtime.cjs';
 import {
   bingSearch,
   clearSearchCache,
@@ -74,9 +79,10 @@ await test('extractMediaFromSegments 保留表情包字段（image / mface / fac
         data: { emoji_id: 'abcdef0123456789abcdef0123456789', url: 'https://gxh.vip.qq.com/x.gif', summary: '[动画表情]' }
       },
       { type: 'face', data: { id: '178', url: 'https://example.invalid/f.png', summary: 'doge' } },
+      { type: 'image', data: { file: 'abcdef0123456789abcdef0123456789', sub_type: 1, summary: '[圖片表情]' } },
       { type: 'text', data: { text: '普通文字' } }
     ]);
-    assert.equal(media.length, 3);
+    assert.equal(media.length, 4);
     assert.equal(media[0].kind, 'image');
     assert.equal(media[0].emojiId, 'f96bf2d2d93c3530d5eb148f55206fb1', 'emoji_id 必须保留（否则失去 CDN 兜底）');
     assert.equal(media[0].emojiPackageId, '242139');
@@ -89,9 +95,163 @@ await test('extractMediaFromSegments 保留表情包字段（image / mface / fac
     assert.equal(media[2].kind, 'face');
     assert.equal(media[2].faceId, '178');
     assert.equal(media[2].url, 'https://example.invalid/f.png');
+    assert.equal(media[3].kind, 'sticker', 'QQ 图片子类型 1 必须标为图片表情');
+    assert.equal(media[3].subType, '1');
 
     assert.equal(await h.segmentsToText([{ type: 'mface', data: { summary: '给你糖吃' } }]), '[表情:给你糖吃]');
   } finally { await h.close(); }
+});
+
+await test('NativeQQ 缓存未命中时按原消息请求 QQ 下载并重新读取缓存', async () => {
+  const bot = new NativeQQ(ROOT);
+  const digest = 'abcdef0123456789abcdef0123456789';
+  const cachedPath = 'C:\\QQ\\nt_data\\Pic\\2026-11\\Ori\\' + digest + '.png';
+  const reads = [];
+  const calls = [];
+  let available = null;
+  bot.read = async (action, params) => {
+    reads.push({action, params});
+    return available;
+  };
+  bot.uid = async (uin) => `uid-${uin}`;
+  bot.call = async (...args) => {
+    calls.push(args);
+    available = cachedPath;
+    return {cached:true};
+  };
+  try {
+    const result = await bot.getImage({file:digest, key:'private:123', messageId:'456'});
+    assert.deepEqual(result, {file:cachedPath});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'fetch_message_image');
+    assert.deepEqual(calls[0][1], {
+      peer:{chatType:1, peerUid:'uid-123'}, messageId:'456', md5:digest,
+    });
+    assert.equal(calls[0][2], 30000, '下载 RPC 使用独立的媒体超时');
+    assert.equal(reads.length, 2, 'QQ 下载完成后重新查缓存');
+  } finally { bot.close(); }
+});
+
+await test('NTQQ runtime 只下载匹配原消息 MD5 的元素并等待 QQ 缓存落盘', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ntqq-runtime-media-'));
+  const digest = crypto.createHash('md5').update(PNG).digest('hex');
+  const filePath = path.join(dir, digest + '.png');
+  const row = {
+    msgId:'456', chatType:1, peerUid:'uid-123',
+    elements:[{elementId:'element-7', picElement:{md5HexStr:digest, fileName:'original.png', picSubType:1, fileSize:String(PNG.length)}}],
+  };
+  let downloadRequest;
+  const service = {
+    getMsgsByMsgId: async (peer, ids) => ({result:0, msgList:peer.chatType === 1 && peer.peerUid === 'uid-123' && ids[0] === '456' ? [row] : []}),
+    getRichMediaElement: async (request) => { downloadRequest = request; fs.writeFileSync(filePath, PNG); return {result:0}; },
+    getRichMediaFilePathForGuild: ({fileName}) => path.join(dir, fileName),
+    addKernelMsgListener: () => 1,
+    removeKernelMsgListener: () => {},
+  };
+  const previousAuth = globalThis.authData;
+  let server, channel, lines, queue = [], waiter = null;
+  const nextPacket = () => new Promise((resolve, reject) => {
+    if (queue.length) return resolve(queue.shift());
+    const timer = setTimeout(() => { waiter = null; reject(new Error('NTQQ runtime test timed out')); }, 5000);
+    waiter = packet => { clearTimeout(timer); resolve(packet); };
+  });
+  try {
+    globalThis.authData = {uid:'self-uid', uin:'999'};
+    server = net.createServer(socket => {
+      channel = socket;
+      lines = createInterface({input:socket});
+      lines.on('line', line => {
+        const packet = JSON.parse(line);
+        if (waiter) { const take = waiter; waiter = null; take(packet); }
+        else queue.push(packet);
+      });
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    startNativeRuntime({getMsgService:() => service}, {pipe:{host:'127.0.0.1', port:address.port}, token:'fixture'});
+    const hello = await nextPacket();
+    assert.equal(hello.hello, 'fixture');
+    const response = nextPacket();
+    channel.write(JSON.stringify({id:1, action:'fetch_message_image', params:{
+      peer:{chatType:1, peerUid:'uid-123'}, messageId:'456', md5:digest,
+    }}) + '\n');
+    assert.deepEqual(await response, {id:1, data:{cached:true}});
+    assert.deepEqual(downloadRequest, {
+      msgId:'456', peerUid:'uid-123', chatType:1, elementId:'element-7', downSourceType:1, downloadType:1,
+    });
+    assert.ok(fs.existsSync(filePath), 'QQ 下载后的目标文件应已经落盘');
+  } finally {
+    channel?.destroy();
+    lines?.close();
+    if (server?.listening) await new Promise(resolve => server.close(resolve));
+    if (previousAuth === undefined) delete globalThis.authData; else globalThis.authData = previousAuth;
+    fs.rmSync(dir, {recursive:true, force:true});
+  }
+});
+
+await test('NTQQ runtime 下载商城表情后等待本地预览缓存落盘', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ntqq-runtime-market-face-'));
+  const emojiId = 'abcdef0123456789abcdef0123456789';
+  const packageId = '42';
+  const target = path.join(dir, 'Documents', 'Tencent Files', '999', 'nt_qq', 'nt_data',
+    'Emoji', 'marketface', packageId, emojiId + '_aio.png');
+  const row = {
+    msgId:'456', chatType:1, peerUid:'uid-123',
+    elements:[{elementId:'market-element', marketFaceElement:{emojiId, emojiPackageId:Number(packageId)}}],
+  };
+  let downloadRequest;
+  const service = {
+    getMsgsByMsgId: async (peer, ids) => ({result:0, msgList:peer.chatType === 1 && peer.peerUid === 'uid-123' && ids[0] === '456' ? [row] : []}),
+    getRichMediaElement: async request => {
+      downloadRequest = request;
+      setTimeout(() => { fs.mkdirSync(path.dirname(target), {recursive:true}); fs.writeFileSync(target, PNG); }, 250);
+      return {result:0};
+    },
+    addKernelMsgListener: () => 1,
+    removeKernelMsgListener: () => {},
+  };
+  const previousAuth = globalThis.authData;
+  const previousUserProfile = process.env.USERPROFILE;
+  let server, channel, lines, queue = [], waiter = null;
+  const nextPacket = () => new Promise((resolve, reject) => {
+    if (queue.length) return resolve(queue.shift());
+    const timer = setTimeout(() => { waiter = null; reject(new Error('NTQQ runtime test timed out')); }, 5000);
+    waiter = packet => { clearTimeout(timer); resolve(packet); };
+  });
+  try {
+    process.env.USERPROFILE = dir;
+    globalThis.authData = {uid:'self-uid', uin:'999'};
+    server = net.createServer(socket => {
+      channel = socket;
+      lines = createInterface({input:socket});
+      lines.on('line', line => {
+        const packet = JSON.parse(line);
+        if (waiter) { const take = waiter; waiter = null; take(packet); }
+        else queue.push(packet);
+      });
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    startNativeRuntime({getMsgService:() => service}, {pipe:{host:'127.0.0.1', port:address.port}, token:'fixture'});
+    const hello = await nextPacket();
+    assert.equal(hello.hello, 'fixture');
+    const response = nextPacket();
+    channel.write(JSON.stringify({id:1, action:'fetch_message_image', params:{
+      peer:{chatType:1, peerUid:'uid-123'}, messageId:'456', emojiId, emojiPackageId:packageId,
+    }}) + '\n');
+    assert.deepEqual(await response, {id:1, data:{cached:true}});
+    assert.deepEqual(downloadRequest, {
+      msgId:'456', peerUid:'uid-123', chatType:1, elementId:'market-element', downSourceType:1, downloadType:1,
+    });
+    assert.ok(fs.existsSync(target), 'QQ 下载的商城表情预览应已经落盘');
+  } finally {
+    channel?.destroy();
+    lines?.close();
+    if (server?.listening) await new Promise(resolve => server.close(resolve));
+    if (previousAuth === undefined) delete globalThis.authData; else globalThis.authData = previousAuth;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
+    fs.rmSync(dir, {recursive:true, force:true});
+  }
 });
 
 // ── 表情包下载：CDN 优先、emoji_id 兜底、普通图片仍走 get_image ──────────────
@@ -185,6 +345,12 @@ await test('fetchMediaData 标注表情/图片，并保留 summary 与 emojiId',
     const failed = await h.fetchMediaData([{ kind: 'image', file: 'abc.jpg', url: 'https://multimedia.nt.qq.com.cn/x' }]);
     assert.equal(failed[0].kind, 'image');
     assert.match(String(failed[0].text), /图片获取失败/, '失败必须明确标注为图片');
+
+    const imageSticker = await h.fetchMediaData([{
+      kind:'image', file:'abcdef0123456789abcdef0123456789', subType:'1', url:'https://gxh.vip.qq.com/fixture.gif'
+    }]);
+    assert.equal(imageSticker[0].kind, 'sticker', 'subType=1 应作为表情输出');
+    assert.ok(imageSticker[0].data, '图片表情应沿用图片读取链路');
   } finally { await h.close(); }
 });
 

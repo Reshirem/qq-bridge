@@ -1160,14 +1160,15 @@ function extractMediaFromSegments(segments) {
       emojiKey: String(d.key ?? '')
     };
     if (seg.type === 'image') {
+      const subType = (d.sub_type ?? d.subType) != null ? String(d.sub_type ?? d.subType) : '';
       media.push({
-        kind: 'image',
+        kind: subType === '1' ? 'sticker' : 'image',
         file: String(d.file ?? ''),
         url: String(d.url ?? ''),
         // 线上段落字段是 snake_case 的 `sub_type`（SnowLuma 运行时源码里就这么发）；
         // 而 SDK 的类型描述的是**内部元素**、拼作 `subType`。两个都读，别只认一个
         // —— 只读 camelCase 的话这里会永远是空串，而且不会有任何报错。
-        subType: (d.sub_type ?? d.subType) != null ? String(d.sub_type ?? d.subType) : '',
+        subType,
         summary: sanitizeMediaSummary(d.summary),
         ...emojiFields
       });
@@ -1294,7 +1295,7 @@ async function main() {
         for (const media of message.media) {
           if (images.length >= config.maxImages) break;
           signal.throwIfAborted();
-          const fetched = await fetchOneBotImage(media);
+          const fetched = await fetchOneBotImage(media, {key:batch.key, messageId:message.messageId});
           if (!fetched?.buffer) throw new Error('学习图片读取失败；消息保留在待学习队列');
           const mimeType = mimeFromBuffer(fetched.buffer);
           const prep = await toModelMedia(fetched.buffer, mimeType, '后台表情学习');
@@ -5968,7 +5969,8 @@ async function main() {
             sendJson({ ok: false, error: '该会话未通过白名单/拒绝名单策略，不能读取' }, 403);
             return;
           }
-          const media = (await findQQMediaMessage(key, messageId))?.media;
+          const message = await findQQMediaMessage(key, messageId);
+          const media = message?.media;
           if (!media) {
             sendJson({ ok: true, messageId, media: [], images: [], note: '该来源的未读和 SnowLuma 历史中未找到该消息' });
             return;
@@ -5978,7 +5980,7 @@ async function main() {
             return;
           }
           try {
-            const images = await fetchMediaData(media);
+            const images = await fetchMediaData(media, {key, messageId:String(message.messageId ?? messageId)});
             sendJson({ ok: true, messageId, media, images });
           } catch (error) {
             log(`图片查询失败 ${key} ${messageId}: ${error?.message ?? error}`);
@@ -6276,6 +6278,18 @@ async function main() {
     }
   }
 
+  function isSafeNativeMediaPath(filePath) {
+    try {
+      if (!native || !selfUserId) return false;
+      const real = fs.realpathSync(String(filePath));
+      const mediaRoot = fs.realpathSync(path.join(os.homedir(), 'Documents', 'Tencent Files', String(selfUserId), 'nt_qq', 'nt_data'));
+      const relative = path.relative(mediaRoot, real);
+      return !!relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+    } catch {
+      return false;
+    }
+  }
+
   // OneBot 图片 file 字段只应接受简单缓存文件名；拒绝路径、URL、盘符、协议前缀等，
   // 防止把任意本地路径/内网 URL 交给网关 get_image 造成 SSRF/任意文件读取。
   function isProbablySafeImageFileRef(file) {
@@ -6320,16 +6334,8 @@ async function main() {
     return { buffer: buf, mimeType: mimeFromBuffer(buf) };
   }
 
-  async function fetchOneBotImage(media) {
-    if (native && /^[a-f0-9]{32}$/i.test(media.file || '')) {
-      const result = await bot.getImage({ file: media.file }).catch(() => null);
-      if (result?.file && fs.statSync(result.file).size <= MAX_MEDIA_BYTES) {
-        const image = acceptImageBuffer(fs.readFileSync(result.file), 'QQ 本机图片');
-        if (image) return image;
-      }
-    }
-    // 表情包（市场/收藏表情）优先走 CDN：get_image 对市场表情必然失败
-    // （SnowLuma 缓存里没有该文件），先试 URL 能省一次失败往返，也更可靠。
+  async function fetchOneBotImage(media, messageContext = {}) {
+    // QQ 原生模式先查本机缓存，必要时按原消息请求 QQ 下载；SnowLuma 模式的表情仍优先走 CDN。
     const emojiId = String(media.emojiId || emojiIdFromFileName(media.file) || '');
     const isSticker = media.kind === 'sticker' || !!emojiId || String(media.subType || '') === '1';
     const label = isSticker ? '表情' : '图片';
@@ -6359,10 +6365,29 @@ async function main() {
     // 只有 file 是安全缓存文件名时才允许交给网关（防任意路径/内网 URL 注入）。
     const tryGetImage = async () => {
       if (!(media.kind === 'image' || media.kind === 'sticker')) return null;
-      if (!media.file || !isProbablySafeImageFileRef(media.file)) return null;
+      const file = String(media.file ?? '');
+      const packageId = String(media.emojiPackageId ?? '');
+      const marketFace = native && /^[a-f0-9]{16,64}$/i.test(String(media.emojiId ?? '')) && /^[1-9]\d{0,18}$/.test(packageId);
+      if ((!file || !isProbablySafeImageFileRef(file)) && !marketFace) return null;
       try {
-        const info = await bot.getImage({ file: String(media.file) });
+        const info = await bot.getImage({
+          ...(file ? {file} : {}),
+          ...(marketFace ? {emojiId:String(media.emojiId), emojiPackageId:packageId} : {}),
+          ...(native && messageContext.key && messageContext.messageId
+            ? {key:String(messageContext.key), messageId:String(messageContext.messageId)} : {}),
+        });
         const obj = info && typeof info === 'object' ? info : {};
+        const localMediaPath = typeof obj.file === 'string' && !obj.file.startsWith('base64://') && fs.existsSync(obj.file)
+          && (native ? isSafeNativeMediaPath(obj.file) : isSafeLocalMediaPath(obj.file));
+        if (localMediaPath) {
+          const stat = fs.statSync(obj.file);
+          if (stat.size > MAX_MEDIA_BYTES) {
+            log(`QQ 本机图片超限，已跳过（${Math.round(stat.size / 1024)}KB）`);
+          } else {
+            const accepted = acceptImageBuffer(fs.readFileSync(obj.file), 'QQ 本机图片');
+            if (accepted) return accepted;
+          }
+        }
         const base64 = base64FromMaybe(obj.data) || base64FromMaybe(obj.base64) || base64FromMaybe(obj.file);
         if (base64) {
           // 粗略估计 base64 解码后大小，超限直接拒绝，避免超大字符串撑爆内存
@@ -6397,9 +6422,9 @@ async function main() {
       return null;
     };
 
-    const result = isSticker
-      ? (await tryUrls()) ?? (await tryGetImage())
-      : (await tryGetImage()) ?? (await tryUrls());
+    const result = native
+      ? (await tryGetImage()) ?? (await tryUrls())
+      : isSticker ? (await tryUrls()) ?? (await tryGetImage()) : (await tryGetImage()) ?? (await tryUrls());
     if (result) return result;
     if (failures.length) {
       log(`[media] ${label}获取失败（${failures.length} 次尝试）：${failures.slice(0, 3).join(' | ')}`);
@@ -6464,7 +6489,7 @@ async function main() {
         }
       } else {
         const img = await fetchOneBotImage(media);
-        const sticker = media.kind === 'sticker';
+        const sticker = media.kind === 'sticker' || String(media.subType || '') === '1';
         const summary = sticker && media.summary ? `:${String(media.summary).slice(0, 20)}` : '';
         const label = sticker ? (summary ? `[表情${summary}]` : `[表情${index}]`) : `[图片${index}]`;
         const prep = img?.buffer ? await toModelMedia(img.buffer, img.mimeType, `${label}`) : null;
@@ -6487,7 +6512,7 @@ async function main() {
     return parts;
   }
 
-  async function fetchMediaData(mediaList) {
+  async function fetchMediaData(mediaList, messageContext = {}) {
     const out = [];
     let index = 0;
     let totalBytes = 0;
@@ -6521,8 +6546,8 @@ async function main() {
           out.push({ index, kind: 'face', faceId: media.faceId ? String(media.faceId) : undefined, text: face.text || `[表情#${media.faceId}]` });
         }
       } else {
-        const img = await fetchOneBotImage(media);
-        const kind = media.kind === 'sticker' ? 'sticker' : 'image';
+        const img = await fetchOneBotImage(media, messageContext);
+        const kind = media.kind === 'sticker' || String(media.subType || '') === '1' ? 'sticker' : 'image';
         const noun = kind === 'sticker' ? '表情' : '图片';
         const base = {
           index,
@@ -6530,6 +6555,7 @@ async function main() {
           ...(media.file ? { file: String(media.file) } : {}),
           ...(media.url ? { url: String(media.url) } : {}),
           ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
+          ...(media.emojiPackageId ? { emojiPackageId: String(media.emojiPackageId) } : {}),
           ...(media.summary ? { summary: String(media.summary) } : {}),
           ...(media.subType ? { subType: String(media.subType) } : {})
         };
@@ -8047,6 +8073,7 @@ async function main() {
       if (m?.url) item.url = String(m.url);
       if (m?.faceId) item.faceId = String(m.faceId);
       if (m?.emojiId) item.emojiId = String(m.emojiId);
+      if (m?.emojiPackageId) item.emojiPackageId = String(m.emojiPackageId);
       if (m?.summary) item.summary = sanitizeMediaSummary(m.summary);
       if (m?.subType) item.subType = String(m.subType);
       return item;
