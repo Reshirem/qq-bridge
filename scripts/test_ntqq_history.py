@@ -6,10 +6,12 @@ import mmap
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import tempfile
 import unittest
 
 import ntqq_history as nt
+from ntqq_reader_service import read as read_service
 
 
 def history(reader, source, limit, before_id=None):
@@ -26,6 +28,30 @@ def body(*parts):
 
 
 class NativeHistoryTest(unittest.TestCase):
+    def test_catchup_keeps_system_notices_and_pages_past_own_messages(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            for kind, table in nt.TABLES.items():
+                db.execute(f"CREATE TABLE {table} ([40001] INTEGER PRIMARY KEY, [40033] INTEGER, "
+                           "[40050] INTEGER, [40800] BLOB, [40027] INTEGER, [40030] INTEGER)")
+                # An entire first page can consist of the account's own messages.
+                db.executemany(f"INSERT INTO {table} VALUES (?,42,100,?,0,123)",
+                               [(mid, body((1, "own message"))) for mid in range(1, 101)])
+                db.execute(f"INSERT INTO {table} VALUES (101,0,100,?,0,123)", (body((8, None)),))
+                db.execute(f"INSERT INTO {table} VALUES (102,123,100,?,0,123)", (body((1, "incoming")),))
+                db.execute(f"INSERT INTO {table} VALUES (103,0,100,?,0,123)", (body((1, "system text")),))
+                before = db.total_changes
+                query = {"kind": kind, "start": 99, "end": 101}
+                first = read_service(db, "catchup", query, "42", b"u_self")
+                self.assertEqual(first, {"events": [], "next": [100, "100"]})
+                second = read_service(db, "catchup", {**query, "cursor": first["next"]}, "42", b"u_self")
+                self.assertEqual([row["message_id"] for row in second["events"]], ["101", "102"])
+                notice = second["events"][0]
+                self.assertEqual(notice["message"], [{"type": "notice", "data": {}}])
+                self.assertEqual(notice["peer_id"], "123")
+                self.assertTrue(notice["replay"])
+                self.assertIsNone(second["next"])
+                self.assertEqual(db.total_changes, before)
+
     def test_media_segments_and_local_cache_roles(self):
         png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
         digest = hashlib.md5(png).digest()

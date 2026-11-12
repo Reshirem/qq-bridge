@@ -1262,13 +1262,48 @@ document.getElementById('desktopAgentMessage').addEventListener('keydown', event
 // ── QQ 消息通道配置 ────────────────────────────────────────────────────────
 // Each form writes only its own settings. Seconds and percentages are UI units.
 const qqSettingsForms = {
-  qqReminderForm: { enabled: 'enabled', keywords: 'attentionKeywords' },
+  qqReminderForm: { keywords: 'attentionKeywords' },
   qqConversationForm: { delayPerCharMs: 'send.delayPerCharMs' },
   qqMediaForm: { prefetchOnReceive: 'media.prefetchOnReceive' },
   qqStickerForm: { regularEnabled: 'sticker.regularEnabled', syncEnabled: 'sticker.syncEnabled', collect: 'sticker.collect.enabled' },
   qqMarketStickerForm: { marketEnabled: 'sticker.marketEnabled' },
   qqFeedbackForm: { maxLength: 'feedback.maxLength' },
 };
+
+const qqReminderButtons = [...document.querySelectorAll('#qqReminderControls [data-reminder-setting]')];
+function showQQReminderButton(button, config) {
+  const enabled = button.dataset.reminderSetting.split('.').reduce((value, key) => value?.[key], config) === true;
+  button.setAttribute('aria-checked', String(enabled));
+  button.textContent = enabled ? '已开启' : '已关闭';
+  if (button.dataset.reminderSetting === 'enabled') document.getElementById('qqReminderMasterHint').hidden = enabled;
+}
+for (const button of qqReminderButtons) {
+  button.addEventListener('click', async () => {
+    const keys = button.dataset.reminderSetting.split('.');
+    const last = keys.pop();
+    const patch = {};
+    keys.reduce((value, key) => value[key] ??= {}, patch)[last] = button.getAttribute('aria-checked') !== 'true';
+    const status = button.closest('.qq-reminder-row').querySelector('[role=status]');
+    const previousText = button.textContent;
+    // Each button owns its revision and response, so concurrent saves cannot
+    // overwrite a different button or an unsaved keyword edit.
+    button.dataset.revision = String(Number(button.dataset.revision || 0) + 1);
+    button.disabled = true;
+    button.textContent = '保存中…';
+    status.textContent = '';
+    status.classList.remove('err');
+    try {
+      const { config } = await consoleApiResult('/api/socialV2/config', 'POST', patch);
+      showQQReminderButton(button, config);
+      status.textContent = '已保存，立即生效';
+      refreshQQDashboard();
+    } catch (error) {
+      button.textContent = previousText;
+      status.textContent = '保存失败：' + error.message;
+      status.classList.add('err');
+    } finally { button.disabled = false; }
+  });
+}
 
 function showQQSettings(form, config) {
   for (const [name, path] of Object.entries(qqSettingsForms[form.id])) {
@@ -1305,13 +1340,20 @@ async function loadQQSettings(page) {
   if (page === 'qq-settings') await loadQQBackend();
   const forms = [...document.querySelectorAll('[data-page="' + page + '"] form')].filter(form => qqSettingsForms[form.id]);
   if (!forms.length) return;
+  const buttons = page === 'qq-settings' ? qqReminderButtons.map(button => [button, button.dataset.revision || '0']) : [];
   try {
     const { config } = await consoleApiResult('/api/socialV2/config');
+    for (const [button, revision] of buttons) {
+      if (revision !== (button.dataset.revision || '0') || button.textContent === '保存中…') continue;
+      showQQReminderButton(button, config);
+      button.disabled = false;
+    }
     for (const form of forms) {
       showQQSettings(form, config);
       form.querySelector('fieldset').disabled = false;
     }
   } catch (error) {
+    for (const [button] of buttons) button.closest('.qq-reminder-row').querySelector('[role=status]').textContent = '读取失败：' + error.message;
     for (const form of forms) form.querySelector('[role=status]').textContent = error.message;
   }
 }

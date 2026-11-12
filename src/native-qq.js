@@ -52,7 +52,7 @@ export class NativeQQ extends EventEmitter {
   }
   onPrivateMessage(fn) { this.on('private', fn); }
   onGroupMessage(fn) { this.on('group', fn); }
-  onNotice() {} // Native message callbacks are registered inside QQ.
+  onNotice(type, fn) { this.on('notice:' + type, fn); }
   async connect() {
     this.server = createServer(socket => this.accept(socket));
     await new Promise((resolve, reject) => {
@@ -124,7 +124,10 @@ export class NativeQQ extends EventEmitter {
         const event = packet.event;
         if (String(event.self_id) !== this.account || !['private','group'].includes(event.message_type)) return;
         this.health.lastPacketAt = Date.now();
-        this.emit(event.message_type, event);
+        if (event.post_type === 'notice') this.emit('notice:' + event.notice_type, event);
+        else this.emit(event.message_type, event);
+      } else if (packet.warning) {
+        this.health.eventError = String(packet.warning).slice(0, 500);
       }
     });
     socket.once('close', () => {
@@ -204,6 +207,16 @@ export class NativeQQ extends EventEmitter {
       const query = {kind,peer:String(id),count:p.count,anchor:p.message_id,older:p.reverse_order !== false};
       if (this.read) {
         const messages = await this.read('history',query);
+        // The read-only DB decoder leaves gray tips as notices. Ask QQ for their
+        // structured event metadata; ordinary history still comes from SQLite.
+        const noticeIds = messages.filter(row => row.message?.some(s => s.type === 'notice')).map(row => String(row.message_id));
+        if (noticeIds.length) {
+          const notices = await this.call('history',{peer:await this.peer(kind,id), ids:noticeIds});
+          for (let i = 0; i < messages.length; i++) {
+            const resolved = notices.find(row => String(row.message_id) === String(messages[i].message_id));
+            if (resolved?.notice_type === 'notify' && resolved.sub_type === 'poke') messages[i] = resolved;
+          }
+        }
         if (messages.length || !query.anchor) return {messages};
         // A live reminder can arrive just before QQ commits the row to SQLite.
         if (query.count === 1) return {messages:await this.call('history',{

@@ -86,6 +86,8 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `webSearch.baseURL` / `model` / `maxUses` / `maxResults` | 搜索端点（默认 `https://api.deepseek.com/anthropic/v1`，必须 https 且解析到公网）、模型（默认 `deepseek-v4-flash`）、单次搜索最多用几次工具、返回条数上限 |
 | `allow.private` / `allow.groups` | 控制台直接测试发送的目标白名单；全局数字角色会话的 QQ 工具不受其限制 |
 | `socialV2.attentionKeywords` | 可选关键词数组。匹配群聊正文时只给全局 agent 发元数据提醒，不把正文注入提示词；空数组关闭关键词提醒 |
+| `socialV2.reminders.unreadFollowup` | 默认 `true`。单独控制休息期间的未读补提醒，每分钟检查一次、每项最多补发一次；关闭后取消定时器与待发补提醒，新事件仍按各项开关首次提醒 |
+| `socialV2.reminders` | 六类提醒的独立开关：`private` 私聊、`atMention` 原生 @、`reply` 回复/引用、`roleCardName` 人格卡名称、`keyword` 关键词、`poke` QQ 戳一戳功能事件。缺省全开，受 `socialV2.enabled` 总开关控制；WebUI「QQ 消息 → 提醒与发送」保存后立即生效，关闭时清掉对应待发和补提醒。戳一戳只提醒目标为当前账号的他人事件，不匹配动作文案或后缀，也不依赖私聊消息开关 |
 | `ownerQQ` | 可选的 QQ 账号身份锚点，也用于验证私聊睡眠命令；具体关系和称谓由当前人格卡及双方表达决定。可在控制台“系统运维 → 访问设置”中设置或清除；保存后本地配置优先于 DSH 的同名设置。旧安装在首次通过控制台保存之前仍兼容 DSH 的 `qq-agent-presets.ownerQQ` |
 | `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
 | `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | 可选 A_Memorix 长期记忆。默认关闭；部署本机 HTTP/JSON Gateway 并创建 namespace 后，可在 WebUI 配置连接地址、namespace、密钥和使用上限；API key 只保存在不入库的 `config.json`。 |

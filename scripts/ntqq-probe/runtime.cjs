@@ -15,7 +15,7 @@ module.exports = function startChannel(receiver, endpoint) {
     if (response?.result !== 0) throw Error(response?.errMsg || 'QQ 调用失败 ' + String(response?.result));
     return response;
   }
-  function message(row) {
+  async function message(row) {
     const group = row.chatType === 2;
     const msg = {
       self_id: account, user_id: String(row.senderUin), message_id: String(row.msgId),
@@ -24,6 +24,28 @@ module.exports = function startChannel(receiver, endpoint) {
       ...(group ? { group_id: number(row.peerUin) || number(row.peerUid) } : {}),
       message: [],
     };
+    // NTQQ JSON gray-tip business 1061 is the QQ poke feature. Display text is
+    // customizable and must never be used as an event or recipient classifier.
+    const gray = (row.elements || []).find(e => e.grayTipElement)?.grayTipElement;
+    if (gray?.subElementType === 17 && String(gray.jsonGrayTipElement?.busiId) === '1061') {
+      let body;
+      try { body = JSON.parse(gray.jsonGrayTipElement.jsonStr); } catch { return msg; }
+      const people = Array.isArray(body?.items) ? body.items.filter(item => typeof item?.uid === 'string' && item.uid) : [];
+      if (people.length !== 2) return msg;
+      const ids = people.map(item => item.uid);
+      const unresolved = ids.filter(uid => uid !== self.uid && !number(uid));
+      const converted = unresolved.length ? await receiver.getUixConvertService?.().getUin(unresolved) : null;
+      const [actor, target] = ids.map(uid => uid === self.uid ? account : number(uid) || number(converted?.uinInfo?.get(uid)));
+      if (!actor || !target) return msg;
+      const peer = group ? msg.group_id : number(row.peerUin) || (actor === account ? target : actor);
+      if (!peer) return msg;
+      const text = `[QQ 戳一戳事件] QQ ${actor} 对 QQ ${target} 使用了“戳一戳”功能。`;
+      return { ...msg, post_type: 'notice', notice_type: 'notify', sub_type: 'poke',
+        user_id: actor, sender_id: actor, target_id: target, ...(!group ? {peer_id: peer} : {}),
+        sender: {user_id: actor, nickname: actor},
+        poke: {targetId: target, targetIsSelf: target === account, groupId: group ? peer : null},
+        message: [{type: 'text', data: {text}}] };
+    }
     for (const element of row.elements || []) {
       const t = element.textElement, q = element.replyElement, pic = element.picElement;
       let type, data;
@@ -43,13 +65,19 @@ module.exports = function startChannel(receiver, endpoint) {
     return msg;
   }
   const listener = new Proxy({
-    onRecvMsg(rows) {
+    async onRecvMsg(rows) {
       if (String(globalThis.authData?.uin) !== account) return socket.destroy();
       for (const r of rows || []) {
-        if (![1, 2].includes(r.chatType) || r.senderUid === self.uid || !number(r.senderUin)) continue;
-        const event = message(r);
-        if (event.message_type === 'group' && !event.group_id) continue;
-        send({ event, peerUid: r.peerUid });
+        if (![1, 2].includes(r.chatType)) continue;
+        try {
+          const event = await message(r);
+          if (event.message_type === 'group' && !event.group_id) continue;
+          if (event.post_type === 'notice') {
+            if (event.sender_id === account) continue;
+          } else if ((r.elements || []).some(e => e.grayTipElement) || r.senderUid === self.uid || !number(r.senderUin)) continue;
+          if (String(globalThis.authData?.uin) !== account) return socket.destroy();
+          send({ event, peerUid: r.peerUid });
+        } catch (error) { send({warning: 'QQ 事件解析失败：' + String(error.message || error)}); }
       }
     },
     onMsgInfoListUpdate(rows) {
@@ -187,7 +215,7 @@ module.exports = function startChannel(receiver, endpoint) {
       const res = p.ids ? await svc.getMsgsByMsgId(p.peer,p.ids)
         : await svc.getMsgsIncludeSelf(p.peer, p.anchor || '0', p.count, p.older);
       const rows = checked(res).msgList.filter(r => r.chatType === p.peer.chatType && r.peerUid === p.peer.peerUid);
-      return rows.map(message);
+      return Promise.all(rows.map(message));
     }
     if (action === 'fetch_message_image') return fetchMessageImage(p);
     if (action === 'resolveUid') {

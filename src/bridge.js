@@ -33,7 +33,7 @@ import { NodeApiClient, unwrap, discoverDshLaunchToken, discoverDshBaseUrl } fro
 import { mdToPlain, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { openQQUnreadStore, QQ_UNREAD_LIMIT } from './qq-unread-store.js';
-import { classifyIncomingWake } from './autonomy-policy.js';
+import { classifyIncomingWake, isPokeToSelf, reminderEnabled } from './autonomy-policy.js';
 import { findQQMessageReference, parseQQMessageReference } from './qq-message-reference.js';
 import { compactModelMessage, describeAge } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
@@ -4892,6 +4892,7 @@ async function main() {
             replaceQQBuffer();
           }
           if (!next.enabled && wasEnabled) clearQueuedQQAttention();
+          else pruneDisabledQQReminders();
           log('控制台：QQ 提醒与工具配置已更新');
           sendJson({ ok: true, config: cfg.socialV2 });
           return;
@@ -6661,6 +6662,7 @@ async function main() {
       const owner = cfg.ownerQQ != null && userId != null && String(userId) === String(cfg.ownerQQ);
       return {
         kind,
+        ...(entry?.poke ? {kind: 'poke', poke: entry.poke} : {}),
         messageId: entry?.message_id ?? entry?.messageId ?? null,
         sender: String(sender),
         userId: userId != null ? String(userId) : null,
@@ -6996,6 +6998,50 @@ async function main() {
     desktopAttentionReminderTimer = null;
   }
 
+  function pruneDisabledQQReminders() {
+    const enabled = reason => reminderEnabled(reason, cfg.socialV2.reminders);
+    if (!cfg.socialV2.reminders.unreadFollowup) {
+      for (const [key, item] of desktopAttentionQueue) {
+        if (item.reminder === true) desktopAttentionQueue.delete(key);
+      }
+      for (const item of desktopAttentionUnresolved.values()) item.reminderQueued = false;
+    }
+    for (const [key, st] of socialV2.conversations) {
+      // Native rows are reminder positions. Retire disabled positions so a
+      // reconnect or re-enable does not replay them as new attention.
+      const removed = st.unread.filter(row => row.reason && !enabled(row.reason));
+      if (native && removed.length) {
+        unreadStore?.acknowledge(key, {}, removed.map(row => row.seq));
+        st.unread = st.unread.filter(row => !removed.includes(row));
+      }
+      for (const map of [desktopAttentionQueue, desktopAttentionUnresolved]) {
+        const item = map.get(key);
+        if (!item || (enabled(item.reason) && !removed.length)) continue;
+        const remaining = st.unread.filter(row => row.seq <= item.seq && row.reason && enabled(row.reason));
+        const latest = remaining.at(-1);
+        if (!latest) map.delete(key);
+        else {
+          Object.assign(item, {reason: latest.reason, seq: latest.seq, messageId: latest.messageId,
+            senderId: latest.userId, sender: latest.sender || latest.userId, count: remaining.length});
+          if (map === desktopAttentionUnresolved && item.promptedSeq < item.seq && !desktopAttentionQueue.has(key)) {
+            desktopAttentionQueue.set(key, {...item, reminder:false});
+          }
+        }
+      }
+      // SnowLuma retains readable chat bodies; disabled attention is not revived.
+      if (!native) for (const row of removed) delete row.reason;
+    }
+    for (const map of [desktopAttentionQueue, desktopAttentionUnresolved]) {
+      for (const [key, item] of map) if (!enabled(item.reason)) map.delete(key);
+    }
+    if (!desktopAttentionQueue.size && desktopAgentPendingWakeReason === 'qq-attention') {
+      desktopAgentPendingWakeReason = '';
+      saveDesktopAgentState();
+    }
+    clearDesktopAttentionReminderTimer();
+    armDesktopAttentionReminderCheck();
+  }
+
   function hasDesktopAttentionReminderCandidates() {
     return [...desktopAttentionUnresolved.values()].some((item) => (
       item.reminderSent !== true
@@ -7008,12 +7054,12 @@ async function main() {
   }
 
   function armDesktopAttentionReminderCheck() {
-    if (desktopAttentionReminderTimer
+    if (!cfg.socialV2.enabled || !cfg.socialV2.reminders.unreadFollowup || desktopAttentionReminderTimer
       || desktopAgentLifecycle !== 'resting'
       || !hasDesktopAttentionReminderCandidates()) return;
     desktopAttentionReminderTimer = setTimeout(() => {
       desktopAttentionReminderTimer = null;
-      if (desktopAgentLifecycle !== 'resting') return;
+      if (desktopAgentLifecycle !== 'resting' || !cfg.socialV2.enabled || !cfg.socialV2.reminders.unreadFollowup) return;
       if (!dshReady || desktopAgentResetting || desktopAgentTurnActive) {
         armDesktopAttentionReminderCheck();
         return;
@@ -7468,6 +7514,7 @@ async function main() {
 
   function queueDesktopAttentionSignal({ key, kind, id, reason, sender, senderId, messageId, seq }) {
     if (!cfg.socialV2.enabled || ['sleeping', 'stopped'].includes(desktopAgentLifecycle)) return;
+    if (!reminderEnabled(reason, cfg.socialV2.reminders)) return;
     const now = Date.now();
     trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
     const existing = desktopAttentionQueue.get(key);
@@ -7525,6 +7572,7 @@ async function main() {
 
   function recordDesktopAttentionBatchAccepted(batch) {
     for (const [key, item] of batch) {
+      if (!reminderEnabled(item.reason, cfg.socialV2.reminders)) continue;
       if (native && Number.isSafeInteger(item.seq)) unreadStore?.delivered(key,item.seq,item.reminder === true);
       const unresolved = desktopAttentionUnresolved.get(key);
       if (!unresolved || !Number.isSafeInteger(item.seq) || item.seq <= 0) continue;
@@ -7542,6 +7590,7 @@ async function main() {
 
   function requeueDesktopAttentionBatch(batch, { accepted = false } = {}) {
     for (const [key, item] of batch) {
+      if (!reminderEnabled(item.reason, cfg.socialV2.reminders)) continue;
       // Once DSH accepted a follow-up reminder, do not submit it again if a
       // concurrent lifecycle change cancels the turn.
       if (accepted && item.reminder === true) continue;
@@ -7571,7 +7620,7 @@ async function main() {
   async function flushDesktopAttentionSignals() {
     if (desktopAttentionFlushPromise) return desktopAttentionFlushPromise;
     if (!dshReady || desktopAgentResetting || desktopAgentLifecycle !== 'active') return;
-    const batch = [...desktopAttentionQueue.entries()]
+    let batch = [...desktopAttentionQueue.entries()]
       .sort((a, b) => a[1].lastAt - b[1].lastAt)
       .slice(-20);
     const wakeReason = desktopAgentPendingWakeReason;
@@ -7585,6 +7634,9 @@ async function main() {
       try {
         const sessionId = await ensureDesktopAgentSession();
         if (qqBatchExpired()) return;
+        const hadBatch = batch.length > 0;
+        batch = batch.filter(([, item]) => reminderEnabled(item.reason, cfg.socialV2.reminders));
+        if (hadBatch && !batch.length) return;
         if (desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch) {
           requeueDesktopAttentionBatch(batch);
           return;
@@ -7611,7 +7663,7 @@ async function main() {
             senderId,
             messageId,
             count,
-          });
+          }) + (String(item.reason).endsWith('poke') ? '，事件：QQ 戳一戳（功能事件）' : '');
         });
         const wakeInstructionByReason = {
           'rest-expired': cfg.desktopAgent.promptTemplates.restExpired,
@@ -7739,6 +7791,7 @@ async function main() {
       expireNativeReminders();
       return;
     }
+    pruneDisabledQQReminders();
     for (const [key, st] of socialV2.conversations) {
       const [kind,id] = key.split(':');
       for (const ref of st.unread) {
@@ -7777,7 +7830,7 @@ async function main() {
           const batch = await read('catchup',{kind, start:Math.floor(start/1000), end:Math.floor(end/1000),cursor});
           for (const event of batch.events) {
             if (store !== unreadStore || read !== bot.read || nativeMinTime > end) return;
-            await handleIncoming(kind, event.group_id ?? event.user_id, event, cfg);
+            await handleIncoming(kind, event.group_id ?? event.peer_id ?? event.user_id, event, cfg);
           }
           cursor = batch.next;
         } while (cursor);
@@ -8162,17 +8215,15 @@ async function main() {
     return msg;
   }
 
-  // 拍一拍事件写入未读消息流，让 AI 能看到“谁拍了拍谁/拍了拍我”。
-  function appendSocialV2Poke(key, { sender, userId, targetId, targetIsSelf, isOwner = false, groupId = null, action = '', suffix = '' }) {
+  // Feature metadata is distinct from customizable QQ action/suffix wording.
+  function appendSocialV2Poke(key, { sender, userId, targetId, targetIsSelf, isOwner = false, groupId = null, messageId = null }) {
     const st = getSocialV2State(key);
     const actor = String(sender || userId || '未知');
     const target = targetIsSelf ? '你' : (String(targetId || '未知'));
-    const actionText = action ? String(action) : '拍了拍';
-    const suffixText = suffix ? ` ${String(suffix)}` : '';
-    const text = `[拍一拍] ${actor} ${actionText} ${target}${suffixText}`.slice(0, 200);
+    const text = `[QQ 戳一戳事件] ${actor} 对 ${target} 使用了“戳一戳”功能。`.slice(0, 200);
     const msg = {
       seq: (st.lastUnreadSeq || 0) + 1,
-      messageId: null,
+      messageId,
       sender: actor,
       userId: userId != null ? String(userId) : null,
       text,
@@ -8341,6 +8392,7 @@ async function main() {
       replyTargetIsSelf: quoteTargetIsSelf,
       text: plainContent,
       attentionKeywords: cfg.socialV2?.attentionKeywords,
+      reminders: cfg.socialV2?.reminders,
       roleCardNames: kind === 'group' ? selectedRoleCardNamesForWake() : []
     });
   }
@@ -8384,6 +8436,19 @@ async function main() {
   }
 
   async function handleIncoming(kind, id, event, cfg) {
+    if (native && event.message?.some(segment => segment.type === 'notice')) {
+      const account = reminderAccount;
+      const generation = desktopAttentionGeneration;
+      if (!cfg.socialV2.enabled || cfg.socialV2.reminders.poke === false
+        || ['sleeping', 'stopped'].includes(desktopAgentLifecycle)) return;
+      const action = kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history';
+      const result = await bot.raw(action, {[kind === 'group' ? 'group_id' : 'user_id']: id,
+        message_id: event.message_id, count: 1});
+      if (account !== reminderAccount || generation !== desktopAttentionGeneration) return;
+      const resolved = result?.messages?.find(row => String(row.message_id) === String(event.message_id));
+      if (resolved?.notice_type === 'notify') await handlePokeNotice({...resolved, replay: !!event.replay});
+      return;
+    }
     const key = convKey(kind, id);
     const senderIdValue = event?.user_id ?? event?.sender?.user_id ?? null;
     const senderId = senderIdValue == null ? '' : String(senderIdValue);
@@ -8466,6 +8531,7 @@ async function main() {
       const sourceName = kind === 'group' ? event.group_name : event.sender?.nickname;
       if (sourceName) getSocialV2State(key).name = String(sourceName).slice(0, 100);
       const bufferedMessage = appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, mediaList, senderId || null, extractForwardIds(event.message ?? []));
+      if (bufferedMessage && wakeTrigger) bufferedMessage.reason = wakeTrigger;
       // Explicitly enabled background analysis is independent of main-agent attention.
       try {
         chatLearning?.enqueue(key, { ...bufferedMessage, plain: plainContent, bufferId: socialV2.bufferId }, cfg.chatLearning);
@@ -8495,18 +8561,22 @@ async function main() {
       return;
   }
 
-  // 取消/拒绝一个挂起的提问或审批，并给 DSH 回执（超时、被新请求覆盖时使用）
-  // 二代拍一拍（notify/poke）事件处理：写入消息流并按需唤醒。
+  // QQ notify/poke is a feature event, not a phrase in ordinary chat text.
   async function handlePokeNotice(event) {
-    if (!event || event.sub_type !== 'poke') return;
+    if (event?.notice_type !== 'notify' || event.sub_type !== 'poke') return;
     const selfId = event.self_id;
-    const groupId = event.group_id ?? event.groupId ?? null;
+    const groupId = event.group_id ?? null;
     const senderIdRaw = event.sender_id ?? event.user_id ?? event.sender?.user_id ?? null;
     const targetIdRaw = event.target_id ?? event.targetId ?? null;
     const senderId = senderIdRaw != null ? String(senderIdRaw) : '';
     const targetId = targetIdRaw != null ? String(targetIdRaw) : '';
-    // 自己发出的拍一拍不回灌给 AI（避免把“我拍了别人”当成群友事件）。
-    if (senderId && selfId != null && String(senderId) === String(selfId)) return;
+    if (!/^[1-9]\d*$/.test(senderId) || !/^[1-9]\d*$/.test(targetId)
+      || !/^[1-9]\d*$/.test(String(selfId)) || senderId === String(selfId)) return;
+    if (native && (!unreadStore || String(selfId) !== reminderAccount || !bot.health?.connected)) return;
+    const generation = desktopAttentionGeneration;
+    const account = reminderAccount;
+    const acceptReminder = cfg.socialV2.enabled && cfg.socialV2.reminders.poke
+      && !['sleeping', 'stopped'].includes(desktopAgentLifecycle) && isPokeToSelf(event);
     let key;
     let kind;
     let id;
@@ -8517,10 +8587,13 @@ async function main() {
     } else {
       kind = 'private';
       const peer = event.user_id ?? senderId;
-      if (!peer) return;
+      if (!peer || String(peer) !== senderId) return;
       id = String(peer);
       key = convKey('private', id);
     }
+    if (!canonicalV2Key(key)) return;
+    const messageId = qqMessageId(event.message_id);
+    if (native && (!acceptReminder || !messageId || unreadStore.seen(key, messageId))) return;
     let sender = senderId;
     if (kind === 'group' && senderId) {
       try {
@@ -8529,6 +8602,22 @@ async function main() {
     }
     const targetIsSelf = !!targetId && selfId != null && String(targetId) === String(selfId);
     const isOwner = cfg.ownerQQ != null && String(senderId) === String(cfg.ownerQQ);
+    if (generation !== desktopAttentionGeneration || (native && (account !== reminderAccount || !bot.health?.connected))) return;
+    const shouldRemind = acceptReminder && cfg.socialV2.enabled && cfg.socialV2.reminders.poke
+      && !['sleeping', 'stopped'].includes(desktopAgentLifecycle);
+    if (native) {
+      if (!shouldRemind || unreadStore.seen(key, messageId)) return;
+      const st = getSocialV2State(key);
+      const ref = {seq: st.lastUnreadSeq + 1, messageId, reason: 'poke', time: Date.now(), userId: senderId};
+      unreadStore.add(key, ref);
+      st.lastUnreadSeq = ref.seq;
+      st.lastIncomingAt = ref.time;
+      st.unread.push(ref);
+      queueDesktopAttentionSignal({key, kind, id, reason: 'poke', sender, senderId, messageId, seq: ref.seq});
+      return;
+    }
+    const st = getSocialV2State(key);
+    if (messageId && [...st.unread, ...st.readReferences].some(row => row.messageId === messageId)) return;
     const msg = appendSocialV2Poke(key, {
       sender,
       userId: senderId || null,
@@ -8536,11 +8625,13 @@ async function main() {
       targetIsSelf,
       isOwner,
       groupId: groupId != null ? String(groupId) : null,
-      action: event.action,
-      suffix: event.suffix
+      messageId,
     });
-    // A poke is buffered for a later explicit read, but it is not a model wake.
-    appendActivity(`${key} [autonomy] 拍一拍已缓冲：${msg.text.slice(0, 80)}`);
+    if (shouldRemind) {
+      msg.reason = 'poke';
+      queueDesktopAttentionSignal({key, kind, id, reason: 'poke', sender, senderId, messageId, seq: msg.seq});
+    }
+    appendActivity(`${key} QQ 戳一戳事件已缓冲${shouldRemind ? '；已排队提醒角色' : ''}`);
   }
 
   async function pumpMux() {
@@ -8729,7 +8820,7 @@ async function main() {
     try { await handleIncoming('group', event.group_id, event, cfg); } catch (error) { log('处理群消息出错:', error?.message ?? error); }
   });
   bot.onNotice('notify', async (event) => {
-    try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }
+    try { await handlePokeNotice(event); } catch (error) { log('处理 QQ 戳一戳事件出错:', error?.message ?? error); }
   });
 
   if (native) {

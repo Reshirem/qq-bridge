@@ -175,6 +175,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
     scheduleDesktopAgentRecovery, reconcileDesktopAgentLifecycle, pumpMux,
     handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
+    handlePokeNotice,
     flushAttentionNow() {
       if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
       desktopAttentionFlushTimer = null;

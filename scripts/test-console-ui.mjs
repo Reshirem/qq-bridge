@@ -192,11 +192,76 @@ try {
   ]);
   await page.waitForFunction(() => document.querySelector('#qqMediaForm [role=status]').textContent === '已保存');
   assert.equal(fixture.state.v2.media.prefetchOnReceive, true);
-  await page.locator('#qqReminderForm input[name=enabled]').uncheck();
-  await page.locator('#qqReminderForm button').click();
+  const reminderNames = ['private','atMention','reply','roleCardName','keyword','poke','unreadFollowup'];
+  const reminderButton = setting => page.locator(`#qqReminderControls [data-reminder-setting="${setting}"]`);
+  const reminderStatus = setting => reminderButton(setting).locator('..').locator('[role=status]');
+  const reminderValues = () => page.locator('#qqReminderControls [role=switch]').evaluateAll(buttons =>
+    Object.fromEntries(buttons.map(button => [button.dataset.reminderSetting, button.getAttribute('aria-checked') === 'true'])));
+  async function toggleReminder(setting, expected) {
+    const before = await reminderValues();
+    const patch = setting === 'enabled' ? { enabled: expected } : { reminders: { [setting.split('.')[1]]: expected } };
+    const [response] = await Promise.all([
+      page.waitForResponse(r => r.url().endsWith('/api/socialV2/config') && r.request().method() === 'POST'),
+      reminderButton(setting).click(),
+    ]);
+    assert.deepEqual(response.request().postDataJSON(), patch, 'each button saves only its own setting');
+    await reminderButton(setting).and(page.locator(`[aria-checked="${expected}"]:not([disabled])`)).waitFor();
+    assert.deepEqual(await reminderValues(), { ...before, [setting]: expected }, 'other switches keep their states');
+    assert.equal(await reminderStatus(setting).innerText(), '已保存，立即生效');
+  }
+  assert.equal(await page.locator('#qqReminderControls [role=switch]').count(), 8, 'one master and seven shared switches');
+  for (const setting of ['enabled', ...reminderNames.map(name => 'reminders.' + name)]) {
+    assert.equal(await reminderButton(setting).getAttribute('aria-checked'), 'true');
+  }
+  assert.equal(await page.locator('#qqReminderMasterHint').isVisible(), false);
+  const keywordDraft = '待保存关键词\n第二个关键词';
+  await page.locator('#v2AttentionKeywords').fill(keywordDraft);
+  for (const name of ['poke', 'atMention', 'unreadFollowup']) await toggleReminder('reminders.' + name, false);
+  assert.equal(await page.locator('#v2AttentionKeywords').inputValue(), keywordDraft, 'switch saves preserve keyword drafts');
+  assert.deepEqual(fixture.state.v2.attentionKeywords, ['看看这个'], 'switch saves do not submit keyword drafts');
+  const reminderSettings = structuredClone(fixture.state.v2.reminders);
+  const [keywordResponse] = await Promise.all([
+    page.waitForResponse(r => r.url().endsWith('/api/socialV2/config') && r.request().method() === 'POST'),
+    page.locator('#qqReminderForm button').click(),
+  ]);
   await page.waitForFunction(() => document.querySelector('#qqReminderForm [role=status]').textContent === '已保存');
+  assert.deepEqual(keywordResponse.request().postDataJSON(), { attentionKeywords: keywordDraft.split('\n') });
+  assert.deepEqual(fixture.state.v2.reminders, reminderSettings, 'keyword saves preserve reminder switches');
+
+  // A rejected save must keep the old state and allow the same button to retry.
+  await page.route('**/api/socialV2/config', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: '测试保存失败' }),
+  }), { times: 1 });
+  await reminderButton('reminders.poke').click();
+  await reminderStatus('reminders.poke').filter({ hasText: '保存失败：测试保存失败' }).waitFor();
+  assert.equal(await reminderButton('reminders.poke').getAttribute('aria-checked'), 'false');
+  assert.equal(await reminderButton('reminders.poke').innerText(), '已关闭');
+  assert.equal(await reminderButton('reminders.poke').isEnabled(), true);
+  assert.equal(fixture.state.v2.reminders.poke, false);
+  await toggleReminder('reminders.poke', true);
+
+  await page.reload();
+  await page.locator('#qqReminderControls [data-reminder-setting="enabled"]:not([disabled])').waitFor();
+  for (const name of reminderNames) {
+    assert.equal(await reminderButton('reminders.' + name).getAttribute('aria-checked'), String(fixture.state.v2.reminders[name]));
+  }
+  assert.equal(await page.locator('#v2AttentionKeywords').inputValue(), keywordDraft);
+  await toggleReminder('enabled', false);
+  await page.locator('#qqReminderMasterHint').waitFor({ state: 'visible' });
+  const pausedSettings = structuredClone(fixture.state.v2.reminders);
+  await toggleReminder('reminders.reply', false);
   assert.equal(fixture.state.v2.enabled, false);
+  assert.deepEqual(fixture.state.v2.reminders, { ...pausedSettings, reply: false }, 'individual settings remain editable while paused');
   assert.equal(fixture.state.v2.sticker.enabled, true);
+  for (const width of [1440, 760, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'reminder controls fit width ' + width);
+    assert.ok(await page.locator('#qqReminderControls [role=switch]').evaluateAll(buttons => buttons.every(button => {
+      const rect = button.getBoundingClientRect();
+      return rect.width >= 88 && rect.height >= 44 && rect.left >= 0 && rect.right <= innerWidth;
+    })), 'each reminder button stays readable and within the viewport');
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await openPage('social-v2');
   await page.locator('details').filter({ has: page.locator('#v2ResetBtn') }).locator('summary').click();
   await Promise.all([

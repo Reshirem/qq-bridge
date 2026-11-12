@@ -509,13 +509,56 @@
     <button class="primary">应用并重启桥接</button> <span class="meta" role="status"></span>
   </fieldset></form>
   <h2>提醒规则</h2>
+  <p class="meta">每种提醒单独控制，点击按钮即保存。普通休息可被提醒打断；睡眠和停止期间不会触发。</p>
+  <div id="qqReminderControls">
+    <div class="qq-reminder-row qq-reminder-master">
+      <div><strong id="qqReminderEnabledLabel">QQ 提醒总开关</strong><p class="meta">统一启停自动提醒，保留各项设置。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderEnabledLabel" data-reminder-setting="enabled" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <p id="qqReminderMasterHint" class="meta" hidden>总开关已关闭。以下设置会保留，开启总开关后生效。</p>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderPrivateLabel">私聊消息</strong><p class="meta">收到私聊来信时提醒。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderPrivateLabel" data-reminder-setting="reminders.private" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderAtLabel">@ 角色</strong><p class="meta">群聊中直接 @ 当前账号，不含 @ 全体。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderAtLabel" data-reminder-setting="reminders.atMention" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderReplyLabel">回复／引用</strong><p class="meta">群聊中回复或引用角色发出的消息。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderReplyLabel" data-reminder-setting="reminders.reply" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderRoleLabel">人格卡名称</strong><p class="meta">群消息提到当前选中的人格卡名称。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderRoleLabel" data-reminder-setting="reminders.roleCardName" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderKeywordLabel">自定义关键词</strong><p class="meta">群消息命中下方设置的关键词。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderKeywordLabel" data-reminder-setting="reminders.keyword" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderPokeLabel">戳一戳</strong><p class="meta">他人对当前账号使用 QQ「戳一戳」功能，群聊和私聊共用此开关。按功能事件识别，自定义动作和后缀不影响判断。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderPokeLabel" data-reminder-setting="reminders.poke" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderFollowupLabel">未读补提醒</strong><p class="meta">已提醒但仍未读的消息，在后续休息期间每分钟检查一次，最多补发一次。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderFollowupLabel" data-reminder-setting="reminders.unreadFollowup" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+  </div>
+  <p class="meta">各项独立，消息同时命中其他已开启条件时仍会提醒。</p>
   <form id="qqReminderForm"><fieldset disabled>
-    <label class="memory-toggle"><input type="checkbox" name="enabled"> 允许 QQ 消息提醒角色</label>
-    <p class="meta">私聊、原生 @、回复角色、提到当前人格卡名称或命中下方关键词时，角色会收到消息位置。普通休息可被提醒打断。睡眠期间不会触发会话提醒。</p>
     <label for="v2AttentionKeywords">额外的群聊关键词</label>
     <textarea id="v2AttentionKeywords" name="keywords" rows="2" placeholder="例如角色的另一个昵称，每行一个"></textarea>
     <p class="meta">所有群聊共用。每项 2–64 个字符，最多 50 项。</p>
-    <button class="primary">保存提醒规则</button> <span class="meta" role="status"></span>
+    <button class="primary">保存关键词</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
 <section data-page="qq-settings" hidden class="card">
@@ -623,7 +666,7 @@
         <div class="metric"><span>DSH 连接</span><strong id="metricDsh">连接中</strong><small id="metricDshHint">等待服务响应</small></div>
         <div class="metric"><span>QQ 消息通道</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
         <div class="metric"><span>数字角色会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
-        <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复/引用、关键词</small></div>
+        <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复、角色名、关键词、戳一戳</small></div>
         <div class="span-all" id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
         <b>⚠️ QQ 网关健康提醒</b>
         <div class="meta" style="margin:4px 0" id="snowlumaWarnHint"></div>

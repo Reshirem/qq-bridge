@@ -58,18 +58,19 @@ def read(db, action, params, account, self_uid):
         table = TABLES[params["kind"]]
         cursor = params.get("cursor")
         extra = " AND ([40050],[40001]) > (?,?)" if cursor else ""
-        args = [int(params["start"]), int(params["end"]), int(account)]
+        args = [int(params["start"]), int(params["end"])]
         if cursor:
             args.extend(int(v) for v in cursor)
         rows = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027],[40030] FROM {table} "
-                          "WHERE [40050] BETWEEN ? AND ? AND [40033]!=? AND [40033]>0 AND [40030]>0"
+                          "WHERE [40050] BETWEEN ? AND ? AND [40030]>0"
                           + extra + " ORDER BY [40050],[40001] LIMIT 100", args).fetchall()
         events = []
         for mid, sender, stamp, blob, bucket, peer in rows:
-            if not group and peer != sender:
+            notice = any(part.get("type") == "notice" for part in decode_segments(blob))
+            if (not sender or sender < 0 or str(sender) == account or (not group and peer != sender)) and not notice:
                 continue
             item = format_row(db, table, peer, (mid,sender,stamp,blob,bucket), account, self_uid)
-            item.update(self_id=account, message_type=params["kind"], replay=True)
+            item.update(self_id=account, message_type=params["kind"], peer_id=str(peer), replay=True)
             events.append(item)
         return {"events": events, "next": [rows[-1][2],str(rows[-1][0])] if len(rows)==100 else None}
     if action == "uid":

@@ -86,6 +86,16 @@ pre { margin:8px 0; padding:12px; max-height:380px; overflow:auto; white-space:p
 .settings-group>summary { padding:12px; cursor:pointer; font-weight:600 }
 .settings-content { padding:0 13px 14px }
 .settings-content .row { margin:8px 0 }
+.qq-reminder-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:6px 14px; padding:14px 0; border-bottom:1px solid var(--line) }
+.qq-reminder-row strong { display:block; font-size:13px }
+.qq-reminder-row [role=status] { grid-column:1 / -1 }
+.qq-reminder-row [role=status]:empty { display:none }
+.qq-reminder-row [role=switch] { min-width:88px; min-height:44px; white-space:nowrap }
+.qq-reminder-row [role=switch][aria-checked=true] { color:#fff; background:#236849; border-color:#236849 }
+.qq-reminder-row [role=switch][aria-checked=true]:hover { background:#1d573d }
+.qq-reminder-master { margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:7px; background:var(--canvas) }
+#qqReminderMasterHint { margin-top:8px; color:var(--orange) }
+#qqReminderControls + .meta { margin-top:12px }
 .empty-state { padding:18px; border:1px dashed var(--line); border-radius:7px; color:var(--muted) }
 .empty-state strong { display:block; color:var(--text) }
 table { width:100%; border-collapse:collapse; font-size:13px }

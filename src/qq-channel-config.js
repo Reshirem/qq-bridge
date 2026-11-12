@@ -1,6 +1,7 @@
 // The same schema handles old config files and partial WebUI updates. Writing the
 // normalized result drops retired controls without rewriting unrelated settings.
 const defaults = {
+  reminders: { private: true, atMention: true, reply: true, roleCardName: true, keyword: true, poke: true, unreadFollowup: true },
   send: { delayPerCharMs: 20 },
   feedback: { maxLength: 500 },
   sticker: { syncEnabled: true, syncTtlMs: 60000, maxListCount: 100 },

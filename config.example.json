@@ -71,6 +71,7 @@
   "socialV2": {
     "enabled": true,
     "attentionKeywords": [],
+    "reminders": { "private": true, "atMention": true, "reply": true, "roleCardName": true, "keyword": true, "poke": true, "unreadFollowup": true },
     "send": { "delayPerCharMs": 20 },
     "sticker": {
       "regularEnabled": true,
