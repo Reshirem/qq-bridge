@@ -47,6 +47,7 @@ export class NativeQQ extends EventEmitter {
     this.root = root;
     this.pipe = '\\\\.\\pipe\\qq-bridge-' + randomUUID();
     this.token = randomUUID();
+    this.imageRequests = new Map();
     this.health = { mode: 'native', connected: false, readerReady: false, hint: '等待桌面 QQ 登录' };
   }
   onPrivateMessage(fn) { this.on('private', fn); }
@@ -155,6 +156,12 @@ export class NativeQQ extends EventEmitter {
     }
     if (action === 'get_image') {
       if (!this.read) throw Error('QQ 媒体库尚未连接');
+      const {read, call, account} = this;
+      const checkConnection = () => {
+        if (this.closed || this.read !== read || this.call !== call || this.account !== account) {
+          throw Error('QQ 图片读取期间账号或连接已改变，请重新读取');
+        }
+      };
       const md5 = String(p.file ?? '').toLowerCase();
       const emojiId = String(p.emojiId ?? '').toLowerCase();
       const packageId = String(p.emojiPackageId ?? '');
@@ -162,8 +169,10 @@ export class NativeQQ extends EventEmitter {
       const marketFace = /^[a-f0-9]{16,64}$/.test(emojiId) && /^[1-9]\d{0,18}$/.test(packageId);
       if (!hasMd5 && !marketFace) return {file:null};
       const image = hasMd5 ? {type:'image', md5} : {type:'marketFace', emojiId, packageId};
-      let file = await this.read('media', image);
-      if (!file && hasMd5 && marketFace) file = await this.read('media', {type:'marketFace', emojiId, packageId});
+      let file = await read('media', image);
+      checkConnection();
+      if (!file && hasMd5 && marketFace) file = await read('media', {type:'marketFace', emojiId, packageId});
+      checkConnection();
       if (file) return {file};
       // Market faces use their local preview or the bridge's existing CDN fallback.
       if (!hasMd5) return {file:null};
@@ -174,13 +183,16 @@ export class NativeQQ extends EventEmitter {
       const match = /^(group|private):([1-9]\d{0,18})$/.exec(key);
       if (!match || !/^-?[1-9]\d{0,19}$/.test(messageId)) return {file:null};
       const peer = await this.peer(match[1], match[2]);
-      await this.call('fetch_message_image', {
+      checkConnection();
+      await call('fetch_message_image', {
         peer, messageId,
         md5,
       }, 30000);
       const deadline = Date.now() + 12000;
       do {
-        file = await this.read('media', image);
+        checkConnection();
+        file = await read('media', image);
+        checkConnection();
         if (file) return {file};
         await new Promise(resolve => setTimeout(resolve, 250));
       } while (!this.closed && this.read && Date.now() < deadline);
@@ -214,7 +226,18 @@ export class NativeQQ extends EventEmitter {
   getLoginInfo() { return this.raw('get_login_info'); }
   getGroupMemberList(id) { return this.raw('get_group_member_list',{group_id:id}); }
   async getGroupMemberInfo(group, user) { return (await this.getGroupMemberList(group)).find(r => r.user_id === String(user)); }
-  getImage(params) { return this.raw('get_image',params); }
+  getImage(params = {}) {
+    const key = JSON.stringify([this.account, String(params.file ?? '').toLowerCase(),
+      params.key, params.messageId, params.emojiId, params.emojiPackageId]);
+    const previous = this.imageRequests.get(key);
+    if (previous && previous.read === this.read && previous.call === this.call) return previous.promise;
+    const request = {read:this.read, call:this.call, promise:this.raw('get_image',params)};
+    this.imageRequests.set(key, request);
+    const clear = () => { if (this.imageRequests.get(key) === request) this.imageRequests.delete(key); };
+    // Prefetch and a simultaneous role read share one download; failures remain retryable.
+    void request.promise.then(clear, clear);
+    return request.promise;
+  }
   sendPrivateMessage(id, message) { return this.raw('send_private_msg',{user_id:id,message:[message].flat()}); }
   sendGroupMessage(id, message) { return this.raw('send_group_msg',{group_id:id,message:[message].flat()}); }
 }

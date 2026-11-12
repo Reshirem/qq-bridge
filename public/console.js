@@ -1264,6 +1264,7 @@ document.getElementById('desktopAgentMessage').addEventListener('keydown', event
 const qqSettingsForms = {
   qqReminderForm: { enabled: 'enabled', keywords: 'attentionKeywords' },
   qqConversationForm: { delayPerCharMs: 'send.delayPerCharMs' },
+  qqMediaForm: { prefetchOnReceive: 'media.prefetchOnReceive' },
   qqStickerForm: { regularEnabled: 'sticker.regularEnabled', syncEnabled: 'sticker.syncEnabled', collect: 'sticker.collect.enabled' },
   qqMarketStickerForm: { marketEnabled: 'sticker.marketEnabled' },
   qqFeedbackForm: { maxLength: 'feedback.maxLength' },

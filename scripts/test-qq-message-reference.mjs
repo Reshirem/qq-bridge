@@ -418,8 +418,12 @@ test('legacy pause becomes one reminder preference while both send paths accept 
   try {
     const config = (await call('/api/socialV2/config', { adminOnly: true })).data.config;
     assert.equal(config.enabled, false);
+    assert.equal(config.media.prefetchOnReceive, true, 'legacy configs default to receiving image prefetch');
     assert.equal('maxMessageChars' in config.send, false);
     assert.equal('context' in config, false);
+    const mediaConfig = await settings({media:{prefetchOnReceive:false}});
+    assert.equal(mediaConfig.data.config.media.prefetchOnReceive, false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(h.temp, 'config.json'), 'utf8')).socialV2.media.prefetchOnReceive, false);
     const text = '长'.repeat(600);
     assert.equal((await call('/api/send/group', { method: 'POST', body: { groupId: 456, message: text } })).status, 200);
     assert.equal((await call('/api/socialV2/send-message', { method: 'POST', body: { key: 'group:456', messages: text } })).status, 200);

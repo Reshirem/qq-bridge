@@ -37,7 +37,12 @@ export function qqChannelConfig(saved = {}, changes = {}) {
   const config = {
     ...settings({ enabled: true }, saved, changes),
     attentionKeywords: [...names.values()],
-    media: { maxBytes: 8 * 1024 * 1024, maxPixels: 64000000, maxCount: 5, ...saved.media, ...changes.media },
+    media: {
+      maxBytes: 8 * 1024 * 1024, maxPixels: 64000000, maxCount: 5,
+      ...saved.media, ...changes.media,
+      prefetchOnReceive: [changes.media?.prefetchOnReceive, saved.media?.prefetchOnReceive, true]
+        .find(value => typeof value === 'boolean'),
+    },
   };
   if (saved.tools || changes.tools) config.tools = { ...saved.tools, ...changes.tools };
   for (const [key, schema] of Object.entries(defaults)) {

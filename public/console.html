@@ -527,6 +527,14 @@
     <button class="primary">保存对话设置</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
+<section data-page="qq-settings" hidden class="card">
+  <h2>图片缓存</h2>
+  <form id="qqMediaForm"><fieldset disabled>
+    <label class="memory-toggle"><input type="checkbox" name="prefetchOnReceive"> 收到消息时预取 QQ 图片</label>
+    <p class="meta">独立方案默认在收到新图片消息后后台检查并补齐 QQ 缓存。关闭后，角色实际读取图片时才检查；缺失的图片仍会请求 QQ 下载并返回。预取不会把图片内容自动发给角色。</p>
+    <button class="primary">保存图片设置</button> <span class="meta" role="status"></span>
+  </fieldset></form>
+</section>
 <section id="section-whitelist" data-page="access" hidden class="card span-all">
       <h2>关系对象 QQ</h2>
       <label for="ownerQQ">QQ 号（ownerQQ）</label>

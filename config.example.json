@@ -88,6 +88,7 @@
       "maxLength": 500
     },
     "media": {
+      "prefetchOnReceive": true,
       "maxBytes": 8388608,
       "maxPixels": 64000000,
       "maxCount": 5,

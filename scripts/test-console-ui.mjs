@@ -36,7 +36,7 @@ try {
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
   page.on('pageerror', error => errors.push(error.message));
-  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} (${message.location().url})`); });
   page.on('dialog', dialog => dialog.accept());
   async function openPage(view) {
     const tab = page.locator('.section-tabs [data-view="' + view + '"]');
@@ -176,6 +176,22 @@ try {
   await page.waitForFunction(() => document.querySelector('#qqConversationForm [role=status]').textContent === '已保存');
   assert.equal(fixture.state.v2.send.delayPerCharMs, 25);
   assert.equal(fixture.state.v2.wait, undefined);
+  const imagePrefetch = page.locator('#qqMediaForm [name=prefetchOnReceive]');
+  assert.equal(await imagePrefetch.isChecked(), true, 'image cache prefetch defaults to on');
+  await imagePrefetch.uncheck();
+  await Promise.all([
+    page.waitForResponse(r => r.url().endsWith('/api/socialV2/config') && r.request().method() === 'POST'),
+    page.locator('#qqMediaForm button').click(),
+  ]);
+  await page.waitForFunction(() => document.querySelector('#qqMediaForm [role=status]').textContent === '已保存');
+  assert.equal(fixture.state.v2.media.prefetchOnReceive, false);
+  await imagePrefetch.check();
+  await Promise.all([
+    page.waitForResponse(r => r.url().endsWith('/api/socialV2/config') && r.request().method() === 'POST'),
+    page.locator('#qqMediaForm button').click(),
+  ]);
+  await page.waitForFunction(() => document.querySelector('#qqMediaForm [role=status]').textContent === '已保存');
+  assert.equal(fixture.state.v2.media.prefetchOnReceive, true);
   await page.locator('#qqReminderForm input[name=enabled]').uncheck();
   await page.locator('#qqReminderForm button').click();
   await page.waitForFunction(() => document.querySelector('#qqReminderForm [role=status]').textContent === '已保存');

@@ -174,6 +174,9 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       }
       if (method === 'GET') {
         switch (path) {
+          case '/api/learning/market-packs/availability':
+            return json({ok:true, native:state.qqBackend === 'native'
+              ? {available:state.marketPack.items.length, total:state.marketPack.items.length} : null});
           case '/api/learning/market-packs': {
             const pack = state.marketPack, q = url.searchParams.get('query');
             const match = q ? pack.name.includes(q) || pack.id === q : pack.installed;

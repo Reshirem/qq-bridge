@@ -20,6 +20,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import { NativeQQ } from '../src/native-qq.js';
+import { qqChannelConfig } from '../src/qq-channel-config.js';
 import startNativeRuntime from './ntqq-probe/runtime.cjs';
 import {
   bingSearch,
@@ -102,6 +103,138 @@ await test('extractMediaFromSegments 保留表情包字段（image / mface / fac
   } finally { await h.close(); }
 });
 
+await test('原生 QQ 收到图片时默认后台预取，关闭后按需读取仍会补齐缓存', async () => {
+  assert.equal(qqChannelConfig({}).media.prefetchOnReceive, true);
+  assert.equal(qqChannelConfig({}, {media:{prefetchOnReceive:false}}).media.prefetchOnReceive, false);
+  assert.equal(qqChannelConfig({media:{prefetchOnReceive:false}}, {send:{delayPerCharMs:25}}).media.prefetchOnReceive, false);
+  assert.equal(qqChannelConfig({media:{prefetchOnReceive:false}}, {media:{prefetchOnReceive:'true'}}).media.prefetchOnReceive, false);
+  const digest = crypto.createHash('md5').update(PNG).digest('hex');
+  const event = {
+    self_id:'42', group_id:456, user_id:123, message_id:'910000000000000001',
+    sender:{user_id:123,nickname:'fixture'},
+    message:[
+      {type:'text',data:{text:'图片缓存测试'}},
+      {type:'image',data:{file:digest,sub_type:0}},
+    ],
+  };
+  const startNative = h => {
+    h.bot.account = '42';
+    h.bot.health = {connected:true};
+    h.bot.read = async () => [];
+    h.bot.emit('open');
+  };
+
+  const eager = await bridgeHarness({config:{qqBackend:'native'}});
+  try {
+    startNative(eager);
+    let releaseDownload;
+    const pendingDownload = new Promise(resolve => { releaseDownload = resolve; });
+    const requests = [];
+    eager.bot.getImage = params => { requests.push(params); return pendingDownload; };
+    await eager.handleIncomingForTest('group',456,event);
+    assert.equal(requests.length,1, 'message receive returns while the cache download is still pending');
+    assert.equal(requests[0].key,'group:456');
+    assert.equal(requests[0].messageId,event.message_id);
+    await eager.handleIncomingForTest('group',456,event);
+    assert.equal(requests.length,1, 'duplicate events share the running cache check');
+    assert.equal(eager.calls.prompts.length,0, 'prefetch does not start a model turn');
+    releaseDownload({base64:PNG.toString('base64')});
+    await new Promise(resolve => setTimeout(resolve,0));
+  } finally { await eager.close(); }
+
+  const lazy = await bridgeHarness({config:{qqBackend:'native',socialV2:{media:{prefetchOnReceive:false}}}});
+  try {
+    startNative(lazy);
+    const requests = [];
+    lazy.bot.getImage = async params => { requests.push(params); return {base64:PNG.toString('base64')}; };
+    await lazy.handleIncomingForTest('group',456,event);
+    assert.equal(requests.length,0, 'disabled mode does not fetch on message receive');
+    const image = await lazy.fetchOneBotImage({kind:'image',file:digest},{key:'group:456',messageId:event.message_id});
+    assert.deepEqual(image.buffer,PNG);
+    assert.equal(requests.length,1, 'an explicit image read still checks and fills the cache');
+    assert.equal(requests[0].key,'group:456');
+    assert.equal(requests[0].messageId,event.message_id);
+  } finally { await lazy.close(); }
+});
+
+await test('预取有并发和每条上限，关闭立即丢弃排队任务，重新开启无需重启', async () => {
+  const h = await bridgeHarness({config:{qqBackend:'native',socialV2:{media:{maxCount:3}}}});
+  let server;
+  const requests = [], releases = [];
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const incoming = (id, count = 1, extras = {}) => h.handleIncomingForTest('group',456,{
+    self_id:'42', group_id:456, user_id:123, message_id:String(id), ...extras,
+    message:Array.from({length:count}, (_, n) => ({type:'image',data:{file:(n + 1).toString(16).padStart(32,'0')}})),
+  });
+  try {
+    h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.read = async () => [];
+    h.bot.emit('open');
+    h.bot.getImage = params => { requests.push(params); return new Promise(resolve => releases.push(resolve)); };
+    server = h.startConsoleServer();
+    if (!server.listening) await new Promise(resolve => server.once('listening',resolve));
+    const setEnabled = async enabled => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/socialV2/config`, {
+        method:'POST', headers:{'content-type':'application/json','x-console-token':'fixture-console-token'},
+        body:JSON.stringify({media:{prefetchOnReceive:enabled}}),
+      });
+      assert.equal(response.status,200);
+      assert.equal((await response.json()).config.media.prefetchOnReceive,enabled);
+    };
+    await incoming(1,5);
+    assert.equal(requests.length,2,'at most two concurrent cache checks');
+    releases.shift()({file:'cached'}); await settle();
+    assert.equal(requests.length,3);
+    while (releases.length) releases.shift()({file:'cached'});
+    await settle();
+    assert.equal(requests.length,3,'the remaining pictures beyond the per-message limit stay on demand');
+    await incoming(2,3);
+    assert.equal(requests.length,5);
+    await setEnabled(false);
+    while (releases.length) releases.shift()({file:'cached'});
+    await settle();
+    await incoming(3);
+    assert.equal(requests.length,5,'disabled setting removes queued work and skips later messages');
+    await setEnabled(true);
+    await incoming(4,1,{replay:true});
+    await incoming(5,1,{self_id:'43'});
+    assert.equal(requests.length,5,'replayed messages and another account cannot trigger prefetch');
+    await incoming(6,3);
+    assert.equal(requests.length,7,'the setting takes effect on the next message');
+    h.bot.emit('close');
+    h.bot.account = '43'; h.bot.emit('open');
+    while (releases.length) releases.shift()({file:'cached'});
+    await settle();
+    assert.equal(requests.length,7,'queued images are discarded on disconnect/account change');
+  } finally {
+    h.bot.emit('close');
+    while (releases.length) releases.shift()({file:'cached'});
+    await settle();
+    if (server?.listening) await new Promise(resolve => server.close(resolve));
+    await h.close();
+  }
+});
+
+await test('预取等待账号缓存读取器就绪，队列有界且单图失败不会阻塞后续任务', async () => {
+  const h = await bridgeHarness({config:{qqBackend:'native'}});
+  let requests = 0;
+  try {
+    h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open');
+    h.bot.getImage = async () => { if (++requests === 1) throw Error('cache miss fixture'); return {file:'cached'}; };
+    for (let id = 1; id <= 105; id++) {
+      await h.handleIncomingForTest('group',456, {
+        self_id:'42', user_id:123, message_id:String(id),
+        message:[{type:'image',data:{file:'c'.repeat(32)}}],
+      });
+    }
+    assert.equal(requests,0,'cache reader startup must not turn incoming images into failed jobs');
+    h.bot.read = async () => ({events:[],next:null});
+    h.bot.emit('reader-ready');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests,100,'the queue stays bounded and keeps draining after a failed image');
+    assert.equal(h.calls.prompts.length,0);
+  } finally { h.bot.emit('close'); await h.close(); }
+});
+
 await test('原生图片读取带上原消息定位，只读取当前账号的 QQ 缓存', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-image-path-'));
   const digest = crypto.createHash('md5').update(PNG).digest('hex');
@@ -155,6 +288,50 @@ await test('NativeQQ 缓存未命中时按原消息请求 QQ 下载并重新读�
     });
     assert.equal(calls[0][2], 30000, '下载 RPC 使用独立的媒体超时');
     assert.equal(reads.length, 3, '请求接受后继续等待有效缓存，不能提前返回成功');
+  } finally { bot.close(); }
+});
+
+await test('NativeQQ 预取与角色看同一张图共用下载，失败后仍可重试', async () => {
+  const bot = new NativeQQ(ROOT);
+  const params = {file:'a'.repeat(32),key:'group:456',messageId:'123'};
+  let attempts = 0, release, cache = null;
+  bot.read = async () => cache;
+  bot.call = async () => { attempts++; await new Promise(resolve => { release = resolve; }); cache = 'cached.png'; };
+  try {
+    const prefetch = bot.getImage(params), requested = bot.getImage(params);
+    assert.equal(prefetch,requested);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(attempts,1);
+    release();
+    assert.deepEqual(await requested,{file:'cached.png'});
+    assert.deepEqual(await bot.getImage(params),{file:'cached.png'});
+    assert.equal(attempts,1,'a completed cache hit never downloads again');
+    cache = null;
+    bot.call = async () => { throw Error('download failed'); };
+    await assert.rejects(bot.getImage(params), /download failed/);
+    cache = 'cached-after-retry.png';
+    assert.deepEqual(await bot.getImage(params),{file:cache});
+    assert.equal(bot.imageRequests.size,0);
+  } finally { bot.close(); }
+});
+
+await test('NativeQQ 图片读取遇到账号切换不继续下载或返回旧账号结果', async () => {
+  const bot = new NativeQQ(ROOT);
+  let release, downloads = 0;
+  const params = {file:'b'.repeat(32),key:'group:456',messageId:'123'};
+  bot.account = '42';
+  bot.read = () => new Promise(resolve => { release = resolve; });
+  bot.call = async () => { downloads++; };
+  try {
+    const pending = bot.getImage(params);
+    bot.account = '43';
+    release('old-account.png');
+    await assert.rejects(pending, /账号或连接已改变/);
+    assert.equal(downloads,0);
+    bot.read = async () => null;
+    bot.call = async () => { downloads++; bot.account = '44'; };
+    await assert.rejects(bot.getImage(params), /账号或连接已改变/);
+    assert.equal(downloads,1,'a submitted download is never resumed against a different account');
   } finally { bot.close(); }
 });
 

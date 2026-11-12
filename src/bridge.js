@@ -1221,6 +1221,11 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+  const incomingImagePrefetchQueue = [];
+  const incomingImagePrefetchJobs = new Map();
+  let incomingImagePrefetchActive = 0;
+  const INCOMING_IMAGE_PREFETCH_CONCURRENCY = 2;
+  const INCOMING_IMAGE_PREFETCH_QUEUE_LIMIT = 100;
   if (!['native', 'snowluma'].includes(cfg.qqBackend)) throw Error('qqBackend 只支持 native 或 snowluma');
   const native = cfg.qqBackend === 'native';
   const {SnowLumaWebSocketClient, text} = native
@@ -4881,6 +4886,7 @@ async function main() {
           const wasEnabled = cfg.socialV2.enabled;
           if (native && next.enabled && !wasEnabled) expireNativeReminders();
           cfg.socialV2 = next;
+          if (!next.media.prefetchOnReceive) clearIncomingImagePrefetchQueue();
           if (legacyPauseNeedsSave) {
             legacyPauseNeedsSave = false;
             replaceQQBuffer();
@@ -6424,6 +6430,48 @@ async function main() {
     return null;
   }
 
+  function clearIncomingImagePrefetchQueue() {
+    for (const job of incomingImagePrefetchQueue) incomingImagePrefetchJobs.delete(job.id);
+    incomingImagePrefetchQueue.length = 0;
+  }
+
+  function drainIncomingImagePrefetchQueue() {
+    if (!cfg.socialV2.media.prefetchOnReceive) return clearIncomingImagePrefetchQueue();
+    // Incoming callbacks may arrive before the account's cache reader is ready.
+    while (bot.health?.connected && bot.read && incomingImagePrefetchActive < INCOMING_IMAGE_PREFETCH_CONCURRENCY
+      && incomingImagePrefetchQueue.length) {
+      const job = incomingImagePrefetchQueue.shift();
+      if (job.account !== bot.account) { incomingImagePrefetchJobs.delete(job.id); continue; }
+      incomingImagePrefetchActive++;
+      // Only fill QQ's own cache. No CDN fetch, image normalization or model input here.
+      void bot.getImage(job.params)
+        .catch(error => log(`QQ 图片后台预取失败：${error?.message ?? error}`))
+        .finally(() => {
+          incomingImagePrefetchJobs.delete(job.id);
+          incomingImagePrefetchActive--;
+          drainIncomingImagePrefetchQueue();
+        });
+    }
+  }
+
+  function prefetchIncomingImages(key, messageId, mediaList) {
+    if (!native || !cfg.socialV2.media.prefetchOnReceive || !messageId) return;
+    let count = 0;
+    for (const media of Array.isArray(mediaList) ? mediaList : []) {
+      if (count >= MAX_MEDIA_COUNT) break;
+      if (!['image', 'sticker'].includes(media?.kind) || !/^[a-f0-9]{32}$/i.test(String(media.file ?? ''))) continue;
+      count++;
+      const file = media.file.toLowerCase();
+      const id = JSON.stringify([bot.account, key, messageId, file]);
+      if (incomingImagePrefetchJobs.has(id)) continue;
+      if (incomingImagePrefetchJobs.size >= INCOMING_IMAGE_PREFETCH_QUEUE_LIMIT) break;
+      const job = { id, account:bot.account, params:{file, key, messageId} };
+      incomingImagePrefetchJobs.set(id, job);
+      incomingImagePrefetchQueue.push(job);
+    }
+    drainIncomingImagePrefetchQueue();
+  }
+
   async function fetchFaceMedia(media) {
     const faceId = Number(media.faceId);
     // 系统小表情（face 段）：只有数字 id 才有对应实体；拿不到时至少保留 summary 文案。
@@ -7678,6 +7726,7 @@ async function main() {
   closeQQUnreadStore = () => unreadStore?.close();
   function bindNativeReminders(account) {
     if (reminderAccount === account) return;
+    clearIncomingImagePrefetchQueue();
     if (reminderAccount) clearQueuedQQAttention({keepNativeReminders:true});
     nativeMinTime = 0;
     unreadStore?.close();
@@ -8392,6 +8441,7 @@ async function main() {
       if (!messageId || unreadStore.seen(key,messageId)) return;
       const sender = String(event.sender?.card || event.sender?.nickname || senderId);
       if (!event.replay) {
+        prefetchIncomingImages(key, messageId, mediaList);
         chatLearning?.enqueue(key, {messageId, plain:plainContent, media:mediaList, userId:senderId,
           isOwner, nativeAccount:reminderAccount}, cfg.chatLearning);
       }
@@ -8699,12 +8749,13 @@ async function main() {
       });
     }
     bot.on('reader-ready', recoverCoverage);
+    bot.on('reader-ready', drainIncomingImagePrefetchQueue);
     bot.on('open', () => {
       bindNativeReminders(bot.account);
       selfUserId = bot.account;
       log('已连接 QQ 独立通道');
     });
-    bot.on('close', () => { clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; stickerEntries = []; log('QQ 独立通道已断开，等待重连'); });
+    bot.on('close', () => { clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; stickerEntries = []; log('QQ 独立通道已断开，等待重连'); });
     process.once('exit', () => bot.close());
   } else {
     registerSnowLumaEvents();
