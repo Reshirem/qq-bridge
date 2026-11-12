@@ -41,6 +41,7 @@ QQ 接入方案由启动配置 `qqBackend` 二选一。独立模式持有桌面 
 - `ownerQQ` 首次由 WebUI 保存或清除后，本地值优先于 DSH 同名设置；此前的旧安装继续兼容 DSH 设置。账号改变时，缓存消息的身份标记按当前账号计算；QQ 工具访问范围不受该设置影响。
 - 私聊、真正发给机器人的原生 @、已验证的回复/引用、群消息中提到当前选中的人格卡名称、配置的 `socialV2.attentionKeywords` 命中，以及他人对当前账号的 QQ 戳一戳事件，会向同一全局会话发送元数据提醒。`socialV2.reminders` 分别控制 `private`、`atMention`、`reply`、`roleCardName`、`keyword`、`poke`，默认全开，且受 `socialV2.enabled` 总开关控制。消息可以匹配多个条件，只要还有已开启条件就能提醒。会话活动时通过 DSH 的 `steer` 送到当前回合的下一步，休息时提前唤醒；提醒不含正文，数字角色可自行决定如何参与。
 - 戳一戳识别使用结构化类型与参与者账号：SnowLuma 的 `notify/poke`，原生 QQ 的 JSON 灰条业务 `1061`。不使用可定制的动作文字或后缀；主会话提示与按需历史明确标为「QQ 戳一戳事件」。原生断线补查保留系统发送者的灰条记录，再按原消息 ID 向 QQ 查询结构化事件；提醒库仍只保存定位与进度。
+- 主动戳一戳沿用 `qq_send_poke` → `/api/socialV2/send-poke`。独立通道把 `group_poke` / `send_poke` 映射为 QQ 消息服务 `sendNudge(peer, targetUin, aioUin)`；群聊 peer 使用群号，私聊先解析 NT UID，两个 UIN 参数以十进制字符串传递。发送前核验群成员或私聊目标一致性，成员查询及 UID 解析期间账号/凭证/连接切换会取消发送。仅 QQ 返回 `result: 0` 才确认原生调用成功，失败或超时不重发。主动发送与接收提醒开关独立；实发验证边界见 [NTQQ_SEND.md](NTQQ_SEND.md)。
 - 全局数字角色使用 `mcp-qq.js` 的 QQ 工具集，可访问账号中的群聊和私聊，不按提醒来源限制会话。项目工具守卫和桥接 API 仍校验当前 `desktop-agent` 会话与内部凭证；管理接口仅控制台可用，发送继续执行内容检查和审计。聊天隐私提示仍作为模型行为约定，而非会话访问隔离。直接通过 QQ 桌面 UI 发送不经过桥接 API 检查。
 - 可选 A_Memorix 记忆的写入、相关度检索、单条读取和删除由 `a-memorix-gateway.js` 统一接入；DSH 工具、首次会话摘要和 WebUI 的常规记忆操作访问同一 namespace。DSH 记忆工具只校验全局 agent token，不受 `agent_rest` 生命周期限制。为支持全量原始记录浏览，已登录的本机 WebUI 还可通过独立适配器只读分页查询该 namespace 的 metadata SQLite `paragraphs` 表；该读取仅供控制台使用，agent-call 白名单不开放此路由。桥接不直接写入 SQLite，也不读取向量库或图文件；调用参数中的记忆正文和搜索词不会进入工具参数日志。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - `dsh-computer-use-win` 提供本机桌面操作能力；数字角色可根据需要观察用户的电脑活动。插件支持部分后台操作和由用户通过 Esc 停止桌面操作；普通鼠标或键盘操作不会自动停止工具。ChatGPT、DSH、qq-bridge 和 SnowLuma 的 GUI 在无关任务期间保持受保护。详情见 [RULES.md](../../RULES.md)。
@@ -50,9 +51,10 @@ QQ 接入方案由启动配置 `qqBackend` 二选一。独立模式持有桌面 
 - 桥接运行期间，角色读到触发提醒的消息时，桥接会确认该条提醒。若它仍未读，会话进入休息后由单一全局计时器每分钟检查一次，最多补发一次。`socialV2.reminders.unreadFollowup`（默认开启）独立控制补提醒；关闭后清除补提醒定时器与排队补提醒，保留未读定位和新事件的首次提醒。
 - 异常回合退避时，新到的 QQ 提醒留在桥接队列，暂停未读补提醒。如果 DSH 已经开始新回合，桥接把等待的提醒提交给该回合的下一步。如果到重试时间会话仍空闲，恢复提示会带上排队的 QQ 提醒。桥接重启后重新订阅原主会话。会话事件流重连时，桥接从快照确认休息前的回合是否已经结束，随后继续处理排队的提醒。
 - 消息提醒与 QQ 工具使用 `id:` 和 `seq:` 区分 QQ 消息 ID 与本地序号；有歧义的纯数字会返回明确提示。缺少 QQ 消息 ID 时提醒中的本地序号会带缓存标识；清空 QQ 缓存时同步丢弃待处理提醒，并使之前的本地序号提醒失效，避免序号重新指向新消息。
-- 回合没有调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟尝试恢复，之后间隔最长 30 分钟。WebUI 停止会取消当前和排队中的 DSH 工作并持久进入 `stopped`；只有 WebUI 手动启动或提交任务才解除停止态。
+- 回合以 `completed` 正常结束却未调用 `agent_rest` 时，桥接首次立即发送 `desktopAgent.promptTemplates.missingRest` 收尾提醒，由角色自行选择休息时间并调用工具。连续遗漏时保留 `missing-rest` 待发原因，按 1、2、4、8、16 分钟递增补发，之后间隔最长 30 分钟；WebUI 显示“等待收尾”，不混同连接故障。中断或运行失败仍使用异常恢复提示。仅工具实际调用才进入休息。WebUI 停止会取消当前和排队中的 DSH 工作并持久进入 `stopped`；只有 WebUI 手动启动或提交任务才解除停止态。
+- 提示提交期间到达的回合结束事件，在回执确认后统一处理；较晚的提交回执不能覆盖事件流已经确认的结束状态，避免快速回合漏发后续提醒。
 - QQ 等待工具及其静默判断已移除。模型自行决定下一步，新的 QQ 事件沿用提醒规则。
-- `state/desktop-agent.json` 保存桥接管理的全局会话 ID、令牌和生命周期。DSH 负责保留会话历史；桥接仅管理当前配置指向的全局会话。
+- `state/desktop-agent.json` 保存桥接管理的全局会话 ID、令牌和生命周期。`restReminderSent` 记录本活动周期是否已经安排首次收尾提醒，重启保留，进入休息或手动恢复时清除；旧状态缺少该字段时按 false 处理。事件流快照确认旧版恢复等待对应的是正常结束回合后，会改发一次明确的收尾提醒，不重建会话。旧提示模板配置缺少 `missingRest` 时自动补默认文本，已有自定义模板保留。DSH 负责保留会话历史；桥接仅管理当前配置指向的全局会话。
 - Windows 上已有独立的 [NTQQ 历史只读实验](NTQQ_HISTORY.md)，用 SQLCipher 和 Windows 只读 VFS 直接查询登录账号的原库与 WAL，通过 Windows DPAPI 复用已核验的账号密钥。运行中的桥接仍通过 SnowLuma 接收事件、查询历史和发送消息。
 
 当前权限约定见 [RULES.md](../../RULES.md)，安装过程见 [DSH_SETUP.md](DSH_SETUP.md)。长期记忆目标与实施边界见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。

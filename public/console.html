@@ -227,6 +227,10 @@
           <textarea id="runtimePromptRecovery" class="runtime-prompt-template" rows="3" spellcheck="false"></textarea>
           <div class="meta">休息到期、QQ 打断和异常恢复提示都可以留空。</div>
 
+          <label for="runtimePromptMissingRest">遗漏休息工具时的收尾提醒</label>
+          <textarea id="runtimePromptMissingRest" class="runtime-prompt-template" rows="3" spellcheck="false"></textarea>
+          <div class="meta">回合正常结束却未调用 agent_rest 时发送。首次立即提醒，连续遗漏时延长间隔；由角色自行选择休息时间。</div>
+
           <label for="runtimePromptMemoryBootstrap">长期记忆开场摘要模板</label>
           <textarea id="runtimePromptMemoryBootstrap" class="runtime-prompt-template" rows="3" spellcheck="false"></textarea>
           <div class="meta">占位符：{entries} 已检索到的自身经历摘要（必须保留）。</div>

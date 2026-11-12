@@ -12,6 +12,8 @@
 
 独立 QQ 通道沿用相同的桥接鉴权、来源检查和出站审计。桥接与 QQ 使用每次启动新建的本机命名管道和随机握手凭证。数据库连接只读，原生 64 位消息 ID 以字符串传递。选择 SnowLuma 时独立组件不会启动。[QQ 接入方案](NTQQ_ATTENTION.md)
 
+主动戳一戳沿用 agent token 与全局会话校验。群聊目标须通过本群成员查询，私聊显式目标须等于当前私聊对象；号码转为 Number 前拒绝超出安全整数范围的输入。成员查询前捕获发送保护，查询后重验 QQ 账号和全局凭证；独立通道在 UID 解析后重验账号与连接，QQ 运行时再核对登录账号、会话和号码格式。原生 `sendNudge` 的失败、缺失回执和不支持均不得返回成功，断线或超时不自动重发。接收戳一戳提醒的开关不限制主动发送。
+
 ## 一、威胁模型（我们要防谁、防什么）
 
 | 威胁主体 | 能力假设 | 我们不防的 |
@@ -96,6 +98,7 @@
 | QQ 持久睡眠 | `handleIncoming()`、`sleepDesktopAgent()` | 只有配置账号的私聊纯文本命令可进入或结束；进入时保存 `sleeping`、清除待处理提醒并尝试取消 DSH 工作，消息继续缓冲但不生成提醒。桥接重启和 DSH 重连后保持睡眠；恢复后不补发睡眠期间的提醒。DSH 外部直接发起的回合在事件到达后请求取消，并非 DSH 层的入口拦截。 |
 | WebUI 长期记忆设置 | `/api/memory/settings`、`/api/memory/providers`、`/api/memory/service` | 仅控制台令牌可配置或启停本机服务；状态接口只返回密钥是否已设置，不回显密钥。Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径；Provider 保存后重启 A_Memorix。 |
 | 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token；调用会保存定时休息状态，并在返回工具结果后取消当前 DSH turn。该状态不限制后续工具调用；休息到期只发起一次恢复回合。 |
+| 漏调用休息工具 | DSH `turn/end` 与会话快照 | 正常完成但未调用工具时，桥接只向原主会话发收尾提醒，不自动进入休息。首次立即提醒，连续遗漏指数退避；持久停止、睡眠及休息时不发此提醒。模板沿用已认证控制台的配置接口，发送沿用现有会话与生命周期校验。 |
 | 记忆工具 | `/api/desktop-agent/memory/*` | 校验全局 agent token，并固定访问 `config.json` 中的 A_Memorix namespace，不受 `agent_rest` 生命周期限制。参数正文与检索词不写入工具参数日志。 |
 | 记忆管理 | `/api/memory/*` | 受控制台令牌保护；用于 WebUI 搜索、查看、保存、替代和删除。A_Memorix namespace API key 留在桥接本地配置，不返回给页面或 DSH。 |
 | 记忆全量浏览 | `POST /api/memory/records/list` | 受控制台令牌与 JSON/Origin 校验保护；带 `x-agent-token` 时因默认拒绝白名单而返回 403。仅读取配置 namespace 的 `paragraphs` 表，校验 storage key 路径与必需列，使用 SQLite `mode=ro` + `query_only` 和参数化查询；不读向量/图存储，不写数据库。 |

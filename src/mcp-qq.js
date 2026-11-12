@@ -483,10 +483,10 @@ server.tool(
 if (cfg.socialV2?.tools?.sendPoke !== false) {
   server.tool(
     'qq_send_poke',
-    '发送 QQ 拍一拍（群聊/私聊）。适合自然回应别人的拍一拍或偶尔提醒正在聊的人，但别频繁。群聊必须传 targetUserId（要拍的群友 QQ 号，可从 qq_get_active_members / qq_get_message_detail 的 userId 获取）；私聊可不传 targetUserId（默认拍当前私聊对象）。',
+    '使用 QQ「戳一戳」功能（群聊/私聊），可自然回应对方或偶尔提醒正在聊的人，避免频繁使用。功能名称不代表实际动作文案。群聊必须传 targetUserId（目标群友 QQ 号，可从 qq_get_active_members / qq_get_message_detail 的 userId 获取）；私聊默认对当前私聊对象使用，若传 targetUserId 则必须与私聊对象一致。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-      targetUserId: z.union([z.number(), z.string()]).optional().describe('要拍的群友 QQ 号（群聊必填；私聊可选）')
+      targetUserId: z.union([z.number(), z.string()]).optional().describe('目标 QQ 号（群聊必填；私聊可省略或填当前私聊对象）')
     },
     async ({ key, targetUserId }) => {
       try {
@@ -497,7 +497,7 @@ if (cfg.socialV2?.tools?.sendPoke !== false) {
         });
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
-        return { content: [{ type: 'text', text: `拍一拍失败：${error?.message ?? error}` }], isError: true };
+        return { content: [{ type: 'text', text: `戳一戳失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );

@@ -1800,6 +1800,7 @@ async function main() {
   if (desktopAgentRestNeedsClamp) desktopAgentRestUntil = Date.now() + DESKTOP_AGENT_REST_MAX_MS;
   let desktopAgentRecoveryAttempt = Math.max(0, Math.floor(Number(desktopAgentSavedState.recoveryAttempt) || 0));
   let desktopAgentRecoveryAt = Number(desktopAgentSavedState.recoveryAt) || 0;
+  let desktopAgentRestReminderSent = desktopAgentSavedState.restReminderSent === true;
   let desktopAgentPendingWakeReason = String(desktopAgentSavedState.pendingWakeReason ?? '');
   let desktopAgentManualPromptPending = Math.max(0, Math.floor(Number(desktopAgentSavedState.manualPromptPending) || 0));
   let desktopAgentLifecycleEpoch = 0;
@@ -1807,6 +1808,7 @@ async function main() {
   let desktopAgentSessionPromise = null;
   let desktopAgentResetting = false;
   let desktopAgentTurnActive = false;
+  let desktopAgentLastTurnBoundary = null;
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
   let memoryOrganizerWorkerPromise = null;
@@ -1885,6 +1887,7 @@ async function main() {
       restUntil: desktopAgentRestUntil || 0,
       recoveryAttempt: desktopAgentRecoveryAttempt,
       recoveryAt: desktopAgentRecoveryAt || 0,
+      restReminderSent: desktopAgentRestReminderSent,
       pendingWakeReason: desktopAgentPendingWakeReason || '',
       manualPromptPending: desktopAgentManualPromptPending,
       initialContextSessionId: desktopAgentInitialContextSessionId || '',
@@ -5312,7 +5315,7 @@ async function main() {
           const key = String(body.key ?? '').trim();
           const targetUserId = String(body.targetUserId ?? body.userId ?? '').trim();
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
-                    if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: '自主会话发送拍一拍必须携带 agent token' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: '自主会话发送戳一戳必须携带 agent token' }, 403); return; }
           if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (!v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
@@ -5324,40 +5327,48 @@ async function main() {
             return;
           }
           if (kind === 'group' && !targetUserId) {
-            sendJson({ ok: false, error: '群聊拍一拍必须指定 targetUserId（要拍的群友 QQ 号）' }, 400);
+            sendJson({ ok: false, error: '群聊戳一戳必须指定 targetUserId（目标群友 QQ 号）' }, 400);
+            return;
+          }
+          if (!Number.isSafeInteger(id) || (targetUserId && !Number.isSafeInteger(Number(targetUserId)))) {
+            sendJson({ ok: false, error: 'QQ 号或群号超出可精确表示的整数范围' }, 400);
             return;
           }
           if (targetUserId && !/^[1-9]\d*$/.test(targetUserId)) {
             sendJson({ ok: false, error: 'targetUserId 必须是正整数 QQ 号' }, 400);
             return;
           }
-          // 群聊必须确认目标确实是本群成员（私聊天然只有双方，无需校验）。
+          if (kind === 'private' && targetUserId && targetUserId !== keyMatch[2]) {
+            sendJson({ ok: false, error: '私聊戳一戳的 targetUserId 必须与当前私聊对象一致' }, 400);
+            return;
+          }
+          // 群聊必须确认目标确实是本群成员；私聊只操作当前对象。
+          const sendGuard = captureSendGuard(key);
           if (kind === 'group') {
             const memberError = await assertGroupMember(id, targetUserId);
             if (memberError) { sendJson({ ok: false, error: memberError }, 403); return; }
           }
           const st = getSocialV2State(key);
           const now = Date.now();
-          // 成员校验是异步的（要问 OneBot）；发送前确认 QQ 目标和全局会话凭证没有切换。
-          const sendGuard = captureSendGuard(key);
+          // 成员校验是异步的；发送前确认 QQ 账号和全局会话凭证没有切换。
           try {
             sendGuard();
             if (kind === 'group') {
               await bot.raw('group_poke', { group_id: id, user_id: Number(targetUserId) });
             } else {
-              // 私聊拍一拍：send_poke 自动路由到当前私聊对象
+              // 私聊戳一戳：send_poke 路由到当前私聊对象。
               await bot.raw('send_poke', { user_id: id });
             }
             st.lastActionAt = now;
             st.lastAiReplyAt = now;
 
             saveSocialV2State(key);
-            log(`[autonomous] 工具拍一拍 ${key}${kind === 'group' ? ' -> ' + targetUserId : ''}`);
-            appendActivity(`${key} [autonomous] 工具拍一拍${kind === 'group' ? ' -> ' + targetUserId : ''}`);
+            log(`[autonomous] 工具戳一戳 ${key}${kind === 'group' ? ' -> ' + targetUserId : ''}`);
+            appendActivity(`${key} [autonomous] 工具戳一戳${kind === 'group' ? ' -> ' + targetUserId : ''}`);
             sendJson({ ok: true, key, kind, targetUserId: targetUserId || String(id) });
           } catch (error) {
-            log(`[autonomous] 工具拍一拍失败 ${key}:`, error?.message ?? error);
-            sendJson({ ok: false, error: `拍一拍失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
+            log(`[autonomous] 工具戳一戳失败 ${key}:`, error?.message ?? error);
+            sendJson({ ok: false, error: `戳一戳失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
           }
           return;
         }
@@ -6826,6 +6837,7 @@ async function main() {
       if (!sessionId) throw new Error('DSH 创建 desktop-agent session 未返回 sessionId');
 
       desktopAgentSessionId = sessionId;
+      desktopAgentRestReminderSent = false;
       saveDesktopAgentState();
       api.events.follow(sessionId);
       await ensureChatModel(sessionId);
@@ -7198,6 +7210,7 @@ async function main() {
   }
 
   function resumeDesktopAgentLifecycle(reason = 'manual WebUI task') {
+    desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
@@ -7231,6 +7244,7 @@ async function main() {
   }
 
   function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_MAX_MS) {
+    desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
@@ -7312,6 +7326,36 @@ async function main() {
     log('全局数字角色休息结束，准备发起一轮恢复');
   }
 
+  function finishDesktopAgentTurn(event) {
+    if (desktopAgentLifecycle !== 'active' || desktopAgentManualPromptPending > 0) return;
+    if (['rest-expired', 'sleep-ended', 'missing-rest', 'qq-attention'].includes(desktopAgentPendingWakeReason)
+      || desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(0);
+    else if (event.data?.reason?.kind === 'completed') remindDesktopAgentToRest();
+    else scheduleDesktopAgentRecovery('turn interrupted before agent_rest');
+  }
+
+  function remindDesktopAgentToRest() {
+    if (!['active', 'recovering'].includes(desktopAgentLifecycle) || desktopAgentManualPromptPending > 0) return;
+    // Coalesce duplicate completion events while this reminder is being sent.
+    if (desktopAgentPendingWakeReason === 'missing-rest') return;
+    desktopAgentPendingWakeReason = 'missing-rest';
+    if (desktopAgentRestReminderSent) {
+      scheduleDesktopAgentRecovery('agent_rest still missing after reminder');
+      return;
+    }
+    // One immediate reminder per activity cycle; the model still chooses when
+    // to rest. Persist the guard so reconnecting cannot create a prompt loop.
+    desktopAgentRestReminderSent = true;
+    clearDesktopAgentRecoveryTimer();
+    clearDesktopAttentionReminderTimer();
+    desktopAgentLifecycle = 'active';
+    desktopAgentRecoveryAt = 0;
+    desktopAgentRecoveryAttempt = 0;
+    saveDesktopAgentState();
+    log('全局数字角色正常结束但未调用 agent_rest，已排队发送收尾提醒');
+    scheduleDesktopAttentionFlush(0);
+  }
+
   function scheduleDesktopAgentRecovery(reason = 'turn ended without agent_rest') {
     if (desktopAgentLifecycle === 'stopped' || desktopAgentLifecycle === 'sleeping' || desktopAgentLifecycle === 'resting' || desktopAgentLifecycle === 'idle') return;
     if (desktopAgentRecoveryTimer) return;
@@ -7333,7 +7377,8 @@ async function main() {
     desktopAgentRecoveryAttempt += 1;
     desktopAgentRecoveryAt = Date.now() + delayMs;
     saveDesktopAgentState();
-    log(`全局数字角色未进入休息态（${reason}）；${Math.round(delayMs / 1000)} 秒后重试`);
+    const action = desktopAgentPendingWakeReason === 'missing-rest' ? '再次发送收尾提醒' : '尝试恢复';
+    log(`全局数字角色未进入休息态（${reason}）；${Math.round(delayMs / 1000)} 秒后${action}`);
     armDesktopAgentRecoveryTimer();
   }
 
@@ -7627,6 +7672,7 @@ async function main() {
     if (batch.length === 0 && (!wakeReason || desktopAgentTurnActive)) return;
     const epoch = desktopAgentLifecycleEpoch;
     const attentionGeneration = desktopAttentionGeneration;
+    let submittedTurnBoundary = desktopAgentLastTurnBoundary;
     const qqBatchExpired = () => (batch.length > 0 || wakeReason === 'qq-attention')
       && attentionGeneration !== desktopAttentionGeneration;
     for (const [key] of batch) desktopAttentionQueue.delete(key);
@@ -7636,7 +7682,7 @@ async function main() {
         if (qqBatchExpired()) return;
         const hadBatch = batch.length > 0;
         batch = batch.filter(([, item]) => reminderEnabled(item.reason, cfg.socialV2.reminders));
-        if (hadBatch && !batch.length) return;
+        if (hadBatch && !batch.length && (!wakeReason || wakeReason === 'qq-attention')) return;
         if (desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch) {
           requeueDesktopAttentionBatch(batch);
           return;
@@ -7670,6 +7716,7 @@ async function main() {
           'sleep-ended': '【睡眠结束】ownerQQ 已发送起床命令，你可以继续活动。',
           'qq-attention': cfg.desktopAgent.promptTemplates.qqWake,
           recovery: cfg.desktopAgent.promptTemplates.recovery,
+          'missing-rest': cfg.desktopAgent.promptTemplates.missingRest,
         };
         const wakeInstruction = turnWasActive ? '' : (wakeInstructionByReason[wakeReason] ?? '');
         // A persisted QQ wake can outlive its in-memory batch across a bridge
@@ -7683,6 +7730,7 @@ async function main() {
         ].filter(Boolean).join('\n');
         // DSH steer is admitted at the next step of an active turn and starts a
         // turn when idle, so QQ signals survive a race with turn startup.
+        submittedTurnBoundary = desktopAgentLastTurnBoundary;
         const accepted = await submitDesktopAgentPrompt(sessionId, prompt, { mode: batch.length ? 'steer' : 'queue' });
         if (!accepted?.result?.ok) {
           const error = accepted?.result?.error;
@@ -7700,11 +7748,14 @@ async function main() {
           if (desktopAgentSessionId !== sessionId) requeueDesktopAttentionBatch(batch, { accepted: true });
           return;
         }
-        desktopAgentTurnActive = true;
+        // A fast turn may finish before the RPC receipt. Stream events are
+        // newer evidence than this receipt and must retain their running state.
+        if (desktopAgentLastTurnBoundary === submittedTurnBoundary) desktopAgentTurnActive = true;
         if (wakeReason && (!turnWasActive || wakeReason === 'qq-attention')
           && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
         saveDesktopAgentState();
-        log(`全局数字角色会话已接收注意提醒（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
+        if (wakeReason === 'missing-rest') log(`全局数字角色会话已接收 agent_rest 收尾提醒（${sessionId}）`);
+        else log(`全局数字角色会话已接收注意提醒（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
         if (batch.length) appendActivity(`QQ 注意信号已提交给全局数字角色（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
         if (qqBatchExpired()) return;
@@ -7723,6 +7774,13 @@ async function main() {
     } finally {
       if (desktopAttentionFlushPromise === promise) {
         desktopAttentionFlushPromise = null;
+        // Also handle an ended turn when preparation discarded a QQ batch
+        // after its reminder switch was disabled.
+        if (epoch === desktopAgentLifecycleEpoch
+          && desktopAgentLastTurnBoundary !== submittedTurnBoundary
+          && desktopAgentLastTurnBoundary?.type === 'turn/end') {
+          finishDesktopAgentTurn(desktopAgentLastTurnBoundary);
+        }
         // New signals may arrive while the prior RPC is still in flight.
         if (desktopAttentionQueue.size > 0 || (qqBatchExpired() && desktopAgentPendingWakeReason)) {
           scheduleDesktopAttentionFlush();
@@ -7949,7 +8007,7 @@ async function main() {
       for (const k of keys) groupMemberNameCache.delete(k);
     }
   }
-  // 群成员集合缓存：用于「拍一拍目标必须是本群成员」的校验。
+  // 群成员集合缓存：用于「戳一戳目标必须是本群成员」的校验。
   // 不校验的话，群友只要让 AI 传一个任意 QQ 号，桥接就会向网关发 group_poke，
   // 等于把机器人账号变成任意 QQ 号的探测/骚扰工具（工具描述里承诺了白名单约束）。
   const groupMemberIdsCache = new Map(); // groupId -> { ids:Set<string>, ts }
@@ -7963,12 +8021,12 @@ async function main() {
       try {
         list = await bot.getGroupMemberList(Number(gid));
       } catch (error) {
-        // 失败即拒绝（fail-closed）：宁可拍不出去，也不要绕过校验。
+        // 成员查询失败时拒绝发送，不绕过校验。
         return `无法获取群 ${gid} 的成员列表：${error?.message ?? error}`;
       }
       const members = Array.isArray(list) ? list : (list?.data ?? []);
       const ids = new Set(members.map((m) => String(m?.user_id ?? '')).filter(Boolean));
-      if (!ids.size) return `群 ${gid} 的成员列表为空，无法校验拍一拍目标`;
+      if (!ids.size) return `群 ${gid} 的成员列表为空，无法校验戳一戳目标`;
       cached = { ids, ts: Date.now() };
       if (!native) groupMemberIdsCache.set(gid, cached);
       if (groupMemberIdsCache.size > 50) {
@@ -7977,7 +8035,7 @@ async function main() {
         }
       }
     }
-    return cached.ids.has(uid) ? null : `QQ ${uid} 不是群 ${gid} 的成员，已拒绝拍一拍`;
+    return cached.ids.has(uid) ? null : `QQ ${uid} 不是群 ${gid} 的成员，已拒绝戳一戳`;
   }
 
   async function resolveGroupMemberName(groupId, userId) {
@@ -8664,7 +8722,16 @@ async function main() {
                   resumeDesktopAgentRestForAttention();
                 }
               } else if (desktopAgentLifecycle === 'recovering' || (desktopAgentLifecycle === 'active' && desktopAgentTurnActive)) {
-                await reconcileDesktopAgentLifecycle();
+                const boundary = frame.snapshot?.records?.findLast(({ event }) =>
+                  event?.type === 'turn/start' || event?.type === 'turn/end');
+                if (!desktopAgentRestReminderSent && desktopAgentManualPromptPending === 0
+                  && (!desktopAgentPendingWakeReason || desktopAgentPendingWakeReason === 'recovery')
+                  && boundary?.event.type === 'turn/end' && boundary.event.data?.reason?.kind === 'completed') {
+                  // Older versions treated every missing agent_rest as failure.
+                  // A snapshot proves this turn completed, so send the specific cue.
+                  desktopAgentTurnActive = false;
+                  remindDesktopAgentToRest();
+                } else await reconcileDesktopAgentLifecycle();
               }
             }
             continue;
@@ -8674,6 +8741,7 @@ async function main() {
             const event = frame.event;
             recordSessionUsage(frame.sessionId, event);
             if (event?.type === 'turn/start') {
+              desktopAgentLastTurnBoundary = event;
               const turnWasAlreadyActive = desktopAgentTurnActive;
               desktopAgentTurnActive = true;
               const manualQueued = !turnWasAlreadyActive && desktopAgentManualPromptPending > 0 && desktopAgentLifecycle !== 'stopped' && desktopAgentLifecycle !== 'sleeping';
@@ -8759,17 +8827,12 @@ async function main() {
             }
 
             if (event?.type === 'turn/end') {
+              desktopAgentLastTurnBoundary = event;
               desktopAgentTurnActive = false;
               toolCallNames.delete(frame.sessionId);
               if (desktopAgentLifecycle === 'resting' && desktopAgentPendingWakeReason === 'qq-attention') {
                 resumeDesktopAgentRestForAttention();
-              } else if (desktopAgentLifecycle === 'active' && desktopAgentManualPromptPending === 0) {
-                if (desktopAgentPendingWakeReason === 'rest-expired'
-                  || desktopAgentPendingWakeReason === 'sleep-ended'
-                  || desktopAgentPendingWakeReason === 'qq-attention'
-                  || desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(0);
-                else scheduleDesktopAgentRecovery('turn ended without agent_rest');
-              }
+              } else if (!desktopAttentionFlushPromise) finishDesktopAgentTurn(event);
             }
             continue;
           }

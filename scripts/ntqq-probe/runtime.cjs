@@ -207,6 +207,20 @@ module.exports = function startChannel(receiver, endpoint) {
   async function perform(action, p) {
     if (String(globalThis.authData?.uin) !== account) throw Error('QQ 登录账号已切换');
     if (action === 'get_login_info') return {user_id: account, nickname: self.nickName || self.nickname || ''};
+    if (action === 'poke') {
+      const {peer, targetUin, aioUin} = p;
+      if (!peer || ![1, 2].includes(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid
+        || ![targetUin, aioUin].every(id => typeof id === 'string' && /^[1-9]\d{0,19}$/.test(id) && BigInt(id) <= 9223372036854775807n)
+        || (peer.chatType === 2 ? peer.peerUid !== aioUin : targetUin !== aioUin)) {
+        throw Error('QQ 戳一戳目标与会话不匹配');
+      }
+      if (typeof svc.sendNudge !== 'function') throw Error('当前 QQ 不支持原生戳一戳');
+      if (socket.destroyed) throw Error('QQ 连接已关闭，未发送戳一戳');
+      // QQ takes the native contact, target QQ number, and conversation QQ
+      // number. Both numbers are decimal strings in its N-API binding.
+      checked(await svc.sendNudge(peer, targetUin, aioUin));
+      return {accepted: true};
+    }
     if (action === 'market_pack_availability') {
       const resources = await marketResources(p.packId, p.faceIds);
       return {available: p.faceIds.filter(id => resources.has(id)).length, total: p.faceIds.length};

@@ -93,6 +93,38 @@ try {
   ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/console/desktop-agent' && request.body.message === '离线 UI 契约检查'));
 
+  let pendingWakeReason = 'missing-rest';
+  const recoveryStatus = route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({
+      ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
+      found: true, running: false, agentAvailable: true, lifecycle: 'recovering',
+      pendingWakeReason, recoveryAttempt: 2, recoveryAt: '2026-11-12T12:20:47.551Z',
+    }),
+  });
+  await page.route('**/api/console/desktop-agent', recoveryStatus);
+  await page.reload();
+  await page.locator('#desktopAgentStatus').filter({ hasText: '等待收尾提醒' }).waitFor();
+  assert.equal(await page.locator('#metricDesktopAgent').textContent(), '等待收尾');
+  assert.doesNotMatch(await page.locator('#desktopAgentStatus').getAttribute('class'), /\berr\b/);
+  assert.match(await page.locator('#metricDesktopAgentHint').textContent(), /由角色选择休息时间/);
+  pendingWakeReason = 'recovery';
+  await page.reload();
+  await page.locator('#desktopAgentStatus').filter({ hasText: '异常恢复等待' }).waitFor();
+  assert.equal(await page.locator('#metricDesktopAgent').textContent(), '等待恢复');
+  await page.unroute('**/api/console/desktop-agent', recoveryStatus);
+
+  await openPage('persona');
+  await page.locator('.runtime-prompt-templates > summary').click();
+  await page.waitForFunction(() => document.getElementById('runtimePromptMissingRest').value.includes('agent_rest'));
+  assert.equal(await page.locator('#runtimePromptMissingRest').inputValue(), fixture.state.runtimePromptTemplates.missingRest);
+  const missingRestTemplate = '【收尾提醒测试】请调用 agent_rest，自行选择休息时间。';
+  await page.locator('#runtimePromptMissingRest').fill(missingRestTemplate);
+  await page.locator('#runtimePromptTemplatesSave').click();
+  await page.locator('#runtimePromptTemplatesMsg').filter({ hasText: '已保存' }).waitFor();
+  assert.equal(fixture.state.runtimePromptTemplates.missingRest, missingRestTemplate);
+  await page.reload();
+  await page.waitForFunction(text => document.getElementById('runtimePromptMissingRest').value === text, missingRestTemplate);
+
   await openPage('usage');
   await page.locator('[data-usage-key="memory"]').click();
   await page.waitForFunction(() => document.getElementById('usageTurnScope').textContent.includes('记忆整理'));

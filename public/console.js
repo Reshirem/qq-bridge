@@ -442,6 +442,7 @@ const runtimePromptTemplateFields = [
   ['restExpired', 'runtimePromptRestExpired'],
   ['qqWake', 'runtimePromptQqWake'],
   ['recovery', 'runtimePromptRecovery'],
+  ['missingRest', 'runtimePromptMissingRest'],
   ['memoryBootstrap', 'runtimePromptMemoryBootstrap'],
 ];
 let runtimePromptTemplateDefaults = null;
@@ -694,7 +695,11 @@ async function refreshDesktopAgentStatus(force = false) {
       }
       else if (info.lifecycle === 'recovering') {
         const retryAt = info.recoveryAt ? new Date(info.recoveryAt).toLocaleString() : '即将';
-        label = `异常恢复等待 · 第 ${info.recoveryAttempt || 1} 次，${retryAt} 重试`; tone = 'meta err'; summaryLabel = '等待恢复'; hint = '未正常进入休息态，桥接按指数间隔尝试恢复';
+        if (info.pendingWakeReason === 'missing-rest') {
+          label = `等待收尾提醒 · 第 ${info.recoveryAttempt || 1} 次补发，${retryAt} 发送`; tone = 'meta'; summaryLabel = '等待收尾'; hint = '角色尚未调用 agent_rest；桥接会再次提醒，由角色选择休息时间';
+        } else {
+          label = `异常恢复等待 · 第 ${info.recoveryAttempt || 1} 次，${retryAt} 重试`; tone = 'meta err'; summaryLabel = '等待恢复'; hint = '回合中断或提交失败，桥接按指数间隔尝试恢复';
+        }
       }
       else if (info.running) { label = '正在运行'; tone = 'meta ok'; summaryLabel = '运行中'; hint = '数字角色正在自主探索或处理任务'; }
       else if (info.blank) { label = '会话已创建，尚未启动'; tone = 'meta'; summaryLabel = '等待启动'; hint = '点击“启动自主探索”'; }

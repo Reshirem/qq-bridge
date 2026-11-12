@@ -153,6 +153,18 @@ export class NativeQQ extends EventEmitter {
   async raw(action, p = {}) {
     if (!this.call) throw Error(this.health.hint || 'QQ 独立通道未连接');
     if (action === 'get_status') return {online:true, good:true};
+    if (action === 'group_poke' || action === 'send_poke') {
+      const group = action === 'group_poke';
+      const targetUin = String(p.user_id ?? '');
+      const aioUin = group ? String(p.group_id ?? '') : targetUin;
+      if (![targetUin, aioUin].every(id => /^[1-9]\d{0,19}$/.test(id) && BigInt(id) <= 9223372036854775807n)) {
+        throw Error('QQ 戳一戳目标或会话编号无效');
+      }
+      const call = this.call, account = this.account;
+      const peer = await this.peer(group ? 'group' : 'private', aioUin);
+      if (this.call !== call || this.account !== account) throw Error('QQ 连接或登录账号已切换，未发送戳一戳');
+      return call('poke', {peer, targetUin, aioUin});
+    }
     if (['get_group_list','get_friend_list'].includes(action)) {
       try { return await this.call(action,p); } catch (error) { if (!this.read) throw error; }
       return this.read(action,p);
