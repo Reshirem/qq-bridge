@@ -140,6 +140,14 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
     for await (const chunk of req) raw += chunk;
     requests.push({ url: req.url, body: raw ? JSON.parse(raw) : null, token: req.headers['x-agent-token'] });
     res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.url === '/api/socialV2/image-detail') {
+      res.end(JSON.stringify({ ok: true, images: [{
+        kind: 'image', index: 1, data: 'aW1hZ2U=', mimeType: 'image/png',
+        imageRef: 'fixture-image-ref', representation: 'original', width: 4000, height: 2250,
+        originalWidth: 4000, originalHeight: 2250, originalAvailable: true, canFetchOriginal: true,
+      }] }));
+      return;
+    }
     res.end(JSON.stringify({ ok: true, readThroughSeq: 21, messages: [shortMessage], accepted: raw ? JSON.parse(raw) : null }));
   });
   await new Promise((resolve, reject) => {
@@ -182,6 +190,25 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
     assert.ok(stickerSchema, 'qq_send_sticker is available');
     assert.equal('message' in stickerSchema.properties, false, 'stickers use a separate bubble');
     const common = { key: 'group:123' };
+    const imageDetailSchema = listed.tools.find(tool => tool.name === 'qq_get_image_detail')?.inputSchema;
+    assert.ok(imageDetailSchema, 'single-image detail tool is exposed through real MCP');
+    assert.deepEqual(imageDetailSchema.properties.quality.enum, ['preview', 'original']);
+    assert.equal(imageDetailSchema.properties.quality.default, 'original');
+    assert.match(listed.tools.find(tool => tool.name === 'qq_get_image_detail').description, /DSH\/模型服务可能再次缩放/);
+    const detailArgs = { ...common, imageRef: 'fixture-image-ref' };
+    const detail = await client.callTool({ name: 'qq_get_image_detail', arguments: detailArgs });
+    assert.notEqual(detail.isError, true);
+    assert.equal(requests.at(-1).url, '/api/socialV2/image-detail');
+    assert.deepEqual(requests.at(-1).body, { ...detailArgs, quality: 'original' });
+    assert.equal(detail.content.filter(part => part.type === 'image').length, 1);
+    assert.match(detail.content.find(part => part.type === 'text').text, /"representation":"original"/);
+    assert.match(detail.content.find(part => part.type === 'text').text, /尺寸与形态指桥接输出/);
+    const beforeInvalidCrop = requests.length;
+    const invalidCrop = await client.callTool({ name: 'qq_get_image_detail', arguments: {
+      ...detailArgs, crop: { x: 0.8, y: 0, width: 0.5, height: 0.5 },
+    } });
+    assert.equal(invalidCrop.isError, true);
+    assert.equal(requests.length, beforeInvalidCrop);
     const lookup = listed.tools.find(tool => tool.name === 'qq_list_stickers').inputSchema;
     assert.deepEqual(Object.keys(lookup.properties).sort(), ['key', 'query']);
     assert.ok(lookup.required.includes('query'));

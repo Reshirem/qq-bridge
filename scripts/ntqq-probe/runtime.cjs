@@ -9,13 +9,38 @@ module.exports = function startChannel(receiver, endpoint) {
   const socket = load('net').createConnection(endpoint.pipe);
   const send = packet => { if (!socket.destroyed) socket.write(JSON.stringify(packet) + '\n'); };
   const slides = new Map(); // Only in-flight send receipts.
+  const mediaDownloads = new Map(); // Only in-flight forward-media completions.
+  const mediaKey = (msgId, elementId) => JSON.stringify([String(msgId), String(elementId)]);
+  // Source-scoped capabilities for nodes actually returned by this QQ connection.
+  // Bodies remain in QQ; these bounded entries only serve subsequent nested/media reads.
+  const forwards = new Map();
+  let forwardRows = 0;
+  const messageId = value => typeof value === 'string' && /^-?[1-9]\d{0,19}$/.test(value) &&
+    BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
+  const forwardKey = (peer, id) => JSON.stringify([peer.chatType, peer.peerUid, id]);
+  const sameAccount = () => {
+    if (socket.destroyed || String(globalThis.authData?.uin) !== account) throw Error('QQ 连接或登录账号已改变');
+  };
+  const rememberForward = (peer, id, entry) => {
+    const key = forwardKey(peer, id);
+    forwardRows -= forwards.get(key)?.rows.size || 0;
+    forwards.delete(key); forwards.set(key, entry);
+    forwardRows += entry.rows.size;
+    // A root plus five bounded previews can return 606 nested references and
+    // 600 rows. Keep that complete tool result usable while bounding both costs.
+    while (forwards.size > 1000 || forwardRows > 1000) {
+      const oldest = forwards.keys().next().value;
+      forwardRows -= forwards.get(oldest).rows.size;
+      forwards.delete(oldest);
+    }
+  };
   let listenerId;
   const number = value => /^[1-9]\d*$/.test(String(value)) ? String(value) : '';
   function checked(response) {
     if (response?.result !== 0) throw Error(response?.errMsg || 'QQ 调用失败 ' + String(response?.result));
     return response;
   }
-  async function message(row) {
+  async function message(row, context = null) {
     const group = row.chatType === 2;
     const msg = {
       self_id: account, user_id: String(row.senderUin), message_id: String(row.msgId),
@@ -57,9 +82,17 @@ module.exports = function startChannel(receiver, endpoint) {
       else if (pic) { type = 'image'; data = { file: pic.md5HexStr, sub_type: pic.picSubType, summary: pic.summary }; }
       else if (element.faceElement) { type = 'face'; data = { id: element.faceElement.faceIndex }; }
       else if (element.marketFaceElement) { const f = element.marketFaceElement; type = 'mface'; data = { emoji_id: f.emojiId, emoji_package_id: f.emojiPackageId, summary: f.faceName }; }
+      else if (element.multiForwardMsgElement) {
+        type = 'forward';
+        data = {id: context ? `native:${context.rootId}:${row.msgId}` : `native:${row.msgId}`};
+      }
       else if (element.videoElement) { type = 'video'; data = {}; }
       else if (element.fileElement) { type = 'file'; data = { name: element.fileElement.fileName }; }
       else { type = '其他消息'; data = {}; }
+      if (context && (type === 'image' || type === 'mface')) {
+        data.nativeForwardId = context.id;
+        data.nativeMessageId = String(row.msgId);
+      }
       msg.message.push({ type, data });
     }
     return msg;
@@ -88,12 +121,87 @@ module.exports = function startChannel(receiver, endpoint) {
         if (row.sendStatus === 2 && number(row.msgSeq)) receipt.resolve({ message_id: String(row.msgId) });
       }
     },
+    onRichMediaDownloadComplete(info) {
+      if (String(globalThis.authData?.uin) !== account) return socket.destroy();
+      if (!info?.msgId || !info.msgElementId) return;
+      mediaDownloads.get(mediaKey(info.msgId, info.msgElementId))?.finish(info);
+    },
   }, { get: (obj, prop) => prop in obj ? obj[prop] : typeof prop === 'string' && prop.startsWith('on') ? () => {} : undefined });
   async function original(peer, id) {
     const rows = checked(await svc.getMsgsByMsgId(peer, [String(id)])).msgList;
     const row = rows.find(r => r.chatType === peer.chatType && r.peerUid === peer.peerUid && String(r.msgId) === String(id));
     if (!row) throw Error('QQ 当前会话中找不到此消息');
     return row;
+  }
+  function forwardReference(peer, id) {
+    const parts = String(id ?? '').split(':');
+    if (!peer || ![1, 2].includes(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid ||
+      parts[0] !== 'native' || ![2,3].includes(parts.length) || !parts.slice(1).every(messageId)) {
+      throw Error('QQ 转发定位无效');
+    }
+    return {rootId:parts[1], parentId:parts[2] || parts[1]};
+  }
+  async function getForwardMessage(p) {
+    const {peer, id} = p;
+    const {rootId, parentId} = forwardReference(peer, id);
+    const known = forwards.get(forwardKey(peer, id));
+    if (parentId !== rootId && !known) throw Error('QQ 嵌套转发未在此来源读取过，请先读取上层转发');
+    const root = await original(peer, rootId);
+    sameAccount();
+    if (!(root.elements || []).some(e => e.multiForwardMsgElement)) throw Error('QQ 此消息不是合并转发');
+    if (typeof svc.getMultiMsg !== 'function') throw Error('当前 QQ 未提供合并转发读取接口');
+    // QQ resolves the resource on demand, including downloading an uncached
+    // forward. The first root is always the real message in the verified source.
+    const result = checked(await svc.getMultiMsg(peer, rootId, parentId));
+    sameAccount();
+    if (!Array.isArray(result.msgList) || !result.msgList.length) {
+      throw Error('QQ 未返回转发内容，资源可能尚未下载或已失效，请稍后重试');
+    }
+    const rows = result.msgList.slice(0,100).filter(row => messageId(String(row?.msgId ?? '')));
+    if (!rows.length) throw Error('QQ 返回的转发节点无效');
+    const entry = {rootId, parentId, rows:new Map(rows.map(row => [String(row.msgId), {
+      msgId:String(row.msgId),
+      elements:(row.elements || []).filter(e => e.picElement || e.marketFaceElement).slice(0,100).map(e => ({
+        elementId:e.elementId,
+        ...(e.picElement ? {picElement:{md5HexStr:e.picElement.md5HexStr, picSubType:e.picElement.picSubType,
+          sourcePath:e.picElement.sourcePath, fileSize:e.picElement.fileSize}} : {}),
+        ...(e.marketFaceElement ? {marketFaceElement:{emojiId:e.marketFaceElement.emojiId,
+          emojiPackageId:e.marketFaceElement.emojiPackageId}} : {}),
+      })),
+    }]))};
+    const messages = [];
+    for (const row of rows) {
+      if ((row.elements || []).some(e => e.multiForwardMsgElement)) {
+        const nestedId = `native:${rootId}:${row.msgId}`;
+        if (String(row.msgId) !== rootId && nestedId !== id) {
+          const existing = forwards.get(forwardKey(peer, nestedId));
+          rememberForward(peer, nestedId, existing || {rootId, parentId:String(row.msgId), rows:new Map()});
+        }
+      }
+      messages.push(await message(row, {id,rootId}));
+    }
+    sameAccount();
+    // Keep the currently returned page even when it contained many nested IDs.
+    rememberForward(peer, id, entry);
+    return {messages, total:result.msgList.length, truncated:result.msgList.length > rows.length};
+  }
+  function forwardImage(p) {
+    forwardReference(p.peer, p.forwardId);
+    const entry = forwards.get(forwardKey(p.peer, p.forwardId));
+    const row = entry?.rows.get(String(p.messageId ?? ''));
+    if (!row) throw Error('QQ 转发图片尚未在此来源读取，请先重新读取该转发');
+    const digest = String(p.md5 ?? '').toLowerCase();
+    const emojiId = String(p.emojiId ?? '').toLowerCase(), packageId = String(p.emojiPackageId ?? '');
+    const hasDigest = /^[a-f0-9]{32}$/.test(digest);
+    // Match the exact identity that NativeQQ will look up first. A known market
+    // face must never authorize an unrelated supplied ordinary-image digest.
+    const element = (row.elements || []).find(item => hasDigest
+      ? item.picElement && String(item.picElement.md5HexStr).toLowerCase() === digest
+      : (item.marketFaceElement && /^[a-f0-9]{16,64}$/.test(emojiId) &&
+        String(item.marketFaceElement.emojiId).toLowerCase() === emojiId &&
+        String(item.marketFaceElement.emojiPackageId) === packageId));
+    if (!element) throw Error('QQ 此转发节点中找不到对应的图片');
+    return {row, element, rootId:entry.rootId};
   }
   async function marketResources(packId, faceIds) {
     const response = checked(await svc.getMarketEmoticonEncryptKeys(Number(packId), faceIds));
@@ -104,6 +212,47 @@ module.exports = function startChannel(receiver, endpoint) {
     }
     return resources;
   }
+  async function fetchForwardImage(peer, rootId, element) {
+    if (typeof svc.downloadRichMedia !== 'function') throw Error('当前 QQ 不支持下载合并转发内图片');
+    const key = mediaKey(rootId, element.elementId);
+    const previous = mediaDownloads.get(key);
+    if (previous) return previous.promise;
+    let finish;
+    const complete = new Promise(resolve => { finish = resolve; });
+    const entry = {finish, promise:null};
+    mediaDownloads.set(key, entry);
+    // Some QQ versions do not emit a completion here. The caller must still
+    // verify the real, validated cache file after this bounded notification wait.
+    const timer = setTimeout(() => finish(null), 12000);
+    entry.promise = (async () => {
+      try {
+        // Desktop QQ addresses a forwarded image by the outer source message
+        // and the inner picture element, including pictures in nested forwards.
+        // The synthetic inner message ID cannot identify this download.
+        const result = await svc.downloadRichMedia({
+          fileModelId:'0', downSourceType:0, triggerType:0,
+          msgId:rootId, chatType:peer.chatType, peerUid:peer.peerUid,
+          elementId:element.elementId, thumbSize:0, downloadType:1,
+          filePath:Number(element.picElement.picSubType) === 1 ? '' : element.picElement.sourcePath,
+        });
+        if (result?.result != null) checked(result);
+        const info = await complete;
+        sameAccount();
+        if (info?.error) throw Error(info.error);
+        const failed = code => code != null && code !== '' && String(code) !== '0';
+        if (info && (failed(info.fileErrCode) || failed(info.fileSrvErrCode))) {
+          const codes = [failed(info.fileErrCode) && `QQ ${info.fileErrCode}`,
+            failed(info.fileSrvErrCode) && `服务端 ${info.fileSrvErrCode}`].filter(Boolean).join('，');
+          throw Error(`QQ 转发图片下载失败（${codes}）${info.fileErrMsg ? '：' + String(info.fileErrMsg).slice(0,300) : ''}`);
+        }
+        return {requested:true};
+      } finally {
+        clearTimeout(timer);
+        if (mediaDownloads.get(key) === entry) mediaDownloads.delete(key);
+      }
+    })();
+    return entry.promise;
+  }
   async function fetchMessageImage(p) {
     const peer = p.peer;
     const messageId = String(p.messageId ?? '');
@@ -111,11 +260,12 @@ module.exports = function startChannel(receiver, endpoint) {
         !/^-?[1-9]\d{0,19}$/.test(messageId)) throw Error('QQ 图片定位信息无效');
     const digest = String(p.md5 ?? '').toLowerCase();
     if (!/^[a-f0-9]{32}$/.test(digest)) throw Error('QQ 图片标识无效');
-    const row = await original(peer, messageId);
-    const element = (row.elements || []).find(item => item.picElement &&
+    const verified = p.forwardId ? forwardImage(p) : null;
+    const row = verified?.row || await original(peer, messageId);
+    const element = verified?.element || (row.elements || []).find(item => item.picElement &&
       String(item.picElement.md5HexStr).toLowerCase() === digest);
+    sameAccount();
     if (!element?.elementId) throw Error('QQ 原消息中找不到对应的图片元素');
-    if (typeof svc.getRichMediaElement !== 'function') throw Error('当前 QQ 不支持按原消息下载图片');
     const root = path.join(os.homedir(), 'Documents', 'Tencent Files', account, 'nt_qq', 'nt_data');
     const target = element.picElement.sourcePath;
     const relative = typeof target === 'string' && path.isAbsolute(target) ? path.relative(root, target) : '..';
@@ -123,9 +273,12 @@ module.exports = function startChannel(receiver, endpoint) {
     if (!sticker && (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))) {
       throw Error('QQ 返回的图片缓存位置无效');
     }
+    if (verified) return fetchForwardImage(peer, verified.rootId, element);
+    if (typeof svc.getRichMediaElement !== 'function') throw Error('当前 QQ 不支持按原消息下载图片');
     const result = await svc.getRichMediaElement({
       downSourceType: 1,
-      msgId: String(row.msgId), peerUid: String(peer.peerUid), chatType: Number(peer.chatType),
+      msgId: String(row.msgId),
+      peerUid: String(peer.peerUid), chatType: Number(peer.chatType),
       elementId: String(element.elementId), downloadType: 1,
       // Ordinary images need QQ's original destination; stickers choose their own cache.
       ...(sticker ? {} : {thumbSize: 0, filePath: target}),
@@ -207,6 +360,8 @@ module.exports = function startChannel(receiver, endpoint) {
   async function perform(action, p) {
     if (String(globalThis.authData?.uin) !== account) throw Error('QQ 登录账号已切换');
     if (action === 'get_login_info') return {user_id: account, nickname: self.nickName || self.nickname || ''};
+    if (action === 'get_forward_msg') return getForwardMessage(p);
+    if (action === 'check_forward_image') { forwardImage(p); return {verified:true}; }
     if (action === 'poke') {
       const {peer, targetUin, aioUin} = p;
       if (!peer || ![1, 2].includes(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid
@@ -320,5 +475,7 @@ module.exports = function startChannel(receiver, endpoint) {
     clearInterval(identityTimer);
     if (listenerId != null) svc.removeKernelMsgListener(String(listenerId));
     for (const receipt of slides.values()) receipt.reject(Error('QQ 通道已断开，投递结果未知'));
+    for (const download of mediaDownloads.values()) download.finish({error:'QQ 通道已断开，图片下载结果未知'});
+    mediaDownloads.clear();
   });
 };

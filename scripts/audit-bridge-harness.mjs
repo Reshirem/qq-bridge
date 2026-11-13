@@ -19,6 +19,8 @@ import * as autonomyPolicy from '../src/autonomy-policy.js';
 import * as qqMessageReference from '../src/qq-message-reference.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as mediaNormalize from '../src/media-normalize.js';
+import { prepareImageDetail } from '../src/media-detail.js';
+import { createQQImageReferences } from '../src/qq-image-references.js';
 import * as forward from '../src/forward.js';
 import * as sticker from '../src/sticker-lib.js';
 import * as chatLearning from '../src/chat-learning.js';
@@ -240,6 +242,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
+    prepareImageDetail, createQQImageReferences,
     // The fixture must never probe or spawn a host ffmpeg process during startup.
     isFfmpegAvailable: () => false,
     sniffImage: mediaNormalize.sniffImage,

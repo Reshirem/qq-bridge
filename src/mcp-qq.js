@@ -118,6 +118,23 @@ function errorText(value, fallback) {
   return fallback;
 }
 
+// 只把模型定位和判断清晰度所需的字段带入文本，不展开缓存路径、URL 或图像字节。
+function imageMetadataText(image) {
+  const metadata = {};
+  if (typeof image?.imageRef === 'string' && image.imageRef) metadata.imageRef = image.imageRef;
+  if (['preview', 'original', 'reencoded', 'crop'].includes(image?.representation)) {
+    metadata.representation = image.representation;
+  }
+  for (const field of ['width', 'height', 'originalWidth', 'originalHeight']) {
+    const value = image?.[field];
+    if (value === null || (Number.isFinite(value) && value > 0)) metadata[field] = value;
+  }
+  for (const field of ['originalAvailable', 'canFetchOriginal']) {
+    if (typeof image?.[field] === 'boolean') metadata[field] = image[field];
+  }
+  return Object.keys(metadata).length ? `\n媒体信息：${serializeModelData(metadata)}\n以上尺寸与形态指桥接输出；DSH/模型服务可能再次缩放，细节不足请从原图裁剪更小区域。` : '';
+}
+
 async function agentApi(path, init = {}) {
   const timeoutMs = init.timeoutMs || 15000;
   const { timeoutMs: _omit, ...rest } = init;
@@ -579,7 +596,7 @@ server.tool(
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
     'qq_get_message_images',
-    '获取指定 QQ 消息中的图片/表情，并直接以图像内容返回给模型（视觉模型可“看懂”）。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情。**动图（GIF/动态表情）会被桥接抽帧拼成多格图再给你**：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」——按格子顺序理解动作即可，不要把它当成一张九宫格照片；没有这类说明就是静态图。体积过大的图会被自动缩放/重编码，说明里会给出原始尺寸与体积；如果错误提示缺少 FFmpeg，明确告诉用户这是桥接部署依赖未配置，建议设置 FFMPEG_PATH 并重启桥接；如果图确实无法提供，如实说明，不要编造画面。',
+    '获取指定 QQ 消息中的图片/表情预览，并直接以图像内容返回给模型。当消息文本里出现 [图片]、[表情] 或 hasMedia=true 时调用。支持一条消息里的多张图片/表情。预览附 imageRef、实际尺寸及原图可用状态；预览不清晰、需要读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或原图局部，不猜测，也不要为省 token 跳过必要检查。representation 表示实际返回的形态，缩放或裁剪不等于已读完整原图。**动图（GIF/动态表情）会被桥接抽帧拼成多格图再给你**：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」——按格子顺序理解动作即可，不要把它当成一张九宫格照片；没有这类说明就是静态图。如果错误提示缺少 FFmpeg，明确告诉用户这是桥接部署依赖未配置，建议设置 FFMPEG_PATH 并重启桥接；如果图确实无法提供，如实说明，不要编造画面。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数'),
@@ -598,10 +615,10 @@ if (cfg.socialV2?.tools?.getImages !== false) {
         const textParts = [];
         for (const img of images) {
           if (img?.data && img?.mimeType) {
-            textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]`);
+            textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]${imageMetadataText(img)}`);
             content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
           } else {
-            textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : '（获取失败）'}]`);
+            textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : '（获取失败）'}]${imageMetadataText(img)}`);
           }
         }
         if (textParts.length) {
@@ -610,6 +627,48 @@ if (cfg.socialV2?.tools?.getImages !== false) {
         return { content };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取图片失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.getImages !== false || cfg.socialV2?.tools?.getForwardMsg !== false) {
+  server.tool(
+    'qq_get_image_detail',
+    '按图片工具返回的 imageRef 查看同一 QQ 来源中的单张图片，quality 默认 original，可选 preview。originalAvailable 表示原图已缓存，canFetchOriginal 表示可尝试从 QQ 补取；失败时如实说明，不以预览冒充原图。读小字、核对数字或预览看不清时主动请求原图；需要局部细节时可提供 crop，从原图裁剪后返回。crop 仅支持 quality=original，x/y/width/height 为完整图像中 0..1 的归一化坐标（左上为原点，宽高须大于0且区域不得越界）。返回的 representation 和尺寸描述桥接输出的预览、原图、重编码图或裁剪区域；DSH/模型服务可能再次缩放或重编码，大图细节仍不清楚时用更小的 crop 继续核对。裁剪/缩放不代表已读完整原图。',
+    {
+      key: z.string().describe('图片所属 QQ 会话 key，须与取得 imageRef 时的来源一致'),
+      imageRef: z.string().trim().min(1).describe('完整复制图片结果中的 imageRef，不使用本地路径、URL 或猜测图片标识'),
+      quality: z.enum(['preview', 'original']).default('original').describe('默认 original；preview 仅取预览'),
+      crop: z.object({
+        x: z.number().min(0).max(1),
+        y: z.number().min(0).max(1),
+        width: z.number().positive().max(1),
+        height: z.number().positive().max(1),
+      }).refine((crop) => crop.x + crop.width <= 1 && crop.y + crop.height <= 1, {
+        message: '裁剪区域不得超出完整图片边界',
+      }).optional().describe('可选原图局部区域；只支持 quality=original'),
+    },
+    async ({ key, imageRef, quality = 'original', crop }) => {
+      try {
+        if (crop && quality !== 'original') throw new Error('crop 仅支持 quality=original');
+        const data = await agentApi('/api/socialV2/image-detail', {
+          method: 'POST',
+          body: JSON.stringify({ key, imageRef, quality, ...(crop ? { crop } : {}) }),
+          timeoutMs: 180000,
+        });
+        const images = Array.isArray(data?.images) ? data.images : [];
+        if (images.length !== 1) throw new Error(data?.note || '未返回指定的单张图片');
+        const img = images[0];
+        const available = Boolean(img?.data && img?.mimeType);
+        const content = [{
+          type: 'text',
+          text: `[${img?.kind === 'face' ? '表情' : '图片'}${img?.index ?? ''}${img?.text ? ' ' + img.text : available ? '' : '（获取失败）'}]${imageMetadataText(img)}`,
+        }];
+        if (available) content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
+        return { content, ...(available ? {} : { isError: true }) };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `获取图片详情失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
@@ -747,10 +806,10 @@ if (cfg.socialV2?.tools?.getStickerImage !== false) {
 if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   server.tool(
     'qq_get_forward_msg',
-    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_conversation_history` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接把最多 5 张图片以图像内容返回给视觉模型；如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
+    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_conversation_history` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接返回最多 5 张图片预览，附 imageRef、实际尺寸及原图可用状态。预览不清晰、读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或局部，不猜测，也不要为省 token 跳过必要检查；缩放或裁剪不等于已读完整原图。如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
-      id: z.string().describe('合并转发消息 id（来自消息里的 [转发消息 id=...] 或 forwardIds 数组）')
+      id: z.string().describe('完整复制消息里的 [转发消息 id=...] 或 forwardIds 数组中的值（原生 QQ 为 native:...）；不要用发送者 QQ 号或猜测资源 ID')
     },
     async ({ key, id }) => {
       try {
@@ -768,7 +827,7 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
             if (!m || typeof m !== 'object') continue;
             for (const media of Array.isArray(m.media) ? m.media : []) {
               if (!media || typeof media !== 'object') continue;
-              const keyId = media.url || media.file || media.faceId || '';
+              const keyId = media.url || media.file || media.faceId || media.emojiId || '';
               if (!keyId || seen.has(keyId)) continue;
               seen.add(keyId);
               images.push(media);
@@ -792,9 +851,9 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
             for (const img of mediaImages) {
               if (img?.data && img?.mimeType) {
                 content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
-                imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}${img.text ? ' ' + img.text : ''}]`);
+                imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}${img.text ? ' ' + img.text : ''}]${imageMetadataText(img)}`);
               } else {
-                imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}（${img.text || '获取失败'}）]`);
+                imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}（${img.text || '获取失败'}）]${imageMetadataText(img)}`);
               }
             }
           } catch (error) {

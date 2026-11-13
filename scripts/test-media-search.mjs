@@ -135,6 +135,7 @@ await test('原生 QQ 收到图片时默认后台预取，关闭后按需读取�
     assert.equal(requests.length,1, 'message receive returns while the cache download is still pending');
     assert.equal(requests[0].key,'group:456');
     assert.equal(requests[0].messageId,event.message_id);
+    assert.equal(requests[0].maxBytes,8 * 1024 * 1024, 'prefetch uses the same limit as an explicit image read');
     await eager.handleIncomingForTest('group',456,event);
     assert.equal(requests.length,1, 'duplicate events share the running cache check');
     assert.equal(eager.calls.prompts.length,0, 'prefetch does not start a model turn');
@@ -154,6 +155,7 @@ await test('原生 QQ 收到图片时默认后台预取，关闭后按需读取�
     assert.equal(requests.length,1, 'an explicit image read still checks and fills the cache');
     assert.equal(requests[0].key,'group:456');
     assert.equal(requests[0].messageId,event.message_id);
+    assert.equal(requests[0].maxBytes,8 * 1024 * 1024);
   } finally { await lazy.close(); }
 });
 
@@ -243,7 +245,8 @@ await test('原生图片读取带上原消息定位，只读取当前账号的 Q
   fs.mkdirSync(path.dirname(target), {recursive:true});
   fs.writeFileSync(target, PNG);
   fs.writeFileSync(outside, PNG);
-  const h = await bridgeHarness({config:{qqBackend:'native'}, globals:{os:{...os, homedir:() => dir}}});
+  const h = await bridgeHarness({config:{qqBackend:'native', socialV2:{media:{maxBytes:512 * 1024}}},
+    globals:{os:{...os, homedir:() => dir}}});
   try {
     h.bot.account = '999';
     h.bot.emit('open');
@@ -253,6 +256,7 @@ await test('原生图片读取带上原消息定位，只读取当前账号的 Q
     assert.deepEqual(found.buffer, PNG);
     assert.equal(received.key, 'private:123');
     assert.equal(received.messageId, '456');
+    assert.equal(received.maxBytes, 512 * 1024, 'native cache selection must use the configured byte limit');
     h.bot.getImage = async () => ({file:outside});
     assert.equal(await h.fetchOneBotImage({kind:'image', file:digest}), null);
   } finally {
@@ -288,12 +292,85 @@ await test('NativeQQ 缓存未命中时按原消息请求 QQ 下载并重新读�
     });
     assert.equal(calls[0][2], 30000, '下载 RPC 使用独立的媒体超时');
     assert.equal(reads.length, 3, '请求接受后继续等待有效缓存，不能提前返回成功');
+    assert.ok(reads.every(read => JSON.stringify(read.params) === JSON.stringify({type:'image',md5:digest})),
+      'omitting maxBytes retains the original media request contract');
   } finally { bot.close(); }
+});
+
+await test('NativeQQ 把大小上限传给首次缓存查询、下载后查询及商城预览回退', async () => {
+  const bot = new NativeQQ(ROOT), reads = [], calls = [];
+  const digest = 'a'.repeat(32), maxBytes = 1024;
+  let available = null;
+  bot.read = async (action, params) => { reads.push({action,params}); return available; };
+  bot.call = async (action, params) => { calls.push({action,params}); available = 'small-thumbnail.png'; };
+  try {
+    assert.deepEqual(await bot.getImage({file:digest, key:'group:456', messageId:'123', maxBytes}),
+      {file:'small-thumbnail.png'});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].action, 'fetch_message_image');
+    assert.deepEqual(reads, [1,2].map(() => ({action:'media',params:{type:'image',md5:digest,maxBytes}})));
+    reads.length = calls.length = 0;
+    bot.read = async (action, params) => {
+      reads.push({action,params}); return params.type === 'marketFace' ? 'small-market-preview.png' : null;
+    };
+    assert.deepEqual(await bot.getImage({file:digest, emojiId:'b'.repeat(32), emojiPackageId:'42', maxBytes}),
+      {file:'small-market-preview.png'});
+    assert.deepEqual(reads, [
+      {action:'media',params:{type:'image',md5:digest,maxBytes}},
+      {action:'media',params:{type:'marketFace',emojiId:'b'.repeat(32),packageId:'42',maxBytes}},
+    ]);
+    assert.equal(calls.length, 0);
+  } finally { bot.close(); }
+});
+
+await test('NativeQQ 所有缓存超限时明确失败而不重复下载', async () => {
+  const bot = new NativeQQ(ROOT);
+  let downloads = 0, reads = 0;
+  bot.read = async () => { reads++; throw Error('QQ 本地图片缓存均超过读取大小上限，未重复下载'); };
+  bot.call = async () => { downloads++; };
+  try {
+    for (let i = 0; i < 2; i++) {
+      await assert.rejects(bot.getImage({file:'a'.repeat(32),key:'group:456',messageId:'123',maxBytes:1024}),
+        /缓存均超过读取大小上限/);
+    }
+    assert.equal(reads, 2);
+    assert.equal(downloads, 0);
+    assert.equal(bot.imageRequests.size, 0);
+  } finally { bot.close(); }
+});
+
+await test('NativeQQ 只合并相同大小上限的并发请求，非法上限不能复用不限大小请求', async () => {
+  const bot = new NativeQQ(ROOT), reads = [];
+  const params = {file:'a'.repeat(32)};
+  bot.call = async () => { throw Error('cache hit must not download'); };
+  bot.read = (action, query) => new Promise(resolve => { reads.push({action,query,resolve}); });
+  try {
+    const unlimited = bot.getImage(params);
+    const small = bot.getImage({...params,maxBytes:64});
+    const larger = bot.getImage({...params,maxBytes:128});
+    assert.equal(bot.getImage({...params,maxBytes:64}), small);
+    assert.notEqual(small, larger);
+    assert.notEqual(small, unlimited);
+    assert.equal(reads.length, 3);
+    for (const maxBytes of [null, true, 0, -1, 1.5, '1024', NaN, Infinity, 20 * 1024 * 1024 + 1]) {
+      await assert.rejects(bot.getImage({...params,maxBytes}), /maxBytes/);
+      await assert.rejects(bot.raw('get_image', {...params,maxBytes}), /maxBytes/);
+    }
+    assert.equal(reads.length, 3, 'invalid limits must fail before cache access');
+    for (const read of reads) read.resolve(`${read.query.maxBytes ?? 'original'}.png`);
+    assert.deepEqual(await Promise.all([unlimited,small,larger]),
+      [{file:'original.png'},{file:'64.png'},{file:'128.png'}]);
+    assert.equal(bot.imageRequests.size, 0);
+    bot.read = async () => 'bounded.png';
+    for (const maxBytes of [1, 20 * 1024 * 1024]) {
+      assert.deepEqual(await bot.getImage({...params,maxBytes}), {file:'bounded.png'});
+    }
+  } finally { for (const read of reads) read.resolve(null); bot.close(); }
 });
 
 await test('NativeQQ 预取与角色看同一张图共用下载，失败后仍可重试', async () => {
   const bot = new NativeQQ(ROOT);
-  const params = {file:'a'.repeat(32),key:'group:456',messageId:'123'};
+  const params = {file:'a'.repeat(32),key:'group:456',messageId:'123',maxBytes:8 * 1024 * 1024};
   let attempts = 0, release, cache = null;
   bot.read = async () => cache;
   bot.call = async () => { attempts++; await new Promise(resolve => { release = resolve; }); cache = 'cached.png'; };
@@ -467,6 +544,11 @@ await test('fetchOneBotImage 表情优先 CDN，普通图片优先 get_image', a
 
     // ③ 普通图片（有 file）：get_image 优先，不走 CDN
     const before = fetched.length;
+    const getImage = h.bot.getImage.bind(h.bot);
+    h.bot.getImage = params => {
+      assert.deepEqual({...params}, {file:'abc.jpg'}, 'SnowLuma keeps its original get_image parameters');
+      return getImage(params);
+    };
     const image = await h.fetchOneBotImage({ kind: 'image', file: 'abc.jpg' });
     assert.ok(image?.buffer?.length);
     assert.deepEqual(h.calls.images, ['abc.jpg']);

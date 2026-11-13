@@ -12,7 +12,7 @@ import yaml from 'js-yaml';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createAMemorixGateway } from '../src/a-memorix-gateway.js';
-import { createMemoryOrganizerState, organizerTranscriptRecords } from '../src/memory-organizer.js';
+import { createMemoryOrganizerState, organizerEvidenceVersion, organizerTranscriptRecords } from '../src/memory-organizer.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -283,6 +283,116 @@ test('detail and history preserve both renderings of a quoted reply in either re
   }
   for (const change of [{ text: '另一条' }, { plain: '[引用 乙：另一个约定]' + body }, { userId: '9' }]) {
     assert.equal(transcript([d, h, [h[0], { ...history, ...change }]]).incomplete, true);
+  }
+});
+
+function qqReadRecords(reads) {
+  return reads.flatMap(({ message, key = 'group:1', tool = 'qq_get_conversation_history' }, index) => {
+    const callId = String(index);
+    const entry = { messageId: '17', userId: '7', at: '04:56', ...message };
+    const payload = tool === 'qq_get_message_detail' ? { info: entry } : { messages: [entry], readThroughSeq: index + 1 };
+    return [
+      { seq: 2 * index, type: 'tool/call', data: { name: tool, callId, arguments: { key } } },
+      { seq: 2 * index + 1, type: 'tool/result', data: { message: { source: { callId },
+        content: [{ type: 'text', text: JSON.stringify({ key, partial: false, ...payload }) }] } } }
+    ];
+  });
+}
+
+test('notice placeholders cannot replace a witnessed QQ body in either read order', () => {
+  const body = { text: '@角色', plain: '@角色', tail: '@角色', sender: '甲' };
+  for (const placeholder of [{ text: '[notice]' }, { text: '[notice]', plain: '[notice]', tail: '[notice]' }]) {
+    for (const reads of [[body, placeholder, placeholder], [placeholder, body, placeholder]]) {
+      const records = qqReadRecords(reads.map(message => ({ message })));
+      const before = structuredClone(records);
+      const result = organizerTranscriptRecords(records);
+      assert.deepEqual(result.incompleteReasons, []);
+      const messages = result.events.filter(event => event.kind === 'qq-message');
+      assert.equal(messages.length, 1);
+      assert.deepEqual(messages[0].message, { messageId: '17', sender: '甲', userId: '7', at: '04:56', ...body });
+      assert.equal(messages[0].bodySourceSeq, reads[0] === body ? undefined : 3);
+      assert.deepEqual(records, before, 'persisted source evidence must not be mutated');
+    }
+  }
+});
+
+test('a metadata-only notice contributes no fabricated body and cannot borrow another identity', () => {
+  const records = qqReadRecords([
+    { message: { text: '[notice]', plain: '[notice]', tail: '[notice]', sender: '甲' } },
+    { message: { text: '其他群的正文' }, key: 'group:2' },
+    { message: { messageId: '18', text: '另一条消息' } }
+  ]);
+  const result = organizerTranscriptRecords(records);
+  assert.equal(result.incomplete, false);
+  const messages = result.events.filter(event => event.kind === 'qq-message');
+  assert.equal(messages.length, 3);
+  assert.deepEqual(messages[0].message, { messageId: '17', sender: '甲', userId: '7', at: '04:56' });
+  assert.equal(messages[0].bodySourceSeq, undefined);
+});
+
+test('notice placeholders do not hide real text, identity, time, media or truncation conflicts', () => {
+  const original = { text: '原文', userId: '7', time: 100, at: '04:56', isSelf: false, media: [{ kind: 'image' }] };
+  for (const change of [
+    { text: '不同正文' }, { userId: '9' }, { time: 101 }, { at: '04:57' },
+    { isSelf: true }, { media: [{ kind: 'video' }] }
+  ]) {
+    const result = organizerTranscriptRecords(qqReadRecords([
+      { message: original }, { message: { text: '[notice]' } },
+      { message: { ...original, text: '[notice]', ...change } }
+    ]));
+    assert.equal(result.incomplete, true, JSON.stringify(change));
+    assert.match(result.incompleteReasons[0], new RegExp(Object.keys(change)[0]));
+  }
+  const clipped = organizerTranscriptRecords(qqReadRecords([{ message: { text: '不完整', textTruncated: true } }]));
+  assert.equal(clipped.events.find(event => event.kind === 'qq-message').message.text, undefined);
+  assert.equal(organizerTranscriptRecords(qqReadRecords([{ message: { text: '[notice][truncated]' } }])).incomplete, true);
+});
+
+test('only exact notice placeholders are omitted from individual text renderings', () => {
+  for (const text of ['文字 [notice]', '[notice] 后续文字', ' [notice]', '[NOTICE]', '[图片]', '[其它]']) {
+    const result = organizerTranscriptRecords(qqReadRecords([{ message: { text } }]));
+    assert.equal(result.events.find(event => event.kind === 'qq-message').message.text, text);
+    assert.equal(organizerTranscriptRecords(qqReadRecords([
+      { message: { text } }, { message: { text: '不同正文' } }
+    ])).incomplete, true);
+  }
+  const result = organizerTranscriptRecords(qqReadRecords([
+    { message: { text: '[notice]', plain: '已见正文' } },
+    { message: { plain: '另一份正文' } }
+  ]));
+  assert.match(result.incompleteReasons[0], /plain/);
+});
+
+test('quoted reply alignment uses the tool that first supplied a body after a notice', () => {
+  const detail = { message: { text: '[引用 甲：周六见]好的' }, tool: 'qq_get_message_detail' };
+  const history = { message: { text: '好的', plain: '[引用 甲：周六见]好的' } };
+  for (const reads of [[detail, history, history], [history, detail, history]]) {
+    const result = organizerTranscriptRecords(qqReadRecords([{ message: { text: '[notice]' } }, ...reads]));
+    assert.deepEqual(result.incompleteReasons, []);
+    const message = result.events.find(event => event.kind === 'qq-message');
+    assert.equal(message.bodySourceSeq, 3);
+    assert.deepEqual(new Set([message.message.text, message.message.plain]), new Set(['好的', '[引用 甲：周六见]好的']));
+  }
+});
+
+test('existing chunk receipts retain evidence layout while unread jobs adopt notice handling', () => {
+  for (const job of [{}, { progress: { evidenceVersion: 2, total: null, completed: 0 } }]) {
+    assert.equal(organizerEvidenceVersion(job), 3);
+  }
+  for (const evidenceVersion of [1, 2, 3]) {
+    for (const checkpoint of [{ total: 5 }, { completed: 1 }]) {
+      assert.equal(organizerEvidenceVersion({ progress: { evidenceVersion, ...checkpoint } }), evidenceVersion);
+    }
+    assert.equal(organizerEvidenceVersion({ progress: { evidenceVersion }, organizerSessionIds: ['session'] }), evidenceVersion);
+  }
+  assert.equal(organizerEvidenceVersion({ progress: { total: 5 } }), 1);
+  assert.equal(organizerEvidenceVersion({ organizerSessionId: 'session' }), 1);
+  const records = qqReadRecords([{ message: { text: '[notice]' } }]);
+  for (const options of [{ legacyChunkLayout: true }, { omitNoticePlaceholders: false }]) {
+    assert.equal(organizerTranscriptRecords(records, options).events.find(e => e.kind === 'qq-message').message.text, '[notice]');
+    assert.equal(organizerTranscriptRecords(qqReadRecords([
+      { message: { text: '原文' } }, { message: { text: '[notice]' } }
+    ]), options).incomplete, true);
   }
 });
 

@@ -42,6 +42,9 @@ def format_row(db, table, peer, row, account, self_uid):
         elif kind == "marketFace":
             kind, data = "mface", {"emoji_id": item.get("emojiId"), "emoji_package_id": item.get("packageId"),
                                    "summary": item.get("label", "")}
+        elif kind == "forward":
+            # Resolve through this source's original QQ message, not a guessed resource ID.
+            data = {"id": "native:" + str(mid)}
         else:
             data = {}
         segments.append({"type": kind, "data": data})

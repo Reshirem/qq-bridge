@@ -182,3 +182,131 @@ test('denied group reads never reveal the group allowlist', async () => {
   assert.doesNotMatch(result.content[0].text, /111111|222222/);
   assert.ok(calls.length >= 1, '应当只经过桥接的鉴权/拒绝路径');
 });
+
+const previewImage = {
+  kind: 'image', index: 1, text: '预览', data: 'fixture-image-bytes', mimeType: 'image/jpeg',
+  imageRef: 'fixture-source-scoped-image', representation: 'preview', width: 1280, height: 720,
+  originalWidth: 4000, originalHeight: 2250, originalAvailable: false, canFetchOriginal: true,
+  localPath: 'C:\\private-cache\\original.jpg', url: 'https://private.invalid/signed-image',
+};
+const imageMetadata = (result) => Array.from(result.content).filter(part => part.type === 'text')
+  .flatMap(part => [...part.text.matchAll(/媒体信息：([^\n]+)/g)].map(match => JSON.parse(match[1])));
+
+test('message previews expose source references and exact availability without cache internals', async () => {
+  let requested;
+  const callTool = loadQQTools(async (url) => {
+    requested = new URL(url);
+    return Response.json({ ok: true, images: [previewImage] });
+  });
+  const result = await callTool('qq_get_message_images', { key: 'group:123', messageId: 'id:-55' });
+  assert.equal(requested.pathname, '/api/images/message');
+  assert.equal(requested.searchParams.get('messageId'), 'id:-55');
+  assert.deepEqual(imageMetadata(result), [{
+    imageRef: previewImage.imageRef, representation: 'preview', width: 1280, height: 720,
+    originalWidth: 4000, originalHeight: 2250, originalAvailable: false, canFetchOriginal: true,
+  }]);
+  assert.equal(result.content.filter(part => part.type === 'image').length, 1);
+  const text = result.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
+  assert.doesNotMatch(text, /private-cache|private\.invalid|fixture-image-bytes/);
+});
+
+test('forward previews retain single-image references including failed previews', async () => {
+  const requests = [];
+  const callTool = loadQQTools(async (url, init) => {
+    requests.push({ path: new URL(url).pathname, body: init.body ? JSON.parse(init.body) : null });
+    if (requests.at(-1).path === '/api/socialV2/forward-message') return Response.json({
+      ok: true, messages: [{ media: [{ file: 'fixture-md5', nativeForwardId: 'native:1', nativeMessageId: '2' }] }],
+    });
+    return Response.json({ ok: true, images: [
+      previewImage,
+      { ...previewImage, index: 2, imageRef: 'retryable-image', data: null, text: '预览失败', originalWidth: null, originalHeight: null },
+    ] });
+  });
+  const result = await callTool('qq_get_forward_msg', { key: 'group:123', id: 'native:1' });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].path, '/api/socialV2/forward-media');
+  assert.equal(requests[1].body.media[0].nativeMessageId, '2');
+  const metadata = imageMetadata(result);
+  assert.equal(metadata.length, 2);
+  assert.equal(metadata[0].imageRef, previewImage.imageRef);
+  assert.equal(metadata[1].imageRef, 'retryable-image');
+  assert.equal(metadata[1].originalWidth, null);
+  assert.equal(metadata[1].originalAvailable, false);
+  assert.equal(result.content.filter(part => part.type === 'image').length, 1);
+  assert.doesNotMatch(JSON.stringify(metadata), /private-cache|private\.invalid|fixture-image-bytes/);
+});
+
+test('single-image detail defaults to original and preserves explicit preview/crop requests', async () => {
+  const requests = [];
+  const callTool = loadQQTools(async (url, init) => {
+    requests.push({ path: new URL(url).pathname, method: init.method, body: JSON.parse(init.body), headers: init.headers });
+    const body = requests.at(-1).body;
+    return Response.json({ ok: true, images: [{
+      ...previewImage, representation: body.crop ? 'crop' : body.quality,
+      width: body.crop ? 1000 : 4000, height: body.crop ? 1125 : 2250, originalAvailable: true,
+    }] });
+  });
+  const base = { key: 'group:123', imageRef: previewImage.imageRef };
+  const original = await callTool('qq_get_image_detail', base);
+  assert.equal(requests[0].path, '/api/socialV2/image-detail');
+  assert.equal(requests[0].method, 'POST');
+  assert.deepEqual(requests[0].body, { ...base, quality: 'original' });
+  assert.equal(requests[0].headers['x-agent-token'], 'a'.repeat(64));
+  assert.equal(original.isError, undefined);
+  assert.equal(imageMetadata(original)[0].representation, 'original');
+  assert.equal(imageMetadata(original)[0].width, 4000);
+  await callTool('qq_get_image_detail', { ...base, quality: 'preview' });
+  assert.deepEqual(requests[1].body, { ...base, quality: 'preview' });
+  const crop = { x: 0.25, y: 0, width: 0.25, height: 0.5 };
+  const cropped = await callTool('qq_get_image_detail', { ...base, crop });
+  assert.deepEqual(requests[2].body, { ...base, quality: 'original', crop });
+  assert.equal(imageMetadata(cropped)[0].representation, 'crop');
+  assert.equal(cropped.content.filter(part => part.type === 'image').length, 1);
+});
+
+test('image detail rejects invalid crops before requesting the bridge', async () => {
+  const callTool = loadQQTools(async () => assert.fail('invalid image detail input must not reach bridge'));
+  const base = { key: 'group:123', imageRef: previewImage.imageRef };
+  for (const crop of [
+    { x: -0.1, y: 0, width: 0.5, height: 0.5 },
+    { x: 0, y: 0, width: 0, height: 0.5 },
+    { x: 0.8, y: 0, width: 0.5, height: 0.5 },
+    { x: 0, y: 0.8, width: 0.5, height: 0.5 },
+    { x: 0, y: 0, width: '0.5', height: 0.5 },
+  ]) await assert.rejects(callTool('qq_get_image_detail', { ...base, crop }));
+  await assert.rejects(callTool('qq_get_image_detail', { ...base, quality: 'raw' }));
+  await assert.rejects(callTool('qq_get_image_detail', { ...base, imageRef: ' ' }));
+  const result = await callTool('qq_get_image_detail', { ...base, quality: 'preview', crop: { x: 0, y: 0, width: 1, height: 1 } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /crop 仅支持 quality=original/);
+});
+
+test('image detail registration follows either existing image reading capability', () => {
+  for (const [getImages, getForwardMsg, expected] of [
+    [undefined, undefined, true], [true, false, true], [false, true, true], [false, false, false],
+  ]) {
+    const callTool = loadQQTools(async () => assert.fail('registration must not call bridge'), {
+      socialV2: { tools: { getImages, getForwardMsg } },
+    });
+    assert.equal(callTool.has('qq_get_image_detail'), expected);
+    if (expected) assert.deepEqual(Object.keys(callTool.schema('qq_get_image_detail')).sort(), ['crop', 'imageRef', 'key', 'quality']);
+  }
+});
+
+test('image detail reports missing originals, bridge failures and malformed multi-image results honestly', async () => {
+  for (const payload of [
+    { ok: false, error: { code: 'original-unavailable', message: '原图无法获取' } },
+    { ok: true, images: [], note: '原图不在缓存中' },
+    { ok: true, images: [{ ...previewImage, data: null, text: '原图无法获取' }] },
+    { ok: true, images: [previewImage, previewImage] },
+  ]) {
+    const callTool = loadQQTools(async () => Response.json(payload));
+    const result = await callTool('qq_get_image_detail', { key: 'group:123', imageRef: previewImage.imageRef });
+    assert.equal(result.isError, true);
+    assert.equal(result.content.some(part => part.type === 'image'), false);
+    assert.match(result.content[0].text, /原图|指定的单张图片/);
+  }
+  const callTool = loadQQTools(async () => Response.json({ ok: true, images: [{ ...previewImage, representation: 'reencoded' }] }));
+  const result = await callTool('qq_get_image_detail', { key: 'group:123', imageRef: previewImage.imageRef });
+  assert.equal(imageMetadata(result)[0].representation, 'reencoded', 'original request must preserve the actual returned representation');
+});

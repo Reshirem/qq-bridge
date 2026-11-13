@@ -38,6 +38,19 @@ test('抽出的是 YAML 解析后的真实提示词字符串', () => {
   assert.ok(!originalPrefix.includes('{{cwd}}'), '不应使用 DSH 已移除的 cwd 变量');
 });
 
+test('图片细节规则来自 QQ 固定前缀模块，不替换动态人格卡', () => {
+  const saved = JSON.parse(fs.readFileSync(new URL('../dsh/agent-presets/desktop-agent/prompt-modules.json', import.meta.url), 'utf8'));
+  const qq = saved.modules.find(module => module.id === 'qq-channel');
+  assert.ok(qq.enabled);
+  assert.match(qq.content, /qq_get_image_detail（quality=original）/);
+  assert.match(qq.content, /imageRef/);
+  assert.match(qq.content, /originalAvailable\/canFetchOriginal/);
+  assert.match(qq.content, /不因为省 token 而跳过必要的图片检查/);
+  assert.match(qq.content, /重编码、缩放或裁剪不等于已读完整原图/);
+  assert.equal(composePresetPromptModules(saved), originalPrefix);
+  assert.match(originalPrefix, /\{\{qq_bridge_active_role_card\}\}/);
+});
+
 test('原样写回是幂等的，且不改变提示词语义', () => {
   const rewritten = renderPresetPromptYaml(source, originalPrefix);
   assert.equal(extractPresetPrefix(rewritten), originalPrefix, '读回应与原提示词逐字一致');
@@ -129,13 +142,17 @@ test('只含空格/Tab 的行也能安全往返（不会被当成空行读丢）
   assert.equal(extractPresetPrefix(next), spaced, '空白行必须原样保留');
 });
 
-test('模块均可关闭或留空，不检查提示词内容', () => {
+test('模块均可关闭或留空；缺失关键变量或收尾工具时仅给出非阻断提醒', () => {
   const saved = JSON.parse(fs.readFileSync(new URL('../dsh/agent-presets/desktop-agent/prompt-modules.json', import.meta.url), 'utf8'));
+  assert.deepEqual(presetPromptWarnings(composePresetPromptModules(saved)), []);
   const modules = saved.modules.map((m) => ({ ...m, enabled: false, content: '' }));
   assert.equal(composePresetPromptModules({ version: 1, modules }), '');
   modules[0].enabled = true;
   assert.ok(composePresetPromptModules({ version: 1, modules }).startsWith('【'));
-  assert.deepEqual(presetPromptWarnings('任意内容'), []);
+  const warnings = presetPromptWarnings('任意内容');
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.some((w) => w.includes('{{qq_bridge_active_role_card}}')));
+  assert.ok(warnings.some((w) => w.includes('agent_rest')));
 });
 
 test('自定义固定前缀模块规范化、预览和序列化一致', () => {

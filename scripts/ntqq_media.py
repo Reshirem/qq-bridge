@@ -4,6 +4,12 @@ import hashlib
 import re
 
 
+MAX_MEDIA_BYTES = 20 * 1024 * 1024
+MAX_ORIGINAL_BYTES = 32 * 1024 * 1024
+DEFAULT_PREVIEW_BYTES = 8 * 1024 * 1024
+MAX_HEADER_BYTES = 256 * 1024
+
+
 def digest_hex(value):
     if len(value) == 16:
         return value.hex()
@@ -19,6 +25,58 @@ def media_header(header):
     if header[4:8] == b"ftyp":
         return "image" if header[8:12] in (b"avif", b"avis", b"heic", b"heix", b"mif1") else "video"
     return None
+
+
+def image_dimensions(header):
+    """Read dimensions from a bounded header, without decoding image pixels."""
+    width = height = 0
+    if header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) >= 24:
+        width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+    elif header.startswith((b"GIF87a", b"GIF89a")) and len(header) >= 10:
+        width, height = int.from_bytes(header[6:8], "little"), int.from_bytes(header[8:10], "little")
+    elif header.startswith(b"BM") and len(header) >= 26:
+        width = int.from_bytes(header[18:22], "little", signed=True)
+        height = abs(int.from_bytes(header[22:26], "little", signed=True))
+    elif header[:4] == b"RIFF" and header[8:12] == b"WEBP" and len(header) >= 30:
+        if header[12:16] == b"VP8X":
+            width, height = 1 + int.from_bytes(header[24:27], "little"), 1 + int.from_bytes(header[27:30], "little")
+        elif header[12:16] == b"VP8L":
+            bits = int.from_bytes(header[21:25], "little")
+            width, height = 1 + (bits & 0x3fff), 1 + ((bits >> 14) & 0x3fff)
+        elif header[12:16] == b"VP8 ":
+            width, height = int.from_bytes(header[26:28], "little") & 0x3fff, int.from_bytes(header[28:30], "little") & 0x3fff
+    elif header.startswith(b"\xff\xd8\xff"):
+        offset = 2
+        while offset + 9 < len(header):
+            if header[offset] != 0xff:
+                offset += 1
+                continue
+            marker = header[offset + 1]
+            if marker in (0xd8, 0xd9) or 0xd0 <= marker <= 0xd7:
+                offset += 2
+                continue
+            length = int.from_bytes(header[offset + 2:offset + 4], "big")
+            if length < 2:
+                break
+            if 0xc0 <= marker <= 0xcf and marker not in (0xc4, 0xc8, 0xcc):
+                width = int.from_bytes(header[offset + 7:offset + 9], "big")
+                height = int.from_bytes(header[offset + 5:offset + 7], "big")
+                break
+            offset += 2 + length
+    return (width, height) if width > 0 and height > 0 else (None, None)
+
+
+def bounded_md5(stream, limit):
+    stream.seek(0)
+    digest = hashlib.md5()
+    total = 0
+    while total <= limit:
+        block = stream.read(min(64 * 1024, limit + 1 - total))
+        if not block:
+            return digest.hexdigest(), total
+        total += len(block)
+        digest.update(block)
+    return None, total
 
 
 class MediaCache:
@@ -47,7 +105,7 @@ class MediaCache:
         self.indexes[video] = files
         return files
 
-    def resolve(self, item):
+    def resolve(self, item, max_bytes=None):
         kind = item["type"]
         market = kind == "marketFace"
         digest = item.get("emojiId" if market else "md5")
@@ -57,7 +115,7 @@ class MediaCache:
         if market and (not re.fullmatch(r"[0-9a-f]{16,64}", str(digest), re.I)
                        or not re.fullmatch(r"[1-9]\d{0,18}", str(package or ""))):
             return {}
-        key = (kind, digest, package)
+        key = (kind, digest, package, max_bytes)
         if key in self.results:
             return self.results[key]
         if market:
@@ -67,6 +125,7 @@ class MediaCache:
         else:
             candidates = self.index(kind == "video").get(digest, ())
         found = {}
+        oversized = False
         for role, path in candidates:
             original = role == "Ori"
             field = "original" if original else "cover" if kind == "video" else "thumbnail"
@@ -75,6 +134,11 @@ class MediaCache:
             try:
                 resolved = path.resolve(strict=True)
                 if not resolved.is_relative_to(self.root) or not resolved.is_file():
+                    continue
+                if max_bytes is not None and resolved.stat().st_size > max_bytes:
+                    # QQ may have several Thumb sizes. A large original or first
+                    # preview must not hide a later preview that fits the limit.
+                    oversized = True
                     continue
                 with resolved.open("rb") as stream:
                     expected = "video" if original and kind == "video" else "image"
@@ -87,22 +151,123 @@ class MediaCache:
                 found[field] = str(resolved)
             except OSError:
                 continue
+        if not found and oversized:
+            # An existing oversized cache is not a cache miss: downloading the
+            # same original again would not make it fit. Do not cache this error
+            # as an empty result, which would make a repeated read redownload it.
+            raise ValueError(f"QQ 本地图片缓存均超过读取大小上限（{max_bytes} 字节），未重复下载")
         self.results[key] = found
         return found
 
+    def resolve_quality(self, item, quality, max_bytes):
+        """Quality reads return verified source metadata; legacy reads stay paths."""
+        market = item["type"] == "marketFace"
+        if market and quality == "original":
+            raise ValueError("QQ 商城表情暂不支持读取原图")
+        digest = item.get("emojiId" if market else "md5")
+        package = item.get("packageId")
+        key = ("quality", item["type"], digest, package, quality, max_bytes)
+        if key in self.results:
+            return self.results[key]
+        candidates = ([("Thumb", self.root / "Emoji/marketface" / str(package) / (digest + "_aio.png"))]
+                      if market else self.index(False).get(digest, ()))
+        original = thumbnail = None
+        original_dimensions = (None, None)
+        unavailable = "unsupported" if market else "not_cached"
+        oversized = False
+        for role, path in candidates:
+            is_original = role == "Ori"
+            if quality == "original" and not is_original:
+                continue  # A cached preview must not suppress an original download.
+            if (is_original and original) or (not is_original and thumbnail):
+                continue
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(self.root) or not resolved.is_file():
+                    continue
+                size = resolved.stat().st_size
+                with resolved.open("rb") as stream:
+                    header = stream.read(MAX_HEADER_BYTES)
+                    if media_header(header) != "image":
+                        if is_original and unavailable == "not_cached":
+                            unavailable = "invalid_cache"
+                        continue
+                    width, height = image_dimensions(header)
+                    if is_original:
+                        # Preview metadata can describe a large original, but an
+                        # unverified or >32 MiB source is never called available.
+                        if size > MAX_ORIGINAL_BYTES:
+                            if unavailable != "source_too_large":
+                                original_dimensions = (width, height)
+                            unavailable = "source_too_large"
+                            oversized = True
+                            continue
+                        actual_digest, actual_size = bounded_md5(stream, MAX_ORIGINAL_BYTES)
+                        if actual_digest is None:
+                            original_dimensions = (width, height)
+                            unavailable = "source_too_large"
+                            oversized = True
+                            continue
+                        if actual_digest != digest or actual_size != size:
+                            if unavailable == "not_cached":
+                                unavailable = "invalid_cache"
+                            continue
+                        original = {"file": str(resolved), "width": width, "height": height, "bytes": size}
+                        original_dimensions = (width, height)
+                        unavailable = None
+                    if size > max_bytes:
+                        oversized = True
+                        continue
+                    if not is_original:
+                        thumbnail = {"file": str(resolved), "width": width, "height": height, "bytes": size}
+            except OSError:
+                continue
+        selected = (thumbnail if quality == "preview" else None) or (
+            original if original and original["bytes"] <= max_bytes else None)
+        if not selected and oversized:
+            raise ValueError(f"QQ 本地图片缓存均超过读取大小上限（{max_bytes} 字节），未重复下载")
+        result = {
+            "file": selected["file"] if selected else None,
+            "representation": "preview" if selected is not None and selected is thumbnail else "original" if selected else quality,
+            "width": selected["width"] if selected else None,
+            "height": selected["height"] if selected else None,
+            "originalWidth": original_dimensions[0], "originalHeight": original_dimensions[1],
+            "originalAvailable": original is not None,
+            "originalUnavailableReason": unavailable,
+        }
+        self.results[key] = result
+        return result
+
 
 def resolve_media(cache, params):
+    quality = params.get("quality")
+    if "quality" in params and quality not in ("preview", "original"):
+        raise ValueError("图片 quality 必须是 preview 或 original")
+    max_bytes = params.get("maxBytes")
+    # Explicit preview reads may need a large source to generate the preview.
+    # The bridge separately caps the normalized model output.
+    maximum = MAX_ORIGINAL_BYTES if quality else MAX_MEDIA_BYTES
+    if "maxBytes" in params and (type(max_bytes) is not int or not 0 < max_bytes <= maximum):
+        raise ValueError(f"图片 maxBytes 必须是 1 至 {maximum} 之间的整数")
+    if quality and "maxBytes" not in params:
+        max_bytes = MAX_ORIGINAL_BYTES if quality == "original" else DEFAULT_PREVIEW_BYTES
     if params.get("type") == "marketFace":
         emoji_id = str(params.get("emojiId", "")).lower()
         package_id = str(params.get("packageId", ""))
         if not re.fullmatch(r"[0-9a-f]{16,64}", emoji_id) or not re.fullmatch(r"[1-9]\d{0,18}", package_id):
             raise ValueError("无效的商城表情标识")
-        files = cache.resolve({"type": "marketFace", "emojiId": emoji_id, "packageId": package_id})
+        item = {"type": "marketFace", "emojiId": emoji_id, "packageId": package_id}
+        if quality:
+            return cache.resolve_quality(item, quality, max_bytes)
+        files = cache.resolve(item, max_bytes)
         return files.get("thumbnail")
     if params.get("type", "image") != "image":
         raise ValueError("未知的媒体类型")
     digest = str(params.get("md5", "")).lower()
     if not re.fullmatch(r"[0-9a-f]{32}", digest):
         raise ValueError("无效的图片标识")
-    files = cache.resolve({"type": "image", "md5": digest})
+    item = {"type": "image", "md5": digest}
+    if quality:
+        return cache.resolve_quality(item, quality, max_bytes)
+    files = cache.resolve(item, max_bytes)
     return files.get("original") or files.get("thumbnail")

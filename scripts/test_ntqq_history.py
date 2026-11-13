@@ -28,6 +28,34 @@ def body(*parts):
 
 
 class NativeHistoryTest(unittest.TestCase):
+    def test_forward_handles_keep_native_ids_and_source_boundaries(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            for kind, table in nt.TABLES.items():
+                db.execute(f"CREATE TABLE {table} ([40001] INTEGER PRIMARY KEY, [40033] INTEGER, "
+                           "[40050] INTEGER, [40800] BLOB, [40027] INTEGER, [40030] INTEGER)")
+                # Both signed 64-bit values exceed JavaScript's exact integer range.
+                ids = (7707676957754756207, -7707676957754756207)
+                for mid in ids:
+                    db.execute(f"INSERT INTO {table} VALUES (?,123,100,?,0,123)",
+                               (mid, body((1, "before"), (16, None), (10, None), (1, "after"))))
+                before = db.total_changes
+                for mid in ids:
+                    query = {"kind": kind, "peer": "123", "count": 1, "anchor": str(mid), "older": True}
+                    rows = read_service(db, "history", query, "42", b"u_self")
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["message_id"], str(mid))
+                    self.assertEqual(rows[0]["message"], [
+                        {"type": "text", "data": {"text": "before"}},
+                        {"type": "forward", "data": {"id": "native:" + str(mid)}},
+                        {"type": "card", "data": {}},
+                        {"type": "text", "data": {"text": "after"}},
+                    ])
+                    self.assertEqual(read_service(db, "history", {**query, "peer": "456"}, "42", b"u_self"), [])
+                replay = read_service(db, "catchup", {"kind": kind, "start": 99, "end": 101}, "42", b"u_self")
+                self.assertEqual([row["message"][1]["data"]["id"] for row in replay["events"]],
+                                 ["native:" + str(mid) for mid in sorted(ids)])
+                self.assertEqual(db.total_changes, before)
+
     def test_catchup_keeps_system_notices_and_pages_past_own_messages(self):
         with closing(sqlite3.connect(":memory:")) as db:
             for kind, table in nt.TABLES.items():

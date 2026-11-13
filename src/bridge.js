@@ -37,7 +37,9 @@ import { classifyIncomingWake, isPokeToSelf, reminderEnabled } from './autonomy-
 import { findQQMessageReference, parseQQMessageReference } from './qq-message-reference.js';
 import { compactModelMessage, describeAge } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
-import { normalizeImageForModel } from './media-normalize.js';
+import { normalizeImageForModel, sniffImage } from './media-normalize.js';
+import { prepareImageDetail } from './media-detail.js';
+import { createQQImageReferences } from './qq-image-references.js';
 import { isFfmpegAvailable } from './ffmpeg-resolve.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
@@ -56,6 +58,7 @@ import { handleLearningRequest } from './learning-api.js';
 import { listAMemorixParagraphs } from './a-memorix-readonly.js';
 import {
   createMemoryOrganizerState,
+  organizerEvidenceVersion,
   organizerToolLeafName,
   organizerTranscriptRecords,
   successfulAgentRestBoundaries
@@ -2081,7 +2084,7 @@ async function main() {
     'QQ 对话以 source key 分开保存和理解；私聊与群聊、不同群之间不得合并为共同背景。保留说话人、场合、时间和不确定性。',
     'QQ 读取结果标记 partial=true 时，只代表本段中的已返回页；可整理返回页里明确可见的事实，但不得把未返回内容当成已读或据此推断其不存在。',
     '工具结果标记 truncated=true 时，只能依据实际返回的项目，不得将部分名单或结果当成完整集合，也不得推断未返回项目不存在。',
-    '关系身份要拆分消息来源、QQ账号归属与角色关系：只有对方消息（isSelf=false）中的 isOwner=true，或明确写有 ownerQQ 的配置标记，才表示发言账号匹配配置的 ownerQQ；isSelf=true 或 ownerLabel=“我”代表数字角色自己的消息，不能当作对方身份依据。该标记只锚定账号，具体关系性质和称呼以本提示中提供的当前人格卡及双方明确表达为准，不把“主人”写死。未配置 ownerQQ 时，直接一对一会话中的交谈对象只可确认是当前来源里的说话人；可以按人格卡和当前互动自然相处。同一来源内持续、清楚形成的关系扮演可作为该来源内的相处设定，但不证明现实身份、全局主人/owner身份、其他 QQ userId 或操作权限。生活状态、行程、自称、昵称、亲近语气、玩笑或孤立称呼，只能作为该来源中说话人的表达，不单独证明主人/owner身份或跨来源账号归属；例如某人说“回到家了”，不能据此认定对方是主人或把其与其他来源的账号对应起来。QQ 好友只说明平台联系人关系，不代表信任等级、主人关系或其他聊天内容的分享授权。',
+    '关系身份要拆分消息来源、QQ账号归属与角色关系：只有对方消息（isSelf=false）中的 isOwner=true，或明确写有 ownerQQ 的配置标记，才表示发言账号匹配配置的 ownerQQ；isSelf=true 代表数字角色自己的消息，不能当作对方身份依据。该标记只锚定账号，具体关系性质和称呼以本提示中提供的当前人格卡及双方明确表达为准，不把“主人”写死。未配置 ownerQQ 时，直接一对一会话中的交谈对象只可确认是当前来源里的说话人；可以按人格卡和当前互动自然相处。同一来源内持续、清楚形成的关系扮演可作为该来源内的相处设定，但不证明现实身份、全局主人/owner身份、其他 QQ userId 或操作权限。生活状态、行程、自称、昵称、亲近语气、玩笑或孤立称呼，只能作为该来源中说话人的表达，不单独证明主人/owner身份或跨来源账号归属；例如某人说“回到家了”，不能据此认定对方是主人或把其与其他来源的账号对应起来。QQ 好友只说明平台联系人关系，不代表信任等级、主人关系或其他聊天内容的分享授权。',
     '整理关系记忆时保留来源、说话人和证据性质；明确表达的关系与配置账号标记分开记录。某一来源内持续、清楚形成的关系扮演可以作为该来源内的相处设定记录，不推断为现实身份、跨来源关系或操作权限。生活状态、行程、自称、昵称、亲近语气、玩笑或孤立称呼只能作为该来源中说话人的表达，不单独证明主人/owner身份、固定关系或跨来源账号归属。QQ 好友或好友列表只表示平台联系人关系，不单独证明信任程度或信息分享授权。关系依据不足时保留未知，不把推测保存成事实。人格卡用于解释关系设定，不要仅为重复卡片内容而创建记忆.',
     '优先挑选未来仍有价值的信息：稳定偏好、关系与称呼、重要决定、承诺和未完成事项、反复出现且有意义的经历、数字角色实际做过的事与结果。不要备份整段聊天，也不要为普通闲聊强行造记忆。',
     '工具调用参数只是计划，只有对应的成功结果才能说明事情做成；失败、取消和部分成功要如实保留。',
@@ -2209,6 +2212,7 @@ async function main() {
       `整理任务 ${job.jobId}，源 DSH 会话 ${job.sourceSessionId}，事件范围 (${job.fromSeq}, ${job.throughSeq}]。当前是第 ${chunkIndex + 1}/${chunkCount} 段。`,
       '以下 JSON 是这段范围内的用户可见消息、工具调用和工具结果。只有成功工具结果中实际返回的内容才算主会话收到；QQ 消息列表和单条详情会单独标为 qq-message，其他 QQ 读取结果保留在 tool-result。readThroughSeq 记录 qq-bridge 当时同一来源的连续已展示水位；对有本地 seq 的缓冲消息可用 bufferId 与 seq 核对水位，对历史详情等结果不能把水位误当成该消息的序号。partial=true 表示当前只返回一页；可整理这页明确可见的事实，但不能把未返回内容当成已读或据此推断其不存在。工具结果 truncated=true 表示只返回部分集合，只能依据可见项目。QQ 消息 textTruncated=true 时正文已移除，不能据此保存具体消息事实。重复本地消息按 source key + QQ messageId，或 source key + bufferId + 本地 seq 合并；字段只在双方都提供时比较，缺失与补全不算冲突。单独的 tool-call 只表示尝试读取，不能当成读过。',
       `先判断哪些信息值得跨会话保留，再按系统说明调用记忆工具。不要把不同 source key 的内容混成一条记忆。更正时保留 supersedes 关联。每条新记忆的 externalId 使用 qq-bridge:organizer:${job.jobId}:chunk-${chunkIndex + 1}:item-N（N 从 1 开始，按本段稳定编号）。sourceContext 写清源 DSH session 和事件序号；涉及 QQ 时还写 source key 和说话人。evidenceReferences 写 DSH 事件序号，并尽量写 QQ 本地 seq 或 messageId。`,
+      'QQ 通用占位 [notice] 不提供正文证据，不能据此推测消息内容或认定撤回。正文字段缺失时只保留已有元数据；同一消息合并后若有 bodySourceSeq，它是实际读到正文的 DSH 事件序号，引用正文时使用该序号。',
       '若检索发现该事实已存在且没有新信息，不要重复写。若没有值得保存的内容，直接明确报告无新增记忆。不要声称未经记忆工具确认的写入已经成功。',
       '完成后最终答复包含 MEMORY_ORGANIZER_DONE；若本段没有新增或更新的记忆，包含 MEMORY_ORGANIZER_NO_CHANGE。',
       '```json',
@@ -2753,7 +2757,7 @@ async function main() {
     const MAX_MEMORY_ORGANIZER_TURNS_PER_SESSION = 8;
     const day = job.day || memoryOrganizerDay();
     // Existing receipts and external IDs refer to the original chunk boundaries.
-    const evidenceVersion = job.progress?.evidenceVersion ?? (Number.isSafeInteger(job.progress?.total) ? 1 : 2);
+    const evidenceVersion = organizerEvidenceVersion(job);
     let activeJob = memoryOrganizer.updateJob(job.jobId, {
       status: 'reading', day,
       progress: {
@@ -2775,7 +2779,10 @@ async function main() {
     }
     const range = await readMemoryOrganizerRange(activeJob.sourceSessionId, activeJob.fromSeq, activeJob.throughSeq);
     if (!range.complete) throw new Error(range.error || '源 DSH 事件范围不完整');
-    const transcript = organizerTranscriptRecords(range.records, { sanitize: redactSensitive, legacyChunkLayout: evidenceVersion === 1 });
+    const transcript = organizerTranscriptRecords(range.records, {
+      sanitize: redactSensitive, legacyChunkLayout: evidenceVersion === 1,
+      omitNoticePlaceholders: evidenceVersion >= 3
+    });
     if (transcript.incomplete) {
       const reasons = transcript.incompleteReasons?.slice(0, 5).join('；');
       throw new Error(`源 DSH 记录不完整；未推进整理游标${reasons ? `：${reasons}` : ''}`);
@@ -5769,7 +5776,7 @@ async function main() {
               info = null;
             }
             // 无论 info 来自本地还是 OneBot，只要本地有 found 就补充转发字段，避免提示词与实现不一致。
-            if (info && found) Object.assign(info, forwardFields);
+            if (info && found && !native) Object.assign(info, forwardFields);
             // 正文本就是 200 字符预览；显式告知截断，避免模型把预览当成全文。
             if (info) info.textTruncated = String(info.text ?? '').length >= 200;
             sendQQReadResult(key, st, { ok: true, key, messageId, info }, found && info ? [found] : []);
@@ -5780,13 +5787,13 @@ async function main() {
         }
         // ── 合并转发消息查询端点（MCP qq_get_forward_msg 走这里） ────────────
         if (req.method === 'GET' && url.pathname === '/api/socialV2/forward-message') {
-          if (native) { sendJson({ok:false,error:'QQ 独立通道暂未接入合并转发详情'},501); return; }
           const key = String(url.searchParams.get('key') ?? '').trim();
           const id = String(url.searchParams.get('id') ?? '').trim();
           const agentToken = String(req.headers['x-agent-token'] ?? '').trim();
           const keyMatch = /^(group|private):(\d+)$/.exec(key);
           if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
           if (!id) { sendJson({ ok: false, error: 'id 不能为空' }, 400); return; }
+          if (sanitizeForwardId(id) !== id) { sendJson({ ok: false, error: '转发消息 id 格式无效' }, 400); return; }
           if (!agentToken) {
             sendJson({ ok: false, error: '自主会话读取合并转发必须携带 agent token' }, 403);
             return;
@@ -5810,8 +5817,10 @@ async function main() {
             return;
           }
           try {
-            const data = await bot.raw('get_forward_msg', { id });
+            const mediaAccount = String(selfUserId || '');
+            const data = await bot.raw('get_forward_msg', { id, ...(native ? { key } : {}) });
             const formatted = formatForwardResponse(data);
+            registerForwardImages(formatted, key, id, mediaAccount);
             const remember = (fid) => {
               if (!fid) return;
               let set = seenForwardIds.get(key);
@@ -5844,9 +5853,16 @@ async function main() {
               }
             }
             for (const fid of nestedIds) {
+              let previewTimer;
               try {
-                const ndata = await bot.raw('get_forward_msg', { id: fid });
+                const pending = bot.raw('get_forward_msg', { id: fid, ...(native ? { key } : {}) });
+                // Optional previews must not consume the MCP's 120s budget and
+                // discard a root that QQ already returned (root <=60s, five <=8s).
+                const ndata = native ? await Promise.race([pending, new Promise((_, reject) => {
+                  previewTimer = setTimeout(() => reject(Error('嵌套转发预览超时，可使用此 id 单独读取')), 8000);
+                })]) : await pending;
                 const nfmt = formatForwardResponse(ndata, { maxMessages: 3, maxCharsPerMessage: 120 });
+                registerForwardImages(nfmt, key, fid, mediaAccount);
                 for (const nm of nfmt.messages || []) {
                   for (const nfid of nm.nestedForwardIds || []) remember(nfid);
                 }
@@ -5854,12 +5870,65 @@ async function main() {
               } catch (error) {
                 log(`嵌套转发预览失败 ${key} ${fid}:`, error?.message ?? error);
                 nestedPreviews.push({ id: fid, error: error?.message ?? '嵌套转发读取失败' });
+              } finally {
+                clearTimeout(previewTimer);
               }
             }
+            if (mediaAccount !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取转发');
             sendJson({ ok: true, key, id, ...formatted, nestedPreviews });
           } catch (error) {
             log(`合并转发查询失败 ${key} ${id}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `合并转发查询失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/image-detail') {
+          const body = await readBody();
+          const key = canonicalV2Key(body.key);
+          const agentToken = String(req.headers['x-agent-token'] ?? '').trim();
+          if (!key) { sendJson({ok:false, error:'key 格式无效'}, 400); return; }
+          if (!agentToken || !agentTokenOk(key, agentToken) || !v2SessionAllowed(key, agentToken)) {
+            sendJson({ok:false, error:'agent token 无效或目标不允许读取'}, 403); return;
+          }
+          const quality = body.quality ?? 'original';
+          const crop = body.crop;
+          if (!['preview', 'original'].includes(quality) || (crop != null && (quality !== 'original' ||
+              typeof crop !== 'object' || Array.isArray(crop) ||
+              !['x','y','width','height'].every(k => typeof crop[k] === 'number' && Number.isFinite(crop[k])) ||
+              crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0 ||
+              crop.x + crop.width > 1 || crop.y + crop.height > 1))) {
+            sendJson({ok:false, error:'quality 应为 preview/original；crop 须为原图内的归一化区域 {x,y,width,height}'}, 400); return;
+          }
+          const account = String(selfUserId || '');
+          const reference = imageReferences.resolve(body.imageRef, {account, key});
+          if (!reference) {
+            sendJson({ok:false, error:'图片引用已失效或不属于当前账号/来源，请重新读取原消息或转发内容取得 imageRef'}, 404); return;
+          }
+          if (quality === 'original' && !canRequestOriginal(reference.media, reference.context)) {
+            sendJson({ok:false, error:'当前图片没有可验证的原图读取通道；可用 quality="preview" 查看已有图片'}, 400); return;
+          }
+          const jobKey = JSON.stringify([account, key, body.imageRef, quality, crop ?? null]);
+          if (!imageDetailJobs.has(jobKey) && imageDetailJobs.size >= 2) {
+            sendJson({ok:false, error:'正在处理其他图片细节，请稍后重试'}, 429); return;
+          }
+          try {
+            let pending = imageDetailJobs.get(jobKey);
+            if (!pending) {
+              pending = fetchMediaData([{...reference.media, imageRef:body.imageRef}], {
+                ...reference.context, quality, crop, detailIndex:reference.index
+              });
+              imageDetailJobs.set(jobKey, pending);
+              pending.finally(() => { if (imageDetailJobs.get(jobKey) === pending) imageDetailJobs.delete(jobKey); }).catch(() => {});
+            }
+            const images = await pending;
+            if (account !== String(selfUserId || '') || !imageReferences.resolve(body.imageRef, {account, key})) {
+              sendJson({ok:false, error:'QQ 账号或连接已变化，请重新读取图片'}, 409); return;
+            }
+            const image = images[0];
+            sendJson({ok:!!image?.data, key, images, ...(!image?.data ? {error:image?.text || '图片细节获取失败'} : {})});
+          } catch (error) {
+            log('[media] 图片细节读取失败:', error?.message ?? error);
+            sendJson({ok:false, error:safeImageReadError(error) || '图片细节获取失败；原图可能尚未下载完成，请稍后重试或重新读取预览'}, 500);
           }
           return;
         }
@@ -5870,9 +5939,69 @@ async function main() {
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
-                    if (!media.length) { sendJson({ ok: true, key, media: [], images: [] }); return; }
+          if (native && (!canonicalV2Key(key) || media.some(m => m?.kind !== 'face' &&
+              (!/^native:-?[1-9]\d{0,19}(?::-?[1-9]\d{0,19})?$/.test(String(m?.nativeForwardId ?? '')) ||
+               !/^-?[1-9]\d{0,19}$/.test(String(m?.nativeMessageId ?? '')))))) {
+            sendJson({ ok: false, error: '转发图片缺少有效的原生转发与节点定位，请重新读取转发内容' }, 400); return;
+          }
+          if (!media.length) { sendJson({ ok: true, key, media: [], images: [] }); return; }
           try {
-            const images = await fetchMediaData(media);
+            let images;
+            if (!native) {
+              images = await fetchMediaData(media, {key, forward:true});
+            } else {
+              // Budget the whole read, including source checks, QQ/cache work and
+              // model conversion. Five images fit in three 45s rounds (<180s MCP).
+              const deadline = Date.now() + 135000;
+              images = new Array(media.length);
+              const count = Math.min(media.length, MAX_MEDIA_COUNT);
+              let next = 0;
+              const failed = (index, text) => ({
+                index: index + 1,
+                kind: media[index]?.kind === 'face' ? 'face' : (media[index]?.kind === 'sticker' ? 'sticker' : 'image'),
+                text,
+              });
+              const worker = async () => {
+                while (next < count && Date.now() < deadline) {
+                  const index = next++;
+                  const expired = Error('图片读取超时，可重新读取此转发重试');
+                  let timer;
+                  try {
+                    const timeout = new Promise((_, reject) => {
+                      timer = setTimeout(() => reject(expired), Math.min(45000, deadline - Date.now()));
+                    });
+                    const result = await Promise.race([fetchMediaData([media[index]], { key, forward: true }), timeout]);
+                    images[index] = result[0] ? { ...result[0], index: index + 1 } : failed(index, '（图片获取失败）');
+                  } catch (error) {
+                    images[index] = failed(index, `（${error?.message ?? '图片获取失败'}）`);
+                    // QQ reads cannot be cancelled here. Retire a timed-out slot
+                    // so its still-running read never makes concurrency exceed 2.
+                    if (error === expired) return;
+                  } finally {
+                    clearTimeout(timer);
+                  }
+                }
+              };
+              await Promise.all([worker(), worker()]);
+              let totalBytes = 0;
+              for (let index = 0; index < media.length; index++) {
+                if (index >= count) {
+                  images[index] = failed(index, `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）`);
+                } else if (!images[index]) {
+                  images[index] = failed(index, '（图片读取预算已用尽，可重新读取此转发重试）');
+                } else if (images[index].data) {
+                  // Apply the shared byte limit in source order, independent of
+                  // which worker finished first.
+                  const bytes = Buffer.byteLength(images[index].data, 'base64');
+                  if (totalBytes + bytes > MAX_MEDIA_BYTES) {
+                    const { data, mimeType, ...metadata } = images[index];
+                    images[index] = { ...metadata, text: '（图片总大小超限，已跳过）' };
+                  } else {
+                    totalBytes += bytes;
+                  }
+                }
+              }
+            }
             sendJson({ ok: true, key, media, images });
           } catch (error) {
             log(`转发媒体读取失败 ${key}:`, error?.message ?? error);
@@ -5987,8 +6116,11 @@ async function main() {
             sendJson({ ok: false, error: '该会话未通过白名单/拒绝名单策略，不能读取' }, 403);
             return;
           }
+          const mediaAccount = String(selfUserId || '');
           const message = await findQQMediaMessage(key, messageId);
-          const media = message?.media;
+          const media = message?.media?.map((item, index) => withImageReference(item, {
+            key, messageId:String(message.messageId ?? messageId)
+          }, index + 1, mediaAccount));
           if (!media) {
             sendJson({ ok: true, messageId, media: [], images: [], note: '该来源的未读和 SnowLuma 历史中未找到该消息' });
             return;
@@ -5999,6 +6131,7 @@ async function main() {
           }
           try {
             const images = await fetchMediaData(media, {key, messageId:String(message.messageId ?? messageId)});
+            if (mediaAccount !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取图片');
             sendJson({ ok: true, messageId, media, images });
           } catch (error) {
             log(`图片查询失败 ${key} ${messageId}: ${error?.message ?? error}`);
@@ -6235,6 +6368,7 @@ async function main() {
     return Number.isFinite(n) && n > 0 ? Math.min(8, Math.max(1, Math.round(n))) : 5;
   })();
   const MAX_MEDIA_BYTES = maxMediaBytesLimit; // 单条消息图片总字节上限
+  const MAX_ORIGINAL_SOURCE_BYTES = 32 * 1024 * 1024;
   const MAX_MEDIA_PIXELS = (() => {
     const n = Number(cfg.socialV2?.media?.maxPixels);
     return Number.isFinite(n) && n > 0 ? Math.min(64_000_000, Math.max(1_000_000, Math.round(n))) : 64_000_000;
@@ -6281,6 +6415,51 @@ async function main() {
     }
     if (out.note) log(`[media] ${label}: ${out.note}`);
     return out;
+  }
+
+  function canRequestOriginal(media, context) {
+    return !!(native && context.key && (context.messageId || context.forward) &&
+      /^[a-f0-9]{32}$/i.test(String(media.file ?? '')) && !media.emojiPackageId);
+  }
+
+  function withImageReference(media, context, index, account = String(selfUserId || '')) {
+    if (!media || typeof media !== 'object' || account !== String(selfUserId || '')) return media;
+    const imageRef = imageReferences.remember({account, key:context.key, media, context, index});
+    return imageRef ? {...media, imageRef, canFetchOriginal:canRequestOriginal(media, context)} : media;
+  }
+
+  function registerForwardImages(formatted, key, forwardId, account) {
+    for (const message of formatted.messages || []) {
+      message.media = (message.media || []).map((media, index) => withImageReference(media,
+        {key, forward:true, forwardId, messageId:message.messageId}, index + 1, account));
+    }
+  }
+
+  function safeImageMetadata(value = {}) {
+    const dimension = n => Number.isSafeInteger(n) && n > 0 && n <= 64_000_000 ? n : null;
+    return {
+      representation:['preview','original','reencoded','crop'].includes(value.representation) ? value.representation : 'preview',
+      width:dimension(value.width), height:dimension(value.height),
+      originalWidth:dimension(value.originalWidth), originalHeight:dimension(value.originalHeight),
+      originalAvailable:value.originalAvailable === true,
+      canFetchOriginal:value.canFetchOriginal === true,
+      ...(['not_cached','invalid_cache','source_too_large','unsupported'].includes(value.originalUnavailableReason)
+        ? {originalUnavailableReason:value.originalUnavailableReason} : {})
+    };
+  }
+
+  function safeImageReadError(error) {
+    const text = String(error?.message ?? '');
+    const download = /^QQ 转发图片下载失败（(?:QQ -?\d+(?:，服务端 -?\d+)?|服务端 -?\d+)）/.exec(text);
+    if (download) return download[0];
+    if (/^QQ 本地图片缓存均超过读取大小上限（[1-9]\d{0,7} 字节），未重复下载$/.test(text)) return text;
+    return [
+      'QQ 未能在规定时间内完成原图缓存，未使用预览代替',
+      'QQ 尚未取得经过校验的原图，未使用预览代替',
+      '未获取到经过校验的原图',
+      'QQ 图片读取期间账号或连接已改变，请重新读取',
+      'QQ 媒体读取器未返回有效画质信息，请重新连接'
+    ].includes(text) ? text : null;
   }
 
   function isSafeLocalMediaPath(filePath) {
@@ -6353,6 +6532,10 @@ async function main() {
   }
 
   async function fetchOneBotImage(media, messageContext = {}) {
+    const quality = messageContext.quality;
+    // Both explicit modes may read a bounded original: preview can generate a
+    // small image when QQ has no thumbnail. Model output has a separate budget.
+    const maxSourceBytes = quality ? MAX_ORIGINAL_SOURCE_BYTES : MAX_MEDIA_BYTES;
     // QQ 原生模式先查本机缓存，必要时按原消息请求 QQ 下载；SnowLuma 模式的表情仍优先走 CDN。
     const emojiId = String(media.emojiId || emojiIdFromFileName(media.file) || '');
     const isSticker = media.kind === 'sticker' || !!emojiId || String(media.subType || '') === '1';
@@ -6370,7 +6553,7 @@ async function main() {
     const tryUrls = async () => {
       for (const url of urls) {
         try {
-          const fetched = await safeFetchBuffer(url, MAX_MEDIA_BYTES);
+          const fetched = await safeFetchBuffer(url, maxSourceBytes);
           const accepted = acceptImageBuffer(fetched.buffer, `${label} URL `);
           if (accepted) return { ...accepted, mimeType: accepted.mimeType || mimeFromUrl(url) };
           failures.push(`${url} 不是有效图片`);
@@ -6390,50 +6573,65 @@ async function main() {
       try {
         const info = await bot.getImage({
           ...(file ? {file} : {}),
+          ...(native ? {maxBytes:maxSourceBytes, ...(quality ? {quality} : {})} : {}),
           ...(marketFace ? {emojiId:String(media.emojiId), emojiPackageId:packageId} : {}),
           ...(native && messageContext.key && messageContext.messageId
             ? {key:String(messageContext.key), messageId:String(messageContext.messageId)} : {}),
+          ...(native && messageContext.forward ? {key:String(messageContext.key),
+            forwardId:String(media.nativeForwardId), messageId:String(media.nativeMessageId)} : {}),
         });
         const obj = info && typeof info === 'object' ? info : {};
+        const metadata = safeImageMetadata(obj);
+        if (quality === 'original' && obj.representation !== 'original') throw Error('未获取到经过校验的原图');
         const localMediaPath = typeof obj.file === 'string' && !obj.file.startsWith('base64://') && fs.existsSync(obj.file)
           && (native ? isSafeNativeMediaPath(obj.file) : isSafeLocalMediaPath(obj.file));
         if (localMediaPath) {
           const stat = fs.statSync(obj.file);
-          if (stat.size > MAX_MEDIA_BYTES) {
+          if (stat.size > maxSourceBytes) {
             log(`QQ 本机图片超限，已跳过（${Math.round(stat.size / 1024)}KB）`);
           } else {
             const accepted = acceptImageBuffer(fs.readFileSync(obj.file), 'QQ 本机图片');
-            if (accepted) return accepted;
+            if (accepted) return { ...accepted, ...metadata };
           }
         }
         const base64 = base64FromMaybe(obj.data) || base64FromMaybe(obj.base64) || base64FromMaybe(obj.file);
         if (base64) {
           // 粗略估计 base64 解码后大小，超限直接拒绝，避免超大字符串撑爆内存
-          if (base64.length * 3 / 4 <= MAX_MEDIA_BYTES) {
+          if (base64.length * 3 / 4 <= maxSourceBytes) {
             const accepted = acceptImageBuffer(Buffer.from(base64, 'base64'), 'get_image 返回的图片');
-            if (accepted) return accepted;
+            if (accepted) return { ...accepted, ...metadata };
           } else {
             log(`get_image 返回的图片 base64 超限，已跳过（${Math.round(base64.length * 3 / 4 / 1024)}KB）`);
           }
         }
         if (obj.url) {
           try {
-            const fetched = await safeFetchBuffer(String(obj.url), MAX_MEDIA_BYTES);
+            const fetched = await safeFetchBuffer(String(obj.url), maxSourceBytes);
             const accepted = acceptImageBuffer(fetched.buffer, 'get_image URL 图片');
-            if (accepted) return { ...accepted, mimeType: accepted.mimeType || mimeFromUrl(obj.url) };
+            if (accepted) return { ...accepted, ...metadata, mimeType: accepted.mimeType || mimeFromUrl(obj.url) };
           } catch (error) {
             failures.push(`get_image url: ${error?.message ?? error}`);
           }
         }
 
       } catch (error) {
+        if (native && quality === 'original') {
+          const safeError = safeImageReadError(error);
+          if (safeError) throw Error(safeError);
+        }
+        // Forward reads expose numeric download codes and the reader's fixed
+        // size-limit message, never raw paths or signed diagnostic URLs.
+        const nativeFailure = /^QQ 转发图片下载失败（(?:QQ -?\d+(?:，服务端 -?\d+)?|服务端 -?\d+)）/.exec(String(error?.message ?? ''));
+        if (native && messageContext.forward && nativeFailure) throw Error(nativeFailure[0]);
+        const sizeFailure = /^QQ 本地图片缓存均超过读取大小上限（[1-9]\d{0,7} 字节），未重复下载$/.exec(String(error?.message ?? ''));
+        if (native && messageContext.forward && sizeFailure) throw Error(sizeFailure[0]);
         failures.push(`get_image: ${error?.message ?? error}`);
       }
       return null;
     };
 
     const result = native
-      ? (await tryGetImage()) ?? (await tryUrls())
+      ? (await tryGetImage()) ?? (messageContext.forward || quality === 'original' ? null : await tryUrls())
       : isSticker ? (await tryUrls()) ?? (await tryGetImage()) : (await tryGetImage()) ?? (await tryUrls());
     if (result) return result;
     if (failures.length) {
@@ -6477,7 +6675,7 @@ async function main() {
       const id = JSON.stringify([bot.account, key, messageId, file]);
       if (incomingImagePrefetchJobs.has(id)) continue;
       if (incomingImagePrefetchJobs.size >= INCOMING_IMAGE_PREFETCH_QUEUE_LIMIT) break;
-      const job = { id, account:bot.account, params:{file, key, messageId} };
+      const job = { id, account:bot.account, params:{file, key, messageId, maxBytes:MAX_MEDIA_BYTES} };
       incomingImagePrefetchJobs.set(id, job);
       incomingImagePrefetchQueue.push(job);
     }
@@ -6568,13 +6766,26 @@ async function main() {
     const out = [];
     let index = 0;
     let totalBytes = 0;
-    for (const media of Array.isArray(mediaList) ? mediaList : []) {
+    const quality = messageContext.quality || 'preview';
+    const account = String(selfUserId || '');
+    const byteBudget = quality === 'original' ? 3 * 1024 * 1024 : MAX_MEDIA_BYTES;
+    for (let media of Array.isArray(mediaList) ? mediaList : []) {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
         out.push({ index, kind: media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : 'image'), text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
         continue;
       }
       if (!media || typeof media !== 'object') continue;
+      let sourceContext = {...messageContext, quality};
+      if (media.imageRef) {
+        const reference = imageReferences.resolve(media.imageRef, {account, key:messageContext.key});
+        if (!reference) {
+          out.push({index, kind:'image', text:'（图片引用已失效，请重新读取原消息或转发）'});
+          continue;
+        }
+        media = {...reference.media, imageRef:media.imageRef};
+        sourceContext = {...sourceContext, ...reference.context};
+      }
       if (media.kind === 'face') {
         const face = await fetchFaceMedia(media);
         const prep = face.buffer ? await toModelMedia(face.buffer, face.mimeType, `表情#${media.faceId ?? index}`) : null;
@@ -6598,12 +6809,15 @@ async function main() {
           out.push({ index, kind: 'face', faceId: media.faceId ? String(media.faceId) : undefined, text: face.text || `[表情#${media.faceId}]` });
         }
       } else {
-        const img = await fetchOneBotImage(media, messageContext);
+        const img = await fetchOneBotImage(media, sourceContext);
+        if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取图片');
         const kind = media.kind === 'sticker' || String(media.subType || '') === '1' ? 'sticker' : 'image';
         const noun = kind === 'sticker' ? '表情' : '图片';
         const base = {
-          index,
+          index:messageContext.detailIndex || index,
           kind,
+          ...(media.imageRef ? {imageRef:media.imageRef} : {}),
+          ...safeImageMetadata(img || {canFetchOriginal:canRequestOriginal(media, sourceContext)}),
           ...(media.file ? { file: String(media.file) } : {}),
           ...(media.url ? { url: String(media.url) } : {}),
           ...(media.emojiId ? { emojiId: String(media.emojiId) } : {}),
@@ -6611,15 +6825,26 @@ async function main() {
           ...(media.summary ? { summary: String(media.summary) } : {}),
           ...(media.subType ? { subType: String(media.subType) } : {})
         };
-        const prep = img?.buffer ? await toModelMedia(img.buffer, img.mimeType, `${noun}${index}`) : null;
+        const prep = img?.buffer ? (quality === 'original'
+          ? await prepareImageDetail(img.buffer, img.mimeType, {crop:messageContext.crop,
+            ffmpegPath:modelMediaLimits.ffmpegPath, timeoutMs:modelMediaLimits.timeoutMs})
+          : await toModelMedia(img.buffer, img.mimeType, `${noun}${index}`)) : null;
         if (prep?.ok) {
-          if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
+          if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取图片');
+          if (totalBytes + prep.buffer.length > byteBudget) {
             out.push({ ...base, text: `（${noun}总大小超限，已跳过）` });
             continue;
           }
           totalBytes += prep.buffer.length;
+          const dimensions = sniffImage(prep.buffer);
           out.push({
             ...base,
+            representation:quality === 'original' ? prep.representation
+              : (img.representation === 'original' && prep.buffer === img.buffer ? 'original' : 'preview'),
+            width:dimensions?.width ?? prep.width ?? null,
+            height:dimensions?.height ?? prep.height ?? null,
+            originalWidth:prep.originalWidth ?? base.originalWidth,
+            originalHeight:prep.originalHeight ?? base.originalHeight,
             mimeType: prep.mimeType,
             data: prep.buffer.toString('base64'),
             text: prep.note ? `（${prep.note}）` : ''
@@ -7804,6 +8029,8 @@ async function main() {
 
   // 会话见过的 forward id（有界，避免 未读消息移出队列后无法读取刚见过的转发）
   const seenForwardIds = new Map(); // key -> Set<string>
+  const imageReferences = createQQImageReferences();
+  const imageDetailJobs = new Map();
 
   function getSocialV2State(key) {
     // 只允许内部约定的会话 key 格式，并统一成无前导零的正整数形式，防止同一会话分裂成多个状态。
@@ -8093,8 +8320,10 @@ async function main() {
       const response = await bot.raw(group ? 'get_group_msg_history' : 'get_friend_msg_history',
         {[group ? 'group_id' : 'user_id']: convId, message_id:String(messageId), count:1, reverse_order:true});
       const row = response.messages.find(row => String(row.message_id) === String(messageId));
+      const forwardIds = extractForwardIds(row?.message);
       return row ? { sender: row.sender?.nickname || String(row.user_id), userId: String(row.user_id),
-        text: await segmentsToText(row.message, { includeReply: false }), messageId: String(messageId) } : null;
+        text: await segmentsToText(row.message, { includeReply: false }), messageId: String(messageId),
+        forwardIds, hasForward: forwardIds.length > 0 } : null;
     }
     pruneReplyInfoCache();
     const cacheKey = `${kind}:${String(convId)}:${String(messageId)}`;
@@ -8909,7 +9138,7 @@ async function main() {
       selfUserId = bot.account;
       log('已连接 QQ 独立通道');
     });
-    bot.on('close', () => { clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; stickerEntries = []; log('QQ 独立通道已断开，等待重连'); });
+    bot.on('close', () => { imageReferences.clear(); clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; stickerEntries = []; log('QQ 独立通道已断开，等待重连'); });
     process.once('exit', () => bot.close());
   } else {
     registerSnowLumaEvents();
@@ -9070,6 +9299,8 @@ async function main() {
     }
 
     bot.on('close', (info) => {
+      imageReferences.clear();
+      selfUserId = '';
       snowlumaHealth.connected = false;
       log(`SnowLuma 连接断开（code=${info?.code ?? '?'}），重连中…`);
       // 连不上时最常见的原因就是换了 QQ 账号 → token 变了；顺手自愈。

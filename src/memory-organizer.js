@@ -309,7 +309,17 @@ function visibleMessageContent(message) {
   });
 }
 
-function compactQQMessage(message) {
+const QQ_TEXT_FIELDS = Object.freeze(['text', 'plain', 'tail']);
+
+export function organizerEvidenceVersion(job) {
+  // Once chunks can have receipts, their boundaries and external IDs are fixed.
+  const hasChunks = Number.isSafeInteger(job.progress?.total)
+    || Number(job.progress?.completed) > 0
+    || Boolean(job.organizerSessionId) || Boolean(job.organizerSessionIds?.length);
+  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 3;
+}
+
+function compactQQMessage(message, omitNoticePlaceholders) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return message;
   const out = {};
   for (const key of [
@@ -317,6 +327,13 @@ function compactQQMessage(message) {
     'time', 'at', 'ago', 'text', 'plain', 'tail', 'kind', 'textTruncated'
   ]) {
     if (message[key] !== undefined && message[key] !== null && message[key] !== '') out[key] = message[key];
+  }
+  if (omitNoticePlaceholders) {
+    // Native QQ can expose an undecoded notice in a later read of the same ID.
+    // This exact fallback is not another body; retain all other evidence checks.
+    for (const key of QQ_TEXT_FIELDS) {
+      if (out[key] === '[notice]') delete out[key];
+    }
   }
   if (out.textTruncated === true) {
     // Keep the message identity and sender metadata, but do not offer a clipped
@@ -387,7 +404,9 @@ function containsTruncationMarker(value) {
  * Build a model-facing evidence list from persisted, user-visible session events.
  * Calls are retained for context, but only successful tool results carry returned data.
  */
-export function organizerTranscriptRecords(records, { sanitize = (value) => value, legacyChunkLayout = false } = {}) {
+export function organizerTranscriptRecords(records, {
+  sanitize = (value) => value, legacyChunkLayout = false, omitNoticePlaceholders = !legacyChunkLayout
+} = {}) {
   const ordered = (Array.isArray(records) ? records : [])
     .filter((record) => record && typeof record === 'object')
     .slice()
@@ -493,7 +512,7 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
         }
         for (const qqMessage of messages) {
           if (containsTruncationMarker(qqMessage)) markIncomplete(`DSH 事件 ${seq} 的 QQ 消息正文含截断标记`);
-          const compact = compactQQMessage(qqMessage);
+          const compact = compactQQMessage(qqMessage, omitNoticePlaceholders);
           const messageId = String(compact?.messageId ?? '').trim();
           const messageSeq = Number(compact?.seq);
           const identity = key && messageId ? `${key}\u0000${messageId}`
@@ -501,11 +520,18 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
               ? `${key}\u0000${bufferId}\u0000seq:${messageSeq}` : '';
           if (identity && seenQQMessages.has(identity)) {
             const previous = seenQQMessages.get(identity);
-            const aligned = alignQQTextFields(previous.message, compact, previous.event.tool, toolLeaf);
+            const aligned = alignQQTextFields(previous.message, compact, previous.bodyTool, toolLeaf);
             const conflictingFields = conflictingQQMessageFields(previous.message, aligned);
             if (conflictingFields.length) {
               markIncomplete(`DSH 事件 ${previous.event.seq} 和 ${seq} 中重复 QQ 消息字段不一致（${conflictingFields.join('、')}）`);
             } else {
+              if (omitNoticePlaceholders && !QQ_TEXT_FIELDS.some(field => previous.message[field] !== undefined)
+                  && QQ_TEXT_FIELDS.some(field => aligned[field] !== undefined)) {
+                // The first read may have contained metadata only. Attribute the
+                // newly available body to the read that actually supplied it.
+                previous.bodyTool = toolLeaf;
+                previous.event.bodySourceSeq = seq;
+              }
               // Detail and list tools expose different optional fields for the
               // same message. Keep the richer union while checking only fields
               // present in both results; sender is a display label, not identity.
@@ -519,7 +545,7 @@ export function organizerTranscriptRecords(records, { sanitize = (value) => valu
             bufferId, readThroughSeq, message: sanitize(compact)
           };
           events.push(qqEvent);
-          if (identity) seenQQMessages.set(identity, { message: compact, event: qqEvent });
+          if (identity) seenQQMessages.set(identity, { message: compact, event: qqEvent, bodyTool: toolLeaf });
         }
         continue;
       }

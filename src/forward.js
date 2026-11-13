@@ -143,10 +143,17 @@ function nodeContent(node) {
 function segmentMedia(seg) {
   if (!seg || typeof seg !== 'object') return null;
   const d = seg.data ?? {};
-  if (seg.type === 'image') {
+  if (seg.type === 'image' || seg.type === 'mface') {
     const file = String(d.file ?? d.file_id ?? d.filename ?? '');
     const url = String(d.url ?? d.src ?? '');
-    if (file || url) return { kind: 'image', file: file || undefined, url: url || undefined };
+    const emojiId = String(d.emoji_id ?? d.emojiId ?? '');
+    const subType = String(d.sub_type ?? d.subType ?? (seg.type === 'mface' ? '1' : ''));
+    if (file || url || emojiId) return {
+      kind: subType === '1' ? 'sticker' : 'image', file: file || undefined, url: url || undefined,
+      ...(subType ? { subType } : {}),
+      ...(emojiId ? { emojiId, emojiPackageId: String(d.emoji_package_id ?? d.emojiPackageId ?? '') } : {}),
+      ...(d.nativeForwardId ? {nativeForwardId: String(d.nativeForwardId), nativeMessageId: String(d.nativeMessageId ?? '')} : {}),
+    };
   }
   if (seg.type === 'face') {
     const faceId = String(d.id ?? d.face_id ?? '');
@@ -178,8 +185,8 @@ export function formatForwardResponse(data, options = {}) {
   const maxMessages = Math.max(1, Math.min(100, Number(options.maxMessages) || 50));
   const maxCharsPerMessage = Math.max(1, Math.min(2000, Number(options.maxCharsPerMessage) || 500));
   const raw = Array.isArray(data) ? data : (Array.isArray(data?.messages) ? data.messages : []);
-  const total = raw.length;
-  const truncatedByCount = total > maxMessages;
+  const total = Number.isSafeInteger(data?.total) && data.total >= raw.length ? data.total : raw.length;
+  const truncatedByCount = total > maxMessages || data?.truncated === true;
   let textTruncated = false;
   const messages = raw.slice(0, maxMessages).map((node, index) => {
     const fullText = nodeText(node);

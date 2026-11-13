@@ -68,6 +68,8 @@ check('formatForwardResponse textTruncated 标记', truncated.textTruncated === 
 
 const empty = formatForwardResponse({ messages: [] });
 check('formatForwardResponse 空 messages', empty.total === 0 && empty.truncated === false && empty.messages.length === 0);
+const partial = formatForwardResponse({messages: data.messages, total: 150, truncated: true});
+check('原生上游截断保留总数和不完整标记', partial.total === 150 && partial.truncated && partial.messages.length === 3);
 
 const senderFallback = formatForwardResponse({ messages: [{ sender: { nickname: '', card: '王五', user_id: 10003 }, message: 'x' }] });
 check('sender 空 nickname 回退到 card', senderFallback.messages[0].sender === '王五');
@@ -77,6 +79,14 @@ const fmtNode = formatForwardResponse(nodeData);
 check('formatForwardResponse 兼容标准 node.data 结构', fmtNode.messages[0].sender === '张三' && fmtNode.messages[0].text === '你好' && fmtNode.messages[0].userId === '10001' && fmtNode.messages[0].time === 100006);
 
 check('nodeText 清洗 CQ 字符串', nodeText({ message: '[CQ:image,file=x]' }) === '[媒体]');
+
+const nativeMedia = formatForwardResponse({messages: [{message: [
+  {type:'image', data:{file:'a'.repeat(32), sub_type:1, nativeForwardId:'native:9007199254740999', nativeMessageId:'9007199254741001'}},
+  {type:'mface', data:{emoji_id:'b'.repeat(32), emoji_package_id:'42', nativeForwardId:'native:9007199254740999', nativeMessageId:'9007199254741001'}},
+]}]}).messages[0].media;
+check('转发图片保留原生来源与64位节点定位', nativeMedia[0].nativeForwardId === 'native:9007199254740999' && nativeMedia[0].nativeMessageId === '9007199254741001');
+check('转发图片保留表情类型', nativeMedia[0].kind === 'sticker' && nativeMedia[0].subType === '1');
+check('转发商城表情保留包与图片标识', nativeMedia[1].kind === 'sticker' && nativeMedia[1].emojiId === 'b'.repeat(32) && nativeMedia[1].emojiPackageId === '42');
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
 process.exitCode = failed > 0 ? 1 : 0;

@@ -75,8 +75,18 @@ export function extractPresetPrefix(text) {
   return typeof prefix === 'string' ? prefix : null;
 }
 
-/** 保留 API 字段兼容性，不审查用户自定义的提示词内容。 */
-export function presetPromptWarnings() { return []; }
+/** 非阻断式固定前缀提示：缺少关键占位符或回合收尾说明时在控制台给出提醒，不拦截保存。 */
+export function presetPromptWarnings(content) {
+  const text = String(content ?? '');
+  const warnings = [];
+  if (!text.includes(PRESET_ROLE_CARD_VARIABLE)) {
+    warnings.push(`当前启用前缀不含 ${PRESET_ROLE_CARD_VARIABLE}，选中的人格卡不会注入 DSH 固定前缀`);
+  }
+  if (!/\bagent_rest\b/.test(text)) {
+    warnings.push('当前启用前缀未提及 agent_rest，角色可能遗漏回合收尾并触发桥接补发提醒');
+  }
+  return warnings;
+}
 
 /** 校验并规范化固定前缀模块文件/API 载荷。内置模块元数据来自代码定义，自定义模块标题随用户配置保存。 */
 export function normalizePresetPromptModules(value) {

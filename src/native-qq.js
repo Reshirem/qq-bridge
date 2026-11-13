@@ -5,6 +5,22 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 
+function imageQuality(value) {
+  if (value !== undefined && value !== 'preview' && value !== 'original') {
+    throw Error('图片 quality 必须是 preview 或 original');
+  }
+  return value;
+}
+
+function imageMaxBytes(value, quality) {
+  const maximum = (quality === undefined ? 20 : 32) * 1024 * 1024;
+  if (value === undefined) return quality === undefined ? undefined : (quality === 'original' ? 32 : 8) * 1024 * 1024;
+  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+    throw Error(`图片 maxBytes 必须是 1 至 ${maximum} 之间的整数`);
+  }
+  return value;
+}
+
 // Every request belongs to one connection. Never resubmit an interrupted send.
 function rpcStream(output, input, notification) {
   const pending = new Map();
@@ -48,6 +64,7 @@ export class NativeQQ extends EventEmitter {
     this.pipe = '\\\\.\\pipe\\qq-bridge-' + randomUUID();
     this.token = randomUUID();
     this.imageRequests = new Map();
+    this.forwardRequests = new Map();
     this.health = { mode: 'native', connected: false, readerReady: false, hint: '等待桌面 QQ 登录' };
   }
   onPrivateMessage(fn) { this.on('private', fn); }
@@ -153,6 +170,7 @@ export class NativeQQ extends EventEmitter {
   async raw(action, p = {}) {
     if (!this.call) throw Error(this.health.hint || 'QQ 独立通道未连接');
     if (action === 'get_status') return {online:true, good:true};
+    if (action === 'get_forward_msg') return this.getForwardMessage(p);
     if (action === 'group_poke' || action === 'send_poke') {
       const group = action === 'group_poke';
       const targetUin = String(p.user_id ?? '');
@@ -170,6 +188,9 @@ export class NativeQQ extends EventEmitter {
       return this.read(action,p);
     }
     if (action === 'get_image') {
+      const quality = imageQuality(p.quality);
+      const maxBytes = imageMaxBytes(p.maxBytes, quality);
+      const sizeLimit = {...(maxBytes === undefined ? {} : {maxBytes}), ...(quality ? {quality} : {})};
       if (!this.read) throw Error('QQ 媒体库尚未连接');
       const {read, call, account} = this;
       const checkConnection = () => {
@@ -182,36 +203,91 @@ export class NativeQQ extends EventEmitter {
       const packageId = String(p.emojiPackageId ?? '');
       const hasMd5 = /^[a-f0-9]{32}$/.test(md5);
       const marketFace = /^[a-f0-9]{16,64}$/.test(emojiId) && /^[1-9]\d{0,18}$/.test(packageId);
-      if (!hasMd5 && !marketFace) return {file:null};
-      const image = hasMd5 ? {type:'image', md5} : {type:'marketFace', emojiId, packageId};
-      let file = await read('media', image);
-      checkConnection();
-      if (!file && hasMd5 && marketFace) file = await read('media', {type:'marketFace', emojiId, packageId});
-      checkConnection();
-      if (file) return {file};
-      // Market faces use their local preview or the bridge's existing CDN fallback.
-      if (!hasMd5) return {file:null};
-
+      if (!hasMd5 && !marketFace) {
+        if (quality) throw Error('QQ 图片标识无效');
+        return {file:null};
+      }
+      if (quality === 'original' && !hasMd5) throw Error('QQ 商城表情暂不支持读取原图');
       const key = String(p.key ?? '').trim();
       const messageId = String(p.messageId ?? '').trim();
-      if (!key && !messageId) return {file:null};
-      const match = /^(group|private):([1-9]\d{0,18})$/.exec(key);
-      if (!match || !/^-?[1-9]\d{0,19}$/.test(messageId)) return {file:null};
-      const peer = await this.peer(match[1], match[2]);
+      const source = /^(group|private):([1-9]\d{0,18})$/.exec(key);
+      const hasLocator = !!source && /^-?[1-9]\d{0,19}$/.test(messageId);
+      const imageResult = value => {
+        if (quality === undefined) return {file:value};
+        // Explicit quality cannot silently accept an older path-only reader or
+        // call an unverified thumbnail an original. Restart the reader instead.
+        if (!value || typeof value !== 'object' || !['preview','original'].includes(value.representation)
+          || typeof value.originalAvailable !== 'boolean' || (value.file != null && typeof value.file !== 'string')) {
+          throw Error('QQ 媒体读取器未返回有效画质信息，请重新连接');
+        }
+        if (quality === 'original' && value.file && (value.representation !== 'original' || !value.originalAvailable)) {
+          throw Error('QQ 尚未取得经过校验的原图，未使用预览代替');
+        }
+        const dimension = number => Number.isInteger(number) && number > 0 && number <= 0xffffffff ? number : null;
+        const reason = ['not_cached','invalid_cache','source_too_large','unsupported'].includes(value.originalUnavailableReason)
+          ? value.originalUnavailableReason : null;
+        return {
+          file:value.file || null, representation:value.representation,
+          width:dimension(value.width), height:dimension(value.height),
+          originalWidth:dimension(value.originalWidth), originalHeight:dimension(value.originalHeight),
+          originalAvailable:value.originalAvailable,
+          originalUnavailableReason:reason,
+          canFetchOriginal:hasMd5 && !['source_too_large','unsupported'].includes(reason) && (value.originalAvailable || hasLocator),
+        };
+      };
+      let forwardPeer;
+      if (p.forwardId) {
+        const match = /^(group|private):([1-9]\d{0,18})$/.exec(String(p.key ?? ''));
+        if (!match) throw Error('QQ 转发图片来源无效');
+        forwardPeer = await this.peer(match[1], match[2]);
+        checkConnection();
+        // Validate the node before even returning a local cache hit. A media hash
+        // supplied by a caller is not evidence that it belongs to this source.
+        await call('check_forward_image', {
+          peer:forwardPeer, forwardId:p.forwardId, messageId:String(p.messageId ?? ''),
+          md5:hasMd5 ? md5 : '', emojiId, emojiPackageId:packageId,
+        });
+        checkConnection();
+      }
+      const image = {...(hasMd5 ? {type:'image', md5} : {type:'marketFace', emojiId, packageId}), ...sizeLimit};
+      let result = imageResult(await read('media', image));
+      checkConnection();
+      if (!result.file && hasMd5 && marketFace && quality !== 'original') {
+        if (p.forwardId) {
+          // A secondary identity needs its own source check. Validating the
+          // ordinary image does not authorize an arbitrary market preview.
+          await call('check_forward_image', {
+            peer:forwardPeer, forwardId:p.forwardId, messageId:String(p.messageId ?? ''),
+            md5:'', emojiId, emojiPackageId:packageId,
+          });
+          checkConnection();
+        }
+        result = imageResult(await read('media', {type:'marketFace', emojiId, packageId, ...sizeLimit}));
+      }
+      checkConnection();
+      if (result.file) return result;
+      // Forward callers cannot supply an arbitrary fallback URL. Only expose
+      // the fixed QQ CDN resource after checking this node's exact identity.
+      if (!hasMd5) return p.forwardId && marketFace
+        ? {...result, url:`https://gxh.vip.qq.com/club/item/parcel/item/${emojiId.slice(0,2)}/${emojiId}/raw300.gif`}
+        : result;
+
+      if (!hasLocator) return result;
+      const peer = forwardPeer || await this.peer(source[1], source[2]);
       checkConnection();
       await call('fetch_message_image', {
         peer, messageId,
-        md5,
+        md5, ...(p.forwardId ? {forwardId:p.forwardId} : {}),
       }, 30000);
       const deadline = Date.now() + 12000;
       do {
         checkConnection();
-        file = await read('media', image);
+        result = imageResult(await read('media', image));
         checkConnection();
-        if (file) return {file};
+        if (result.file) return result;
         await new Promise(resolve => setTimeout(resolve, 250));
       } while (!this.closed && this.read && Date.now() < deadline);
-      throw Error('QQ 未能在规定时间内完成图片缓存');
+      throw Error(quality === 'original' ? 'QQ 未能在规定时间内完成原图缓存，未使用预览代替' : 'QQ 未能在规定时间内完成图片缓存');
     }
     if (action === 'get_group_msg_history' || action === 'get_friend_msg_history') {
       const kind = action === 'get_group_msg_history' ? 'group' : 'private';
@@ -251,9 +327,39 @@ export class NativeQQ extends EventEmitter {
   getLoginInfo() { return this.raw('get_login_info'); }
   getGroupMemberList(id) { return this.raw('get_group_member_list',{group_id:id}); }
   async getGroupMemberInfo(group, user) { return (await this.getGroupMemberList(group)).find(r => r.user_id === String(user)); }
+  getForwardMessage(params = {}) {
+    const key = String(params.key ?? ''), id = String(params.id ?? '');
+    const source = /^(group|private):([1-9]\d{0,18})$/.exec(key);
+    if (!source || !/^native:-?[1-9]\d{0,19}(?::-?[1-9]\d{0,19})?$/.test(id)) {
+      return Promise.reject(Error('QQ 转发定位无效，请使用当前来源消息中的 forwardIds'));
+    }
+    const cacheKey = JSON.stringify([this.account, key, id]);
+    const previous = this.forwardRequests.get(cacheKey);
+    if (previous && previous.call === this.call) return previous.promise;
+    const call = this.call, account = this.account;
+    const request = {call, promise:(async () => {
+      const peer = await this.peer(source[1], source[2]);
+      const check = () => {
+        if (this.closed || this.call !== call || this.account !== account) {
+          throw Error('QQ 转发读取期间账号或连接已改变，请重新读取');
+        }
+      };
+      check();
+      const result = await call('get_forward_msg', {peer, id}, 60000);
+      check();
+      return result;
+    })()};
+    this.forwardRequests.set(cacheKey, request);
+    const clear = () => { if (this.forwardRequests.get(cacheKey) === request) this.forwardRequests.delete(cacheKey); };
+    void request.promise.then(clear, clear);
+    return request.promise;
+  }
   getImage(params = {}) {
+    let maxBytes, quality;
+    try { quality = imageQuality(params.quality); maxBytes = imageMaxBytes(params.maxBytes, quality); }
+    catch (error) { return Promise.reject(error); }
     const key = JSON.stringify([this.account, String(params.file ?? '').toLowerCase(),
-      params.key, params.messageId, params.emojiId, params.emojiPackageId]);
+      params.key, params.messageId, params.emojiId, params.emojiPackageId, params.forwardId, quality, maxBytes]);
     const previous = this.imageRequests.get(key);
     if (previous && previous.read === this.read && previous.call === this.call) return previous.promise;
     const request = {read:this.read, call:this.call, promise:this.raw('get_image',params)};
