@@ -12,6 +12,11 @@
     "allowRemote": false
   },
   "desktopAgent": {
+    "sleepSchedule": {
+      "enabled": false,
+      "sleepTime": "",
+      "wakeTime": ""
+    },
     "promptTemplates": {
       "roleCard": "【当前角色卡：{roleName}】\n{roleContent}",
       "qqAttention": "【QQ 提醒】\n{sources}",

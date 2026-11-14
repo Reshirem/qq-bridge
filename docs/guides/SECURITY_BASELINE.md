@@ -97,7 +97,8 @@
 | WebUI 关系对象设置 | `/api/whitelist` | 仅控制台令牌可设置或清除 `ownerQQ`；首次保存后由本地配置优先，忽略 DSH 的同名设置。更改账号时，已缓存消息的身份标记按当前账号重新计算；QQ 工具访问范围不受影响。测试发送名单独立保存，仍只限制控制台测试发送。 |
 | WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务可恢复停止/休息状态，用户在 DSH 对话中的直接消息和 QQ 注意信号可提前结束休息但不能解除持久停止态；所有入口复用单一 `desktop-agent` session。QQ MCP 在内部附加持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
 | WebUI 持久停止 | `/api/console/desktop-agent/stop` | 仅控制台令牌可调用；先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作。DSH 暂不可用时停止态仍保存，恢复连接后不会自动唤醒。 |
-| QQ 持久睡眠 | `handleIncoming()`、`sleepDesktopAgent()` | 只有配置账号的私聊纯文本命令可进入或结束；进入时保存 `sleeping`、清除待处理提醒并尝试取消 DSH 工作，消息继续缓冲但不生成提醒。桥接重启和 DSH 重连后保持睡眠；恢复后不补发睡眠期间的提醒。DSH 外部直接发起的回合在事件到达后请求取消，并非 DSH 层的入口拦截。 |
+| QQ 持久睡眠 | `handleIncoming()`、`sleepDesktopAgent()` | QQ 命令入口只有配置账号的私聊纯文本命令可进入或结束；进入时保存 `sleeping`、清除待处理提醒并尝试取消 DSH 工作，消息继续缓冲但不生成提醒。桥接重启和 DSH 重连不会自行解除睡眠，管理员另行开启的起床闹钟除外；恢复后不补发睡眠期间的提醒。DSH 外部直接发起的回合在事件到达后请求取消，并非 DSH 层的入口拦截。 |
+| 每日睡眠闹钟 | `/api/console/desktop-agent/sleep-schedule`、`sleep-schedule.js` | 默认关闭、时间为空，仅认证控制台可读写，agent-call 默认拒绝且不扩宽工具白名单。启用需管理员配置两个不同的本地时间；定时动作复用持久睡眠/起床流程，不伪造 owner 命令、不发送 QQ 回执。睡觉与起床都跳过 `stopped`，重复目标状态不发起回合；关闭不唤醒。配置代次和生命周期/会话检查阻止旧起床回调覆盖新设置或停止操作。调度只检查本地时钟，不增加模型心跳。 |
 | WebUI 长期记忆设置 | `/api/memory/settings`、`/api/memory/providers`、`/api/memory/service` | 仅控制台令牌可配置或启停本机服务；状态接口只返回密钥是否已设置，不回显密钥。Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径；Provider 保存后重启 A_Memorix。 |
 | 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token；调用会保存定时休息状态，并在返回工具结果后取消当前 DSH turn。该状态不限制后续工具调用；休息到期只发起一次恢复回合。 |
 | 漏调用休息工具 | DSH `turn/end` 与会话快照 | 正常完成但未调用工具时，桥接只向原主会话发收尾提醒，不自动进入休息。首次立即提醒，连续遗漏指数退避；持久停止、睡眠及休息时不发此提醒。模板沿用已认证控制台的配置接口，发送沿用现有会话与生命周期校验。 |

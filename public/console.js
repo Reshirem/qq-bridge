@@ -659,6 +659,88 @@ let desktopAgentStatusAt = 0;
 let desktopAgentStatusRequest = null;
 let desktopAgentInfo = null;
 let desktopAgentControlsAvailable = false;
+const desktopAgentSleepScheduleState = {
+  snapshot: null, dirty: false, editVersion: 0, revision: 0, saving: false, request: null,
+};
+
+function desktopAgentSleepScheduleFormValue() {
+  return {
+    enabled: document.getElementById('desktopAgentSleepScheduleEnabled').checked,
+    sleepTime: document.getElementById('desktopAgentSleepTime').value,
+    wakeTime: document.getElementById('desktopAgentWakeTime').value,
+  };
+}
+
+function desktopAgentSleepScheduleMatches(schedule) {
+  const value = desktopAgentSleepScheduleFormValue();
+  return !!schedule && value.enabled === schedule.enabled && value.sleepTime === schedule.sleepTime && value.wakeTime === schedule.wakeTime;
+}
+
+function desktopAgentScheduledTime(value, timeZone) {
+  if (!Number.isFinite(value)) return '未安排';
+  try {
+    return new Intl.DateTimeFormat('zh-CN', { timeZone, dateStyle: 'short', timeStyle: 'short', hour12: false }).format(new Date(value));
+  } catch {
+    return new Date(value).toISOString();
+  }
+}
+
+function desktopAgentSleepingDescription(info) {
+  const snapshot = desktopAgentSleepScheduleState.snapshot;
+  const scheduled = snapshot?.schedule.enabled;
+  const nextWake = scheduled && Number.isFinite(snapshot.nextWakeAt)
+    ? `${desktopAgentScheduledTime(snapshot.nextWakeAt, snapshot.timeZone)}（${snapshot.timeZone}）`
+    : '';
+  return {
+    label: info.running ? '睡眠中；正在等待 DSH 取消当前回合'
+      : nextWake ? `睡眠中；下次起床 ${nextWake}`
+        : scheduled ? '睡眠中；已启用每日定时起床'
+          : snapshot ? '睡眠中；定时起床未启用' : '睡眠中；正在读取定时设置',
+    hint: nextWake ? `下次定时起床 ${nextWake}；也可由 ownerQQ 私聊发送 /起床 提前恢复`
+      : '由 ownerQQ 私聊发送 /起床 恢复',
+  };
+}
+
+function applyDesktopAgentSleepSchedule(response) {
+  if (!response?.ok || !response.schedule) throw new Error(response?.error || '定时设置响应无效');
+  const state = desktopAgentSleepScheduleState;
+  state.snapshot = response;
+  if (!state.dirty) {
+    document.getElementById('desktopAgentSleepScheduleEnabled').checked = response.schedule.enabled;
+    document.getElementById('desktopAgentSleepTime').value = response.schedule.sleepTime;
+    document.getElementById('desktopAgentWakeTime').value = response.schedule.wakeTime;
+  }
+  document.getElementById('desktopAgentSleepScheduleFields').disabled = false;
+  document.getElementById('desktopAgentSleepScheduleSave').disabled = state.saving;
+  document.getElementById('desktopAgentSleepScheduleNext').textContent =
+    `已保存：${response.schedule.enabled ? '已启用' : '未启用'} · 桥接时区：${response.timeZone} · 下次睡觉：${desktopAgentScheduledTime(response.nextSleepAt, response.timeZone)} · 下次起床：${desktopAgentScheduledTime(response.nextWakeAt, response.timeZone)}`;
+  if (desktopAgentInfo?.lifecycle === 'sleeping') {
+    const description = desktopAgentSleepingDescription(desktopAgentInfo);
+    document.getElementById('desktopAgentStatus').textContent = description.label + (desktopAgentInfo.sessionId ? ` · ${desktopAgentInfo.sessionId}` : '');
+    document.getElementById('metricDesktopAgentHint').textContent = description.hint;
+  }
+}
+
+async function refreshDesktopAgentSleepSchedule() {
+  const state = desktopAgentSleepScheduleState;
+  if (state.saving) return;
+  if (state.request) return state.request;
+  const revision = state.revision;
+  const request = (async () => {
+    try {
+      const response = await api('/api/console/desktop-agent/sleep-schedule');
+      if (revision !== state.revision || state.saving) return;
+      applyDesktopAgentSleepSchedule(response);
+    } catch (error) {
+      if (revision !== state.revision || state.saving) return;
+      const status = document.getElementById('desktopAgentSleepScheduleStatus');
+      status.textContent = '定时设置读取失败：' + (error?.message || '请求失败');
+      status.className = 'meta err';
+    }
+  })();
+  state.request = request;
+  try { await request; } finally { if (state.request === request) state.request = null; }
+}
 
 async function refreshDesktopAgentStatus(force = false) {
   if (!force && Date.now() - desktopAgentStatusAt < 5000) return;
@@ -667,16 +749,22 @@ async function refreshDesktopAgentStatus(force = false) {
     const status = document.getElementById('desktopAgentStatus');
     const summary = document.getElementById('metricDesktopAgent');
     const summaryHint = document.getElementById('metricDesktopAgentHint');
+    const scheduleRevision = desktopAgentSleepScheduleState.saving ? null : desktopAgentSleepScheduleState.revision;
     try {
       const info = await api('/api/console/desktop-agent');
       desktopAgentInfo = info;
+      if (scheduleRevision === desktopAgentSleepScheduleState.revision && !desktopAgentSleepScheduleState.saving) {
+        if (info.sleepSchedule) applyDesktopAgentSleepSchedule(info.sleepSchedule);
+        else await refreshDesktopAgentSleepSchedule();
+      }
       let label = '正在读取会话状态';
       let tone = 'meta ok';
       let summaryLabel = '已就绪';
       let hint = '持久会话可启动自主探索或接收任务';
       if (info.lifecycle === 'sleeping') {
-        label = info.running ? '睡眠中；正在等待 DSH 取消当前回合' : '睡眠中；不会自动唤醒';
-        tone = info.running ? 'meta err' : 'meta'; summaryLabel = '睡眠中'; hint = '由 ownerQQ 私聊发送 /起床 恢复';
+        const description = desktopAgentSleepingDescription(info);
+        label = description.label;
+        tone = info.running ? 'meta err' : 'meta'; summaryLabel = '睡眠中'; hint = description.hint;
       }
       else if (!info.dshReady) { label = 'DSH 当前未连接'; tone = 'meta err'; summaryLabel = 'DSH 未连接'; hint = '检查 DSH 是否正在运行'; }
       else if (!info.presetAvailable) { label = '数字角色 preset 未加载；请安装 preset bundle 并重启 DSH'; tone = 'meta err'; summaryLabel = '缺少 preset'; hint = '请先完成 DSH preset 配置'; }
@@ -1166,6 +1254,47 @@ document.getElementById('desktopAgentRefresh').addEventListener('click', async (
   const button = document.getElementById('desktopAgentRefresh');
   button.disabled = true;
   try { await refreshDesktopAgentStatus(true); } finally { button.disabled = false; }
+});
+document.getElementById('desktopAgentSleepScheduleForm').addEventListener('input', () => {
+  const state = desktopAgentSleepScheduleState;
+  state.editVersion++;
+  state.dirty = !desktopAgentSleepScheduleMatches(state.snapshot?.schedule);
+  const status = document.getElementById('desktopAgentSleepScheduleStatus');
+  status.textContent = state.saving ? '正在保存；新编辑将保留' : state.dirty ? '有未保存的修改' : '';
+  status.className = 'meta';
+});
+document.getElementById('desktopAgentSleepScheduleForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const state = desktopAgentSleepScheduleState;
+  if (state.saving || !state.snapshot) return;
+  const value = desktopAgentSleepScheduleFormValue();
+  const status = document.getElementById('desktopAgentSleepScheduleStatus');
+  const validTime = time => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time);
+  const error = [value.sleepTime, value.wakeTime].some(time => time && !validTime(time))
+    ? '请使用 HH:mm 格式填写时间'
+    : value.enabled && (!value.sleepTime || !value.wakeTime) ? '启用前请填写睡觉时间和起床时间'
+      : value.sleepTime && value.sleepTime === value.wakeTime ? '睡觉时间与起床时间不能相同' : '';
+  if (error) { status.textContent = error; status.className = 'meta err'; return; }
+  const editVersion = state.editVersion;
+  state.saving = true;
+  state.revision++;
+  document.getElementById('desktopAgentSleepScheduleSave').disabled = true;
+  status.textContent = '正在保存…';
+  status.className = 'meta';
+  try {
+    const response = await api('/api/console/desktop-agent/sleep-schedule', 'POST', value);
+    if (!response?.ok || !response.schedule) throw new Error(response?.error || '保存失败');
+    state.dirty = state.editVersion !== editVersion && !desktopAgentSleepScheduleMatches(response.schedule);
+    applyDesktopAgentSleepSchedule(response);
+    status.textContent = state.dirty ? '已保存；仍有新修改未保存' : '已保存';
+    status.className = 'meta ok';
+  } catch (error) {
+    status.textContent = '保存失败：' + (error?.message || '请求失败');
+    status.className = 'meta err';
+  } finally {
+    state.saving = false;
+    document.getElementById('desktopAgentSleepScheduleSave').disabled = false;
+  }
 });
 document.getElementById('desktopAgentStart').addEventListener('click', async () => {
   const button = document.getElementById('desktopAgentStart');

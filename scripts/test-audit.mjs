@@ -5,7 +5,8 @@ import { spawnSync } from 'node:child_process';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
-  'test-sleep-commands.mjs', 'test-attention-delivery.mjs', 'test-qq-message-reference.mjs',
+  'test-sleep-commands.mjs', 'test-sleep-schedule.mjs', 'test-sleep-schedule-routes.mjs',
+  'test-attention-delivery.mjs', 'test-qq-message-reference.mjs',
   'test-poke-reminders.mjs', 'test-poke-send.mjs',
   'test-qq-unread-store.mjs', 'test-qq-backends.mjs', 'test-maa-agent.mjs',
   'test-forward.mjs', 'test-native-forward.mjs', 'test-forward-routes.mjs',

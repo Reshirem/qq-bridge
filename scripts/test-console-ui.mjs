@@ -24,6 +24,144 @@ const errors = [];
 const blockedRequests = [];
 let browser;
 
+async function checkSleepSchedule(page) {
+  const endpoint = '/api/console/desktop-agent/sleep-schedule';
+  const enabled = page.locator('#desktopAgentSleepScheduleEnabled');
+  const sleepTime = page.locator('#desktopAgentSleepTime');
+  const wakeTime = page.locator('#desktopAgentWakeTime');
+  const save = page.locator('#desktopAgentSleepScheduleSave');
+  const message = page.locator('#desktopAgentSleepScheduleStatus');
+  const response = schedule => ({
+    ok: true, schedule: { ...schedule }, timeZone: fixture.state.desktopAgentSleepTimeZone,
+    nextSleepAt: schedule.enabled ? fixture.state.desktopAgentNextSleepAt : null,
+    nextWakeAt: schedule.enabled ? fixture.state.desktopAgentNextWakeAt : null,
+  });
+  const refresh = async () => {
+    await page.locator('#desktopAgentRefresh').click();
+    await page.waitForFunction(() => !document.getElementById('desktopAgentRefresh').disabled);
+  };
+  const saveAndWait = async () => {
+    await save.click();
+    await message.filter({ hasText: /^已保存/ }).waitFor();
+    await page.waitForFunction(() => !document.getElementById('desktopAgentSleepScheduleSave').disabled);
+  };
+  await page.waitForFunction(() => !document.getElementById('desktopAgentSleepScheduleFields').disabled);
+  assert.equal(await enabled.isChecked(), false, 'daily sleep is disabled by default');
+  assert.equal(await sleepTime.inputValue(), '', 'sleep time starts empty');
+  assert.equal(await wakeTime.inputValue(), '', 'wake time starts empty');
+  const before = fixture.requests.filter(r => r.path === endpoint).length;
+  await enabled.check();
+  await save.click();
+  await message.filter({ hasText: '启用前请填写睡觉时间和起床时间' }).waitFor();
+  await sleepTime.fill('23:00');
+  await wakeTime.fill('23:00');
+  await save.click();
+  await message.filter({ hasText: '睡觉时间与起床时间不能相同' }).waitFor();
+  assert.equal(fixture.requests.filter(r => r.path === endpoint).length, before, 'invalid schedules are not posted');
+  fixture.state.desktopAgentSleepTimeZone = 'Pacific/Honolulu';
+  await wakeTime.fill('07:00');
+  await saveAndWait();
+  assert.deepEqual(fixture.requests.filter(r => r.path === endpoint).at(-1).body,
+    { enabled: true, sleepTime: '23:00', wakeTime: '07:00' });
+  const next = await page.locator('#desktopAgentSleepScheduleNext').textContent();
+  assert.match(next, /Pacific\/Honolulu/);
+  assert.match(next, /下次睡觉：.*05:00.*下次起床：.*13:00/, 'next dates use the bridge timezone');
+  fixture.state.desktopAgentSleeping = true;
+  await refresh();
+  assert.match(await page.locator('#desktopAgentStatus').textContent(), /下次起床.*13:00.*Pacific\/Honolulu/);
+  assert.doesNotMatch(await page.locator('#desktopAgentStatus').textContent(), /不会自动唤醒/);
+
+  await sleepTime.fill('22:30');
+  await refresh();
+  assert.equal(await sleepTime.inputValue(), '22:30', 'status polling preserves unsaved times');
+  const rejectSave = route => route.request().method() === 'POST'
+    ? route.fulfill({ json: { ok: false, error: '测试保存失败' } }) : route.continue();
+  await page.route('**' + endpoint, rejectSave);
+  await save.click();
+  await message.filter({ hasText: '保存失败：测试保存失败' }).waitFor();
+  assert.equal(await sleepTime.inputValue(), '22:30', 'failed saves preserve the draft');
+  await page.unroute('**' + endpoint, rejectSave);
+
+  // Hold an older status response until a newer POST has completed.
+  const oldStatus = {
+    ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
+    found: true, running: false, agentAvailable: true, lifecycle: 'sleeping',
+    sleepSchedule: response({ enabled: false, sleepTime: '', wakeTime: '' }),
+  };
+  let releaseStatus, statusStarted;
+  const holdStatus = new Promise(resolve => { releaseStatus = resolve; });
+  const statusSeen = new Promise(resolve => { statusStarted = resolve; });
+  const delayedStatus = async route => {
+    statusStarted();
+    await holdStatus;
+    await route.fulfill({ json: oldStatus });
+  };
+  await page.route('**/api/console/desktop-agent', delayedStatus);
+  await page.locator('#desktopAgentRefresh').click();
+  await statusSeen;
+  await saveAndWait();
+  releaseStatus();
+  await page.waitForFunction(() => !document.getElementById('desktopAgentRefresh').disabled);
+  await page.unroute('**/api/console/desktop-agent', delayedStatus);
+  assert.equal(await enabled.isChecked(), true, 'old status cannot overwrite a saved schedule');
+  assert.equal(await sleepTime.inputValue(), '22:30');
+  assert.match(await page.locator('#desktopAgentSleepScheduleNext').textContent(), /已保存：已启用/);
+
+  // The user may continue editing while a save is in flight.
+  let releaseSave, saveStarted;
+  const holdSave = new Promise(resolve => { releaseSave = resolve; });
+  const saveSeen = new Promise(resolve => { saveStarted = resolve; });
+  const delayedSave = async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const submitted = route.request().postDataJSON();
+    saveStarted();
+    await holdSave;
+    fixture.state.desktopAgentSleepSchedule = { ...submitted };
+    await route.fulfill({ json: response(submitted) });
+  };
+  await page.route('**' + endpoint, delayedSave);
+  await sleepTime.fill('22:15');
+  await save.click();
+  await saveSeen;
+  await wakeTime.fill('08:15');
+  await refresh();
+  assert.equal(await wakeTime.inputValue(), '08:15', 'a refresh during saving preserves new edits');
+  releaseSave();
+  await message.filter({ hasText: '已保存；仍有新修改未保存' }).waitFor();
+  await page.unroute('**' + endpoint, delayedSave);
+  assert.equal(await sleepTime.inputValue(), '22:15');
+  assert.equal(await wakeTime.inputValue(), '08:15', 'save response cannot replace edits made during that save');
+  assert.equal(fixture.state.desktopAgentSleepSchedule.wakeTime, '07:00');
+  await refresh();
+  assert.equal(await wakeTime.inputValue(), '08:15', 'later refresh still preserves the draft');
+  await saveAndWait();
+  assert.equal(fixture.state.desktopAgentSleepSchedule.wakeTime, '08:15');
+
+  await enabled.uncheck();
+  const beforeDisabledSave = fixture.requests.filter(r => r.path === endpoint).length;
+  await wakeTime.fill(await sleepTime.inputValue());
+  await save.click();
+  await message.filter({ hasText: '睡觉时间与起床时间不能相同' }).waitFor();
+  assert.equal(fixture.requests.filter(r => r.path === endpoint).length, beforeDisabledSave,
+    'disabled schedules also reject matching nonempty times before posting');
+  await sleepTime.fill('');
+  await wakeTime.fill('');
+  await saveAndWait();
+  assert.deepEqual(fixture.state.desktopAgentSleepSchedule, { enabled: false, sleepTime: '', wakeTime: '' },
+    'disabling permits empty times');
+  assert.match(await page.locator('#desktopAgentStatus').textContent(), /睡眠中；定时起床未启用/,
+    'disabling the schedule does not wake the sleeping character');
+  assert.match(await page.locator('#desktopAgentSleepScheduleNext').textContent(), /下次睡觉：未安排.*下次起床：未安排/);
+  for (const width of [760, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `sleep schedule fits ${width}px`);
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  fixture.state.desktopAgentSleeping = false;
+  fixture.state.desktopAgentSleepTimeZone = 'Asia/Shanghai';
+  await refresh();
+}
+
 try {
   browser = await playwright.chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block' });
@@ -76,6 +214,7 @@ try {
   await page.getByText('我先看看桌面状态。', { exact: true }).waitFor();
   await page.locator('#desktopAgentHistoryOlder').click();
   await page.getByText('请按当前角色在这个长期会话里自然活动。', { exact: true }).waitFor();
+  await checkSleepSchedule(page);
   await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/api/console/desktop-agent') && response.request().method() === 'POST'),
     page.locator('#desktopAgentStart').click(),

@@ -54,6 +54,8 @@ main { margin-left:202px; padding:0 clamp(22px,4vw,66px) 40px; max-width:1700px 
 .desktop-agent-heading { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:10px }
 #desktopAgentMessage { min-height:116px }
 .desktop-agent-actions { margin:12px 0 }
+.desktop-agent-sleep-schedule fieldset { min-width:0; padding:0; margin:0; border:0 }
+.desktop-agent-sleep-times { gap:12px 24px }
 .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center }
 .row>* { min-width:0; max-width:100% }
 .row input[type=text],.row input[type=search] { flex:1 1 170px }

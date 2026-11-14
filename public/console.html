@@ -109,7 +109,25 @@
           <button id="desktopAgentRefresh" class="small">刷新状态</button>
           <span class="meta" id="desktopAgentMessageStatus" role="status"></span>
         </div>
-        <p class="meta">Ctrl + Enter 发送任务。普通休息可由任务或 QQ 提醒打断。睡眠由 ownerQQ 私聊发送 <code>/起床</code> 解除。</p>
+        <p class="meta">Ctrl + Enter 发送任务。普通休息可由任务或 QQ 提醒打断。睡眠可由 ownerQQ 私聊发送 <code>/起床</code> 或下方定时起床解除。</p>
+        <details class="settings-group desktop-agent-sleep-schedule" open>
+          <summary>每日睡眠与起床</summary>
+          <form id="desktopAgentSleepScheduleForm" class="settings-content" novalidate>
+            <fieldset id="desktopAgentSleepScheduleFields" disabled>
+              <label><input id="desktopAgentSleepScheduleEnabled" type="checkbox"> 启用每日定时睡眠与起床</label>
+              <div class="row desktop-agent-sleep-times">
+                <div><label for="desktopAgentSleepTime">睡觉时间</label><input id="desktopAgentSleepTime" type="time" step="60"></div>
+                <div><label for="desktopAgentWakeTime">起床时间</label><input id="desktopAgentWakeTime" type="time" step="60"></div>
+              </div>
+              <p class="meta" id="desktopAgentSleepScheduleNext" role="status">正在读取定时设置…</p>
+              <div class="row">
+                <button id="desktopAgentSleepScheduleSave" type="submit" class="small">保存定时设置</button>
+                <span id="desktopAgentSleepScheduleStatus" class="meta" role="status"></span>
+              </div>
+            </fieldset>
+            <p class="meta">按桥接所在时区每天执行，需要桥接保持运行。桥接停止期间错过闹钟，重启后只补执行最近一次。可通过 ownerQQ 私聊提前发送 <code>/睡觉</code> 或 <code>/起床</code>；到点已处于对应状态时不会重复执行。停用定时不会解除已有睡眠；WebUI「停止自主运行」状态不会被闹钟唤醒。</p>
+          </form>
+        </details>
         <details class="settings-group desktop-agent-management">
           <summary>会话管理</summary>
           <div class="settings-content">

@@ -36,6 +36,7 @@ import { analyzeMarketPack } from '../src/market-analysis.js';
 import * as memorixGateway from '../src/a-memorix-gateway.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
+import * as sleepSchedule from '../src/sleep-schedule.js';
 import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
@@ -176,6 +177,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     isDshReady() { return dshReady; },
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
     scheduleDesktopAgentRecovery, reconcileDesktopAgentLifecycle, pumpMux,
+    checkDesktopAgentSleepSchedule, desktopAgentSleepScheduleInfo, stopDesktopAgentLifecycle,
     handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
     handlePokeNotice,
     flushAttentionNow() {
@@ -238,7 +240,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector,
     openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
-    ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer,
+    ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer, ...sleepSchedule,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,

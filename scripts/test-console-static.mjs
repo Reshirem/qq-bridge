@@ -33,6 +33,7 @@ try {
 ok(/<link[^>]+href="\/console\.css"/.test(html), '页面从独立静态文件加载样式');
 ok(/<script[^>]+src="\/console\.js"[^>]+defer/.test(html), '页面延迟加载独立控制台脚本');
 ok(/id="qqMediaForm"/.test(html) && /prefetchOnReceive/.test(consoleJs), 'QQ 图片预取设置具备保存入口');
+ok(/id="desktopAgentSleepScheduleForm"/.test(html) && /\/api\/console\/desktop-agent\/sleep-schedule/.test(consoleJs), '每日睡眠与起床设置具备独立保存入口');
 const idSet = new Set(ids);
 const references = [...consoleJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
 const missing = [...new Set(references.filter((id) => !idSet.has(id)))];

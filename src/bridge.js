@@ -40,6 +40,7 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel, sniffImage } from './media-normalize.js';
 import { prepareImageDetail } from './media-detail.js';
 import { createQQImageReferences } from './qq-image-references.js';
+import { normalizeSleepSchedule, planSleepSchedule, sleepScheduleTimeZone } from './sleep-schedule.js';
 import { isFfmpegAvailable } from './ffmpeg-resolve.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
@@ -814,6 +815,12 @@ function loadConfig() {
     promptTemplates = normalizeDesktopAgentPromptTemplates(DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS);
   }
   roleCardPromptTemplate = promptTemplates.roleCard;
+  let sleepSchedule;
+  try { sleepSchedule = normalizeSleepSchedule(file.desktopAgent?.sleepSchedule); }
+  catch (error) {
+    log(`⚠️ desktopAgent.sleepSchedule 配置无效，已停用定时睡眠：${error?.message ?? error}`);
+    sleepSchedule = normalizeSleepSchedule();
+  }
   const cfg = {
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
@@ -844,6 +851,7 @@ function loadConfig() {
       ...(file.desktopAgent && typeof file.desktopAgent === 'object' && !Array.isArray(file.desktopAgent)
         ? Object.fromEntries(Object.entries(file.desktopAgent).filter(([key]) => key !== 'promptTemplates'))
         : {}),
+      sleepSchedule,
     },
     allow: {
       private: normalizeIdList(file.allow?.private ?? []),
@@ -1807,6 +1815,10 @@ async function main() {
   let desktopAgentPendingWakeReason = String(desktopAgentSavedState.pendingWakeReason ?? '');
   let desktopAgentManualPromptPending = Math.max(0, Math.floor(Number(desktopAgentSavedState.manualPromptPending) || 0));
   let desktopAgentLifecycleEpoch = 0;
+  let desktopAgentSleepScheduleState = desktopAgentSavedState.sleepScheduleState ?? null;
+  let desktopAgentSleepScheduleTimer = null;
+  let desktopAgentSleepSchedulePromise = null;
+  let desktopAgentSleepScheduleGeneration = 0;
   KNOWN_AGENT_TOKENS.add(desktopAgentToken);
   let desktopAgentSessionPromise = null;
   let desktopAgentResetting = false;
@@ -1894,6 +1906,7 @@ async function main() {
       pendingWakeReason: desktopAgentPendingWakeReason || '',
       manualPromptPending: desktopAgentManualPromptPending,
       initialContextSessionId: desktopAgentInitialContextSessionId || '',
+      sleepScheduleState: desktopAgentSleepScheduleState,
       updatedAt: Date.now()
     });
   }
@@ -4321,6 +4334,47 @@ async function main() {
           return;
         }
 
+        if (req.method === 'GET' && url.pathname === '/api/console/desktop-agent/sleep-schedule') {
+          sendJson(desktopAgentSleepScheduleInfo());
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/console/desktop-agent/sleep-schedule') {
+          const body = await readBody();
+          let next;
+          try {
+            if (!body || !['enabled', 'sleepTime', 'wakeTime'].every((key) => Object.hasOwn(body, key))) {
+              throw new Error('请提交睡眠闹钟开关、睡觉时间和起床时间');
+            }
+            next = normalizeSleepSchedule(body);
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? '睡眠闹钟配置无效' }, 400);
+            return;
+          }
+          const changed = JSON.stringify(next) !== JSON.stringify(cfg.desktopAgent.sleepSchedule);
+          // Compute before writing. A changed schedule starts at its next future
+          // alarm; saving the same values must not discard an overdue event.
+          const nextState = changed ? planSleepSchedule({ config: next, now: Date.now() }).state : null;
+          try {
+            const configFile = path.join(ROOT, 'config.json');
+            const file = readConfigObject(configFile);
+            const desktopAgent = file.desktopAgent && typeof file.desktopAgent === 'object' && !Array.isArray(file.desktopAgent)
+              ? file.desktopAgent : {};
+            file.desktopAgent = { ...desktopAgent, sleepSchedule: next };
+            atomicWriteConfigJson(configFile, file);
+            cfg.desktopAgent.sleepSchedule = next;
+            if (changed) {
+              desktopAgentSleepScheduleGeneration += 1;
+              desktopAgentSleepScheduleState = nextState;
+              saveDesktopAgentState();
+            }
+          } catch (error) {
+            sendJson({ ok: false, error: `保存睡眠闹钟失败：${error?.message ?? error}` }, 500);
+            return;
+          } finally { armDesktopAgentSleepSchedule(); }
+          log(`控制台：每日睡眠闹钟已${next.enabled ? '开启' : '关闭'}`);
+          sendJson(desktopAgentSleepScheduleInfo());
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/console/desktop-agent') {
           await refreshPresetList();
           let live = null;
@@ -4352,6 +4406,7 @@ async function main() {
             recoveryAttempt: desktopAgentRecoveryAttempt,
             pendingWakeReason: desktopAgentPendingWakeReason || null,
             pendingManualTasks: desktopAgentManualPromptPending,
+            sleepSchedule: desktopAgentSleepScheduleInfo(),
             error: sessionStatusError || null
           });
           return;
@@ -7396,8 +7451,68 @@ async function main() {
     } finally { if (desktopAgentSleepCancellation === cancellation) desktopAgentSleepCancellation = null; }
   }
 
-  async function sleepDesktopAgent() {
-    if (desktopAgentLifecycle === 'sleeping') return cancelSleepingSession();
+  function desktopAgentSleepScheduleInfo() {
+    return {
+      ok: true,
+      schedule: { ...cfg.desktopAgent.sleepSchedule },
+      timeZone: sleepScheduleTimeZone(),
+      nextSleepAt: cfg.desktopAgent.sleepSchedule.enabled ? desktopAgentSleepScheduleState?.nextSleepAt ?? null : null,
+      nextWakeAt: cfg.desktopAgent.sleepSchedule.enabled ? desktopAgentSleepScheduleState?.nextWakeAt ?? null : null,
+    };
+  }
+
+  function armDesktopAgentSleepSchedule() {
+    if (desktopAgentSleepScheduleTimer) clearTimeout(desktopAgentSleepScheduleTimer);
+    desktopAgentSleepScheduleTimer = null;
+    if (!cfg.desktopAgent.sleepSchedule.enabled || desktopAgentSleepSchedulePromise) return;
+    const nextAt = Math.min(desktopAgentSleepScheduleState?.nextSleepAt ?? Infinity,
+      desktopAgentSleepScheduleState?.nextWakeAt ?? Infinity);
+    // Local clock checks only; no periodic model prompt. The cap also detects
+    // resume from system sleep, a forward clock change, or a changed local zone.
+    const delay = Math.max(1000, Math.min(60_000, nextAt - Date.now()));
+    desktopAgentSleepScheduleTimer = setTimeout(() => {
+      desktopAgentSleepScheduleTimer = null;
+      void checkDesktopAgentSleepSchedule().catch((error) => log(`睡眠闹钟检查失败：${error?.message ?? error}`));
+    }, delay);
+    desktopAgentSleepScheduleTimer.unref?.();
+  }
+
+  function checkDesktopAgentSleepSchedule(now = Date.now()) {
+    if (desktopAgentSleepSchedulePromise) return desktopAgentSleepSchedulePromise;
+    const generation = desktopAgentSleepScheduleGeneration;
+    const operation = (async () => {
+      const plan = planSleepSchedule({ config: cfg.desktopAgent.sleepSchedule, state: desktopAgentSleepScheduleState, now });
+      const event = plan.event;
+      if (event && desktopAgentLifecycle !== 'stopped') {
+        if (event.type === 'sleep' && desktopAgentLifecycle !== 'sleeping') {
+          await sleepDesktopAgent({ scheduled: true });
+        } else if (event.type === 'wake' && desktopAgentLifecycle === 'sleeping') {
+          await wakeDesktopAgent({ scheduled: true, canWake: () => generation === desktopAgentSleepScheduleGeneration });
+        }
+      }
+      // Lifecycle changes persist first. A crash before this checkpoint can
+      // replay the alarm safely: an already reached target state is a no-op.
+      // A settings save invalidates both an awaited wake and its old checkpoint.
+      if (generation === desktopAgentSleepScheduleGeneration
+        && JSON.stringify(plan.state) !== JSON.stringify(desktopAgentSleepScheduleState)) {
+        desktopAgentSleepScheduleState = plan.state;
+        saveDesktopAgentState();
+      }
+    })();
+    const pending = operation.finally(() => {
+      if (desktopAgentSleepSchedulePromise === pending) desktopAgentSleepSchedulePromise = null;
+      armDesktopAgentSleepSchedule();
+    });
+    desktopAgentSleepSchedulePromise = pending;
+    return pending;
+  }
+
+  async function sleepDesktopAgent({ scheduled = false } = {}) {
+    if (desktopAgentLifecycle === 'sleeping') {
+      // A newer manual sleep must invalidate any older wake waiting on DSH.
+      desktopAgentLifecycleEpoch += 1;
+      return cancelSleepingSession();
+    }
     expireNativeReminders();
     desktopAgentLifecycleEpoch += 1;
     desktopAttentionGeneration += 1;
@@ -7415,22 +7530,25 @@ async function main() {
     desktopAgentPendingWakeReason = '';
     desktopAgentManualPromptPending = 0;
     saveDesktopAgentState();
-    appendActivity('ownerQQ 已让数字角色进入睡眠；QQ 提醒和自动唤醒已暂停');
+    appendActivity(`${scheduled ? '每日睡觉闹钟已让' : 'ownerQQ 已让'}数字角色进入睡眠；QQ 提醒已暂停`);
     await cancelSleepingSession();
   }
 
-  async function wakeDesktopAgent() {
+  async function wakeDesktopAgent({ scheduled = false, canWake = () => true } = {}) {
+    const epoch = desktopAgentLifecycleEpoch;
+    const sessionId = desktopAgentSessionId;
     if (native && desktopAgentLifecycle === 'sleeping') expireNativeReminders();
     if (desktopAgentSleepRetryTimer) clearTimeout(desktopAgentSleepRetryTimer);
     desktopAgentSleepRetryTimer = null;
     if (desktopAgentSleepCancellation) await desktopAgentSleepCancellation.catch(() => {});
-    if (desktopAgentLifecycle !== 'sleeping') return false;
-    resumeDesktopAgentLifecycle('ownerQQ /起床');
-    desktopAgentPendingWakeReason = 'sleep-ended';
+    if (desktopAgentLifecycle !== 'sleeping' || epoch !== desktopAgentLifecycleEpoch
+      || sessionId !== desktopAgentSessionId || !canWake()) return false;
+    resumeDesktopAgentLifecycle(scheduled ? 'daily wake alarm' : 'ownerQQ /起床');
+    desktopAgentPendingWakeReason = scheduled ? 'scheduled-wake' : 'sleep-ended';
     saveDesktopAgentState();
     scheduleDesktopAttentionFlush(0);
-    if (!dshReady) scheduleDesktopAgentRecovery('ownerQQ woke agent while DSH offline');
-    appendActivity('ownerQQ 已结束数字角色睡眠');
+    if (!dshReady) scheduleDesktopAgentRecovery(scheduled ? 'wake alarm while DSH offline' : 'ownerQQ woke agent while DSH offline');
+    appendActivity(scheduled ? '每日起床闹钟已结束数字角色睡眠' : 'ownerQQ 已结束数字角色睡眠');
     return true;
   }
 
@@ -7553,7 +7671,7 @@ async function main() {
 
   function finishDesktopAgentTurn(event) {
     if (desktopAgentLifecycle !== 'active' || desktopAgentManualPromptPending > 0) return;
-    if (['rest-expired', 'sleep-ended', 'missing-rest', 'qq-attention'].includes(desktopAgentPendingWakeReason)
+    if (['rest-expired', 'sleep-ended', 'scheduled-wake', 'missing-rest', 'qq-attention'].includes(desktopAgentPendingWakeReason)
       || desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(0);
     else if (event.data?.reason?.kind === 'completed') remindDesktopAgentToRest();
     else scheduleDesktopAgentRecovery('turn interrupted before agent_rest');
@@ -7939,6 +8057,7 @@ async function main() {
         const wakeInstructionByReason = {
           'rest-expired': cfg.desktopAgent.promptTemplates.restExpired,
           'sleep-ended': '【睡眠结束】ownerQQ 已发送起床命令，你可以继续活动。',
+          'scheduled-wake': '【睡眠结束】管理员设置的每日起床闹钟已触发，你可以继续活动。',
           'qq-attention': cfg.desktopAgent.promptTemplates.qqWake,
           recovery: cfg.desktopAgent.promptTemplates.recovery,
           'missing-rest': cfg.desktopAgent.promptTemplates.missingRest,
@@ -8758,9 +8877,19 @@ async function main() {
       if (native && event.replay) return;
       let reply;
       try {
+        // Drain an older alarm before applying the latest owner command. Do
+        // not add an await on the ordinary path with no alarm pending.
+        const scheduleDue = cfg.desktopAgent.sleepSchedule.enabled
+          && Math.min(desktopAgentSleepScheduleState?.nextSleepAt ?? Infinity,
+            desktopAgentSleepScheduleState?.nextWakeAt ?? Infinity) <= Date.now();
+        if (desktopAgentSleepSchedulePromise || scheduleDue) {
+          await checkDesktopAgentSleepSchedule().catch((error) => log(`处理命令前的睡眠闹钟失败：${error?.message ?? error}`));
+        }
         if (command === '/睡觉') {
           await sleepDesktopAgent();
-          reply = '已进入睡眠，QQ 提醒和自动唤醒已暂停。发送 /起床 恢复。';
+          reply = cfg.desktopAgent.sleepSchedule.enabled
+            ? `已进入睡眠，QQ 提醒已暂停。每日 ${cfg.desktopAgent.sleepSchedule.wakeTime}（桥接本地时间）定时起床，也可发送 /起床 提前恢复。`
+            : '已进入睡眠，QQ 提醒和自动唤醒已暂停。发送 /起床 恢复。';
         } else {
           reply = await wakeDesktopAgent() ? '已结束睡眠，正在恢复活动。' : '当前没有处于睡眠状态。';
         }
@@ -9320,6 +9449,9 @@ async function main() {
     });
 
   }
+
+  // Restore the latest due alarm before DSH recovery can resume a model turn.
+  await checkDesktopAgentSleepSchedule().catch((error) => log(`恢复睡眠闹钟失败：${error?.message ?? error}`));
 
   // SnowLuma 尚未就绪时不阻塞桥接启动：SDK 自带后台重连，DSH 侧照常连接。
   bot.connect().catch(error => {

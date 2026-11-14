@@ -83,6 +83,11 @@ export function makeFixtureState() {
   }));
   return {
     role: '小鲸鱼', desktopAgentStopped: false,
+    desktopAgentSleeping: false,
+    desktopAgentSleepSchedule: { enabled: false, sleepTime: '', wakeTime: '' },
+    desktopAgentSleepTimeZone: 'Asia/Shanghai',
+    desktopAgentNextSleepAt: Date.parse('2026-11-14T15:00:00.000Z'),
+    desktopAgentNextWakeAt: Date.parse('2026-11-14T23:00:00.000Z'),
     snowluma: { connected: true, accountOnline: true, degraded: false, good: true },
     memorySettings: { enabled: true, namespace: 'demo', baseUrl: 'http://127.0.0.1:8080', apiKeyConfigured: true },
     memoryProviders: { embedding: { model: 'demo-embedding', dimension: 1024 }, llm: { model: 'demo-model' } },
@@ -131,6 +136,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
   const file = htmlPath || resolve(projectRoot, 'public/console.html');
   await readFile(file); // Fail early rather than displaying a broken preview.
   const state = makeFixtureState();
+  const sleepScheduleStatus = () => ({
+    ok: true, schedule: { ...state.desktopAgentSleepSchedule }, timeZone: state.desktopAgentSleepTimeZone,
+    nextSleepAt: state.desktopAgentSleepSchedule.enabled ? state.desktopAgentNextSleepAt : null,
+    nextWakeAt: state.desktopAgentSleepSchedule.enabled ? state.desktopAgentNextWakeAt : null,
+  });
   const usage = makeUsageFixture();
   const requests = [];
   const unknownRequests = [];
@@ -282,8 +292,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           case '/api/whitelist': return json(state.whitelist);
           case '/api/console/desktop-agent': return json({
             ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
-            found: true, running: false, blank: false, agentAvailable: true, lifecycle: state.desktopAgentStopped ? 'stopped' : 'idle'
+            found: true, running: false, blank: false, agentAvailable: true,
+            lifecycle: state.desktopAgentSleeping ? 'sleeping' : state.desktopAgentStopped ? 'stopped' : 'idle',
+            sleepSchedule: sleepScheduleStatus(),
           });
+          case '/api/console/desktop-agent/sleep-schedule': return json(sleepScheduleStatus());
           case '/api/console/desktop-agent/history': {
             const older = url.searchParams.has('beforeSeq');
             const records = older ? [
@@ -502,6 +515,16 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return json({ ok: false, error: '该安全设置已停用' }, 400);
           case '/api/console/token': return json({ ok: true, token: body.token || 'offline-demo-token-123456', generated: !body.token });
           case '/api/test-send': return json({ ok: true, message_id: 'mock-message-001' });
+          case '/api/console/desktop-agent/sleep-schedule': {
+            const { enabled, sleepTime, wakeTime } = body;
+            const validTime = value => typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+            if (typeof enabled !== 'boolean' || ![sleepTime, wakeTime].every(value => value === '' || validTime(value))
+              || (enabled && (!sleepTime || !wakeTime)) || (sleepTime && sleepTime === wakeTime)) {
+              return json({ ok: false, error: '每日定时时间无效' }, 400);
+            }
+            state.desktopAgentSleepSchedule = { enabled, sleepTime, wakeTime };
+            return json(sleepScheduleStatus());
+          }
           case '/api/console/desktop-agent':
             state.desktopAgentStopped = false;
             return json({ ok: true, sessionId: 'mock-desktop-agent-session', turnStarted: true });
