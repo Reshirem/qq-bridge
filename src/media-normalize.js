@@ -334,6 +334,131 @@ function readIfExists(file) {
   } catch { return null; }
 }
 
+// The GIF decoder tolerates truncated blocks/trailers even with err_detect=explode.
+// Require complete container framing before asking it to validate frame pixels.
+function completeGifContainer(buf) {
+  let pos = 13;
+  if (buf[10] & 0x80) pos += 3 * (2 << (buf[10] & 0x07));
+  let frames = 0;
+  while (pos < buf.length) {
+    const block = buf[pos++];
+    if (block === 0x3b) return frames > 0 && pos === buf.length;
+    if (block === 0x21) {
+      if (pos >= buf.length) return false;
+      pos += 1;
+    } else if (block === 0x2c) {
+      if (pos + 9 > buf.length) return false;
+      const packed = buf[pos + 8];
+      pos += 9;
+      if (packed & 0x80) pos += 3 * (2 << (packed & 0x07));
+      if (pos >= buf.length || buf[pos] < 2 || buf[pos] > 8) return false;
+      pos += 1;
+      frames += 1;
+    } else return false;
+    pos = skipGifSubBlocks(buf, pos);
+    if (pos < 0) return false;
+  }
+  return false;
+}
+
+// The JPEG decoder may report success for a SOF header with no scan at all.
+// Check complete marker/scan framing as well as decoding, including progressive scans.
+function completeJpegContainer(buf) {
+  if (buf.length < 4 || buf.readUInt16BE(0) !== 0xffd8) return false;
+  let pos = 2, frame = false, scan = false, inScan = false, scanBytes = 0;
+  while (pos < buf.length) {
+    if (inScan && buf[pos] !== 0xff) { scanBytes++; pos++; continue; }
+    if (buf[pos++] !== 0xff) return false;
+    while (buf[pos] === 0xff) pos++;
+    if (pos >= buf.length) return false;
+    const marker = buf[pos++];
+    if (inScan && marker === 0x00) { scanBytes++; continue; }
+    if (inScan && marker >= 0xd0 && marker <= 0xd7) continue;
+    if (inScan) {
+      if (!scanBytes) return false;
+      inScan = false;
+    }
+    if (marker === 0xd9) return frame && scan && pos === buf.length;
+    if (marker === 0x00 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) return false;
+    if (marker === 0x01) continue; // TEM is the other standalone marker.
+    if (pos + 2 > buf.length) return false;
+    const size = buf.readUInt16BE(pos), end = pos + size;
+    if (size < 2 || end > buf.length) return false;
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      if (size < 11 || buf[pos + 7] === 0 || size !== 8 + 3 * buf[pos + 7]) return false;
+      frame = true;
+    }
+    if (marker === 0xda) {
+      if (!frame || size < 8 || buf[pos + 2] === 0 || size !== 6 + 2 * buf[pos + 2]) return false;
+      scan = true; inScan = true; scanBytes = 0;
+    }
+    pos = end;
+  }
+  return false;
+}
+
+/**
+ * Decode trusted QQ preview bytes completely before handing them to a model.
+ * This does not establish original-image identity or alter the supplied bytes.
+ * The normalization enabled switch deliberately does not apply to this check.
+ */
+export async function validateImageDecode(buf, opts = {}) {
+  const maxBytes = 32 * 1024 * 1024;
+  const maxPixels = 64_000_000;
+  const maxFrames = 300;
+  const failure = error => ({ ok: false, error });
+  if (!Buffer.isBuffer(buf) || !buf.length) return failure('图片字节为空');
+  if (buf.length > maxBytes) return failure('图片超过 32MiB 解码上限');
+  let info;
+  try { info = sniffImage(buf); } catch { return failure('图片格式或尺寸无效'); }
+  if (!info || !Number.isSafeInteger(info.width) || !Number.isSafeInteger(info.height)
+    || info.width <= 0 || info.height <= 0) return failure('图片格式或尺寸无效');
+  if (info.width * info.height > maxPixels) return failure('图片超过 6400 万像素解码上限');
+  if (info.frames > maxFrames) return failure('图片超过 300 帧完整解码上限');
+  if (info.format === 'gif' && !completeGifContainer(buf)) return failure('GIF 图片数据不完整，未尝试解码');
+  if (info.format === 'jpeg' && !completeJpegContainer(buf)) return failure('JPEG 图片数据不完整，未尝试解码');
+  const timeoutMs = opts.timeoutMs ?? MEDIA_DEFAULTS.timeoutMs;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return failure('图片解码超时须为正数');
+  let dir;
+  try {
+    const ffmpeg = resolveFfmpeg({ ffmpegPath: opts.ffmpegPath ?? null });
+    dir = makeTempWorkspace(opts.tmpDir);
+    // A QQ cache suffix may be wrong. Only the actual bytes choose this suffix.
+    const input = path.join(dir, `validate.${info.format === 'jpeg' ? 'jpg' : info.format}`);
+    const progress = path.join(dir, 'decode-progress.txt');
+    fs.writeFileSync(input, buf, { mode: 0o600 });
+    const args = ['-v', 'error', '-nostdin', '-y', '-xerror', '-err_detect', 'explode',
+      '-max_alloc', '268435456', '-max_pixels', String(maxPixels), '-threads', '1',
+      '-filter_threads', '1', '-filter_complex_threads', '1',
+      '-protocol_whitelist', 'file', '-format_whitelist', 'jpeg_pipe,png_pipe,gif,webp_pipe,apng',
+      '-noautorotate'];
+    // Valid QQ JPEGs without identifying metadata can otherwise probe as image2.
+    // Select the already-identified still-image demuxer without widening access.
+    if (info.format === 'jpeg') args.push('-f', 'jpeg_pipe');
+    if (info.format === 'gif') args.push('-ignore_loop', '1');
+    args.push('-i', input, '-map', '0:v:0', '-an', '-sn', '-dn',
+      '-fps_mode', 'passthrough', '-frames:v', String(maxFrames + 1),
+      '-progress', progress, '-f', 'null', path.join(dir, 'decoded.null'));
+    const result = await runFfmpeg(ffmpeg, args, { timeoutMs: Math.min(60000, Math.ceil(timeoutMs)) });
+    if (!result.ok) return failure('图片完整解码校验失败（解码器不可用、图片损坏或超时）');
+    const stat = fs.statSync(progress);
+    if (!stat.isFile() || stat.size > 64 * 1024) return failure('图片完整解码回执无效');
+    const report = fs.readFileSync(progress, 'utf8');
+    const frames = [...report.matchAll(/^frame=(\d+)\r?$/gm)].map(match => Number(match[1]));
+    const decoded = frames.at(-1);
+    if (decoded > maxFrames) return failure('图片超过 300 帧完整解码上限');
+    if (!Number.isSafeInteger(decoded) || decoded < info.frames || !/^progress=end\r?$/m.test(report)) {
+      return failure('图片未完成有效帧解码');
+    }
+    return { ok: true };
+  } catch {
+    // Decoder and filesystem diagnostics can contain local cache paths.
+    return failure('图片完整解码校验失败，未返回未经验证的图片');
+  } finally {
+    if (dir) cleanupWorkspace(dir);
+  }
+}
+
 // ── 主入口 ──────────────────────────────────────────────────────────────
 
 /**

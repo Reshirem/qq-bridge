@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,10 +38,11 @@ async function harness() {
   let nestedRows = [picture('301')];
   let mode = 'normal';
   let downloadMode = 'success';
+  let ordinaryRows = [];
   const svc = {
     addKernelMsgListener(value) { listener = value; return 1; },
     removeKernelMsgListener() {},
-    getMsgsByMsgId: async (peer, ids) => ({result:0, msgList:peer.chatType === 2 && peer.peerUid === '123' && ids[0] === '101' ? [root] : []}),
+    getMsgsByMsgId: async (peer, ids) => ({result:0, msgList:peer.chatType === 2 && peer.peerUid === '123' && ids[0] === '101' ? [root] : ordinaryRows.filter(row => ids.includes(row.msgId))}),
     getMultiMsg: async (peer, rootId, parentId) => {
       calls.push({peer, rootId, parentId});
       if (mode === 'fail') return {result:1, errMsg:'fixture failure'};
@@ -81,6 +83,7 @@ async function harness() {
     setDownloadMode(value) { downloadMode = value; },
     disableOrdinaryDownload() { delete svc.getRichMediaElement; },
     setNestedRows(value) { nestedRows = value; },
+    setOrdinaryRows(value) { ordinaryRows = value; },
     rpc(action, params) {
       const id = ++nextId;
       return new Promise((resolve, reject) => {
@@ -151,6 +154,45 @@ await test('native forward media reject forged sources and use QQ node cache coo
     await h.rpc('get_forward_msg',{peer:origin,id:'native:101'});
     assert.match((await h.rpc('fetch_message_image',p)).error,/缓存位置无效/);
     assert.equal(h.forwardDownloads.length,2);
+  } finally { await h.close(); }
+});
+
+await test('native converted previews require the exact message thumbnail mapping in ordinary and forwarded reads', async t => {
+  const h = await harness();
+  const realpath = fs.realpathSync, stat = fs.statSync;
+  t.mock.method(fs, 'realpathSync', file => file === imagePath ? file : realpath(file));
+  t.mock.method(fs, 'statSync', file => file === imagePath ? {isFile:() => true} : stat(file));
+  try {
+    const row = picture();
+    row.elements[0].picElement.thumbPath = new Map([[0, imagePath]]);
+    h.setRows([row]);
+    h.setOrdinaryRows([row]);
+    const ordinary = {peer:{chatType:2,peerUid:'456'},messageId:'202',md5:digest,quality:'preview'};
+    const forward = {peer:origin,forwardId:'native:101',messageId:'202',md5:digest,quality:'preview'};
+    await h.rpc('get_forward_msg',{peer:origin,id:'native:101'});
+    for (const params of [ordinary,forward]) {
+      assert.deepEqual((await h.rpc('fetch_message_image',{...params,verifiedPreviewPath:'untrusted'})).data,
+        {requested:false,verifiedPreviewPath:imagePath});
+      assert.ok((await h.rpc('fetch_message_image',{...params,md5:'c'.repeat(32)})).error);
+      assert.ok((await h.rpc('fetch_message_image',{...params,messageId:'999'})).error);
+      assert.ok((await h.rpc('fetch_message_image',{...params,peer:{chatType:2,peerUid:'789'}})).error);
+    }
+    assert.equal(h.downloads.length + h.forwardDownloads.length, 0, 'existing QQ previews do not redownload');
+    row.elements[0].picElement.sourcePath = '';
+    assert.deepEqual((await h.rpc('fetch_message_image',ordinary)).data, {requested:false,verifiedPreviewPath:imagePath},
+      'a verified existing preview does not need an original download destination');
+    row.elements[0].picElement.sourcePath = imagePath;
+    assert.deepEqual((await h.rpc('fetch_message_image',{...ordinary,quality:'original'})).data, {requested:true});
+    assert.deepEqual((await h.rpc('fetch_message_image',{...forward,quality:'original'})).data, {requested:true});
+    assert.equal(h.downloads.length, 1);
+    assert.equal(h.forwardDownloads.length, 1);
+    for (const bad of [path.join(os.tmpdir(),'outside.png'), imagePath.replace('999','998'), imagePath.replace(digest,'b'.repeat(32))]) {
+      row.elements[0].picElement.thumbPath.set(0,bad);
+      assert.deepEqual((await h.rpc('fetch_message_image',ordinary)).data, {requested:true});
+    }
+    row.elements[0].picElement.thumbPath.set(0,imagePath);
+    t.mock.method(fs, 'realpathSync', file => file === imagePath ? path.join(os.tmpdir(),'escape.png') : realpath(file));
+    assert.deepEqual((await h.rpc('fetch_message_image',ordinary)).data, {requested:true}, 'symlink escape cannot authorize preview');
   } finally { await h.close(); }
 });
 

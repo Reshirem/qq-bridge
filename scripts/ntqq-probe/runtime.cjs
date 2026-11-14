@@ -164,7 +164,8 @@ module.exports = function startChannel(receiver, endpoint) {
       elements:(row.elements || []).filter(e => e.picElement || e.marketFaceElement).slice(0,100).map(e => ({
         elementId:e.elementId,
         ...(e.picElement ? {picElement:{md5HexStr:e.picElement.md5HexStr, picSubType:e.picElement.picSubType,
-          sourcePath:e.picElement.sourcePath, fileSize:e.picElement.fileSize}} : {}),
+          sourcePath:e.picElement.sourcePath, fileSize:e.picElement.fileSize,
+          thumbPath:new Map([[0, e.picElement.thumbPath instanceof Map ? e.picElement.thumbPath.get(0) : undefined]])}} : {}),
         ...(e.marketFaceElement ? {marketFaceElement:{emojiId:e.marketFaceElement.emojiId,
           emojiPackageId:e.marketFaceElement.emojiPackageId}} : {}),
       })),
@@ -254,6 +255,7 @@ module.exports = function startChannel(receiver, endpoint) {
     return entry.promise;
   }
   async function fetchMessageImage(p) {
+    if (p.quality !== undefined && !['preview','original'].includes(p.quality)) throw Error('图片 quality 必须是 preview 或 original');
     const peer = p.peer;
     const messageId = String(p.messageId ?? '');
     if (!peer || ![1, 2].includes(Number(peer.chatType)) || !peer.peerUid ||
@@ -270,10 +272,38 @@ module.exports = function startChannel(receiver, endpoint) {
     const target = element.picElement.sourcePath;
     const relative = typeof target === 'string' && path.isAbsolute(target) ? path.relative(root, target) : '..';
     const sticker = Number(element.picElement.picSubType) === 1;
+    // QQ can store a converted JPEG in Ori under the source PNG's digest. Only
+    // the exact native element's thumbnail mapping authorizes it as a preview;
+    // a caller-supplied path or a digest-mismatched Ori alone never does.
+    let verifiedPreviewPath;
+    if (p.quality !== 'original') {
+      const thumbnail = element.picElement.thumbPath instanceof Map ? element.picElement.thumbPath.get(0) : null;
+      const validPreviewPath = value => {
+        if (typeof value !== 'string' || !path.isAbsolute(value)) return false;
+        const rel = path.relative(root, value).split(path.sep).join('/');
+        return new RegExp(`^(?:Pic|Emoji/emoji-recv)/[0-9]{4}-[0-9]{2}/(?:Ori|Thumb)/${digest}(?:_[0-9]+)?\\.[a-z0-9]+$`, 'i').test(rel);
+      };
+      if (validPreviewPath(thumbnail)) {
+        try {
+          const real = fs.realpathSync(thumbnail);
+          if (validPreviewPath(real) && fs.statSync(real).isFile()) {
+            sameAccount();
+            return {requested:false, verifiedPreviewPath:real};
+          }
+        } catch (error) {
+          // QQ may populate this exact native destination asynchronously. The
+          // reader repeats realpath, identity, byte and pixel checks on use.
+          if (error.code === 'ENOENT') verifiedPreviewPath = thumbnail;
+        }
+      }
+    }
     if (!sticker && (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))) {
       throw Error('QQ 返回的图片缓存位置无效');
     }
-    if (verified) return fetchForwardImage(peer, verified.rootId, element);
+    if (verified) {
+      const result = await fetchForwardImage(peer, verified.rootId, element);
+      return {...result, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {})};
+    }
     if (typeof svc.getRichMediaElement !== 'function') throw Error('当前 QQ 不支持按原消息下载图片');
     const result = await svc.getRichMediaElement({
       downSourceType: 1,
@@ -284,7 +314,7 @@ module.exports = function startChannel(receiver, endpoint) {
       ...(sticker ? {} : {thumbSize: 0, filePath: target}),
     });
     if (result?.result != null) checked(result);
-    return {requested: true};
+    return {requested: true, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {})};
   }
 
   async function sendMessage(p) {

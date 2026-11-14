@@ -20,9 +20,11 @@ import {
   normalizeImageForModel,
   planAnimation,
   planNormalization,
-  sniffImage
+  sniffImage,
+  validateImageDecode
 } from '../src/media-normalize.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
+import { resolveFfmpeg } from '../src/ffmpeg-resolve.js';
 
 let failures = 0;
 let skipped = 0;
@@ -49,8 +51,9 @@ const FAKE_GATEWAY_PNG = Buffer.from(
   'base64'
 );
 
+const ffmpeg = resolveFfmpeg();
 const hasFfmpeg = (() => {
-  try { return spawnSync('ffmpeg', ['-v', 'error', '-version'], { stdio: 'ignore' }).status === 0; }
+  try { return spawnSync(ffmpeg, ['-v', 'error', '-version'], { stdio: 'ignore' }).status === 0; }
   catch { return false; }
 })();
 
@@ -158,7 +161,112 @@ await test('normalizeImageForModel：压不动的垃圾字节 ⇒ ok:false 且�
 
 // ── 4. 真实 ffmpeg：抽帧拼图 / 降采样（没装 ffmpeg 就跳过） ─────────────────
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qqb-media-test-'));
-const ff = (args) => spawnSync('ffmpeg', ['-v', 'error', '-y', ...args], { stdio: 'ignore' });
+const ff = (args) => spawnSync(ffmpeg, ['-v', 'error', '-y', ...args], { stdio: 'ignore' });
+
+await test('validateImageDecode：大小、像素、尺寸与帧数在解码前硬性拒绝', async () => {
+  const untouched = path.join(tmp, 'must-not-create-for-invalid-input');
+  const opts = { tmpDir: untouched, enabled: false };
+  const oversized = Buffer.alloc(32 * 1024 * 1024 + 1);
+  assert.match((await validateImageDecode(oversized, opts)).error, /32MiB/);
+  const huge = Buffer.from(PNG_1x1);
+  huge.writeUInt32BE(8001, 16); huge.writeUInt32BE(8000, 20);
+  assert.match((await validateImageDecode(huge, opts)).error, /像素/);
+  const zero = Buffer.from(PNG_1x1); zero.writeUInt32BE(0, 16);
+  for (const bytes of [zero, Buffer.alloc(0), Buffer.from('not an image')]) {
+    assert.equal((await validateImageDecode(bytes, opts)).ok, false);
+  }
+  const tooManyFrames = Buffer.from(GIF_HEAD + GIF_FRAME.repeat(301) + '3b', 'hex');
+  assert.match((await validateImageDecode(tooManyFrames, opts)).error, /300 帧/);
+  assert.equal(fs.existsSync(untouched), false, 'invalid input must not create a decoder workspace');
+});
+
+await test('validateImageDecode：解码器缺失必须拒绝，错误不暴露路径', async () => {
+  const savedPath = process.env.PATH, savedFfmpeg = process.env.FFMPEG_PATH;
+  try {
+    process.env.PATH = ''; delete process.env.FFMPEG_PATH;
+    const result = await validateImageDecode(GIF_1, {
+      enabled: false, ffmpegPath: path.join(tmp, 'private-missing-decoder'), tmpDir: tmp,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /解码/);
+    assert.ok(!result.error.includes(tmp) && !result.error.includes('private-missing-decoder'));
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    if (savedFfmpeg === undefined) delete process.env.FFMPEG_PATH; else process.env.FFMPEG_PATH = savedFfmpeg;
+  }
+});
+
+await test('validateImageDecode：JPEG 缓存误标 .png 仍按字节完整校验且不重编码', async () => {
+  if (!hasFfmpeg) throw skip('本机没有 ffmpeg');
+  const mislabeled = path.join(tmp, 'actual-jpeg.png');
+  const made = ff(['-f', 'lavfi', '-i', 'color=red:size=32x24', '-frames:v', '1', '-c:v', 'mjpeg', mislabeled]);
+  assert.equal(made.status, 0, 'ffmpeg must create the JPEG fixture');
+  const bytes = fs.readFileSync(mislabeled), before = Buffer.from(bytes);
+  assert.equal(sniffImage(bytes)?.format, 'jpeg');
+  assert.deepEqual(await validateImageDecode(bytes, { enabled: false, ffmpegPath: ffmpeg, tmpDir: tmp }), { ok: true });
+  assert.deepEqual(bytes, before, 'validation must not replace or mutate the supplied bytes');
+  const truncated = await validateImageDecode(bytes.subarray(0, bytes.length - 5), { ffmpegPath: ffmpeg, tmpDir: tmp });
+  assert.equal(truncated.ok, false, 'a recognizable JPEG header cannot rescue truncated image data');
+  assert.equal(fs.readdirSync(tmp).some(name => name.startsWith('qqb-media-')), false);
+});
+
+await test('validateImageDecode：没有 JFIF 或 APP 元数据的合法 JPEG 仍能完整解码', async () => {
+  if (!hasFfmpeg) throw skip('本机没有 ffmpeg');
+  const fixture = path.join(tmp, 'jpeg-without-app.jpg');
+  const made = ff(['-f', 'lavfi', '-i', 'color=blue:size=546x542', '-frames:v', '1', '-c:v', 'mjpeg', fixture]);
+  assert.equal(made.status, 0, 'ffmpeg must create the JPEG fixture');
+  const encoded = fs.readFileSync(fixture);
+  const parts = [encoded.subarray(0, 2)];
+  let offset = 2, removed = 0;
+  while (offset < encoded.length) {
+    const start = offset;
+    assert.equal(encoded[offset++], 0xff, 'expected a JPEG marker before scan data');
+    while (encoded[offset] === 0xff) offset++;
+    const marker = encoded[offset++];
+    if (marker === 0xda) { parts.push(encoded.subarray(start)); break; }
+    const length = encoded.readUInt16BE(offset), end = offset + length;
+    assert.ok(length >= 2 && end <= encoded.length, 'fixture segment must be complete');
+    if ((marker >= 0xe0 && marker <= 0xef) || marker === 0xfe) removed++;
+    else parts.push(encoded.subarray(start, end));
+    offset = end;
+  }
+  assert.ok(removed > 0, 'strip encoder metadata to exercise JPEG demuxer detection');
+  const bytes = Buffer.concat(parts), before = Buffer.from(bytes);
+  const info = sniffImage(bytes);
+  assert.equal(info?.format, 'jpeg');
+  assert.equal(info.width, 546); assert.equal(info.height, 542); assert.equal(info.frames, 1);
+  assert.deepEqual(await validateImageDecode(bytes, { ffmpegPath: ffmpeg, tmpDir: tmp }), { ok: true });
+  assert.deepEqual(bytes, before, 'validation must not re-encode a metadata-free JPEG');
+  assert.equal(fs.readdirSync(tmp).some(name => name.startsWith('qqb-media-')), false);
+});
+
+await test('validateImageDecode：有效尺寸头或损坏内容不能通过，关闭归一化也不能绕过', async () => {
+  if (!hasFfmpeg) throw skip('本机没有 ffmpeg');
+  const fakeJpeg = Buffer.from('ffd8ffc00011080018002003011100021100031100ffd9', 'hex');
+  assert.equal(sniffImage(fakeJpeg)?.format, 'jpeg');
+  for (const bytes of [PNG_1x1, fakeJpeg]) {
+    assert.equal((await normalizeImageForModel(bytes, 'image/jpeg', { enabled: false })).ok, true,
+      'the existing normalization behavior remains independent');
+    const result = await validateImageDecode(bytes, { enabled: false, ffmpegPath: ffmpeg, tmpDir: tmp });
+    assert.equal(result.ok, false, 'header recognition is not full image decoding');
+    assert.match(result.error, /解码/);
+    assert.ok(!result.error.includes(tmp));
+  }
+});
+
+await test('validateImageDecode：动图完整解码并忽略无限循环标记，超时拒绝', async () => {
+  if (!hasFfmpeg) throw skip('本机没有 ffmpeg');
+  const forever = Buffer.from(GIF_HEAD + '21ff0b4e45545343415045322e300301000000' + GIF_FRAME + GIF_FRAME + '3b', 'hex');
+  assert.deepEqual(await validateImageDecode(forever, { ffmpegPath: ffmpeg, tmpDir: tmp }), { ok: true });
+  const brokenTail = Buffer.from(GIF_HEAD + GIF_FRAME + '2c000000000100010000020244', 'hex');
+  assert.equal(sniffImage(brokenTail)?.frames, 2);
+  assert.equal((await validateImageDecode(brokenTail, { ffmpegPath: ffmpeg, tmpDir: tmp })).ok, false,
+    'a valid first frame must not hide a truncated later GIF frame');
+  const result = await validateImageDecode(forever, { ffmpegPath: ffmpeg, tmpDir: tmp, timeoutMs: 1 });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /解码/);
+  assert.ok(!result.error.includes(tmp));
+});
 
 await test('真实动图 → 抽帧拼图（单张 JPEG + 帧数说明）', async () => {
   if (!hasFfmpeg) throw skip('本机没有 ffmpeg');

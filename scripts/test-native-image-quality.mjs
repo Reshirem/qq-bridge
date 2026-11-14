@@ -50,7 +50,7 @@ test('an original cache miss downloads and polls for a verified original, never 
   assert.deepEqual(result, {...original(),canFetchOriginal:true});
   assert.equal(reads.length, 3);
   assert.ok(reads.every(read => read.params.quality === 'original' && read.params.maxBytes === 32 * MiB));
-  assert.deepEqual(calls, [{action:'fetch_message_image',params:{peer:{chatType:2,peerUid:'456'},messageId:'123',md5:digest}}]);
+  assert.deepEqual(calls, [{action:'fetch_message_image',params:{peer:{chatType:2,peerUid:'456'},messageId:'123',md5:digest,quality:'original'}}]);
 });
 
 test('explicit originals reject preview or legacy-reader responses rather than relabeling them', async t => {
@@ -165,4 +165,63 @@ test('account changes still discard original and preview responses', async t => 
     release(quality === 'original' ? original() : metadata());
     await assert.rejects(pending, /账号或连接已改变/);
   }
+});
+
+test('native-verified converted caches are previews and caller paths never reach the reader', async t => {
+  const bot = fixture(t), reads = [], calls = [];
+  bot.read = async (action, params) => {
+    reads.push({action,params});
+    return params.verifiedPreviewPath ? metadata({file:'converted.jpg',requiresDecode:true,originalUnavailableReason:'invalid_cache'})
+      : metadata({file:null,originalUnavailableReason:'invalid_cache'});
+  };
+  bot.call = async (action, params) => {
+    calls.push({action,params});
+    return {requested:false,verifiedPreviewPath:'native-thumb0.png'};
+  };
+  const result = await bot.getImage({...locator,quality:'preview',verifiedPreviewPath:'untrusted.png'});
+  assert.equal(result.file, 'converted.jpg');
+  assert.equal(result.representation, 'preview');
+  assert.equal(result.originalAvailable, false);
+  assert.equal(result.requiresDecode, true);
+  assert.equal(reads[0].params.verifiedPreviewPath, undefined);
+  assert.equal(reads[1].params.verifiedPreviewPath, 'native-thumb0.png');
+  assert.equal(calls[0].params.verifiedPreviewPath, undefined);
+  assert.equal(calls[0].params.quality, 'preview');
+});
+
+test('prefetch retains its path result while marking native converted previews for decoding', async t => {
+  const bot = fixture(t), reads = [];
+  bot.read = async (_action, params) => {
+    reads.push(params);
+    return params.verifiedPreviewPath ? metadata({file:'converted.jpg',requiresDecode:true}) : null;
+  };
+  bot.call = async () => ({requested:false,verifiedPreviewPath:'native-thumb0.png'});
+  assert.deepEqual(await bot.getImage(locator), {file:'converted.jpg',requiresDecode:true});
+  assert.equal(reads[1].quality, 'preview');
+  assert.equal(reads[1].maxBytes, 20 * MiB);
+});
+
+test('original reads ignore native preview locators even if an older runtime returns one', async t => {
+  const bot = fixture(t), reads = [];
+  bot.read = async (_action, params) => {
+    reads.push(params);
+    return reads.length === 1 ? missingOriginal() : original();
+  };
+  bot.call = async () => ({verifiedPreviewPath:'converted.png'});
+  const result = await bot.getImage({...locator,quality:'original'});
+  assert.equal(result.representation, 'original');
+  assert.ok(reads.every(p => !p.verifiedPreviewPath && p.quality === 'original'));
+});
+
+test('account or reader changes during native preview lookup cancel before reading that path', async t => {
+  const bot = fixture(t);
+  let release, reads = 0;
+  bot.read = async () => { reads++; return metadata({file:null}); };
+  bot.call = () => new Promise(resolve => { release = resolve; });
+  const pending = bot.getImage({...locator,quality:'preview'});
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  bot.account = '43';
+  release({requested:false,verifiedPreviewPath:'other-account.png'});
+  await assert.rejects(pending, /账号或连接已改变/);
+  assert.equal(reads, 1);
 });

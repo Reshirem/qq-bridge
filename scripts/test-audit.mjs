@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tests = [
   'test-sleep-commands.mjs', 'test-sleep-schedule.mjs', 'test-sleep-schedule-routes.mjs',
-  'test-attention-delivery.mjs', 'test-qq-message-reference.mjs',
+  'test-attention-delivery.mjs', 'test-qq-message-reference.mjs', 'test-native-message-references.mjs',
   'test-poke-reminders.mjs', 'test-poke-send.mjs',
   'test-qq-unread-store.mjs', 'test-qq-backends.mjs', 'test-maa-agent.mjs',
   'test-forward.mjs', 'test-native-forward.mjs', 'test-forward-routes.mjs',
@@ -24,7 +24,7 @@ const tests = [
   // 图片/表情链路（动图/表情包字段、CDN 优先与 emoji_id 兜底）+ 联网搜索
   // （DSH 同一路 DeepSeek 搜索、Bing RSS 兜底、凭据优先级与端点安全；
   //  本轮新增：空结果 note 必须在写缓存之前生成，否则缓存命中丢掉提示）。
-  'test-media-search.mjs',
+  'test-media-search.mjs', 'test-media-normalize.mjs',
   // 令牌账本 / 价目表 与 体检修复回归（纯函数，无外部依赖）
   'test-token-usage.mjs', 'test-hardening.mjs',
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）

@@ -1,6 +1,7 @@
 """Resolve NTQQ media references within the logged-in account's Windows cache."""
 from collections import defaultdict
 import hashlib
+from pathlib import Path
 import re
 
 
@@ -8,6 +9,7 @@ MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_ORIGINAL_BYTES = 32 * 1024 * 1024
 DEFAULT_PREVIEW_BYTES = 8 * 1024 * 1024
 MAX_HEADER_BYTES = 256 * 1024
+MAX_PREVIEW_PIXELS = 64_000_000
 
 
 def digest_hex(value):
@@ -159,14 +161,54 @@ class MediaCache:
         self.results[key] = found
         return found
 
-    def resolve_quality(self, item, quality, max_bytes):
+    def verified_preview(self, digest, path, max_bytes):
+        """Only accept the exact account-cache identity checked by QQ runtime.
+
+        QQ can store a re-encoded thumb:0 in Ori under the source MD5 name.
+        It remains a preview, and the caller must decode the bytes before use.
+        """
+        candidate = Path(path)
+
+        def valid_location(value):
+            if not value.is_absolute():
+                return False
+            try:
+                relative = value.relative_to(self.root).as_posix()
+            except ValueError:
+                return False
+            return re.fullmatch(
+                r"(?:Pic|Emoji/emoji-recv)/\d{4}-(?:0[1-9]|1[0-2])/(?:Ori|Thumb)/"
+                + re.escape(digest) + r"(?:_\d+)?\.[a-z0-9]+", relative, re.I) is not None
+
+        if not valid_location(candidate):
+            raise ValueError("QQ 已核验预览路径不属于当前图片缓存")
+        try:
+            resolved = candidate.resolve(strict=True)
+            if not valid_location(resolved):
+                raise ValueError("QQ 已核验预览路径不属于当前图片缓存")
+            if not resolved.is_file():
+                return None
+            size = resolved.stat().st_size
+            if size > max_bytes:
+                raise ValueError(f"QQ 本地图片缓存均超过读取大小上限（{max_bytes} 字节），未重复下载")
+            with resolved.open("rb") as stream:
+                header = stream.read(MAX_HEADER_BYTES)
+            width, height = image_dimensions(header)
+            if (media_header(header) != "image" or width is None or height is None
+                    or width * height > MAX_PREVIEW_PIXELS):
+                return None
+            return {"file": str(resolved), "width": width, "height": height, "bytes": size}
+        except (OSError, RuntimeError):
+            return None  # QQ may evict the preview or leave an unresolved link.
+
+    def resolve_quality(self, item, quality, max_bytes, verified_preview_path=None):
         """Quality reads return verified source metadata; legacy reads stay paths."""
         market = item["type"] == "marketFace"
         if market and quality == "original":
             raise ValueError("QQ 商城表情暂不支持读取原图")
         digest = item.get("emojiId" if market else "md5")
         package = item.get("packageId")
-        key = ("quality", item["type"], digest, package, quality, max_bytes)
+        key = ("quality", item["type"], digest, package, quality, max_bytes, verified_preview_path)
         if key in self.results:
             return self.results[key]
         candidates = ([("Thumb", self.root / "Emoji/marketface" / str(package) / (digest + "_aio.png"))]
@@ -224,17 +266,24 @@ class MediaCache:
                 continue
         selected = (thumbnail if quality == "preview" else None) or (
             original if original and original["bytes"] <= max_bytes else None)
+        verified_preview = None
+        if not selected and quality == "preview" and verified_preview_path is not None:
+            verified_preview = self.verified_preview(digest, verified_preview_path, max_bytes)
+            selected = verified_preview
         if not selected and oversized:
             raise ValueError(f"QQ 本地图片缓存均超过读取大小上限（{max_bytes} 字节），未重复下载")
         result = {
             "file": selected["file"] if selected else None,
-            "representation": "preview" if selected is not None and selected is thumbnail else "original" if selected else quality,
+            "representation": "preview" if selected is not None and (selected is thumbnail or selected is verified_preview)
+                              else "original" if selected else quality,
             "width": selected["width"] if selected else None,
             "height": selected["height"] if selected else None,
             "originalWidth": original_dimensions[0], "originalHeight": original_dimensions[1],
             "originalAvailable": original is not None,
             "originalUnavailableReason": unavailable,
         }
+        if verified_preview is not None:
+            result["requiresDecode"] = True
         self.results[key] = result
         return result
 
@@ -243,6 +292,12 @@ def resolve_media(cache, params):
     quality = params.get("quality")
     if "quality" in params and quality not in ("preview", "original"):
         raise ValueError("图片 quality 必须是 preview 或 original")
+    verified_preview_path = params.get("verifiedPreviewPath")
+    if "verifiedPreviewPath" in params and (
+            quality != "preview" or params.get("type", "image") != "image"
+            or not isinstance(verified_preview_path, str) or not verified_preview_path
+            or "\x00" in verified_preview_path):
+        raise ValueError("verifiedPreviewPath 仅用于已核验的普通图片预览")
     max_bytes = params.get("maxBytes")
     # Explicit preview reads may need a large source to generate the preview.
     # The bridge separately caps the normalized model output.
@@ -268,6 +323,6 @@ def resolve_media(cache, params):
         raise ValueError("无效的图片标识")
     item = {"type": "image", "md5": digest}
     if quality:
-        return cache.resolve_quality(item, quality, max_bytes)
+        return cache.resolve_quality(item, quality, max_bytes, verified_preview_path)
     files = cache.resolve(item, max_bytes)
     return files.get("original") or files.get("thumbnail")

@@ -212,8 +212,8 @@ export class NativeQQ extends EventEmitter {
       const messageId = String(p.messageId ?? '').trim();
       const source = /^(group|private):([1-9]\d{0,18})$/.exec(key);
       const hasLocator = !!source && /^-?[1-9]\d{0,19}$/.test(messageId);
-      const imageResult = value => {
-        if (quality === undefined) return {file:value};
+      const imageResult = (value, verifiedPreview = false) => {
+        if (quality === undefined && !verifiedPreview) return {file:value};
         // Explicit quality cannot silently accept an older path-only reader or
         // call an unverified thumbnail an original. Restart the reader instead.
         if (!value || typeof value !== 'object' || !['preview','original'].includes(value.representation)
@@ -226,6 +226,7 @@ export class NativeQQ extends EventEmitter {
         const dimension = number => Number.isInteger(number) && number > 0 && number <= 0xffffffff ? number : null;
         const reason = ['not_cached','invalid_cache','source_too_large','unsupported'].includes(value.originalUnavailableReason)
           ? value.originalUnavailableReason : null;
+        if (quality === undefined) return {file:value.file || null, ...(value.requiresDecode === true ? {requiresDecode:true} : {})};
         return {
           file:value.file || null, representation:value.representation,
           width:dimension(value.width), height:dimension(value.height),
@@ -233,6 +234,7 @@ export class NativeQQ extends EventEmitter {
           originalAvailable:value.originalAvailable,
           originalUnavailableReason:reason,
           canFetchOriginal:hasMd5 && !['source_too_large','unsupported'].includes(reason) && (value.originalAvailable || hasLocator),
+          ...(value.requiresDecode === true ? {requiresDecode:true} : {}),
         };
       };
       let forwardPeer;
@@ -275,18 +277,28 @@ export class NativeQQ extends EventEmitter {
       if (!hasLocator) return result;
       const peer = forwardPeer || await this.peer(source[1], source[2]);
       checkConnection();
-      await call('fetch_message_image', {
+      const fetched = await call('fetch_message_image', {
         peer, messageId,
         md5, ...(p.forwardId ? {forwardId:p.forwardId} : {}),
+        ...(quality ? {quality} : {}),
       }, 30000);
+      checkConnection();
+      // Only the authenticated native runtime may supply a preview locator.
+      // Original reads never use this fallback, including on a stale runtime.
+      const verifiedPreview = quality !== 'original' && typeof fetched?.verifiedPreviewPath === 'string';
+      const retryImage = verifiedPreview ? {...image, quality:'preview',
+        maxBytes:maxBytes ?? 20 * 1024 * 1024, verifiedPreviewPath:fetched.verifiedPreviewPath} : image;
       const deadline = Date.now() + 12000;
       do {
         checkConnection();
-        result = imageResult(await read('media', image));
+        result = imageResult(await read('media', retryImage), verifiedPreview);
         checkConnection();
         if (result.file) return result;
         await new Promise(resolve => setTimeout(resolve, 250));
       } while (!this.closed && this.read && Date.now() < deadline);
+      if (quality === 'original' && result.originalUnavailableReason === 'invalid_cache') {
+        throw Error('QQ 当前缓存与消息原图校验不符，无法确认原图；请使用预览');
+      }
       throw Error(quality === 'original' ? 'QQ 未能在规定时间内完成原图缓存，未使用预览代替' : 'QQ 未能在规定时间内完成图片缓存');
     }
     if (action === 'get_group_msg_history' || action === 'get_friend_msg_history') {

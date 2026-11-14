@@ -265,6 +265,41 @@ await test('原生图片读取带上原消息定位，只读取当前账号的 Q
   }
 });
 
+await test('QQ 转换预览对实际字节强制解码，关闭归一化也不能绕过', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-converted-image-'));
+  const digest = 'a'.repeat(32);
+  const target = path.join(dir, 'Documents/Tencent Files/999/nt_qq/nt_data/Pic/2026-11/Ori', digest + '.png');
+  fs.mkdirSync(path.dirname(target), {recursive:true});
+  fs.writeFileSync(target, PNG);
+  let decodeOk = false, calls = 0, swapAccount = false;
+  const h = await bridgeHarness({config:{qqBackend:'native',socialV2:{media:{normalize:false}}},
+    globals:{os:{...os,homedir:() => dir},validateImageDecode:async bytes => {
+      calls++;
+      assert.deepEqual(bytes, PNG, 'decode the bytes actually read, not the declared filename or digest');
+      if (swapAccount) h.bot.account = '998';
+      return {ok:decodeOk};
+    }}});
+  try {
+    h.bot.account = '999'; h.bot.emit('open');
+    h.bot.getImage = async () => ({file:target,representation:'preview',originalAvailable:false,
+      originalUnavailableReason:'invalid_cache',width:1,height:1,requiresDecode:true});
+    const params = {key:'private:123',messageId:'456',quality:'preview'};
+    assert.equal(await h.fetchOneBotImage({kind:'image',file:digest},params), null);
+    decodeOk = true;
+    const result = await h.fetchOneBotImage({kind:'image',file:digest},params);
+    assert.deepEqual(result.buffer, PNG);
+    assert.equal(result.representation, 'preview');
+    assert.equal(result.originalAvailable, false);
+    assert.equal(result.requiresDecode, undefined, 'internal validation flags do not leak to model output');
+    swapAccount = true;
+    assert.equal(await h.fetchOneBotImage({kind:'image',file:digest},params), null);
+    assert.equal(calls, 3);
+  } finally {
+    await h.close();
+    fs.rmSync(dir, {recursive:true,force:true});
+  }
+});
+
 await test('NativeQQ 缓存未命中时按原消息请求 QQ 下载并重新读取缓存', async () => {
   const bot = new NativeQQ(ROOT);
   const digest = 'abcdef0123456789abcdef0123456789';

@@ -244,6 +244,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
+    validateImageDecode: mediaNormalize.validateImageDecode,
     prepareImageDetail, createQQImageReferences,
     // The fixture must never probe or spawn a host ffmpeg process during startup.
     isFfmpegAvailable: () => false,

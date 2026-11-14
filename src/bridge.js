@@ -37,7 +37,7 @@ import { classifyIncomingWake, isPokeToSelf, reminderEnabled } from './autonomy-
 import { findQQMessageReference, parseQQMessageReference } from './qq-message-reference.js';
 import { compactModelMessage, describeAge } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
-import { normalizeImageForModel, sniffImage } from './media-normalize.js';
+import { normalizeImageForModel, sniffImage, validateImageDecode } from './media-normalize.js';
 import { prepareImageDetail } from './media-detail.js';
 import { createQQImageReferences } from './qq-image-references.js';
 import { normalizeSleepSchedule, planSleepSchedule, sleepScheduleTimeZone } from './sleep-schedule.js';
@@ -6177,7 +6177,7 @@ async function main() {
             key, messageId:String(message.messageId ?? messageId)
           }, index + 1, mediaAccount));
           if (!media) {
-            sendJson({ ok: true, messageId, media: [], images: [], note: '该来源的未读和 SnowLuma 历史中未找到该消息' });
+            sendJson({ ok: true, messageId, media: [], images: [], note: '该来源中未找到该消息；若使用本地 seq，请重新读取会话历史并使用返回的 id:<QQ消息ID> 取图' });
             return;
           }
           if (!media.length) {
@@ -6511,6 +6511,7 @@ async function main() {
     return [
       'QQ 未能在规定时间内完成原图缓存，未使用预览代替',
       'QQ 尚未取得经过校验的原图，未使用预览代替',
+      'QQ 当前缓存与消息原图校验不符，无法确认原图；请使用预览',
       '未获取到经过校验的原图',
       'QQ 图片读取期间账号或连接已改变，请重新读取',
       'QQ 媒体读取器未返回有效画质信息，请重新连接'
@@ -6646,7 +6647,20 @@ async function main() {
             log(`QQ 本机图片超限，已跳过（${Math.round(stat.size / 1024)}KB）`);
           } else {
             const accepted = acceptImageBuffer(fs.readFileSync(obj.file), 'QQ 本机图片');
-            if (accepted) return { ...accepted, ...metadata };
+            if (accepted) {
+              if (native && obj.requiresDecode === true) {
+                const account = bot.account;
+                const reader = bot.read, connection = bot.call;
+                const decoded = await validateImageDecode(accepted.buffer, {
+                  ffmpegPath:modelMediaLimits.ffmpegPath, timeoutMs:modelMediaLimits.timeoutMs,
+                });
+                if (bot.closed || bot.account !== account || bot.read !== reader || bot.call !== connection || String(selfUserId) !== String(account)) {
+                  throw Error('QQ 图片读取期间账号或连接已改变，请重新读取');
+                }
+                if (!decoded.ok) throw Error('QQ 预览缓存无法完整解码，请在 QQ 中重新加载图片');
+              }
+              return { ...accepted, ...metadata };
+            }
           }
         }
         const base64 = base64FromMaybe(obj.data) || base64FromMaybe(obj.base64) || base64FromMaybe(obj.file);
@@ -8818,7 +8832,11 @@ async function main() {
     unreadStore.acknowledge(key, qqSourceMetadata(key, { ...st, unread }), sequences);
     st.unread = unread;
     // Keep the last page addressable for follow-up quotes and media, including ID-less pokes.
-    if (!native && keepReferences) st.readReferences = st.readReferences.concat(matched).slice(-100);
+    if (keepReferences) {
+      // Native follow-ups read QQ again; retain only the seq -> message ID mapping.
+      const references = native ? matched.map(({seq, messageId}) => ({seq, messageId})) : matched;
+      st.readReferences = st.readReferences.concat(references).slice(-100);
+    }
     acknowledgeDesktopAttentionThrough(key, readThroughSeqV2(st), sequences);
     return matched.length;
   }
