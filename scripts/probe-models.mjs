@@ -1,8 +1,6 @@
 // 读取 DSH 的 settings/describe，列出所有 namespace 与可选模型（只读）。
 //
-// 输出落在**系统临时目录**（不是仓库里的 state/）：`state/` 被
-// scripts/harden-state-acl.mjs 收紧了 ACL（去掉继承 ⇒ 沙箱进程的能力 SID 不在
-// ACL 里），在 DSH 沙箱里往 state/ 写文件会 EPERM。
+// 输出落在系统临时目录，避免一次性诊断产物混入仓库的生产 state/。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

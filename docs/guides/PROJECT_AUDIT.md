@@ -2,6 +2,8 @@
 
 审计快照：本地 `HEAD=5e940ea`，日期 2026-10-29。本文按 Git 历史、当前注册入口、路由和回归检查整理；它用于区分来源与验证边界，不等同于对真实 QQ、DSH 或本机安装的在线验收。
 
+后续维护说明：2026-11-16 已移除自动 ACL 收紧、提权、目录权限告警及 ACL 命令入口；下表的 ACL 模块行保留为该审计快照的来源记录，不表示当前仍有这一模块。当前文件权限行为见[安全基线](SECURITY_BASELINE.md#6-现有文件权限与测试目录)。
+
 ## Fork 边界与贡献者
 
 本地历史显示，`a49877f4e58d04e47532d44b803360d0f001160d`（Derpyu520，2026-10-22，`v0.2.1-r1`）是 fork 前的父提交；首个 Reshirem 提交是 `9c7834f`（2026-10-27，`refactor: unify QQ bridge on autonomous session runtime`）。这比按文件名推测来源可靠：许多原文件后来被 fork 改写或扩展。
@@ -17,7 +19,7 @@
 | `src/web-search.js` | 495 | 1 | 搜索模块几乎全部继承 |
 | `src/safe-fetch.js` | 385 | 0 | SSRF 防护与安全抓取主要继承 |
 | `src/token-ledger.js` | 958 | 0 | 用量账本主要继承 |
-| `src/state-acl.mjs` | 140 | 0 | 本机状态目录权限处理主要继承 |
+| `src/state-acl.mjs`（已移除） | 140 | 0 | 本机状态目录权限处理主要继承；此行为与模块已于 2026-11-16 移除 |
 | `src/a-memorix-gateway.js` | 0 | 244 | fork 后新增的记忆 Gateway 客户端 |
 | `src/mcp-memory-safe.js` | 0 | 142 | fork 后新增的 DSH 记忆工具注册 |
 | `public/console.html` | 352 | 312 | 原控制台界面经过大量 fork 后扩展 |
@@ -31,7 +33,7 @@
 | DSH API、认证和事件流 | `src/dsh-client.js` | 主要继承；当前由 fork 后的全局会话控制器统一调用 |
 | 搜索、外部网页抓取和 SSRF 防护 | `src/web-search.js`、`src/safe-fetch.js`、`src/mcp-web-search-safe.js` | 搜索与网络安全基础主要继承；MCP 接入和当前全局会话的使用方式由 fork 后维护 |
 | 图片、转发、收藏表情与 FFmpeg 归一化 | `src/media-normalize.js`、`src/forward.js`、`src/sticker-lib.js`、`src/ffmpeg-resolve.js` | 原有媒体/表情能力仍在，fork 后修过图片读取、发送和 Windows FFmpeg 路径 |
-| SnowLuma 连接发现、token 用量账本、安全与 ACL | `src/snowluma-conn.js`、`src/token-ledger.js`、`src/state-acl.mjs` 等 | 以继承模块为主，fork 后增加或调整了状态保护、成本展示与错误处理 |
+| SnowLuma 连接发现、token 用量账本、安全与旧版 ACL | `src/snowluma-conn.js`、`src/token-ledger.js`；审计时还包括现已移除的 `src/state-acl.mjs` | 以继承模块为主，fork 后增加或调整了状态保护、成本展示与错误处理；自动 ACL 策略已于 2026-11-16 移除 |
 | 全局自主会话、生命周期和恢复 | `src/bridge.js`、`src/autonomy-policy.js`、`dsh/agent-presets/desktop-agent/` | fork 后新增/重写：由 WebUI 任务、DSH 输入、QQ 提醒共同唤醒一个 `desktop-agent`；`agent_rest` 结束当前回合，但不限制休息后的工具调用 |
 | QQ 唤醒 | `src/autonomy-policy.js`、`src/bridge.js` | fork 后整理：私聊、发给机器人的原生 @、验证过的回复/引用、配置关键词，以及**当前选中人格卡**名称；普通群消息正文不自动交给模型 |
 | 未处理提醒 | `src/bridge.js` | fork 后新增：消息未被连续读取水位覆盖时，进入休息后全局每分钟检查一次，最多补发一次；指数退避恢复期间不检查 |
@@ -47,6 +49,7 @@
 - 默认头像图片推断：当前不再根据 `assets/deepseek娘.png` 指定人物外观。
 - 旧版本兼容分支：最近的 fork 提交 `5e940ea` 清理了已不用的兼容代码。
 - 旧接口 `/api/authorize/read`：代码仓库中没有当前 MCP 调用方；本次审计将孤立路由和 agent allowlist 项移除。
+- 自动 ACL 收紧：2026-11-16 移除了启动提权、配置写入时收紧临时文件、目录权限告警与相关命令入口；更新不会主动恢复现有磁盘权限的继承。
 - `voice-core.js`、`voice-tool-*`：目录地图标注为仓库外独立语音工具共用代码，不属于当前桥接运行入口；清理前仍需查外部调用方。
 
 ## 审计结果与尚未验证的面
@@ -66,7 +69,7 @@
 2. **没有连接真实 QQ / SnowLuma，也没有跑在线 DSH 生命周期核验。** 26/26 离线回归使用模拟接口，不代表网关登录、事件订阅、真实发送和在线生命周期全部已验收。`npm run verify:dsh` 会创建临时 workspace/session 后归档，这次没有运行。
 3. **真实 A_Memorix schema/Gateway 尚未联调。** `scripts/a-memorix-readonly-list.py` 已通过临时 SQLite fixture 的分页、来源/时间/关键词过滤、LIKE 转义、storage key 越界拒绝及数据库摘要不变检查；fixture 使用读取器要求的当前列结构，不证明用户实际安装的 A_Memorix 版本结构兼容。系统 PATH 没有 Python 命令，但仓库内 A_Memorix venv 可用于该 fixture。
 4. **提醒队列缺少端到端时间测试。** 唤醒分类有纯函数测试，消息水位与 MCP schema 有协议测试；“进入休息后等一分钟、只补发一次、退避态不补发”的完整计时器状态流目前没有单独 fixture 测试。
-5. **ACL 的真实系统行为仍未自动化。** [安全基线](SECURITY_BASELINE.md) 已注明 `icacls`/UAC 行为需要在普通 Windows 终端手动检查；离线回归只做结构断言。
+5. **审计时的 ACL 核验缺口已不适用。** 当时仅有 `icacls`/UAC 结构断言；2026-11-16 已移除这套自动 ACL 策略，当前检查启动与配置保存不再修改 ACL，不对既有磁盘权限作修改或保证。
 
 ### 使用时要知道的设计边界
 

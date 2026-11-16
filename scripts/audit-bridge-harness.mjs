@@ -38,10 +38,28 @@ import * as presetPrompt from '../src/preset-prompt.js';
 import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
 import * as sleepSchedule from '../src/sleep-schedule.js';
 import * as dshDiagnostics from '../src/dsh-diagnostics.js';
-import * as stateAcl from '../src/state-acl.mjs';
 import { unwrap, createTurnCollector, requireSequencedSessionProjection } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+
+// Fail only the fixture's final config replacement, after a complete temporary
+// file has been written. Never modify process-wide fs or real file permissions.
+export function configRenameFailureFs() {
+  return {
+    ...fs,
+    renameSync(from, to) {
+      const destination = path.resolve(String(to));
+      const directory = path.dirname(destination);
+      if (path.basename(destination) === 'config.json'
+        && path.dirname(directory) === path.resolve(os.tmpdir())
+        && path.basename(directory).startsWith('qq-audit-bridge-')) {
+        throw Object.assign(new Error('fixture config rename failure'), { code: 'EIO' });
+      }
+      return fs.renameSync(from, to);
+    },
+  };
+}
+
 export async function bridgeHarness({ config = {}, files = {}, globals = {}, onebot = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
@@ -255,7 +273,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     }),
     openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
-    createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
+    createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
     validateImageDecode: mediaNormalize.validateImageDecode,
@@ -265,9 +283,6 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     sniffImage: mediaNormalize.sniffImage,
     planNormalization: mediaNormalize.planNormalization,
     planAnimation: mediaNormalize.planAnimation,
-    // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事。桩成成功，让 hardenStateDirAcl 走正常分支。
-    hardenDir: () => ({ ok: true, detail: 'stub' }),
-    hardenFile: () => ({ ok: true, detail: 'stub' }),
     cleanupTemp: () => {},
     ...globals,
   });

@@ -60,9 +60,11 @@ powershell -ExecutionPolicy Bypass -File scripts\a-memorix.ps1 stop
 
 Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过 `setup` 安装，启动器会先尝试启动 Gateway 和记忆服务；启动失败会显示警告，但不会阻止桥接运行。直接使用 `npm start` 时，需先单独运行脚本的 `start` 操作。
 
+启动器和桥接不会自动修改 `state/`、`config.json` 的 ACL，也不会为目录权限请求管理员提权。Windows 新建文件沿用父目录权限；更新不会重置旧版已经设置的磁盘权限。共享机器上的目录与备份权限由使用者管理。
+
 如果在桥接运行期间首次运行了 `setup`，重启一次 qq-bridge 以读取脚本写入的 namespace 凭据。之后无需改 `config.json`，可在 WebUI「长期记忆 → 服务设置 → 桥接连接与启动摘要」中设置启用状态、本机 Gateway 地址、已创建的 namespace、namespace API key、请求超时和首次摘要上限。Gateway 地址只允许本机回环地址；切换 namespace 前需先在 A_Memorix 中创建它。保持 `config.example.json` 中的 `memory.enabled: false` 即为关闭状态；未配置时桥接仍可正常运行，WebUI 会显示连接状态。
 
-启用后可在 WebUI「长期记忆 → 服务设置 → A_Memorix 模型服务」中手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机受 ACL 保护的 `state/a-memorix/secrets/`，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
+启用后可在 WebUI「长期记忆 → 服务设置 → A_Memorix 模型服务」中手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机且被 Git 忽略的 `state/a-memorix/secrets/`，文件访问遵循操作系统现有权限，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
 
 长期记忆启用且 `memoryOrganizer.enabled` 未设为 `false` 时，主会话成功休息后每天最多排队运行一次独立记忆整理，日期按 `memoryOrganizer.timeZone` 计算；当天后续休息产生的内容会在下一个可触发日接续整理。它通过 DSH 随附的 `dsh --profile headless` 执行，并按同一时区每天复用一条整理 Session；整理模型跟随触发时主会话的模型选择，A_Memorix 的 Embedding / LLM Provider 是另一套配置。Windows 下桥接会先检查标准 DSH Desktop 安装目录 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`，并直接启动其底层 `DeepSeek Harness.exe` 的 Node CLI 入口，避免带空格的安装路径经过 `cmd.exe` 解析；找不到时再尝试 `PATH` 中的 `dsh`。如使用其他安装位置，可在 `config.json` 的 `memoryOrganizer.cliPath` 指定 CLI 路径，或设置 `DSH_CLI_PATH`。桥接读取当前 Desktop profile 中所选 provider 的配置，只把该 provider 和当前模型放入本次 headless patch；当它使用 `apiKeyEnv` 时，会在这个进程内启用 DSH 本地凭据解析器，密钥值不会复制进 patch 或日志。其他 DSH 工具在整理进程中关闭，模型只保留长期记忆 MCP 工具。对于依赖 Desktop OAuth 登录态而非 DSH 本地凭据引用的 provider，仍需单独确认 headless 是否支持。
 

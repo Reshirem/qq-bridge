@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { bridgeHarness } from './audit-bridge-harness.mjs';
+import { bridgeHarness, configRenameFailureFs } from './audit-bridge-harness.mjs';
 
 async function start(options = {}) {
   const h = await bridgeHarness(options);
@@ -116,13 +116,16 @@ test('test-send lists remain enforced, and invalid entries do not silently weake
 });
 
 test('configuration write failure and malformed configuration do not report success or change the owner', async () => {
-  const f = await start({ globals: { hardenFile: () => ({ ok: false, detail: 'fixture failure' }) } });
+  const f = await start({ globals: { fs: configRenameFailureFs() } });
   try {
     const file = path.join(f.h.temp, 'config.json');
     const before = fs.readFileSync(file, 'utf8');
-    assert.equal((await f.call('/api/whitelist', { ownerQQ: '456' })).status, 500);
+    const failed = await f.call('/api/whitelist', { ownerQQ: '456' });
+    assert.equal(failed.status, 500);
+    assert.match(failed.body.error, /fixture config rename failure/);
     assert.equal(fs.readFileSync(file, 'utf8'), before);
     assert.equal((await f.call('/api/whitelist')).body.ownerQQ, 123);
+    assert.deepEqual(fs.readdirSync(f.h.temp).filter(name => name.startsWith('config.json.') && name.endsWith('.tmp')), []);
     fs.writeFileSync(file, '{ invalid');
     assert.equal((await f.call('/api/whitelist', { ownerQQ: '456' })).status, 500);
     assert.equal(fs.readFileSync(file, 'utf8'), '{ invalid');
@@ -130,8 +133,8 @@ test('configuration write failure and malformed configuration do not report succ
   } finally { await f.close(); }
 });
 
-test('all console configuration saves fail closed if file permissions cannot be hardened', async () => {
-  const f = await start({ globals: { hardenFile: () => ({ ok: false, detail: 'fixture failure' }) } });
+test('all console configuration saves preserve the original and clean temporary files when replacement fails', async () => {
+  const f = await start({ globals: { fs: configRenameFailureFs() } });
   try {
     const file = path.join(f.h.temp, 'config.json');
     const before = fs.readFileSync(file, 'utf8');
@@ -145,8 +148,24 @@ test('all console configuration saves fail closed if file permissions cannot be 
     ]) {
       const result = await f.call(route, body);
       assert.equal(result.status, 500, `${route}: ${JSON.stringify(result.body)}`);
+      assert.match(result.body.error, /fixture config rename failure/, route);
       assert.equal(fs.readFileSync(file, 'utf8'), before, route);
+      assert.deepEqual(fs.readdirSync(f.h.temp).filter(name => name.startsWith('config.json.') && name.endsWith('.tmp')), [], route);
     }
+  } finally { await f.close(); }
+});
+
+test('startup and configuration saves need no permission changes and retired ACL endpoints return 404', async () => {
+  const denyPermissionChange = () => { throw new Error('unexpected file permission change'); };
+  const f = await start({ globals: { fs: { ...fs, chmodSync: denyPermissionChange, fchmodSync: denyPermissionChange } } });
+  try {
+    for (const body of [undefined, { rehardenStateDir: true }]) {
+      assert.equal((await f.call('/api/security', body)).status, 404);
+    }
+    assert.equal((await f.call('/api/whitelist', { ownerQQ: '456' })).status, 200);
+    assert.equal(f.readConfig().ownerQQ, 456);
+    assert.equal((await f.call('/api/whitelist')).body.ownerQQ, 456);
+    assert.deepEqual(fs.readdirSync(f.h.temp).filter(name => name.startsWith('config.json.') && name.endsWith('.tmp')), []);
   } finally { await f.close(); }
 });
 

@@ -6,7 +6,6 @@ import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTokenLedger } from '../src/token-ledger.js';
-import { manualDirCommand } from '../src/state-acl.mjs';
 import { composePresetPromptModules, normalizePresetPromptModules, PRESET_PROMPT_MODULE_DEFINITIONS } from '../src/preset-prompt.js';
 import { DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS, normalizeDesktopAgentPromptTemplates } from '../src/desktop-agent-prompt-templates.js';
 
@@ -126,7 +125,6 @@ export function makeFixtureState() {
       { key: 'group:123456789', name: '示例群聊', unreadCount: 2, attention: 'queued', lastIncomingAt: Date.now(), lastAiReplyAt: Date.now() - 120000 },
       { key: 'private:100001', name: '示例好友', unreadCount: 0, attention: '', lastIncomingAt: Date.now() - 60000, lastAiReplyAt: 0 },
     ],
-    hardenStateDir: false,
     toolLog: [
       { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'call', args: JSON.stringify({ key: 'group:123456789', limit: 20 }) },
       { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'result', ok: true },
@@ -328,17 +326,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           case '/api/socialV2/tool-log': return json({ ok: true, entries: url.searchParams.get('failed') === '1' ? state.toolLog.filter(e => e.ok === false || e.imageAdmission?.rejected > 0) : state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
           case '/api/socialV2/states': return json({ ok: true, backend:state.qqBackend ?? 'snowluma', enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
-          // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
-          // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是
-          // `icacls DIR /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /T /C` —— 正是那句
-          // 会把子文件 DACL 清空、让桥接读不到自己令牌的破坏性命令。示例数据是给人照抄的，
-          // 抄错的那一版和真的那一版看起来一模一样。
-          case '/api/security': return json({
-            ok: true,
-            stateDir: state.hardenStateDir
-              ? { hardened: true, path: 'D:\\demo\\qq-bridge\\state', manualCommand: '' }
-              : { hardened: false, path: 'D:\\demo\\qq-bridge\\state', manualCommand: manualDirCommand('D:\\demo\\qq-bridge\\state') }
-          });
           // 令牌与花费：全部为离线示例数据，不含任何真实用量。
           case '/api/tokens/summary': return json(usage.summary());
           case '/api/tokens/series': return json(usage.series({hours:Number(url.searchParams.get('hours')) || 24}));
@@ -515,13 +502,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           case '/api/socialV2/tool-log/clear': state.toolLog = []; return json({ ok: true });
           case '/api/socialV2/feedback-clear': state.feedback = []; return json({ ok: true });
           case '/api/socialV2/reset': state.buffers = []; return json({ ok: true });
-          case '/api/security':
-            if (body.rehardenStateDir === true) {
-              // 离线演示：把「重新检测」当成一次成功的收紧（真实实现要管理员权限）
-              state.hardenStateDir = true;
-              return json({ ok: true, hardened: true, path: 'D:\\demo\\qq-bridge\\state' });
-            }
-            return json({ ok: false, error: '该安全设置已停用' }, 400);
           case '/api/console/token': return json({ ok: true, token: body.token || 'offline-demo-token-123456', generated: !body.token });
           case '/api/test-send': return json({ ok: true, message_id: 'mock-message-001' });
           case '/api/console/desktop-agent/sleep-schedule': {

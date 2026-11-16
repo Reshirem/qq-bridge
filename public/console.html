@@ -646,22 +646,9 @@
       <div class="meta" id="dshEffortNote"></div>
       <div class="meta" id="dshEffortSideEffect"></div>
     </section>
-<section id="section-security" data-page="access" hidden class="card">
-      <h2>安全状态</h2>
-      <div class="meta">控制台仅在本机访问，登录需要访问令牌。</div>
-      <div id="stateDirStatus" class="meta" role="status">正在读取目录权限…</div>
-      <div id="stateDirWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
-        <b>⚠️ state/ 目录权限未收紧</b>
-        <div class="meta" style="margin:4px 0">桥接未能收紧 <code id="stateDirPath"></code> 的访问权限。此目录保存本地令牌与 QQ 消息缓存。</div>
-        <div class="meta">在本机终端执行下方命令后可重新检测。</div>
-        <pre id="stateDirCmd" style="user-select:all;overflow:auto;margin:4px 0;padding:6px;background:rgba(127,127,127,.12);border-radius:4px"></pre>
-        <button id="stateDirReharden" class="small">重新检测</button>
-        <span class="meta" id="stateDirMsg"></span>
-      </div>
-
-    </section>
 <section id="section-token" data-page="access" hidden class="card">
       <h2>控制台访问令牌</h2>
+      <div class="meta">控制台仅在本机访问，登录需要访问令牌。</div>
       <div class="meta">用于打开本控制台 / 调用管理 API 的令牌。可手动输入新令牌保存，或留空生成随机令牌。修改后当前页面会自动使用新令牌。</div>
       <input type="password" id="consoleTokenInput" placeholder="输入新令牌（至少 16 位），留空则生成随机" autocomplete="new-password">
       <div class="row" style="margin-top:8px">

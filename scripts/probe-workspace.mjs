@@ -4,7 +4,7 @@ import { probeCookie, probeRpc, probeWorkspaceDir } from './probe-auth.mjs';
 const rpc = probeRpc(probeCookie());
 const sh = (r, n = 400) => r.ok ? JSON.stringify(r.value).slice(0, n) : `${r.error.code}: ${r.error.message}`;
 
-// 探测工作区建在系统临时目录：state/ 的 ACL 被收紧过，沙箱里写不进去。
+// 探测工作区建在系统临时目录，避免一次性测试产物混入生产 state/。
 const dir = probeWorkspaceDir('workspace');
 
 console.log('=== workspace/create {path} ===');

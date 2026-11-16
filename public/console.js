@@ -1796,31 +1796,6 @@ document.getElementById('v2ToolLogClear').addEventListener('click', async () => 
   if (r.ok) { ++qqToolLogRequest; renderV2ToolLog([]); }
 });
 
-function loadSecurity() {
-  const status = document.getElementById('stateDirStatus');
-  return api('/api/security').then(r => {
-    if (!r.stateDir) throw new Error(r.error || '未取得目录权限状态');
-    const warn = document.getElementById('stateDirWarn');
-    const hardened = r.stateDir?.hardened;
-    status.textContent = hardened === true ? '状态目录权限已收紧。' : hardened === false ? '状态目录权限需要处理。' : '尚未取得状态目录权限结果。';
-    if (hardened === false) {
-      document.getElementById('stateDirPath').textContent = r.stateDir?.path || 'state/';
-      document.getElementById('stateDirCmd').textContent = r.stateDir?.manualCommand || '';
-      warn.style.display = '';
-    } else {
-      warn.style.display = 'none';
-    }
-  }).catch(error => { status.textContent = '读取权限状态失败：' + error.message; });
-}
-document.getElementById('stateDirReharden').addEventListener('click', async () => {
-  const msg = document.getElementById('stateDirMsg');
-  msg.textContent = '检测中…';
-  const r = await api('/api/security', 'POST', { rehardenStateDir: true });
-  msg.textContent = r.hardened === true ? '✅ 权限已收紧' : '权限仍未收紧，请查看上方命令。';
-  msg.className = r.hardened === true ? 'meta ok' : 'meta err';
-  loadSecurity();
-});
-
 async function changeConsoleToken(generate) {
   const input = document.getElementById('consoleTokenInput');
   const msg = document.getElementById('consoleTokenMsg');
@@ -3045,7 +3020,7 @@ async function loadPage(page, force = false) {
       if (loadForms) jobs.push(refreshWhitelist('test'));
       break;
     case 'access':
-      if (loadForms) jobs.push(refreshWhitelist('owner'), loadSecurity());
+      if (loadForms) jobs.push(refreshWhitelist('owner'));
       break;
   }
   await Promise.all([refresh(), ...jobs]);

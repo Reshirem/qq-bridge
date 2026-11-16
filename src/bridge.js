@@ -45,7 +45,6 @@ import { isFfmpegAvailable } from './ffmpeg-resolve.js';
 import { toolResultDiagnostics, nextLlmRetryState, llmRetryFromSnapshot } from './dsh-diagnostics.js';
 import { createDshMcpManagement } from './dsh-mcp-management.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
-import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { createModelCatalog } from './model-catalog.js';
 import { resolvePriceTable } from './model-prices.js';
@@ -206,8 +205,6 @@ function atomicWriteConfigJson(file, obj) {
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
     fs.writeFileSync(tmp, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    const acl = hardenFile(tmp);
-    if (!acl.ok) throw new Error(`无法收紧临时配置文件权限：${acl.detail}`);
     fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { encoding: 'utf8' });
     renameWithRetry(tmp, file);
   } catch (error) {
@@ -421,43 +418,6 @@ function loadOrCreateConsoleToken() {
   const token = crypto.randomBytes(24).toString('hex');
   atomicWriteText(tokenFile, token);
   return token;
-}
-
-/**
- * 收紧 state/ 的访问权限。
- *
- * **Windows 上 `mode: 0o600` 是空操作**（实测：chmod 之后 ACL 不变），文件继承父目录 ACL ——
- * 本机 state/console-token 实测为 `NT AUTHORITY\Authenticated Users:(M)`，也就是任何能登录
- * 这台机器的用户都能读走控制台令牌、Snowluma accessToken、全局数字角色令牌和全部 QQ 聊天记录。
- * 这里用 icacls 切断 state/ 的继承链，只保留「当前用户 + SYSTEM + Administrators」。
- *
- * ⚠️ 具体实现已抽到 `src/state-acl.mjs`（与 scripts/harden-state-acl.mjs 共用同一份）。
- * 这里原本自带一份**会破坏数据**的实现：
- *   · `icacls DIR /inheritance:r /grant:r "u:(OI)(CI)F" /T` —— (OI)(CI) 是目录专用标志，
- *     套到 /T 展开的文件上会失败，而 /inheritance:r 已摘掉文件的继承 ACE，净结果是
- *     **子文件 DACL 被清空、连属主都读不了**（实测 state/ 下 50 个文件变空，桥接读不到
- *     自己的控制台令牌）；启动日志只报「未能收紧」，看不出已经造成破坏。
- *   · 回读自检用 `/\(I\)/` 扫全文，而 DSH 沙箱的 Low 完整性标签行永远带 (I) ——
- *     于是「已收紧」被误判成「未收紧」，**每次启动都重跑一遍那个破坏性命令**。
- * 两处逻辑各写一份正是漂移的根源，故合并。失败时不能只说"可能可读"就完事，
- * 要给出一条**安全**的可复制命令，并把结果回报到控制台（/api/security 的 stateDirHardened）。
- * 宁可明确报"没做成"，也不要假装已经安全。
- */
-function hardenStateDirAcl() {
-  const result = hardenDir(STATE_DIR);
-  if (result.ok) {
-    stateDirHardened = true;
-    return;
-  }
-  stateDirHardened = false;
-  if (process.platform !== 'win32') {
-    log(`⚠️ 收紧 state/ 权限失败（chmod 700）：${result.detail}`);
-    return;
-  }
-  log('⚠️ 未能收紧 state/ 目录权限：本机任何已登录用户都可能读到控制台令牌与 QQ 聊天记录。');
-  log(`   原因：${String(result.detail).slice(0, 300)}`);
-  log('   改 ACL 需要管理员权限。请用**管理员身份**打开终端后执行下面这几条命令（或在控制台「访问与安全」页点按钮）：');
-  log(`   ${manualDirCommand(STATE_DIR)}`);
 }
 
 function readActivityTail(n) {
@@ -1227,10 +1187,6 @@ function canonicalV2Key(key) {
   return `${m[1]}:${id}`;
 }
 
-// state/ 的 ACL 是否已收紧（hardenStateDirAcl 的结果；控制台「访问与安全」页会显示，
-// 未收紧时给出可复制的提权命令）。null = 还没跑/平台不适用。
-let stateDirHardened = null;
-
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
@@ -1271,7 +1227,6 @@ async function main() {
   // Keep the configured fallback separate from whichever dynamic port was last found.
   const configuredDshBaseUrl = cfg.dsh.baseUrl;
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  hardenStateDirAcl();
   acquireLock();
   // 只向 DSH 提示词 provider 同步当前选择和前缀格式元数据，不写入卡片正文或凭证。
   try {
@@ -4874,35 +4829,6 @@ async function main() {
           return;
         }
 
-        // ── 安全状态 ─────────────────────────────────────────────────────────
-        if (req.method === 'GET' && url.pathname === '/api/security') {
-          sendJson({
-            // state/ 的 ACL 收紧结果：Windows 上改 ACL 需要管理员权限，未提权时会失败。
-            // 控制台据此显示警告与可复制的命令（而不是让用户以为已经安全）。
-            // 命令必须取自 state-acl 的**安全**版本：把 (OI)(CI) 授权和 /T 混在一句里
-            // 会把子文件 DACL 清空，用户照抄就会把自己的 state/ 弄坏。
-            stateDir: {
-              hardened: stateDirHardened,
-              path: STATE_DIR,
-              manualCommand: process.platform === 'win32'
-                ? manualDirCommand(STATE_DIR)
-                : `chmod 700 "${STATE_DIR}"`
-            }
-          });
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/security') {
-          const body = await readBody();
-          // 支持从控制台**重试**收紧 state/ 权限（用户在管理员终端里配好了权限/换了启动方式后）。
-          if (body.rehardenStateDir === true) {
-            stateDirHardened = null;
-            hardenStateDirAcl();
-            sendJson({ ok: stateDirHardened === true, hardened: stateDirHardened, path: STATE_DIR });
-            return;
-          }
-          sendJson({ ok: false, error: '该安全设置已停用；可用此接口重新检测 state 目录权限' }, 400);
-          return;
-        }
         // ── 控制台访问令牌（可手动修改/生成随机） ─────────────────────────────
         if (req.method === 'POST' && url.pathname === '/api/console/token') {
           const body = await readBody();

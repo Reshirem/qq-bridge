@@ -53,10 +53,7 @@ async function main() {
   const desc = unwrap(await api.settings.describe({}), 'settings.describe');
   console.log('✅ DSH 连接成功:', JSON.stringify(desc).slice(0, 200));
 
-  // 独立测试会话，cwd 用**系统临时目录**（不是仓库的 state/）：
-  // state/ 被 scripts/harden-state-acl.mjs 收紧了 ACL（去掉继承 ACE，只留当前用户 /
-  // SYSTEM / Administrators），DSH 沙箱的能力 SID 不在 ACL 里 ⇒ 在沙箱内跑自检
-  // 会直接 EPERM 建目录。自检是一次性探针，产物本来也不该落进仓库状态目录。
+  // 独立测试会话使用系统临时目录，避免一次性探针产物混入生产 state/。
   const cwd = path.join(os.tmpdir(), 'qq-bridge-self-test');
   fs.mkdirSync(cwd, { recursive: true });
   const created = unwrap(await api.sessions.create({ cwd }), 'session.create');

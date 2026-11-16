@@ -4,31 +4,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// ── state/ 权限收紧（Windows 上 mode 0o600 是空操作，必须动 ACL）的离线守卫 ──────────
-// 这里只做"结构 + 编码"级断言：真正的 icacls/UAC 行为在这个环境里跑不了（沙箱禁止改 ACL），
-// 而**假装测过**比不测更危险，所以明确只钉住下面这些不会骗人的事实。
+// Startup keeps its portable batch encoding and no longer changes file ACLs.
 import fs from 'node:fs';
 {
-  const helperPath = path.join(root, 'scripts/harden-state-acl.mjs');
-  assert.ok(fs.existsSync(helperPath), 'ACL 收紧助手必须存在（start.bat 依赖它）');
-  const helper = fs.readFileSync(helperPath, 'utf8');
-  for (const needle of ['icacls', '/inheritance:r', '--elevated', 'isHardened', 'process.exit(0)']) {
-    assert.ok(helper.includes(needle), `ACL 助手应包含 ${needle}`);
-  }
-  // 失败必须降级为非阻断：任何一条 sayAlways/console.log 之后都不得以非 0 退出。
-  assert.ok(!/process\.exit\([1-9]/.test(helper), 'ACL 助手不得以非 0 退出码结束（否则会阻断启动）');
-  // 提权递归防护：被自己拉起的那一次必须跳过提权重试。
-  assert.ok(/!isElevatedRun/.test(helper), '提权重试必须被 --elevated 标记短路，防止递归');
-
   const bat = fs.readFileSync(path.join(root, 'start.bat'));
   const batText = bat.toString('latin1');
   const nonAscii = [...bat].filter((b) => b > 127).length;
   assert.equal(nonAscii, 0, 'start.bat 必须保持纯 ASCII（否则非 UTF-8 控制台会乱码）');
   assert.equal(batText.match(/(?<!\r)\n/g)?.length ?? 0, 0, 'start.bat 必须使用 CRLF');
-  assert.ok(batText.includes('harden-state-acl.mjs'), 'start.bat 必须在启动桥接前调用 ACL 助手');
-  // 助手必须排在 node src/bridge.js 之前，否则"启动时收紧"就不成立
-  assert.ok(batText.indexOf('harden-state-acl.mjs') < batText.indexOf('node src/bridge.js'), 'ACL 助手必须先于桥接启动');
-  console.log('state ACL hardening: helper is non-blocking, recursion-guarded, and wired into start.bat');
+  assert.ok(batText.includes('node src/bridge.js'), 'start.bat 必须继续启动桥接');
+  const bridge = fs.readFileSync(path.join(root, 'src/bridge.js'), 'utf8');
+  for (const source of [batText, bridge]) {
+    assert.doesNotMatch(source, /state-acl|hardenStateDirAcl|hardenFile|icacls|\bRunAs\b/, '启动和配置写入不应修改 ACL 或提权');
+  }
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.equal(Object.hasOwn(pkg.scripts, 'harden-acl'), false);
+  assert.equal(Object.hasOwn(pkg.scripts, 'diagnose:acl'), false);
+  console.log('startup: ASCII/CRLF batch launches the bridge without ACL mutation or elevation');
 }
 
 // ── 合规不变量 L6：本程序**只探测、不部署** SnowLuma ────────────────────────────────

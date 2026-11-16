@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | **QQ 群友 / 陌生人** | 能给机器人发任意文本、图片、表情、拍一拍；能尝试提示注入 | 他们能看到的公开信息 |
 | **被注入的模型** | 会尝试调用任意工具名、传任意参数、尝试外发本机内容 | —— |
-| **本机其他用户** | 能登录同一台机器，能读文件系统 | 已取得管理员/root 的主体 |
+| **本机其他用户** | 能登录同一台机器，能读文件系统 | 文件访问由操作系统和用户配置的目录权限决定；桥接不自动收紧 ACL |
 | **本机其他进程 / 浏览器页面** | 能访问 `127.0.0.1`，能构造任意 HTTP 请求 | 已能读写本项目 `state/` 的主体 |
 | **DSH 侧 desktop-agent** | 由 WebUI 自主探索/任务动作、用户在 DSH 对话中的直接消息或 QQ 元数据提醒启动；每轮以 `agent_rest` 收尾；直接 DSH 消息和有效 QQ 提醒可提前结束休息，异常恢复重试不会在休息期间触发 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计 |
 
@@ -123,46 +123,20 @@
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 原子写 | `atomicWriteJson/Text()` | 唯一随机临时名 + rename（Windows EPERM 退避重试），不会写坏配置 |
-| 敏感配置替换 | `atomicWriteConfigJson()` | 先创建空临时文件并收紧 ACL，再写入内容后原子替换 `config.json`，避免临时副本继承仓库根目录宽松权限 |
-| Windows ACL 收紧 | `hardenStateDirAcl()` + `scripts/harden-state-acl.mjs` | Windows 上 `mode: 0o600` 是**空操作**，因此启动时切断 `state/` 的继承链，只保留当前用户/SYSTEM/Administrators。改 ACL 需要 WRITE_DAC —— **目录属主通常本来就有，所以一般不弹 UAC**；失败时用 `Start-Process -Verb RunAs` 提权重试一次（`--elevated` 短路自身，杜绝递归），再失败就打印可复制命令并**以 0 退出、绝不阻断启动**。控制台「系统运维 → 访问设置」页显示告警条与「重新检测」按钮 |
+| 敏感配置替换 | `atomicWriteConfigJson()` | 随机临时文件写入成功后原子替换 `config.json`；新文件保留 `mode: 0o600`，不再调用 ACL 修改命令或把 ACL 收紧作为配置保存条件 |
+| 本地文件权限 | `state/`、`config.json` 及其临时文件 | Windows 新建文件沿用父目录权限，桥接不自动检查、收紧或恢复 ACL，也不请求管理员提权。支持 POSIX 文件模式的平台继续对相应新文件使用 `0600`；现有目录权限由用户和操作系统管理 |
 | 令牌不回显 | 日志/活动/工具日志 | 控制台令牌只打前 6 位；活动日志与工具调用参数过 `redactSensitiveText` / `redactSensitive`（递归处理 JSON 字符串叶子） |
 | 令牌只发回环 | `dsh-client.ensureAuth()` | DSH launch token 换 Cookie 时必须放进 URL，因此**默认拒绝非回环 baseUrl**；远程部署需显式 `dsh.allowRemote: true` |
 | 路径校验（读点） | `plugins/qq-agent-presets/lib/index.js` 的人格卡 provider | DSH 每次组装 system prompt 时验证人格名格式，并用 `realpath` 确认卡片文件仍位于 `roles/` 目录内；`state/current-role.json` 是本地可编辑状态文件，不能作为路径信任边界 |
 | 原型污染 | audit-log redaction | 日志脱敏跳过 `__proto__` / `constructor` / `prototype` 键，并使用无原型对象 |
 
-### 6. 与 DSH 沙箱的 ACL 交互
+### 6. 现有文件权限与测试目录
 
-DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化工作区路径)` 派生
-（形如 `S-1-4-<a>-<b>`；同一个工作区路径每次会话派生出同一个 SID，**重命名工作区会换一个**），
-沙箱进程跑在 `WRITE_RESTRICTED` + Low 完整性的令牌里，**写权限要靠工作区根上那条
-可继承 ACE 沿继承链传下来**。DSH 只在首次进入工作区时下发一次
-（之后有 exact-ACE 跳过，不会重新下发），也从不修改任何对象的保护标志。
+旧版桥接会主动切断 `state/` 与 `config.json` 的 ACL 继承，并在失败时提权重试。这套自动收紧策略已于 2026-11-16 移除，相关启动步骤、配置写入门槛、控制台告警和命令入口均不再提供。
 
-由此产生一条必须知道的交互：
+更新不会主动重置现存文件或目录的 ACL，也不会恢复继承。旧版留下的权限或用户手动设置的权限仍然有效；后续在 Windows 新建或原子替换的文件沿用父目录权限。DSH 沙箱能否读写仍取决于实际文件权限与 DSH 自身设置，桥接不修改外部程序的权限策略。
 
-| 事实 | 后果 |
-| --- | --- |
-| `harden-state-acl.mjs` 用 `/inheritance:r` 切断 `state/` 与 `config.json` 的继承链 | 这两处的 DACL 里**没有**能力 SID ⇒ **DSH 沙箱会话写不进去**（EPERM / Access denied），而无沙箱终端完全正常 |
-| 这是收紧凭据的**唯一手段**（Windows 上 `mode 0o600` 是空操作） | 取舍明确：**保住凭据不外泄** > 沙箱内可写 |
-
-因此本项目的规矩是：**任何从沙箱里跑的东西都不得写 `state/`**。
-测试夹具、探针、self-test 的临时产物一律落在系统临时目录
-（见 `scripts/probe-auth.mjs` 的 `probeWorkspaceDir`）。
-
-诊断：`npm run diagnose:acl` —— 只读扫描，列出全部被切断继承的路径并分成
-「有意收紧（`state/`、`config.json`）」与「非预期收紧」两类。
-
-> ⛔ **绝不要用 `/inheritance:e` 去"修好" `state/` 的沙箱写入**：恢复继承会把父目录的
-> 可继承 ACE 一起带回来，其中包含 `NT AUTHORITY\Authenticated Users: Modify` 与
-> `BUILTIN\Users: ReadAndExecute` —— 那正是收紧时要摘掉的两条，等于把控制台令牌、
-> SnowLuma OneBot 令牌与全部 QQ 聊天记录重新开放给本机任何已登录用户。
-
-> ⚠️ 已知的**非预期**收紧（2026-09-29 实测）：`plugins/qq-agent-presets/**` 的内容
-> 也被切断了继承（`plugins/` 自身没有）。
-> **本仓库没有任何脚本这么做**，来源不明（手工 icacls 或仓库外工具）。
-> 它的副作用是沙箱会话里改不动 L7 守卫（`qq-tool-restrict.mjs`）。
-> 这两处不含凭据，恢复继承不涉及泄密风险 —— 是否恢复由使用者决定（`npm run diagnose:acl`
-> 会打印命令）。`state/` 不在此列。
+测试夹具、探针和 self-test 继续把临时产物放在系统临时目录，避免混入生产 `state/`，而不是依赖桥接主动收紧目录来隔离。共享机器上的本地文件与备份权限由使用者管理。
 
 ### 7. 网络
 
@@ -182,15 +156,13 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 | # | 风险 | 现状与缓解 | 为什么不修 |
 | --- | --- | --- | --- |
 | R1 | **敏感信息审计是启发式的** | 能抓"带赋值关系的凭据"和本机路径；抓不到任意形态的秘密 | 通用秘密检测无法在没有密钥的情况下做对；硬边界在白名单与工具面，审计是兜底 |
-| R2 | **`state/` 里的令牌是明文** | Windows 已用 ACL 收紧；Linux 用 `0700` | 凭据库/DPAPI 尚未实现；如未来提出该需求，应单独评估部署复杂度和恢复流程 |
+| R2 | **本地配置与 `state/` 里的令牌是明文** | Windows 使用实际父目录权限，不再自动收紧 ACL；支持 POSIX 文件模式的平台继续对相应新文件使用 `0600` | 自动 ACL 策略已按用户要求移除；凭据库/DPAPI 尚未实现，如未来提出该需求，应单独评估部署复杂度和恢复流程 |
 | R3 | **远程停止不是原子的** | 清空待处理队列后请求取消当前回合，已执行的工具副作用无法回滚 | DSH 协议没有事务语义 |
 | R4 | **离线队列不保证送达** | 每会话最多 50 条，进程退出即丢 | 一致性代价过高；README 已写明 |
 | R5 | **预设不变量检查是子串存在性** | 防误删，不防恶意 | 能改这个文件的人本来就是管理员，真正的硬边界在工具守卫与白名单 |
 | R6 | **`self-test.js` 只证明链路通** | 不做断言 | 它是连通性探针，不是回归套件（离线回归由 `node scripts/test-audit.mjs` 运行） |
 | R7 | **单人维护、无外部安全审计** | 有离线回归 + 本文档 | 目前没有已安排的外部/对抗式复审日期 |
-| R8 | **`state/` 的 ACL 收紧可能失败**（未提权且目录属主权限被策略收走时） | `scripts/harden-state-acl.mjs` 会自动提权重试一次；仍失败则明确告警 + 给出可复制命令 + 控制台告警条 | 改 ACL 属于需要特权的操作；**降级为"明确告警"而不是"阻断启动"**是刻意的取舍（否则用户会为了能启动而关掉整条安全链路） |
-| R9 | **收紧 `state/` 后，DSH 沙箱会话写不进 `state/`**（见 §2.6） | 有意取舍，非缺陷；诊断见 `npm run diagnose:acl` | 两者不可兼得：能力 SID 只能靠继承下发，而切断继承正是防"本机其他用户读令牌"的唯一手段。**代价已被接受并写进文档**，项目自己的测试夹具/探针据此改用系统临时目录 |
-| R10 | **`plugins/**` 内容被意外切断继承，沙箱里改不动 L7 守卫** | 来源不明（本仓库无此脚本）；`npm run diagnose:acl` 会列出并打印恢复命令 | 该处不含凭据，恢复继承无泄密风险；但若不恢复，被沙箱约束的 DSH agent 就无法维护工具守卫 —— 需要人工在无沙箱终端改 |
+| R8 | **现有文件可能保留旧版或手动设置的 ACL**（见 §2.6） | 自动收紧已移除，但更新不重置磁盘权限；写入失败仍按正常文件系统错误报告 | 自动恢复继承会改变用户既有授权，因此不随代码更新执行 |
 
 ---
 
@@ -200,7 +172,6 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 node scripts/test-audit.mjs # 纯 mock/fixture 离线回归，必须全绿
 npm run verify:dsh          # 有副作用：创建真实会话并调用模型，仅在获准实测时执行
 npm run verify:persona      # 人格配置一致性；需 DSH_INSTALL_MODULES 指向可解析的 DSH node_modules（桌面版 app.asar 暂不支持）
-npm run diagnose:acl        # ACL 收紧路径盘点（只读；需在**无沙箱**终端跑，见 §2.6）
 npm run scan:tool-names     # 对比可扫描的 DSH 模块目录；当前只支持独立 node_modules，不支持桌面版 app.asar
 node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 ```
@@ -220,8 +191,7 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 - [x] WebUI 全量记忆浏览 HTTP 路由：控制台令牌可到达只读适配器，desktop-agent token 默认 403（`test-audit-bridge.mjs`）
 - [x] Python SQLite 记忆读取器：临时 fixture 覆盖分页、来源/时间/关键词筛选、LIKE 转义、storage key 越界拒绝，且读取前后数据库摘要不变（`test-a-memorix-readonly.mjs`）
 - [ ] A_Memorix 实际安装版本与生产 namespace 的 schema/Gateway 联调；fixture 只覆盖当前读取器要求的列和关系表形态
-- [x] `state/` ACL 助手：非阻断、防递归、`start.bat` 纯 ASCII+CRLF 且先于桥接调用（**结构级断言**）
-- [ ] **`state/` ACL 的真实 icacls/UAC 行为**：需在普通终端手动复跑 `node scripts/harden-state-acl.mjs` 确认（沙箱/CI 里改 ACL 会被拒，无法自动化）
+- [x] 启动和配置保存不调用 ACL 修改或管理员提权；不再提供目录权限告警、重试接口及 ACL 命令入口。`start.bat` 仍通过格式与启动接线检查。
 
 ---
 

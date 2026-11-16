@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { bridgeHarness } from './audit-bridge-harness.mjs';
+import { bridgeHarness, configRenameFailureFs } from './audit-bridge-harness.mjs';
 import { DEFAULT_SLEEP_SCHEDULE, sleepScheduleTimeZone } from '../src/sleep-schedule.js';
 
 const ROUTE = '/api/console/desktop-agent/sleep-schedule';
@@ -146,14 +146,16 @@ test('sleep schedule management requires console authentication and rejects agen
 });
 
 test('schedule write failure leaves runtime schedule and saved config unchanged', async () => {
-  const f = await start({ globals: { hardenFile: () => ({ ok: false, detail: 'fixture failure' }) } });
+  const f = await start({ globals: { fs: configRenameFailureFs() } });
   try {
     const before = f.readConfig();
     const result = await f.call(ROUTE, enabled);
     assert.equal(result.status, 500);
     assert.equal(result.body.ok, false);
+    assert.match(result.body.error, /fixture config rename failure/);
     assert.deepEqual(f.readConfig(), before);
     assert.deepEqual((await f.call()).body.schedule, DEFAULT_SLEEP_SCHEDULE);
+    assert.deepEqual(fs.readdirSync(f.h.temp).filter(name => name.startsWith('config.json.') && name.endsWith('.tmp')), []);
   } finally { await f.close(); }
 });
 
