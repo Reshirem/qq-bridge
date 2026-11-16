@@ -776,6 +776,19 @@ async function refreshDesktopAgentStatus(force = false) {
       else if (!info.sessionId) { label = '尚未创建'; tone = 'meta'; summaryLabel = '尚未创建'; hint = '启动自主探索或发送任务时自动创建'; }
       else if (!info.found) { label = 'DSH 中已找不到当前会话；启动时会重新创建'; tone = 'meta err'; summaryLabel = '待重新创建'; hint = '启动时自动恢复'; }
       else if (!info.agentAvailable) { label = '会话存在，但 agent 当前不可用'; tone = 'meta err'; summaryLabel = '暂不可用'; hint = '请检查 DSH 会话状态'; }
+      else if (Array.isArray(info.pendingInput) && info.pendingInput.length) {
+        const kind = info.pendingInput.includes('approval') ? 'approval' : info.pendingInput.includes('question') ? 'question' : 'other';
+        label = kind === 'approval' ? '等待操作审批' : kind === 'question' ? '等待回答问题' : '等待用户输入';
+        tone = 'meta'; summaryLabel = label; hint = '请在 DSH 中处理待确认事项';
+      }
+      else if (info.dshRetry) {
+        const retry = info.dshRetry;
+        const count = `第 ${retry.retry} 次${retry.mode === 'always' ? '，持续重试' : Number.isSafeInteger(retry.maxRetries) ? ` / 最多 ${retry.maxRetries} 次` : ''}`;
+        const when = retry.waiting && Number.isFinite(retry.retryAt) ? `，计划 ${new Date(retry.retryAt).toLocaleTimeString()} 重试` : '';
+        label = `模型请求${retry.waiting ? '等待重试' : '重试中'} · ${count}${when}`;
+        tone = 'meta'; summaryLabel = retry.waiting ? '模型等待重试' : '模型重试中';
+        hint = [retry.code, retry.reason].filter(Boolean).join('：');
+      }
       else if (info.lifecycle === 'resting') {
         const until = info.restUntil ? `，至 ${new Date(info.restUntil).toLocaleString()}` : '，无限期';
         const queued = info.pendingManualTasks > 0 ? `，${info.pendingManualTasks} 个手动任务排队` : '';
@@ -1575,10 +1588,77 @@ async function refreshQQDashboard(names = false) {
   finally { if (names) namesButton.disabled = false; }
 }
 
+let dshMcpRequest = 0;
+let dshMcpView = null;
+const dshMcpBusy = new Set();
+function renderDshMcp() {
+  const view = dshMcpView;
+  const message = document.getElementById('dshMcpStatus');
+  const output = document.getElementById('dshMcpServers');
+  if (!view) return;
+  message.textContent = view.state === 'ready' ? '已读取 DSH 工具连接状态'
+    : view.error?.message || (view.state === 'unsupported' ? '当前 DSH 未提供 MCP 管理接口' : '暂时无法读取工具连接状态');
+  message.className = view.state === 'ready' ? 'meta' : 'meta err';
+  const labels = { connected: '已连接', connecting: '连接中', reconnecting: '重新连接中',
+    'waiting-credentials': '等待凭据', failed: '失败', disabled: '已禁用', closed: '已关闭',
+    unmanaged: '尚未纳管', unknown: '状态未知' };
+  output.innerHTML = '<table><tr><th>工具服务</th><th>状态</th><th>详情</th><th>操作</th></tr>'
+    + (view.servers || []).filter(row => ['qq', 'qq-memory'].includes(row.name)).map(row => {
+      const status = row.status || {};
+      const cleanupBlocked = ['cleanup', 'unclosed-generation'].includes(status.reason) || status.result?.closeConfirmed === false;
+      const enabled = view.state === 'ready' && row.managed && row.configured && !cleanupBlocked && !dshMcpBusy.has(row.name);
+      const details = [];
+      if (Number.isFinite(status.toolCount)) details.push(`${status.toolCount} 个工具`);
+      if (status.state === 'reconnecting' && Number.isFinite(status.attempt)) details.push(`第 ${status.attempt} 次重连`);
+      if (Number.isFinite(status.nextRetryAtMs)) details.push(`下次重连 ${new Date(status.nextRetryAtMs).toLocaleTimeString()}`);
+      if (status.lastError) details.push(status.lastError);
+      if (status.result?.cleanupError) details.push(status.result.cleanupError);
+      if (cleanupBlocked) details.push('旧进程未确认清理；请检查 DSH，必要时手动重启 DSH 后再操作。');
+      if (view.state === 'ready' && !row.managed) details.push('尚未迁移到桥接的 MCP 管理插件；旧连接可能仍可正常使用。');
+      return `<tr><td>${row.name === 'qq' ? 'QQ' : '长期记忆'}</td><td>${esc(labels[status.state] || '状态未知')}</td>`
+        + `<td>${esc(details.join('；') || '—')}</td><td><button class="small" data-mcp-name="${row.name}" data-mcp-action="probe"${enabled ? '' : ' disabled'}>探测</button> `
+        + `<button class="small" data-mcp-name="${row.name}" data-mcp-action="restart"${enabled ? '' : ' disabled'}>重启连接</button></td></tr>`;
+    }).join('') + '</table>';
+}
+async function refreshDshMcp() {
+  const request = ++dshMcpRequest;
+  try {
+    const view = await consoleApiResult('/api/console/mcp');
+    if (request !== dshMcpRequest) return;
+    dshMcpView = view;
+  } catch (error) {
+    if (request !== dshMcpRequest) return;
+    dshMcpView = { state: 'unavailable', servers: [], error: { message: error.message } };
+  }
+  renderDshMcp();
+}
+document.getElementById('dshMcpRefresh').addEventListener('click', refreshDshMcp);
+document.getElementById('dshMcpServers').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-mcp-action]');
+  if (!button || button.disabled) return;
+  const { mcpName: name, mcpAction: action } = button.dataset;
+  if (!['qq', 'qq-memory'].includes(name) || !['probe', 'restart'].includes(action) || dshMcpBusy.has(name)) return;
+  dshMcpBusy.add(name);
+  renderDshMcp();
+  const message = document.getElementById('dshMcpActionStatus');
+  message.textContent = `${name} ${action === 'probe' ? '探测' : '重启连接'}中…`;
+  try {
+    const response = await consoleApiResult(`/api/console/mcp/${name}/${action}`, 'POST', {});
+    if (action === 'probe') {
+      const result = response.result;
+      message.textContent = result?.ok ? `${name} 探测成功，发现 ${result.toolCount} 个工具。` : `${name} 探测失败：${result?.message || '未能完成连接或读取工具清单'}`;
+      if (result?.closeConfirmed === false) message.textContent += ' DSH 未确认探测进程已清理，请查看 DSH 日志。';
+      if (result?.cleanupError) message.textContent += ` 清理异常：${result.cleanupError}`;
+    } else message.textContent = `${name} 已执行重启连接，请查看连接状态。`;
+  } catch (error) { message.textContent = `${name} 操作失败：${error.message}`; }
+  finally { dshMcpBusy.delete(name); await refreshDshMcp(); }
+});
+
 function v2ToolLogStatus(entry) {
   if (entry.type === 'result') {
     const ok = entry.ok !== false;
-    return `<span class="pill ${ok ? 'g' : 'r'}">${ok ? '成功' : '失败'}</span>`;
+    return `<span class="pill ${ok ? 'g' : 'r'}">${ok ? '成功' : '失败'}</span>`
+      + (entry.imageAdmission?.rejected > 0 ? ' <span class="pill r">图片未接纳</span>' : '');
   }
   return '<span class="pill b">调用</span>';
 }
@@ -1631,15 +1711,21 @@ function renderV2ToolLog(entries) {
   const box = document.getElementById('v2ToolLogOutput');
   const list = entries || [];
   if (!list.length) { box.innerHTML = '<span class="meta">（空）</span>'; return; }
-  let html = '<table><tr><th>时间</th><th>会话 key</th><th>工具名</th><th>状态</th><th>参数</th><th>错误信息</th></tr>';
+  let html = '<table><tr><th>时间</th><th>会话 key</th><th>工具名</th><th>状态</th><th>参数</th><th>错误信息</th><th>图片接纳</th></tr>';
   for (const e of list) {
     const time = e.time ? new Date(e.time).toLocaleString() : '-';
     const key = esc(e.key || '');
     const tool = esc(e.tool || '-');
     const status = v2ToolLogStatus(e);
     const params = e.type === 'call' ? v2ToolLogCell(e.args, e.tool) : '<span class="meta">-</span>';
-    const error = e.type === 'result' ? v2ToolLogCell(e.error) : '<span class="meta">-</span>';
-    html += `<tr><td>${esc(time)}</td><td>${key}</td><td>${tool}</td><td>${status}</td><td>${params}</td><td>${error}</td></tr>`;
+    const error = e.type === 'result' ? v2ToolLogCell([e.errorCode, e.errorName, e.error].filter(Boolean).join(' · ')) : '<span class="meta">-</span>';
+    const admission = e.imageAdmission;
+    const images = admission ? v2ToolLogCell(
+      `DSH 已接纳 ${admission.accepted} 张；未接纳 ${admission.rejected} 张`
+      + (admission.rejected > 0 ? '。工具已返回图片，但 DSH 未交付这些图片给模型。' : '（不代表模型已看清细节）')
+      + (admission.reasons?.length ? '\n' + admission.reasons.join('\n') : '')
+    ) : '<span class="meta">-</span>';
+    html += `<tr><td>${esc(time)}</td><td>${key}</td><td>${tool}</td><td>${status}</td><td>${params}</td><td>${error}</td><td class="tool-log-admission">${images}</td></tr>`;
   }
   html += '</table>';
   box.innerHTML = html;
@@ -1653,7 +1739,7 @@ async function loadV2ToolLog() {
     const data = await consoleApiResult('/api/socialV2/tool-log?limit=200' + (failed ? '&failed=1' : ''));
     if (request !== qqToolLogRequest) return;
     renderV2ToolLog(data.entries.slice().reverse());
-    status.textContent = failed && !data.entries.length ? '没有失败记录' : '显示最近 ' + data.entries.length + ' 项';
+    status.textContent = failed && !data.entries.length ? '没有失败或图片拒绝记录' : '显示最近 ' + data.entries.length + ' 项';
   } catch (error) { if (request === qqToolLogRequest) status.textContent = error.message; }
 }
 document.getElementById('qqFailuresOnly').addEventListener('change', loadV2ToolLog);
@@ -2955,7 +3041,7 @@ async function loadPage(page, force = false) {
       if (loadForms) jobs.push(loadQQSettings(page));
       break;
     case 'maintenance':
-      jobs.push(refreshDesktopAgentStatus(force));
+      jobs.push(refreshDesktopAgentStatus(force), refreshDshMcp());
       if (loadForms) jobs.push(refreshWhitelist('test'));
       break;
     case 'access':
@@ -3566,6 +3652,7 @@ function pollVisiblePage() {
     case 'sessions': void refreshDesktopAgentStatus(); break;
     case 'social-v2': void refreshQQDashboard(); break;
     case 'operations': void refresh(); break;
+    case 'maintenance': void refreshDshMcp(); break;
     case 'usage': void Promise.all([refreshUsage(), refreshUsageChart(), refreshUsageRecent()]); break;
   }
 }

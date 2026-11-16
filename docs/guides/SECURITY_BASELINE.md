@@ -49,16 +49,17 @@
 
 ### 2. 工具面（agent 能做什么）
 
-后台黑话/表情学习明确允许在主角色未读取消息时分析有界的新消息批次。这是独立的 headless 进程，不能向主角色注入任务或向 QQ 发消息。`learning-tool-guard.mjs` 在执行前仅放行本批图片工具；通用执行、文件、联网、插件管理与子代理工具同时在临时 patch 中禁用。最终 JSON 只作为数据处理，证据须来自本批且黑话须在所引用的原文出现；匹配仅归一化大小写、Unicode NFKC 与空白，证据原文不改写，不以同义改写或模板替代原词。图片编号须来自本批桥接准备的清单。含义和表情分类仍可能被模型误判，管理端可以确认或拒绝。
+后台黑话/表情学习明确允许在主角色未读取消息时分析有界的新消息批次。这是独立的 headless 进程，不能向主角色注入任务或向 QQ 发消息。`learning-tool-guard.mjs` 在执行前仅放行本批图片工具；通用执行、文件、联网、插件管理与子代理工具同时在临时 patch 中禁用。学习与记忆整理的 patch 还显式禁用 MCP manager、新旧 QQ/记忆注册、团队和 MCP 资源工具，避免从自定义 base/headless profile 继承主角色的连接；任务自身的直连 MCP 独立注册。最终 JSON 只作为数据处理，证据须来自本批且黑话须在所引用的原文出现；匹配仅归一化大小写、Unicode NFKC 与空白，证据原文不改写，不以同义改写或模板替代原词。图片编号须来自本批桥接准备的清单。含义和表情分类仍可能被模型误判，管理端可以确认或拒绝。
 
 学习管理端 `/api/learning/*` 与 `/api/slang*` 受现有控制台鉴权、Host/Origin 和请求体限制保护，agent 默认拒绝白名单不扩张。`/api/socialV2/slang-query` 复用内部 token 与全局 session 绑定。新知识读取按目标来源和管理员明确指定的 global 筛选；这不改变全局会话上下文本身共享的残余风险。本地表情只读哈希命名的 `state/learned-stickers/` 文件，校验真实路径和 SHA-256，并在发送排队结束后重新检查来源与状态；没有开放任意文件发送。完整数据和资源上限见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__qq__*` QQ 工具 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
-| 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
+| 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` / `memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。执行守卫严格限于 `mcp__qq-memory-organizer__` 命名空间的 `memory_search/save/read/forget`，其他工具即使被继承也拒绝执行。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
+| 压缩宿主依赖 | `plugins/qq-agent-presets/dsh-host-modules.mjs` | 只从当前 DSH 宿主/CLI 运行入口解析共享模块，校验压缩与 LLM 模块身份；缺失、不支持或分裂时拒绝加载。不回退插件私有旧依赖、不探测另一个安装，也不修改 DSH。隔离验收使用临时空 DSH_HOME 与模拟流，无模型或 QQ 调用。 |
 | 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容检查和工具调用审计 |
 | 动态 ACL | sticker / image media helpers | 贴纸只能发 QQ 收藏库或当前来源可用的本地学习表情；学习表情校验专用目录 realpath 与内容哈希。本机图片按所选后端限制到 SnowLuma home 或已登录 QQ 账号的 nt_data，均以 realpath 复核防止符号链接逃逸 |
 | **只探测、不部署** | `mcp-qq.js` | `qq_status` 查询桥接选定的 QQ 通道和登录状态。SnowLuma EULA §5.4 要求将其并入第三方安装包或 Docker 镜像、通过自动化脚本部署时事先取得书面授权；原生组件属专有组件。本程序不安装、不复制、不打包或程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
@@ -114,6 +115,10 @@
 | 安全响应头 | 全部响应 | `X-Frame-Options: DENY`、CSP、`nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` |
 
 ### 5. 秘密与落盘
+
+`/api/console/mcp` 及其 `qq` / `qq-memory` 探测、重启路由仅供已认证的本机控制台，沿用 Host、Origin、JSON 与 agent 默认拒绝边界。GET 只订阅状态，不能触发探测或重启；POST 不能传命令、环境变量或其他服务名称。同名操作互斥且有总超时；超时结果视为未确认，不自动重发，旧进程清理失败不冒称恢复成功。只返回白名单状态字段和有界脱敏诊断，不暴露完整配置、启动命令或环境；插件使用宿主注册生命周期撤销，不修改 DSH 安装文件。
+
+工具图片诊断不保存图片字节、成功工具正文或附件路径；只计持久附件引用和识别到的拒绝标记，拒绝理由采用受控文本。记忆工具及无法关联调用名的错误正文省略；结构化错误码和重试信息也经过脱敏，图片 data URI 与长编码串过滤。自由错误文本仍可能引用业务上下文，启发式脱敏不等于内容隔离。会话迁移缓存不能充当历史游标或空队列证据，旧接口回退仅限已确认的未导出错误，鉴权和服务错误不得静默降级。
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
@@ -193,7 +198,7 @@ DSH 的 Windows 文件沙箱按**能力 SID** 授权：SID 由 `sha256(规范化
 
 ```bash
 node scripts/test-audit.mjs # 纯 mock/fixture 离线回归，必须全绿
-npm run verify:dsh          # DSH 当前 preset/工具守卫/MCP 挂载与在线 API
+npm run verify:dsh          # 有副作用：创建真实会话并调用模型，仅在获准实测时执行
 npm run verify:persona      # 人格配置一致性；需 DSH_INSTALL_MODULES 指向可解析的 DSH node_modules（桌面版 app.asar 暂不支持）
 npm run diagnose:acl        # ACL 收紧路径盘点（只读；需在**无沙箱**终端跑，见 §2.6）
 npm run scan:tool-names     # 对比可扫描的 DSH 模块目录；当前只支持独立 node_modules，不支持桌面版 app.asar
@@ -205,6 +210,7 @@ node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
 - [x] 注意信号包括私聊、原生 @、已验证回复、当前人格卡名称、配置关键词及发给当前账号的 QQ 戳一戳功能事件；六类各有开关，新事件只携带元数据，正文按需读取。戳一戳按结构化事件及参与者账号识别，不使用可定制文案，自己发出或发给其他账号的事件不唤醒。
 - [x] 唯一 `desktop-agent` preset 不可用时拒绝创建全局会话（不回退到默认预设）
 - [x] agent token 无法访问任何管理端点；空 agent token 被拒
+- [x] MCP manager 管理接口仅允许控制台显式操作 qq / qq-memory，刷新不探测/重启；错误、超时、换端点和未纳管不自动重试动作。离线测试见 `test-dsh-mcp-management.mjs` / `test-dsh-mcp-routes.mjs`。
 - [x] 控制台伪造 `Host` 被拒；错令牌（含错长度、大小写、尾空格）被拒
 - [x] 全局 desktop-agent 令牌可读写任意格式有效的 QQ key
 - [x] 出站文本命中敏感信息时整条拦截；含已知会话令牌时直接抛错

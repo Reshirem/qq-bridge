@@ -83,6 +83,11 @@ export function makeFixtureState() {
   }));
   return {
     role: '小鲸鱼', desktopAgentStopped: false,
+    desktopAgentPendingInput: [], desktopAgentRetry: null,
+    dshMcp: { state: 'ready', supported: true, checkedAt: null, servers: [
+      { name: 'qq', managed: true, configured: true, status: { state: 'connected', toolCount: 28 } },
+      { name: 'qq-memory', managed: false, configured: false, status: { state: 'unmanaged' } },
+    ] },
     desktopAgentSleeping: false,
     desktopAgentSleepSchedule: { enabled: false, sleepTime: '', wakeTime: '' },
     desktopAgentSleepTimeZone: 'Asia/Shanghai',
@@ -290,9 +295,11 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             globalSideEffect: true,
           });
           case '/api/whitelist': return json(state.whitelist);
+          case '/api/console/mcp': return json({ ok: true, ...state.dshMcp });
           case '/api/console/desktop-agent': return json({
             ok: true, dshReady: true, presetAvailable: true, sessionId: 'mock-desktop-agent-session',
             found: true, running: false, blank: false, agentAvailable: true,
+            pendingInput: state.desktopAgentPendingInput, dshRetry: state.desktopAgentRetry,
             lifecycle: state.desktopAgentSleeping ? 'sleeping' : state.desktopAgentStopped ? 'stopped' : 'idle',
             sleepSchedule: sleepScheduleStatus(),
           });
@@ -318,7 +325,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           }
           case '/api/qq-backend': return json({ok:true, active:state.qqBackend ?? 'snowluma', selected:state.qqBackend ?? 'snowluma'});
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
-          case '/api/socialV2/tool-log': return json({ ok: true, entries: url.searchParams.get('failed') === '1' ? state.toolLog.filter(e => e.ok === false) : state.toolLog });
+          case '/api/socialV2/tool-log': return json({ ok: true, entries: url.searchParams.get('failed') === '1' ? state.toolLog.filter(e => e.ok === false || e.imageAdmission?.rejected > 0) : state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
           case '/api/socialV2/states': return json({ ok: true, backend:state.qqBackend ?? 'snowluma', enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
@@ -503,6 +510,8 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             job.error = '';
             return json({ ok: true, job });
           }
+          case '/api/console/mcp/qq/probe': return json({ ok: true, name: 'qq', action: 'probe', result: { ok: true, toolCount: 28, closeConfirmed: true } });
+          case '/api/console/mcp/qq/restart': return json({ ok: true, name: 'qq', action: 'restart', result: null });
           case '/api/socialV2/tool-log/clear': state.toolLog = []; return json({ ok: true });
           case '/api/socialV2/feedback-clear': state.feedback = []; return json({ ok: true });
           case '/api/socialV2/reset': state.buffers = []; return json({ ok: true });

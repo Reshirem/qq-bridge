@@ -43,9 +43,16 @@ QQ 有时将转换后的图片放在 `Ori` 目录，沿用原件摘要与扩展�
 
 ## 当前运行行为
 
+- `dsh-client.js` 优先用新版 `session/state` 读取单个会话，只有确认旧宿主未导出此接口时才回退全量列表。冷会话 `active:false` 仍存在，`queue:null` 表示未装载而非空队列。历史、记忆整理、用量游标及停止队列均要求 `sequenced` 持久投影；`migration-required` 缓存只作提示，不能用来推断队列为空或历史已迁移。停止时读取队列失败仍尝试取消当前回合，并保留错误。
+- `dsh-diagnostics.js` 从主会话事件提取有界诊断：结构化工具错误、DSH 图片接纳计数及模型请求重试。重连从快照重建重试状态，回合/步骤边界和成功回复清理状态；重建会话不继承旧重试。WebUI 分别显示等待审批/回答、模型重试和桥接生命周期恢复，图片日志明确区分工具成功与附件接纳；附件接纳不保证模型最终读到或看清图片。
+- `managed-mcp.mjs` 仅把桥接的 `qq` 与 `qq-memory` 注册给 DSH 自身的 MCP manager，保留工具命名空间和调用超时。新安装脚本默认生成纳管条目，`--legacy-mcp` 保留旧直连模式；不覆盖其他 manager 配置。仅更新代码不会迁移生产 profile。`dsh-mcp-management.js` 共享一个按需建立的只读状态订阅，WebUI「系统运维 → 诊断与维护」可显式探测或重连选定服务。探测只初始化、列工具并关闭临时连接；重启不调用工具业务、不重启 DSH；失败与超时不自动重试动作。
+
+- `compaction-persona.mjs` 仅覆盖宿主压缩引擎的摘要生成钩子；`dsh-host-modules.mjs` 根据当前 DSH 宿主/CLI 入口加载同一模块树中的基础引擎、流组装器和错误类，包括桌面 `app.asar`。不从 bridge profile 或插件私有依赖猜测宿主版本。共享类身份保留图片卸载错误恢复，继承当前基础引擎的模型切换前压缩保护；解析失败或模块实例分裂时停止加载，不回退旧版实现。摘要指令和会话持久化仍沿用既有行为，不修改 DSH 本体。
+
 - `token-ledger.js` 将主会话、记忆整理和后台学习的用量存入 SQLite。`model-catalog.js` 缓存 models.dev 目录，按服务商和模型提供美元单价，账本保存每次采用的费率与金额。旧 JSONL 账本在一次事务内迁移。详见[令牌与花费](TOKEN_USAGE_CONSOLE.md)。
 
 - `chat-learning.js` 独立持有后台学习队列、证据与知识库，`learning-runner.js` 负责批次专用 DSH headless 进程，`learning-api.js` 提供控制台管理，`learning-assets.js` 保存按内容哈希寻址的本地表情。新消息可自动进入该学习进程；主角色仍仅按需读取 QQ 正文。学习不创建逐 QQ 的聊天会话、不改变角色说话风格，也不调用 QQ 发送或 A_Memorix 工具。运行与持久化约定见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
+- 后台学习与独立记忆整理的临时 headless patch 显式禁用 MCP manager、新旧 QQ/记忆注册、插件管理、团队和 MCP 资源工具，避免自定义 base/headless profile 把主角色的连接带入后台任务。任务只注册自身需要的直连 MCP；学习执行守卫只允许本批图片工具，`memory-organizer-tool-guard.mjs` 只允许 `mcp__qq-memory-organizer__` 下的 `memory_search/save/read/forget`，其他工具即使被继承也拒绝执行。隔离验收使用实际安装版 DSH、临时空 `DSH_HOME`、假模型与假 MCP，不修改生产 profile。
 
 - `sticker-memory.js` 由桥接把表情目录投影到独立的 A_Memorix 空间。QQ 工具按当前会话和普通表情、商城表情各自的使用开关，把检索命中映射回可发送的稳定 ID。关闭使用保留索引与本地素材。角色复检建议保存在学习库，WebUI 采纳后生效。
 - `market-packs.js` 按包 ID 读取腾讯商城目录，WebUI 支持按包查找、预览、收录、编辑注解与移除。手动收录的商城表情和聊天学习条目共用本地素材存储、检索和发送机制，各有独立的管理视图。

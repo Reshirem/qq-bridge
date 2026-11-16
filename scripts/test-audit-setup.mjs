@@ -69,7 +69,7 @@ function fixture(name, patch = '') {
     QQ_BRIDGE_SKIP_DSH_INSTALL: '1', npm_config_offline: 'true',
     npm_config_cache: path.join(base, 'npm-cache'), npm_config_userconfig: path.join(home, '.npmrc'),
   });
-  const run = (profile = 'web', extraEnv = {}) => spawnSync(process.execPath, [path.join(repo, 'scripts/setup-dsh.mjs'), profile], {
+  const run = (profile = 'web', extraEnv = {}, options = []) => spawnSync(process.execPath, [path.join(repo, 'scripts/setup-dsh.mjs'), profile, ...options], {
     env: { ...env, ...extraEnv }, cwd: repo, encoding: 'utf8', timeout: 15000,
   });
   return { repo, home, patchFile, run };
@@ -102,8 +102,13 @@ try {
       assert.equal(entries.filter((entry) => entry.id === 'mcp-web-search-safe').length, 0, '旧版网页 MCP 应移除');
       assert.ok(!entries.some(entry => ['mcp-snowluma', 'mcp-snowluma-host'].includes(entry.id)));
       const qq = entries.find(entry => entry.id === 'mcp-qq');
+      assert.equal(qq.name, 'qq-agent-presets/managed-mcp.mjs');
       assert.equal(qq.config.serverName, 'qq');
       assert.equal(qq.config.toolCallTimeoutMs, 725000);
+      const memory = entries.find(entry => entry.id === 'mcp-qq-memory');
+      assert.equal(memory.name, 'qq-agent-presets/managed-mcp.mjs');
+      assert.equal(memory.config.serverName, 'qq-memory');
+      assert.equal(memory.config.toolCallTimeoutMs, 150000);
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
@@ -111,6 +116,19 @@ try {
     const bundle = path.join(f.home, 'plugins/qq-agent-presets');
     assert.equal(pkg.dependencies['qq-agent-presets'], `link:${bundle.replaceAll(path.sep, '/')}`);
     assert.ok(fs.statSync(path.join(bundle, 'presets/desktop-agent.patch.yml')).isFile());
+  });
+
+  test('legacy MCP is explicit and a later managed migration preserves unrelated manager entries', () => {
+    const original = [{ select: 'mcp-manager', modify: { config: { servers: { userOnly: { transport: 'stdio', command: 'fixture-user-server' } } } } }];
+    const f = fixture('legacy-migration', yaml.dump(original));
+    assert.equal(f.run('web', {}, ['--legacy-mcp']).status, 0);
+    let doc = yaml.load(fs.readFileSync(f.patchFile, 'utf8'));
+    assert.deepEqual(doc[0], original[0]);
+    assert.ok(doc.flatMap(op => op.insert || []).every(row => row.name === '@deepseek-ai/dsh-mcp-client'));
+    assert.equal(f.run().status, 0);
+    doc = yaml.load(fs.readFileSync(f.patchFile, 'utf8'));
+    assert.deepEqual(doc[0], original[0]);
+    assert.ok(doc.flatMap(op => op.insert || []).every(row => row.name === 'qq-agent-presets/managed-mcp.mjs'));
   });
 
   test('malformed patch fails before replacing user configuration or presets', () => {

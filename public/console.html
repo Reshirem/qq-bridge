@@ -671,8 +671,8 @@
       </div>
     </section>
 <section data-page="operations" hidden class="card span-all">
-  <div class="memory-heading"><div><h2>工具调用日志</h2><p class="meta">查看角色调用工具的时间、参数和返回的错误。</p></div><button id="v2ToolLogLoad" class="small">刷新日志</button></div>
-  <div class="row"><label class="memory-toggle"><input type="checkbox" id="qqFailuresOnly"> 只看失败</label><button id="v2ToolLogClear" class="small danger">清空日志</button><span id="v2ToolLogMsg" class="meta" role="status"></span></div>
+  <div class="memory-heading"><div><h2>工具调用日志</h2><p class="meta">查看角色调用工具的时间、错误码和图片接纳结果。工具成功不一定代表图片已交给模型。</p></div><button id="v2ToolLogLoad" class="small">刷新日志</button></div>
+  <div class="row"><label class="memory-toggle"><input type="checkbox" id="qqFailuresOnly"> 只看失败或图片未接纳</label><button id="v2ToolLogClear" class="small danger">清空日志</button><span id="v2ToolLogMsg" class="meta" role="status"></span></div>
   <div id="v2ToolLogOutput" class="tool-log-table"></div>
 </section>
 <section data-page="operations" hidden class="card span-all">
@@ -695,6 +695,12 @@
         <div class="meta" id="snowlumaWarnDiag">最近一个上游事件包：<b id="snowlumaWarnPkt">unknown</b>；SnowLuma 自评接收链路：<b id="snowlumaWarnGood">unknown</b>。</div>
         </div>
       </div>
+<section id="section-dsh-mcp" data-page="maintenance" hidden class="card span-all">
+  <div class="memory-heading"><div><h2>QQ 与记忆工具连接</h2><p class="meta">查看 DSH 管理的 QQ 和记忆 MCP 连接。探测只检查连接与工具清单；重启仅重建所选工具服务，可能中断正在执行的工具调用。</p></div><button id="dshMcpRefresh" class="small">刷新连接状态</button></div>
+  <p id="dshMcpStatus" class="meta" role="status">尚未读取</p>
+  <div id="dshMcpServers" class="tool-log-table"></div>
+  <p id="dshMcpActionStatus" class="meta" role="status"></p>
+</section>
 <section id="section-test-send" data-page="maintenance" hidden class="card">
       <h2>测试发送</h2>
       <div class="row">

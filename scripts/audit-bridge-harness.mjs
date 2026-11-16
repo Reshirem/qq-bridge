@@ -37,8 +37,9 @@ import * as memorixGateway from '../src/a-memorix-gateway.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
 import * as sleepSchedule from '../src/sleep-schedule.js';
+import * as dshDiagnostics from '../src/dsh-diagnostics.js';
 import * as stateAcl from '../src/state-acl.mjs';
-import { unwrap, createTurnCollector } from '../src/dsh-client.js';
+import { unwrap, createTurnCollector, requireSequencedSessionProjection } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, files = {}, globals = {}, onebot = {} } = {}) {
@@ -105,6 +106,13 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       prompt: async (params) => { calls.prompts.push(params); return success({}); },
     },
     respond: async () => success({}),
+    readSessionState: async (sessionId) => {
+      const listed = unwrap(await api.sessions.list({}), 'fixture session/list');
+      const session = listed.items.find((item) => item.sessionId === sessionId);
+      return session ? { cursor: -1, active: session.agentAvailable === true,
+        running: session.running === true, queue: [], pendingInput: [],
+        ...(typeof session.blank === 'boolean' ? { blank: session.blank } : {}) } : null;
+    },
     stopSessionWork: async (sessionId) => { calls.cancelled.push(sessionId); return { removed: 0 }; },
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
@@ -170,9 +178,9 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   if (connectStart < 0) throw new Error('Cannot locate bridge connection startup in the offline fixture');
   source = source.slice(0, connectStart) + `
   return {
-    closeUnreadStore: () => { tokenLedger.close(); closeQQUnreadStore(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
+    closeUnreadStore: () => { dshMcp.close(); tokenLedger.close(); closeQQUnreadStore(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, getStickerImageData, visibleStickers,
-    runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, memoryOrganizerPatchText,
+    runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, readMemoryOrganizerModel, memoryOrganizerPatchText,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
     isDshReady() { return dshReady; },
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
@@ -238,9 +246,15 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     persistToken: () => ({ updated: false }),
     patchFileFor: fixturePatchFileFor,
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
-    unwrap, createTurnCollector,
+    unwrap, createTurnCollector, requireSequencedSessionProjection,
+    createDshMcpManagement: () => ({
+      status: async () => ({ state: 'unsupported', supported: false, checkedAt: null, servers: [] }),
+      probe: async () => { throw new Error('MCP manager is not configured in this fixture'); },
+      restart: async () => { throw new Error('MCP manager is not configured in this fixture'); },
+      close() {},
+    }),
     openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
-    ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer, ...sleepSchedule,
+    ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...stateAcl, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,

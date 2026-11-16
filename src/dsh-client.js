@@ -221,6 +221,7 @@ const METHOD_ARG_WRAPPERS = {
   'session/search': 'request',
   'session/follow': 'request',
   'session/projections': 'request',
+  'session/state': 'request',
   'workspace/create': 'request',
   'workspace/rename': 'request',
   'workspace/delete': 'request',
@@ -252,14 +253,15 @@ export const FOLLOW_SNAPSHOT_MESSAGES = 200;
  * `session/updateQueue` 的 `itemId` 需要的值。
  *
  * @param values - 单个会话的投影值（`SessionProjectionValues`）。
- * @returns 待处理项数组；该项能力缺失（无 agent / 无 inbox 投影）时为空数组。
+ * @returns 本次投影可见的待处理项；缺失字段时为空数组，不代表持久队列已清空。
+ *          取消等控制操作须先验证 sequenced 投影和完整 inbox，见 _readSessionQueue。
  * @throws 当 inbox 存在但结构不是两个数组字段时——结构变了必须显式失败，
  *         否则会静默漏掉待处理消息（正是上面那个缺陷的形态）。
  */
 export function inboxItemsOfProjections(values) {
   if (values === null || typeof values !== 'object') return [];
   const inbox = values.inbox;
-  // 能力缺失（会话没有活动 agent / 未注册 inbox 投影）⇒ 没有待处理项，不是错误。
+  // 本次未提供 inbox 时没有可提取项；不能据此判断持久队列是否为空。
   if (inbox === undefined) return [];
   if (inbox === null || typeof inbox !== 'object' || Array.isArray(inbox)) {
     throw new Error('invalid session inbox projection');
@@ -285,6 +287,44 @@ export function inboxItemIds(items) {
     if (typeof id !== 'string' || !id) throw new Error('invalid session inbox item');
     return id;
   });
+}
+
+function sessionReadError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+/** Only sequenced projections are authoritative; migration values are cached hints. */
+export function requireSequencedSessionProjection(value) {
+  if (value?.kind === 'migration-required') {
+    throw sessionReadError('session/migration-required', 'DSH 会话需要完成格式迁移；当前仅有缓存状态，请先在 DSH 中完成该会话的迁移后重试');
+  }
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || (value.kind !== undefined && value.kind !== 'sequenced')
+    || !Number.isSafeInteger(value.asOfSeq) || value.asOfSeq < -1
+    || !value.values || typeof value.values !== 'object' || Array.isArray(value.values)) {
+    throw sessionReadError('session/projections-invalid', 'DSH 未返回有效的会话持久状态，无法确认事件游标或待处理队列');
+  }
+  return value;
+}
+
+/** An absent endpoint is the only reason to fall back; service faults remain visible. */
+function sessionStateUnsupported(error) {
+  return error?.code === 'gateway/invocation-unavailable'
+    && error.details?.endpoint === 'session/state'
+    && String(error.message ?? '').includes('no active Remote method exports this endpoint');
+}
+
+function validateSessionState(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !Number.isSafeInteger(value.cursor) || value.cursor < -1
+    || typeof value.active !== 'boolean' || typeof value.running !== 'boolean'
+    || (value.queue !== null && !Array.isArray(value.queue))
+    || !Array.isArray(value.pendingInput)
+    || value.pendingInput.some((kind) => !['approval', 'question', 'other'].includes(kind))) {
+    throw sessionReadError('session/state-invalid', 'DSH 未返回有效的单会话运行状态');
+  }
+  return value;
 }
 
 /** 按 DSH RPC 契约包装参数，并补齐 session/prompt 的 requestId。 */
@@ -471,6 +511,32 @@ export class NodeApiClient extends AbstractApiClient {
     return this._doFetchWithAuth(input, init, false);
   }
 
+  /** Read one Session without activation; older Hosts may explicitly lack this endpoint. */
+  async readSessionState(sessionId, { signal } = {}) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new Error('sessionId is required');
+    const response = await this.callUnary('session/state', { sessionId }, signal);
+    if (response.result?.ok) return validateSessionState(response.result.value);
+    if (response.result?.error?.code === 'session/not-found') return null;
+    if (!sessionStateUnsupported(response.result?.error)) return unwrap(response, 'session/state');
+
+    signal?.throwIfAborted();
+    const listed = unwrap(await this.callUnary('session/list', {}, signal), 'session/list');
+    if (!Array.isArray(listed?.items)) {
+      throw sessionReadError('session/state-invalid', 'DSH 旧版会话列表无效，无法确认运行状态');
+    }
+    const session = listed.items.find((item) => item?.sessionId === sessionId);
+    if (!session) return null;
+    if (typeof session.running !== 'boolean') {
+      throw sessionReadError('session/state-invalid', 'DSH 旧版会话列表缺少运行状态');
+    }
+    // A list row proves existence/running only. Unknown queue and pending input stay unknown.
+    return {
+      cursor: null, active: null, running: session.running, queue: null, pendingInput: null,
+      ...(typeof session.blank === 'boolean' ? { blank: session.blank } : {}),
+      ...(typeof session.agentAvailable === 'boolean' ? { agentAvailable: session.agentAvailable } : {})
+    };
+  }
+
   /**
    * 退役会话前先移除 pending inbox，再取消正在运行的 turn。
    * DSH 的 session/cancel 保留 inbox，archiveSession 只隐藏会话，均不能代替清队列。
@@ -513,8 +579,14 @@ export class NodeApiClient extends AbstractApiClient {
     signal?.throwIfAborted();
     const response = await this.callUnary('session/projections', { sessionId }, signal);
     if (response.result?.ok) {
-      // value === null ⇒ 会话不在宿主注册表里（已归档/从未挂载）⇒ 没有待处理项。
-      return inboxItemIds(inboxItemsOfProjections(response.result.value?.values));
+      const projection = requireSequencedSessionProjection(response.result.value);
+      // Only an explicit absent Session proves there can be no durable pending inbox.
+      if (projection === null) return [];
+      const inbox = projection.values.inbox;
+      if (!inbox || !Array.isArray(inbox['next-turn']) || !Array.isArray(inbox['next-step'])) {
+        throw sessionReadError('session/queue-state-unavailable', 'DSH 未返回完整的持久待处理队列，无法确认已清空；仍会尝试取消当前回合');
+      }
+      return inboxItemIds(inboxItemsOfProjections(projection.values));
     }
     if (response.result?.error?.code === 'session/not-found') return [];
     unwrap(response, 'session/projections');
@@ -861,8 +933,8 @@ export class NodeApiClient extends AbstractApiClient {
 /** 把 RpcResponse 的结果槽解出来；业务错误直接抛出。 */
 export function unwrap(response, label) {
   if (response.result.ok) return response.result.value;
-  const { code, message } = response.result.error;
-  throw new Error(`${label} failed: ${code}: ${message}`);
+  const { code, message, details } = response.result.error;
+  throw Object.assign(new Error(`${label} failed: ${code}: ${message}`), { code, details });
 }
 
 /** 在会话事件流里收集一次 turn 的 assistant 文本（按 turn 分组）。 */

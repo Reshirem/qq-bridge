@@ -30,6 +30,58 @@ test('session/cancel uses the DSH request wrapper and unwraps the envelope', asy
   assert.equal(response.result.value.accepted, true);
 });
 
+test('single-session state uses the request wrapper without listing other sessions', async () => {
+  const api = client();
+  api.cookie = 'fixture=ok';
+  const state = { cursor: 9, active: false, running: false, queue: null, pendingInput: ['approval'] };
+  globalThis.fetch = async (input, init) => {
+    assert.equal(new URL(input).pathname, '/api/session/state');
+    const envelope = JSON.parse(init.body);
+    assert.deepEqual(envelope.payload, { args: { request: { sessionId: 'session-a' } } });
+    return Response.json({ type: 'server-response', rpcId: envelope.rpcId, result: { ok: true, value: state } });
+  };
+  assert.deepEqual(await api.readSessionState('session-a'), state);
+});
+
+test('state falls back only for an explicitly absent endpoint and keeps unknown fields unknown', async () => {
+  const api = client();
+  const calls = [];
+  const unavailable = { code: 'gateway/invocation-unavailable',
+    message: 'typert gateway: session/state: no active Remote method exports this endpoint',
+    details: { endpoint: 'session/state' } };
+  api.callUnary = async (method) => {
+    calls.push(method);
+    return method === 'session/state' ? { result: { ok: false, error: unavailable } }
+      : { result: { ok: true, value: { items: [{ sessionId: 'session-a', running: false, blank: false, agentAvailable: true }] } } };
+  };
+  assert.deepEqual(await api.readSessionState('session-a'), {
+    cursor: null, active: null, running: false, queue: null, pendingInput: null, blank: false, agentAvailable: true
+  });
+  assert.deepEqual(calls, ['session/state', 'session/list']);
+  calls.length = 0;
+  assert.equal(await api.readSessionState('missing'), null);
+  assert.deepEqual(calls, ['session/state', 'session/list']);
+});
+
+test('state not-found, service faults, malformed state and transport errors never silently fall back', async () => {
+  const api = client();
+  for (const error of [
+    { code: 'gateway/internal', message: 'read failed' },
+    { code: 'gateway/invocation-unavailable', message: 'service is temporarily unavailable', details: { endpoint: 'session/state' } },
+    { code: 'gateway/invocation-unavailable', message: 'no active Remote method exports this endpoint', details: { endpoint: 'session/other' } },
+  ]) {
+    api.callUnary = async (method) => { assert.equal(method, 'session/state'); return { result: { ok: false, error } }; };
+    await assert.rejects(api.readSessionState('session-a'), (failure) => failure.code === error.code);
+  }
+  api.callUnary = async (method) => { assert.equal(method, 'session/state'); return { result: { ok: false, error: { code: 'session/not-found' } } }; };
+  assert.equal(await api.readSessionState('session-a'), null);
+  api.callUnary = async (method) => { assert.equal(method, 'session/state'); return { result: { ok: true, value: { running: false } } }; };
+  await assert.rejects(api.readSessionState('session-a'), (error) => error.code === 'session/state-invalid');
+  const failure = new DOMException('fixture deadline', 'TimeoutError');
+  api.callUnary = async () => { throw failure; };
+  await assert.rejects(api.readSessionState('session-a'), (error) => error === failure);
+});
+
 test('a handled auth exchange failure has no orphan rejection', async () => {
   globalThis.fetch = async () => new Response('', { status: 401 });
   const api = client();
@@ -188,6 +240,40 @@ test('session retirement reports projection errors and still cancels active work
   };
   await assert.rejects(api.stopSessionWork('session-a'), /session\/projections/);
   assert.deepEqual(calls.map((call) => call.method), ['session/projections', 'session/cancel']);
+});
+
+test('session retirement rejects migration hints or unknown inbox but still cancels active work', async () => {
+  for (const [value, code] of [
+    [{ kind: 'migration-required', values: { inbox: { 'next-turn': [], 'next-step': [] } } }, 'session/migration-required'],
+    [{ kind: 'sequenced', asOfSeq: 5, values: {} }, 'session/queue-state-unavailable'],
+    [{ asOfSeq: 5, values: { inbox: { 'next-turn': [] } } }, 'session/queue-state-unavailable'],
+    [{ asOfSeq: 5, values: { inbox: null } }, 'session/queue-state-unavailable'],
+    [{ values: { inbox: { 'next-turn': [], 'next-step': [] } } }, 'session/projections-invalid'],
+  ]) {
+    const api = client();
+    api.cookie = 'fixture=ok';
+    const calls = [];
+    api.callUnary = async (method) => {
+      calls.push(method);
+      return { result: { ok: true, value: method === 'session/projections' ? value : { accepted: true } } };
+    };
+    await assert.rejects(api.stopSessionWork('session-a'), (error) => error.code === code);
+    assert.deepEqual(calls, ['session/projections', 'session/cancel']);
+  }
+});
+
+test('explicitly absent sessions and authoritative empty inbox still retire successfully', async () => {
+  for (const value of [null, { kind: 'sequenced', asOfSeq: 5, values: { inbox: { 'next-turn': [], 'next-step': [] } } }]) {
+    const api = client();
+    api.cookie = 'fixture=ok';
+    const calls = [];
+    api.callUnary = async (method) => {
+      calls.push(method);
+      return { result: { ok: true, value: method === 'session/projections' ? value : { accepted: true } } };
+    };
+    assert.deepEqual(await api.stopSessionWork('session-a'), { removed: 0 });
+    assert.deepEqual(calls, ['session/projections', 'session/cancel']);
+  }
 });
 
 test('session retirement times out while reading projections and still attempts cancellation', async () => {

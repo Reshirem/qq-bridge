@@ -297,4 +297,102 @@ for (const previousRest of [0, Date.now() + 3600000]) {
   finally { await h.close(); }
 }
 
+await test('desktop-agent status reads one session and preserves cold and pending-input states', async (h) => {
+  h.setReady(true);
+  const sessionId = await h.ensureDesktopAgentSession();
+  h.api.sessions.list = async () => { throw new Error('status must not enumerate all sessions'); };
+  let state = { cursor: 42, active: false, running: false, queue: null, pendingInput: [] };
+  let stateReads = 0;
+  h.api.readSessionState = async (id) => {
+    assert.equal(id, sessionId);
+    stateReads++;
+    return state;
+  };
+  h.api.callUnary = async (method, request) => {
+    assert.equal(method, 'session/projections');
+    assert.equal(request.sessionId, sessionId);
+    return { result: { ok: true, value: { kind: 'sequenced', asOfSeq: 42, values: { sessionListMetadata: { blank: true } } } } };
+  };
+  const server = h.startConsoleServer();
+  try {
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const readStatus = async () => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/console/desktop-agent`, {
+        headers: { 'x-console-token': 'fixture-console-token' }, signal: AbortSignal.timeout(5000)
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const cold = await readStatus();
+    assert.equal(cold.found, true, 'an inactive runtime session still exists');
+    assert.equal(cold.running, false);
+    assert.equal(cold.agentAvailable, false);
+    assert.equal(cold.blank, true, 'blank state comes from the authoritative projection');
+    assert.deepEqual(cold.pendingInput, []);
+    assert.equal(cold.dshRetry, null);
+    assert.equal(cold.error, null);
+
+    state = { ...state, active: true, running: true, queue: [], pendingInput: ['approval'] };
+    const waiting = await readStatus();
+    assert.equal(waiting.found, true);
+    assert.equal(waiting.running, true);
+    assert.equal(waiting.agentAvailable, true);
+    assert.deepEqual(waiting.pendingInput, ['approval']);
+    assert.equal(stateReads, 2);
+    assert.equal(h.calls.prompts.length, 0, 'reading status cannot start a model turn');
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+await test('desktop-agent history uses a sequenced projection and keeps migration hints non-authoritative', async (h) => {
+  h.setReady(true);
+  const sessionId = await h.ensureDesktopAgentSession();
+  h.api.sessions.list = async () => { throw new Error('history must not enumerate all sessions'); };
+  h.api.readSessionState = async () => ({ cursor: 42, active: false, running: false, queue: null, pendingInput: [] });
+  let projection = { kind: 'sequenced', asOfSeq: 42, values: {} };
+  const pageRequests = [];
+  h.api.callUnary = async (method, request) => {
+    if (method === 'session/projections') {
+      assert.equal(request.sessionId, sessionId);
+      return { result: { ok: true, value: projection } };
+    }
+    assert.equal(method, 'session/page');
+    pageRequests.push(request);
+    return { result: { ok: true, value: { hasMore: false, records: [{
+      seq: 40, event: { type: 'assistant/message', data: { text: 'visible history', reasoning: 'internal detail', token: 'fixture-secret' } }
+    }] } } };
+  };
+  const server = h.startConsoleServer();
+  try {
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const read = async (suffix) => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/console/desktop-agent${suffix}`, {
+        headers: { 'x-console-token': 'fixture-console-token' }, signal: AbortSignal.timeout(5000)
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const history = await read('/history?limit=3');
+    assert.equal(history.status, 200);
+    assert.equal(history.body.throughSeq, 42);
+    assert.equal(pageRequests.length, 1);
+    assert.equal(pageRequests[0].throughSeq, 42);
+    assert.equal(pageRequests[0].maxMessages, 3);
+    assert.equal(pageRequests[0].address.sessionId, sessionId);
+    assert.equal(history.body.records[0].event.data.text, 'visible history');
+    assert.equal(history.body.records[0].event.data.token, '***');
+    assert.equal(history.body.records[0].event.data.reasoning, undefined);
+
+    projection = { kind: 'migration-required', values: { sessionListMetadata: { blank: true }, inbox: { 'next-turn': [], 'next-step': [] } } };
+    const status = await read('');
+    assert.equal(status.status, 200);
+    assert.equal(status.body.found, true);
+    assert.equal(status.body.blank, false, 'cached migration metadata must not prove a blank session');
+    assert.equal(status.body.errorCode, 'session/migration-required');
+    const migration = await read('/history');
+    assert.equal(migration.status, 409);
+    assert.equal(migration.body.errorCode, 'session/migration-required');
+    assert.equal(pageRequests.length, 1, 'migration-only cached state cannot supply a history cursor');
+    assert.equal(h.calls.prompts.length, 0, 'reading history cannot activate or migrate a session');
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
 if (failures) process.exitCode = 1;

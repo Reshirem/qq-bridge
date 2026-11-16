@@ -9,13 +9,13 @@
 //   3. 在 profile package.json 中注册 qq-agent-presets bundle
 //
 // 用法：
-//   node scripts/setup-dsh.mjs [profile]
+//   node scripts/setup-dsh.mjs [profile] [--legacy-mcp]
 //
 // 默认 profile 为 web；可用环境变量 DSH_HOME 指定 DSH 根目录。
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { BUNDLE_DIR, PRESETS, buildPatches, patchFileFor } from './build-agent-preset-patches.mjs';
@@ -24,7 +24,11 @@ import { isFfmpegAvailable } from '../src/ffmpeg-resolve.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
-const PROFILE = process.argv[2] || 'web';
+const cliArgs = process.argv.slice(2);
+const LEGACY_MCP = cliArgs.includes('--legacy-mcp');
+const positional = cliArgs.filter(arg => arg !== '--legacy-mcp');
+if (positional.length > 1 || positional.some(arg => arg.startsWith('--'))) fatal('usage: setup-dsh.mjs [profile] [--legacy-mcp]');
+const PROFILE = positional[0] || 'web';
 
 // A profile is a directory name, never a path (same boundary as DSH itself).
 if (PROFILE === '.' || PROFILE === '..' || PROFILE === 'node_modules'
@@ -108,7 +112,7 @@ function mcpEntries() {
   for (const [id, s] of Object.entries(servers)) {
     out += `- insert:\n`;
     out += `    - id: ${id}\n`;
-    out += `      name: '@deepseek-ai/dsh-mcp-client'\n`;
+    out += `      name: '${LEGACY_MCP ? '@deepseek-ai/dsh-mcp-client' : 'qq-agent-presets/managed-mcp.mjs'}'\n`;
     out += `      config:\n`;
     out += `        serverName: ${s.serverName}\n`;
     out += `        transport: stdio\n`;
@@ -168,7 +172,7 @@ function patchCordis({ patchFile, original, text, removed }) {
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 2 条）`);
+  log(`cordis.patch.yml: MCP 条目已同步（清理旧条目 ${removed} 条，写入 2 条；${LEGACY_MCP ? '旧版直连模式，无健康管理' : 'DSH MCP manager 纳管模式，已验证 DSH 0.2.2-rc.3；旧宿主请用 --legacy-mcp'}）`);
 }
 
 /**
@@ -328,13 +332,15 @@ async function installBundleSourceDependencies() {
     fatal(`qq-agent-presets 源码依赖安装失败（${detail}）。请在仓库根目录执行 npm install --prefix plugins/qq-agent-presets`);
   }
 
-  try {
-    const module = await import(pathToFileURL(path.join(BUNDLE_DIR, 'compaction-persona.mjs')).href);
-    if (typeof module.default !== 'function') throw new Error('缺少默认压缩引擎导出');
-  } catch (error) {
-    fatal(`qq-agent-presets/compaction-persona.mjs 无法从链接源码目录加载：${error?.message ?? error}`);
+  // Compaction imports must resolve from the actual running DSH host. A setup
+  // process cannot safely import them against its own/private old dependencies.
+  for (const file of ['compaction-persona.mjs', 'dsh-host-modules.mjs', 'managed-mcp.mjs']) {
+    const checked = spawnSync(process.execPath, ['--check', path.join(BUNDLE_DIR, file)], {
+      encoding: 'utf8', timeout: 10000, windowsHide: true,
+    });
+    if (checked.error || checked.status !== 0) fatal(`qq-agent-presets/${file} 语法检查失败；未改写 profile。`);
   }
-  log('qq-agent-presets 源码依赖已安装，压缩模块导入正常');
+  log('qq-agent-presets 源码依赖已安装，插件语法检查通过；宿主兼容验证见 scripts/test-compaction-dsh.mjs');
 }
 
 // Validate the existing YAML before changing any presets or configuration.

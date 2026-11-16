@@ -14,10 +14,32 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { createAMemorixGateway } from '../src/a-memorix-gateway.js';
 import { createMemoryOrganizerState, organizerEvidenceVersion, organizerTranscriptRecords } from '../src/memory-organizer.js';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
+import { apply as organizerGuard } from '../src/memory-organizer-tool-guard.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const model = { provider: 'fixture', model: 'fixture' };
 const missing = { code: 'not_found', message: 'memory not found' };
+
+test('organizer excludes managed and legacy QQ tools and guards its exact memory namespace', async () => {
+  const h = await bridgeHarness();
+  try {
+    const patch = yaml.load(h.memoryOrganizerPatchText(model));
+    for (const id of ['tool-plugin-manager', 'tool-agent-team', 'mcp-resources', 'mcp-manager', 'mcp-qq', 'mcp-qq-memory', 'mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
+      assert.ok(patch.some(row => row.id === id && row.disabled), id + ' must remain disabled');
+    }
+    assert.ok(patch.some(row => row.insert?.some(entry => entry.id === 'qq-memory-organizer-tool-guard')));
+    assert.ok(patch.some(row => row.insert?.some(entry => entry.id === 'qq-bridge-memory-organizer' && entry.name === '@deepseek-ai/dsh-mcp-client')));
+    let check;
+    organizerGuard({ tools: { guard: fn => { check = fn; } } });
+    for (const name of ['memory_search', 'memory_save', 'memory_read', 'memory_forget']) {
+      assert.equal(check({ name: 'mcp__qq-memory-organizer__' + name }), undefined);
+    }
+    for (const name of ['memory_save', 'mcp__qq-memory__memory_save', 'mcp__qq__qq_send_message', 'mcp__qq-memory-organizer__unknown', 'plugin_manager', 'unknown_future_tool', '', null]) {
+      assert.ok(check({ name }), String(name) + ' must be denied');
+    }
+    assert.ok(check(null));
+  } finally { await h.close(); }
+});
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-memory-regression-'));
@@ -162,10 +184,30 @@ test('restart receipts keep completed chunks with a normal missing lookup, but r
     push('turn/end', { turn: chunk, reason: { kind: reason } });
   }
   turn(1); turn(2, { failed: true }); turn(3, { reason: 'interrupted' });
-  h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections' ? { asOfSeq: records.length - 1 } : { records, hasMore: false } } });
+  h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections' ? { asOfSeq: records.length - 1, values: {} } : { records, hasMore: false } } });
   try {
     const recovered = await h.readMemoryOrganizerCompletedChunks(['fixture-session'], 'fixture-job', 3);
     assert.deepEqual([...recovered.receipts.keys()], [1]);
+  } finally { await h.close(); }
+});
+
+test('organizer rejects migration-only projections before reading history or cached model routes', async () => {
+  const h = await bridgeHarness();
+  const calls = [];
+  h.api.callUnary = async (method) => {
+    calls.push(method);
+    return { result: { ok: true, value: { kind: 'migration-required', values: {
+      modelSelection: { next: model }
+    } } } };
+  };
+  try {
+    for (const read of [
+      () => h.readMemoryOrganizerCompletedChunks(['fixture-session'], 'fixture-job', 1),
+      () => h.readMemoryOrganizerModel('fixture-session'),
+    ]) {
+      await assert.rejects(read(), (error) => error.code === 'session/migration-required' && /迁移/.test(error.message));
+    }
+    assert.deepEqual(calls, ['session/projections', 'session/projections']);
   } finally { await h.close(); }
 });
 
@@ -198,7 +240,7 @@ test('live and replayed writes clear a save error only for a confirmed retry of 
       if (recovered) assert.equal((await run).newMemories, storedIds.length);
       else await assert.rejects(run, /observedAt 无效/);
       h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections'
-        ? { asOfSeq: records.length - 1 } : { records } } });
+        ? { asOfSeq: records.length - 1, values: {} } : { records } } });
       const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', job.jobId, 1);
       assert.equal(receipts.has(1), recovered);
     }
@@ -411,7 +453,7 @@ test('receipt uses the final visible answer and ignores tentative markers in rea
       { type: 'text', text: chunk === 1 ? 'MEMORY_ORGANIZER_DONE' : '未结束' }] });
     push('turn/end', { turn: chunk, reason: { kind: 'completed' } });
   }
-  h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections' ? { asOfSeq: records.length - 1 } : { records } } });
+  h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections' ? { asOfSeq: records.length - 1, values: {} } : { records } } });
   try {
     const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', 'fixture', 2);
     assert.deepEqual([...receipts.keys()], [1]);

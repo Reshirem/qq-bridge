@@ -421,6 +421,24 @@ for (const resumedBy of ['turn/start', 'retry deadline', 'DSH reconnect']) {
   });
 }
 
+test('lifecycle reconnect reads only the current session state and retains a cold existing session', async () => {
+  const { h, sessionId } = await fixture();
+  try {
+    const reads = [];
+    h.api.sessions.list = async () => { throw new Error('single-session reconciliation must not list history'); };
+    h.api.readSessionState = async (id) => {
+      reads.push(id);
+      return { cursor: 12, active: false, running: false, queue: null, pendingInput: [] };
+    };
+    h.calls.follows.length = 0;
+    await h.reconcileDesktopAgentLifecycle();
+    assert.deepEqual(reads, [sessionId]);
+    assert.deepEqual(h.calls.follows, [sessionId]);
+    assert.equal(h.attentionSnapshot().turnActive, false);
+    assert.equal(h.calls.created.length, 1);
+  } finally { await h.close(); }
+});
+
 test('a reconnected session stream recovers a missed turn end while QQ is waiting to interrupt rest', async () => {
   const { h, clock, sessionId, setRunning } = await fixture();
   try {

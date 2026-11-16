@@ -12,7 +12,7 @@ const { baseUrl } = await discoverDshBaseUrl(process.env.DSH_BASE_URL || config.
 const rpc = probeRpc(probeCookie({ base: baseUrl }), { base: baseUrl });
 const inventory = await rpc('pluginManager/listPlugins', {});
 if (!inventory?.ok) throw Error(inventory?.error?.message || '读取 DSH 插件清单失败');
-const ids = inventory.value.filter(row => row.moduleName === '@deepseek-ai/dsh-mcp-client')
+const ids = inventory.value.filter(row => ['@deepseek-ai/dsh-mcp-client', 'qq-agent-presets/managed-mcp.mjs'].includes(row.moduleName))
   .map(row => row.patchId || row.entryId.split(':').at(-1));
 if (!ids.includes('mcp-qq') || ids.some(id => ['mcp-snowluma', 'mcp-snowluma-host'].includes(id))) {
   throw Error('DSH 尚未完成 QQ 工具迁移，已加载的 MCP 条目：' + ids.join(', '));

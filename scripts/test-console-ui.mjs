@@ -214,6 +214,24 @@ try {
   await page.getByText('我先看看桌面状态。', { exact: true }).waitFor();
   await page.locator('#desktopAgentHistoryOlder').click();
   await page.getByText('请按当前角色在这个长期会话里自然活动。', { exact: true }).waitFor();
+  const refreshSession = async () => {
+    await page.locator('#desktopAgentRefresh').click();
+    await page.waitForFunction(() => !document.getElementById('desktopAgentRefresh').disabled);
+  };
+  assert.doesNotMatch(await page.locator('#desktopAgentStatus').innerText(), /等待用户输入|等待操作审批|等待回答问题/);
+  fixture.state.desktopAgentPendingInput = ['question'];
+  await refreshSession();
+  assert.match(await page.locator('#desktopAgentStatus').innerText(), /等待回答问题/);
+  fixture.state.desktopAgentPendingInput = ['approval'];
+  await refreshSession();
+  assert.match(await page.locator('#desktopAgentStatus').innerText(), /等待操作审批/);
+  fixture.state.desktopAgentPendingInput = [];
+  fixture.state.desktopAgentRetry = { retry: 2, maxRetries: 5, waiting: true, retryAt: Date.now() + 10000, code: 'RATE_LIMIT', reason: 'provider busy' };
+  await refreshSession();
+  assert.match(await page.locator('#desktopAgentStatus').innerText(), /模型请求等待重试.*第 2 次/);
+  fixture.state.desktopAgentRetry = null;
+  await refreshSession();
+  assert.doesNotMatch(await page.locator('#desktopAgentStatus').innerText(), /模型请求等待重试/);
   await checkSleepSchedule(page);
   await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/api/console/desktop-agent') && response.request().method() === 'POST'),
@@ -563,6 +581,48 @@ try {
   assert.equal(new URL(page.url()).hash, '#slang');
   await page.goBack();
   assert.equal(new URL(page.url()).hash, '#memory-settings');
+
+  // MCP status reads never probe or restart; actions remain explicit and scoped.
+  await openPage('maintenance');
+  await page.locator('#dshMcpStatus').filter({ hasText: '已读取' }).waitFor();
+  const qqProbe = page.locator('[data-mcp-name="qq"][data-mcp-action="probe"]');
+  const qqRestart = page.locator('[data-mcp-name="qq"][data-mcp-action="restart"]');
+  assert.equal(await qqProbe.isDisabled(), false);
+  assert.equal(await page.locator('[data-mcp-name="qq-memory"][data-mcp-action="probe"]').isDisabled(), true);
+  assert.equal(fixture.requests.some(r => /\/api\/console\/mcp\/[^/]+\//.test(r.path)), false);
+  await qqProbe.click();
+  await page.locator('#dshMcpActionStatus').filter({ hasText: '发现 28 个工具' }).waitFor();
+  await qqRestart.click();
+  await page.locator('#dshMcpActionStatus').filter({ hasText: '已执行重启连接' }).waitFor();
+  assert.deepEqual(fixture.requests.filter(r => /\/api\/console\/mcp\/[^/]+\//.test(r.path)).map(r => r.path),
+    ['/api/console/mcp/qq/probe', '/api/console/mcp/qq/restart']);
+  fixture.state.dshMcp.servers[0].status = { state: 'failed', reason: 'cleanup', result: { closeConfirmed: false } };
+  await page.locator('#dshMcpRefresh').click();
+  await page.locator('#dshMcpServers').filter({ hasText: '旧进程未确认清理' }).waitFor();
+  assert.equal(await qqRestart.isDisabled(), true);
+  assert.equal(await qqProbe.isDisabled(), true);
+  fixture.state.dshMcp.servers[0].status = { state: 'connected', toolCount: 28 };
+  fixture.state.dshMcp = { ...fixture.state.dshMcp, state: 'unsupported', error: { message: '当前 DSH 未提供 MCP 管理接口' } };
+  await page.locator('#dshMcpRefresh').click();
+  await page.locator('#dshMcpStatus').filter({ hasText: '未提供' }).waitFor();
+  assert.equal(await qqProbe.isDisabled(), true);
+  fixture.state.dshMcp.state = 'ready';
+  fixture.state.toolLog.push({ type: 'result', ok: true, tool: 'qq_get_message_images',
+    imageAdmission: { accepted: 1, rejected: 1, reasons: ['unsupported image <img src=x onerror=alert(1)>'] } });
+  await openPage('operations');
+  await page.locator('#qqFailuresOnly').check();
+  await page.locator('#v2ToolLogOutput').filter({ hasText: '图片未接纳' }).waitFor();
+  assert.match(await page.locator('#v2ToolLogOutput').innerText(), /已接纳 1 张；未接纳 1 张/);
+  assert.equal(await page.locator('#v2ToolLogOutput img').count(), 0, 'diagnostic text is HTML escaped');
+  if (process.env.CONSOLE_UI_SCREENSHOT_DIR) {
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(process.env.CONSOLE_UI_SCREENSHOT_DIR, { recursive: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.screenshot({ path: join(process.env.CONSOLE_UI_SCREENSHOT_DIR, 'dsh-image-diagnostics.png'), fullPage: true });
+    await openPage('maintenance');
+    await page.screenshot({ path: join(process.env.CONSOLE_UI_SCREENSHOT_DIR, 'dsh-mcp-management.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+  }
 
   // All primary and secondary destinations also need to fit a narrow viewport.
   const routes = await page.locator('[data-page]').evaluateAll(els => [...new Set(els.map(el => el.dataset.page))]);

@@ -106,6 +106,8 @@ th { color:var(--muted); font-weight:600 }
 .tool-log-table { overflow:auto; max-height:65vh; margin:10px 0 }
 .tool-log-cell { max-width:28em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer }
 .tool-log-cell.expanded { white-space:pre-wrap; overflow-wrap:anywhere }
+#v2ToolLogOutput th, #v2ToolLogOutput .pill { white-space:nowrap }
+#v2ToolLogOutput .tool-log-admission .tool-log-cell { display:inline-block; width:22em; white-space:pre-wrap; overflow-wrap:anywhere; vertical-align:top }
 .status-badge { display:inline-flex; align-items:center; gap:6px }
 .status-badge::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--muted) }
 .status-badge.online::before { background:#43815c }

@@ -29,7 +29,7 @@ import {
   renderDesktopAgentPromptTemplate,
 } from './desktop-agent-prompt-templates.js';
 import { fileURLToPath } from 'node:url';
-import { NodeApiClient, unwrap, discoverDshLaunchToken, discoverDshBaseUrl } from './dsh-client.js';
+import { NodeApiClient, unwrap, discoverDshLaunchToken, discoverDshBaseUrl, requireSequencedSessionProjection } from './dsh-client.js';
 import { mdToPlain, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { openQQUnreadStore, QQ_UNREAD_LIMIT } from './qq-unread-store.js';
@@ -42,6 +42,8 @@ import { prepareImageDetail } from './media-detail.js';
 import { createQQImageReferences } from './qq-image-references.js';
 import { normalizeSleepSchedule, planSleepSchedule, sleepScheduleTimeZone } from './sleep-schedule.js';
 import { isFfmpegAvailable } from './ffmpeg-resolve.js';
+import { toolResultDiagnostics, nextLlmRetryState, llmRetryFromSnapshot } from './dsh-diagnostics.js';
+import { createDshMcpManagement } from './dsh-mcp-management.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, hardenFile, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
@@ -1704,6 +1706,8 @@ async function main() {
     // 默认只允许把 launch token 交给回环地址；远程 DSH 需要显式 opt-in（见 dsh-client.ensureAuth）。
     allowRemote: cfg.dsh.allowRemote === true
   });
+  const dshMcp = createDshMcpManagement({ api, sanitize: redactSensitiveText });
+  process.once('exit', () => dshMcp.close());
   // Call the model catalog endpoint directly because the API client facade does not expose it.
   const modelCatalogErrorLogged = new Set();
   async function fetchModelCatalog() {
@@ -1823,6 +1827,7 @@ async function main() {
   let desktopAgentSessionPromise = null;
   let desktopAgentResetting = false;
   let desktopAgentTurnActive = false;
+  let desktopAgentRetry = null;
   let desktopAgentLastTurnBoundary = null;
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
@@ -2012,8 +2017,8 @@ async function main() {
     if (!sessionId) return;
     try {
       if (!Number.isSafeInteger(throughSeq)) {
-        const projection = unwrap(await withTimeout(api.callUnary('session/projections', { sessionId }),
-          DSH_CONTROL_TIMEOUT_MS, 'session.projections'), 'session.projections');
+        const projection = requireSequencedSessionProjection(unwrap(await withTimeout(api.callUnary('session/projections', { sessionId }),
+          DSH_CONTROL_TIMEOUT_MS, 'session.projections'), 'session.projections'));
         throughSeq = projection?.asOfSeq;
       }
       const cursor = tokenLedger.cursor(sessionId);
@@ -2039,10 +2044,10 @@ async function main() {
   }
 
   async function readMemoryOrganizerModel(sessionId) {
-    const response = unwrap(
+    const response = requireSequencedSessionProjection(unwrap(
       await withTimeout(api.callUnary('session/projections', { sessionId }), DSH_CONTROL_TIMEOUT_MS, 'session.projections'),
       'session.projections'
-    );
+    ));
     const values = response?.values ?? response?.projections?.values ?? {};
     const projected = values.modelSelection ?? {};
     const selection = projected.next ?? projected.pending ?? projected.lastUsed ?? sessionModels.get(sessionId) ?? null;
@@ -2178,6 +2183,7 @@ async function main() {
       },
       { id: 'system-prompt', config: { personaPrefix: `${MEMORY_ORGANIZER_SYSTEM_PROMPT}\n\n${roleCard}` } },
       { id: 'session-title-llm', disabled: true },
+      { insert: [{ id: 'qq-memory-organizer-tool-guard', name: path.join(ROOT, 'src', 'memory-organizer-tool-guard.mjs').replaceAll('\\', '/') }] },
       {
         insert: [{
           id: 'qq-bridge-memory-organizer',
@@ -2208,7 +2214,11 @@ async function main() {
     for (const id of [
       'tool-working-directory', 'tool-bash', 'tool-pwsh', 'tool-jobs', 'tool-fs',
       'tool-fs-search', 'tool-skill', 'tool-subagent-control', 'tool-subagent',
-      'tool-subagent-fork', 'tool-workflow', 'tool-todo', 'tool-goal', 'tool-web'
+      'tool-subagent-fork', 'tool-workflow', 'tool-todo', 'tool-goal', 'tool-web',
+      'tool-plugin-manager', 'tool-agent-team', 'mcp-resources',
+      // Do not inherit QQ tools from a customized headless/base profile or the
+      // new manager. The organizer's direct memory client remains independent.
+      'mcp-manager', 'mcp-qq', 'mcp-qq-memory', 'mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe',
     ]) operations.push({ id, disabled: true });
     return yaml.dump(operations, { lineWidth: -1, noRefs: true });
   }
@@ -2584,10 +2594,10 @@ async function main() {
     let sessionTurnCount = 0;
     for (let sessionIndex = 0; sessionIndex < sessionList.length; sessionIndex += 1) {
       const sessionId = sessionList[sessionIndex];
-      const projection = unwrap(
+      const projection = requireSequencedSessionProjection(unwrap(
         await withTimeout(api.callUnary('session/projections', { sessionId }), DSH_CONTROL_TIMEOUT_MS, 'session.projections'),
         'session.projections'
-      );
+      ));
       const throughSeq = Number(projection?.asOfSeq);
       if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) {
         throw new Error('无法读取每日整理 Session 的持久记录游标');
@@ -4375,17 +4385,43 @@ async function main() {
           sendJson(desktopAgentSleepScheduleInfo());
           return;
         }
+        if (req.method === 'GET' && url.pathname === '/api/console/mcp') {
+          sendJson({ ok: true, ...await dshMcp.status() });
+          return;
+        }
+        const mcpAction = /^\/api\/console\/mcp\/([^/]+)\/(probe|restart)$/.exec(url.pathname);
+        if (req.method === 'POST' && mcpAction) {
+          const body = await readBody();
+          if (!body || Array.isArray(body) || typeof body !== 'object' || Object.keys(body).length) {
+            sendJson({ ok: false, error: 'MCP 管理操作不接受额外参数' }, 400);
+            return;
+          }
+          try {
+            sendJson(await dshMcp[mcpAction[2]](mcpAction[1]));
+          } catch (error) {
+            sendJson({ ok: false, error: redactSensitiveText(String(error?.message ?? error)).slice(0, 500),
+              errorCode: error?.code || 'action-failed' }, error?.statusCode || 503);
+          }
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/console/desktop-agent') {
           await refreshPresetList();
           let live = null;
+          let projection = null;
           let sessionStatusError = '';
+          let sessionStatusErrorCode = null;
           if (dshReady && desktopAgentSessionId) {
             try {
-              const result = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
-              live = (Array.isArray(result.items) ? result.items : [])
-                .find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId) ?? null;
+              live = await withTimeout(api.readSessionState(desktopAgentSessionId), DSH_CONTROL_TIMEOUT_MS, 'session.state');
+              if (live && typeof live.blank !== 'boolean') {
+                projection = requireSequencedSessionProjection(unwrap(
+                  await withTimeout(api.callUnary('session/projections', { sessionId: desktopAgentSessionId }), DSH_CONTROL_TIMEOUT_MS, 'session.projections'),
+                  'session.projections'
+                ));
+              }
             } catch (error) {
               sessionStatusError = String(error?.message ?? error);
+              if (error?.code === 'session/migration-required') sessionStatusErrorCode = error.code;
             }
           }
           sendJson({
@@ -4396,8 +4432,10 @@ async function main() {
             sessionId: desktopAgentSessionId || null,
             found: desktopAgentSessionId ? !!live : false,
             running: live?.running === true,
-            blank: live?.blank === true,
-            agentAvailable: live ? live.agentAvailable === true : false,
+            blank: (live?.blank ?? projection?.values?.sessionListMetadata?.blank) === true,
+            agentAvailable: live ? (live.active ?? live.agentAvailable) === true : false,
+            pendingInput: live?.pendingInput ?? null,
+            dshRetry: live?.running === true ? desktopAgentRetry : null,
             lifecycle: desktopAgentLifecycle,
             restUntil: desktopAgentLifecycle === 'resting' && desktopAgentRestUntil > 0
               ? new Date(desktopAgentRestUntil).toISOString() : null,
@@ -4407,7 +4445,8 @@ async function main() {
             pendingWakeReason: desktopAgentPendingWakeReason || null,
             pendingManualTasks: desktopAgentManualPromptPending,
             sleepSchedule: desktopAgentSleepScheduleInfo(),
-            error: sessionStatusError || null
+            error: sessionStatusError || null,
+            errorCode: sessionStatusErrorCode
           });
           return;
         }
@@ -4442,12 +4481,13 @@ async function main() {
           }
 
           try {
-            const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
-            const live = (Array.isArray(list.items) ? list.items : [])
-              .find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId) ?? null;
-            if (!live) { sendJson({ ok: false, error: 'DSH 中已找不到当前全局会话；请先启动或重建会话' }, 409); return; }
+            const projection = requireSequencedSessionProjection(unwrap(
+              await withTimeout(api.callUnary('session/projections', { sessionId: desktopAgentSessionId }), DSH_CONTROL_TIMEOUT_MS, 'session.projections'),
+              'session.projections'
+            ));
+            if (!projection) { sendJson({ ok: false, error: 'DSH 中已找不到当前全局会话；请先启动或重建会话' }, 409); return; }
 
-            const asOfSeq = Number(live.projections?.asOfSeq);
+            const asOfSeq = projection.asOfSeq;
             if (!Number.isSafeInteger(asOfSeq) || asOfSeq < -1) {
               sendJson({ ok: false, error: '当前 DSH 未提供可用的会话历史游标' }, 503);
               return;
@@ -4535,7 +4575,9 @@ async function main() {
               records
             });
           } catch (error) {
-            sendJson({ ok: false, error: `读取 DSH 会话记录失败：${error?.message ?? error}` }, 502);
+            const migrationRequired = error?.code === 'session/migration-required';
+            sendJson({ ok: false, error: `读取 DSH 会话记录失败：${error?.message ?? error}`,
+              errorCode: migrationRequired ? error.code : null }, migrationRequired ? 409 : 502);
           }
           return;
         }
@@ -7090,10 +7132,16 @@ async function main() {
         throw new Error(`DSH 尚未加载 desktop-agent preset（${dshPresetIds.join(', ') || '未取得 preset 清单'}）。请先安装/启用 qq-agent-presets 并重启 DSH。`);
       }
 
-      const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
-      const liveSessions = Array.isArray(list.items) ? list.items : [];
       if (desktopAgentSessionId) {
-        const existing = liveSessions.find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId);
+        let existing;
+        if (desktopAgentInitialContextSessionId === desktopAgentSessionId) {
+          existing = await withTimeout(api.readSessionState(desktopAgentSessionId), DSH_CONTROL_TIMEOUT_MS, 'session.state');
+        } else {
+          // The first adoption still needs the list's verified blank flag to preserve prefix injection.
+          const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+          existing = (Array.isArray(list.items) ? list.items : [])
+            .find((item) => String(item?.sessionId ?? '') === desktopAgentSessionId);
+        }
         if (existing) {
           // Existing non-blank sessions have already received prompts under the old
           // per-turn injection behavior. Treat their opening context as consumed so
@@ -7111,6 +7159,7 @@ async function main() {
         log(`全局数字角色在 DSH 中已不存在，清理失效的全局会话状态 ${desktopAgentSessionId}`);
         desktopAgentSessionId = '';
         desktopAgentTurnActive = false;
+        desktopAgentRetry = null;
         KNOWN_AGENT_TOKENS.delete(desktopAgentToken);
         desktopAgentToken = crypto.randomBytes(32).toString('hex');
         KNOWN_AGENT_TOKENS.add(desktopAgentToken);
@@ -7131,6 +7180,7 @@ async function main() {
       if (!sessionId) throw new Error('DSH 创建 desktop-agent session 未返回 sessionId');
 
       desktopAgentSessionId = sessionId;
+      desktopAgentRetry = null;
       desktopAgentRestReminderSent = false;
       saveDesktopAgentState();
       api.events.follow(sessionId);
@@ -7154,9 +7204,7 @@ async function main() {
     try {
       let existing = null;
       if (oldSessionId) {
-        const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
-        existing = (Array.isArray(list.items) ? list.items : [])
-          .find((item) => String(item?.sessionId ?? '') === oldSessionId) ?? null;
+        existing = await withTimeout(api.readSessionState(oldSessionId), DSH_CONTROL_TIMEOUT_MS, 'session.state');
         if (existing?.running === true || desktopAgentTurnActive) {
           throw new Error('全局数字角色当前正在运行；请等当前回合结束后再重建');
         }
@@ -7172,6 +7220,7 @@ async function main() {
 
       desktopAgentSessionId = '';
       desktopAgentTurnActive = false;
+      desktopAgentRetry = null;
       desktopAgentManualPromptPending = 0;
       KNOWN_AGENT_TOKENS.delete(desktopAgentToken);
       desktopAgentToken = crypto.randomBytes(32).toString('hex');
@@ -7766,9 +7815,7 @@ async function main() {
       }
       try {
         const sessionId = await ensureDesktopAgentSession();
-        const result = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
-        const live = (Array.isArray(result.items) ? result.items : [])
-          .find((item) => String(item?.sessionId ?? '') === sessionId) ?? null;
+        const live = await withTimeout(api.readSessionState(sessionId), DSH_CONTROL_TIMEOUT_MS, 'session.state');
         if (epoch !== desktopAgentLifecycleEpoch || desktopAgentLifecycle !== 'recovering') return;
         if (live?.running === true) {
           desktopAgentTurnActive = true;
@@ -7812,10 +7859,8 @@ async function main() {
     const sessionId = desktopAgentSessionId;
     const epoch = desktopAgentLifecycleEpoch;
     try {
-      const result = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+      const live = await withTimeout(api.readSessionState(sessionId), DSH_CONTROL_TIMEOUT_MS, 'session.state');
       if (desktopAgentSessionId !== sessionId || desktopAgentLifecycleEpoch !== epoch) return;
-      const live = (Array.isArray(result.items) ? result.items : [])
-        .find((item) => String(item?.sessionId ?? '') === sessionId) ?? null;
       // On cold start the persisted session has no event subscription yet.
       if (live) api.events.follow(sessionId);
       if (desktopAgentLifecycle === 'sleeping') {
@@ -8703,7 +8748,7 @@ async function main() {
       for (let i = lines.length - 1; i >= 0 && parsed.length < limit; i--) {
         try {
           const entry = JSON.parse(lines[i]);
-          if (!failedOnly || (entry.type === 'result' && entry.ok === false)) parsed.push(entry);
+          if (!failedOnly || (entry.type === 'result' && (entry.ok === false || entry.imageAdmission?.rejected > 0))) parsed.push(entry);
         } catch {}
       }
       return parsed.reverse();
@@ -8722,7 +8767,12 @@ async function main() {
         safeEntry.args = '[memory query/content omitted]';
       }
       if (isMemoryTool && typeof safeEntry.error === 'string') safeEntry.error = '[memory error omitted]';
+      if (safeEntry.type === 'result' && !safeEntry.tool && typeof safeEntry.error === 'string') {
+        safeEntry.error = '[unattributed tool error omitted]';
+      }
       if (typeof safeEntry.error === 'string') safeEntry.error = redactSensitiveText(safeEntry.error);
+      if (safeEntry.imageAdmission) safeEntry.imageAdmission = redactSensitive(safeEntry.imageAdmission);
+      if (safeEntry.imageAdmission && (isMemoryTool || !safeEntry.tool)) safeEntry.imageAdmission.reasons = [];
       if (typeof safeEntry.args === 'string') {
         let parsed = safeEntry.args;
         let parsedOk = false;
@@ -9087,6 +9137,7 @@ async function main() {
           if (frame.type === 'session/snapshot') {
             if (frame.sessionId === desktopAgentSessionId) {
               recordSessionSnapshot(frame.sessionId, frame.snapshot);
+              desktopAgentRetry = llmRetryFromSnapshot(frame.snapshot?.records, redactSensitiveText);
               // A follow stream can reconnect independently of HTTP. Use its
               // snapshot boundary for rest: a later running turn may be a new
               // direct DSH prompt whose turn/start is still on this stream.
@@ -9116,6 +9167,7 @@ async function main() {
             if (frame.sessionId !== desktopAgentSessionId) continue;
             const event = frame.event;
             recordSessionUsage(frame.sessionId, event);
+            desktopAgentRetry = nextLlmRetryState(desktopAgentRetry, event, { redact: redactSensitiveText });
             if (event?.type === 'turn/start') {
               desktopAgentLastTurnBoundary = event;
               const turnWasAlreadyActive = desktopAgentTurnActive;
@@ -9183,17 +9235,15 @@ async function main() {
             } else if (event?.type === 'tool/result') {
               const callId = event.data?.message?.source?.callId;
               const toolName = callId != null ? (toolCallNames.get(frame.sessionId)?.get(String(callId)) ?? '') : '';
-              const resultBlock = event.data?.message?.content?.[0];
-              const failed = event.data?.message?.isError === true || resultBlock?.isError === true;
-              const errorText = failed ? String(resultBlock?.text ?? resultBlock?.error ?? event.data?.message?.error ?? '') : '';
+              const diagnostics = toolResultDiagnostics(event, redactSensitiveText);
+              const failed = !diagnostics.ok;
               appendToolLog({
                 type: 'result',
                 time: new Date().toISOString(),
                 key: 'desktop-agent',
                 sessionId: frame.sessionId,
                 tool: toolName,
-                ok: !failed,
-                error: errorText ? sanitizeToolArgs(errorText) : null
+                ...diagnostics
               });
               if (!failed && organizerToolLeafName(toolName) === 'agent_rest') {
                 const resultSeq = Number(event?.seq);

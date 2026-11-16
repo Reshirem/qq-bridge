@@ -18,6 +18,8 @@ const tests = [
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
   // DSH inbox 投影解析用于停止唯一全局 desktop-agent 前清理其排队工作。
   'test-dsh-inbox-projection.mjs',
+  'test-dsh-diagnostics.mjs', 'test-dsh-mcp-management.mjs', 'test-dsh-mcp-routes.mjs',
+  'test-compaction-host-modules.mjs',
   'test-md-to-plain.mjs', 'test-mux-reconnect.mjs',
   'test-qq-model-view.mjs', 'test-agent-preset-patches.mjs',
   'test-preset-prompt.mjs', 'test-preset-prompt-api.mjs',

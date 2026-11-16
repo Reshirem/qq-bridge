@@ -8,7 +8,7 @@
 
 1. 在原仓库目录运行 `git pull --ff-only` 和 `npm install`。沿用现有 `config.json` 和 `state/`，其中保存角色会话、提醒、学习成果和记忆数据。
 2. 在重启桥接前确认 `config.json` 的 `qqBackend`。旧配置缺少这个字段时新版会启动 `native`。要继续沿用 OneBot，请显式设置 `"qqBackend": "snowluma"`。要切到独立方案，先准备原生依赖和当前账号的密钥。两套后端各自保留自己的提醒或未读数据，切换不会把旧未读转换成另一套的计数。[独立通道安装](NTQQ_ATTENTION.md#新机器安装)
-3. 在仓库根目录运行 `node scripts/setup-dsh.mjs desktop`（Web profile 用 `web`，自定义 profile 用实际名称）。脚本移除旧的 `mcp-snowluma`、`mcp-snowluma-host` 等桥接注册项，安装 `mcp-qq` 和 `mcp-qq-memory`。
+3. 在仓库根目录运行 `node scripts/setup-dsh.mjs desktop`（Web profile 用 `web`，自定义 profile 用实际名称）。脚本移除旧的 `mcp-snowluma`、`mcp-snowluma-host` 等桥接注册项，安装由 DSH MCP manager 纳管的 `mcp-qq` 和 `mcp-qq-memory`。需要 DSH 0.2.2 系列的 manager（已验证 0.2.2-rc.3）；旧宿主追加 `--legacy-mcp` 沿用直连模式。
 4. 等当前角色回合结束，完整退出并重新打开 DSH，然后用原来的方式重启 qq-bridge。桥接会接续原角色会话，工具名迁移本身无需重建会话。旧会话历史可能仍出现 `mcp__snowluma__*`。在新回合用 `mcp__qq__qq_status` 查看实际后端，并核对这次调用的回执。[验证](#验证)
 
 以后单独切换 QQ 后端时，在 WebUI「QQ 消息 → 提醒与发送」选择方案并点击「应用并重启桥接」。两种后端共用一套角色工具。通过 `start.bat` 运行时守护窗口会自动拉起桥接，前台运行则需再次执行 `npm start`。
@@ -91,11 +91,19 @@ DSH 使用自定义根目录时，在同一 PowerShell 窗口先设置 `$env:DSH
 脚本会：
 
 1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将用于 QQ 关系对象身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
-2. 将 `mcp-qq` 和 `mcp-qq-memory` 两个条目写入目标 profile 的 `cordis.patch.yml`，并清理旧的 `mcp-snowluma`、`mcp-snowluma-host` 和 `mcp-web-search-safe` 注册。网页搜索使用 DSH 自带工具。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
+2. 将 `mcp-qq` 和 `mcp-qq-memory` 两个条目写入目标 profile 的 `cordis.patch.yml`，通过 `qq-agent-presets/managed-mcp.mjs` 注册到宿主 MCP manager；显式 `--legacy-mcp` 时仍用旧 `dsh-mcp-client`。仅替换桥接自己的注册项，不覆盖其他服务或 manager 配置，并清理旧的 `mcp-snowluma`、`mcp-snowluma-host` 和 `mcp-web-search-safe` 注册。网页搜索使用 DSH 自带工具。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
 3. 从目标 profile 清理不再使用的 bundle，并注册合并后的 `qq-agent-presets`。
-4. 在 `plugins/qq-agent-presets` 源码目录安装 bundle 自身依赖，并实际导入检查自定义压缩模块；随后尝试执行 `dsh plugin --profile <profile> install` 安装 profile bundle。若 DSH CLI 不可用，会提示手动执行 profile 安装命令。
+4. 在 `plugins/qq-agent-presets` 源码目录安装 bundle 自身依赖，并检查自定义压缩模块语法；随后尝试执行 `dsh plugin --profile <profile> install` 安装 profile bundle。若 DSH CLI 不可用，会提示手动执行 profile 安装命令。
 
-`desktop-agent` 的上下文压缩使用 `qq-agent-presets/compaction-persona.mjs`，通过 DSH `dsh-compaction-basic` 的 `summarize()` 扩展点替换默认摘要指令，并保留基础压缩策略。当前插件依赖精确固定到 DSH Desktop 44.7 所带的 `0.2.1-rc.3`；DSH 更新后需先核对扩展接口和依赖版本，再调整固定版本。profile 中的 bundle 是指向仓库目录的 `link:` 依赖，Node 会从链接的真实源码目录解析 npm 包，因此依赖必须安装在 `plugins/qq-agent-presets/node_modules`，不会因为运行 profile 安装命令而自动出现在这里。安装脚本会在修改 profile 前安装这些源码依赖，并验证压缩模块能导入；也可手动运行 `npm install --prefix plugins/qq-agent-presets` 修复。依赖锁定在 `plugins/qq-agent-presets/package-lock.json`。安装后重载或重启 DSH，让它重新加载 preset。
+仅更新桥接源码不会自动改写 DSH profile。希望启用连接管理时，需显式运行上述 setup 并在方便时重载 DSH；若暂时不能改动外部配置，现有直连继续使用，WebUI 会准确显示“尚未纳管”。旧宿主可运行 `node scripts/setup-dsh.mjs desktop --legacy-mcp`，但不会获得 manager 状态、探测或定向重连。
+
+纳管后，在 WebUI「系统运维 → 诊断与维护 → QQ 与记忆工具连接」查看状态；刷新只读取状态。探测只建立临时 MCP 连接、读取工具清单并关闭，不调用模型或 QQ 发送工具；“重启连接”只重建所选 MCP 服务，可能中断进行中的工具调用，不会重启 DSH 或另一个服务。若宿主不能确认旧进程已清理，桥接会提示管理员检查 DSH，不自动重试。`node scripts/test-managed-mcp-dsh.mjs` 可在临时空 DSH_HOME 和假 MCP 中验证安装版的注册、探测、定向重启及清理，不接触生产会话。
+
+WebUI 主会话状态支持显示 DSH 的等待审批/回答与模型重试。工具日志显示结构化错误码和图片接纳结果；“工具成功”不等于图片已被 DSH 接纳，“已接纳”也不代表模型看清细节。旧历史若返回 `session/migration-required`，请在 DSH 完成迁移；桥接不会自行改写外部历史文件。
+
+`desktop-agent` 的上下文压缩使用 `qq-agent-presets/compaction-persona.mjs`，仅通过 DSH `dsh-compaction-basic` 的 `summarize()` 扩展点替换摘要指令。`dsh-host-modules.mjs` 从当前 DSH 宿主或 CLI 的运行入口解析其共享压缩与 LLM 模块，支持桌面版 `app.asar`；不再安装私有旧版 DSH 依赖，也不会回退到另一份安装。这样可继承当前宿主的模型切换前压缩保护，并保证图像卸载恢复使用同一个 `LlmError` 类。入口不是 DSH、模块缺失、LLM 实例分裂或所需 API 不可用时明确拒绝加载，普通 Node 直接导入该压缩模块不再是有效验收方式。bundle 自身的 schemastery 依赖仍安装在源码目录，锁定于 `plugins/qq-agent-presets/package-lock.json`。安装后重载或重启 DSH，让它重新加载 preset。
+
+升级 DSH 后可运行 `node scripts/test-compaction-host-modules.mjs` 验证解析边界，再运行 `node scripts/test-compaction-dsh.mjs` 使用已安装的 DSH Desktop 在临时空 `DSH_HOME` 中验证共享类身份、图片卸载恢复和模型切换保护；测试不读取生产会话、不调用模型、不发 QQ 消息，也不修改 DSH 安装包。
 
 脚本可重复运行；修改 MCP 配置前会备份目标文件，解析失败时不会覆盖它。preset patch 是生成文件，修改 preset 时请编辑 `dsh/agent-presets/<preset>/` 下的源文件，然后运行：
 
@@ -103,7 +111,7 @@ DSH 使用自定义根目录时，在同一 PowerShell 窗口先设置 `$env:DSH
 node scripts/build-agent-preset-patches.mjs
 ```
 
-如果看到 `compaction-basic (qq-agent-presets/compaction-persona.mjs): never started`，先在仓库根目录运行 `node scripts/setup-dsh.mjs <profile>`；也可运行 `npm install --prefix plugins/qq-agent-presets` 后确认该目录中的 `node_modules/@deepseek-ai/dsh-compaction-basic` 存在，再重载 DSH。若设置 `QQ_BRIDGE_SKIP_DSH_INSTALL=1`，脚本仍会安装并检查 bundle 源码依赖，但会跳过 DSH CLI 的 profile 安装；之后需手动执行 `dsh plugin --profile <profile> install`。
+如果看到 `compaction-basic (qq-agent-presets/compaction-persona.mjs): never started`，先查看同一条目的具体加载错误，并运行上述宿主兼容测试；缺少宿主 API 时更新 DSH，不要向 bundle 安装另一份 `dsh-compaction-basic` 或 `dsh-llm`。bundle 链接或自身依赖缺失时可运行 `node scripts/setup-dsh.mjs <profile>` 后重载 DSH。若设置 `QQ_BRIDGE_SKIP_DSH_INSTALL=1`，脚本仍会安装并检查 bundle 源码依赖，但会跳过 DSH CLI 的 profile 安装；之后需手动执行 `dsh plugin --profile <profile> install`。
 
 如果把仓库移动或重新 clone 到新路径，请再次运行 `setup-dsh.mjs`，以更新 profile 中的 MCP 路径和 bundle 链接。
 
@@ -150,7 +158,7 @@ node scripts/test-audit-setup-guards.mjs
 
 确认 DSH `agentPresets/list` 能列出 `desktop-agent`。全局数字角色应看到 `mcp__wincu__*`、完整的 `mcp__qq__*` 和 `mcp__qq-memory__*`。`web_search` 与 `web_fetch` 由 DSH `tool-web` 行的 `search` / `fetch` 配置控制，本仓库 preset 默认启用；是否提供给当前模型步骤还取决于 DSH 当前提供方的就绪状态。`ask_user_question` 和 `todo_write` 不再由 `desktop-agent` 挂载。shell、通用文件工具、子代理或 Harness 管理工具也不应出现。记忆未启用时，调用记忆工具会收到明确的配置错误。缺少 `desktop-agent` 时，桥接不会回退到 DSH 默认 preset。
 
-进一步检查 DSH API 时，桌面版可运行 `node scripts/verify-dsh-current.mjs desktop`，Web 版可运行 `npm run verify:dsh`。该脚本会创建临时测试会话。只查看现有角色工具回执可使用上面的 `probe:tools`。
+`verify-dsh-current.mjs` / `npm run verify:dsh` 不是只读检查：会创建真实测试会话并调用模型，且部分检查仍依赖旧版 profile 模块布局，不能作为新版桌面 ASAR 或 MCP manager 的完整兼容证明。不要在只读外部程序的排查中运行它；需要真实模型验证时再明确安排。当前版本可先运行本文的隔离 compaction / managed MCP 测试，核对现有角色工具回执则使用上面的 `probe:tools`。
 
 ## 常见问题
 

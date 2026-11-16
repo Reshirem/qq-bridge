@@ -24,7 +24,11 @@ export function learningPatch({ model, provider, imageServer, imageManifest, mod
   for (const id of [
     'tool-working-directory', 'tool-bash', 'tool-pwsh', 'tool-jobs', 'tool-fs', 'tool-fs-search',
     'tool-skill', 'tool-subagent-control', 'tool-subagent', 'tool-subagent-fork', 'tool-workflow',
-    'tool-todo', 'tool-goal', 'tool-web', 'tool-plugin-manager',
+    'tool-todo', 'tool-goal', 'tool-web', 'tool-plugin-manager', 'tool-agent-team', 'mcp-resources',
+    // A customized headless/base profile may include the desktop registrations.
+    // Disable the manager itself as well as both current and legacy entry IDs;
+    // the batch's direct image client above remains independent of the manager.
+    'mcp-manager', 'mcp-qq', 'mcp-qq-memory', 'mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe',
   ]) operations.push({ id, disabled: true });
   return yaml.dump(operations, { lineWidth: -1, noRefs: true });
 }

@@ -406,7 +406,9 @@ test('learning tool guard blocks everything except the prepared image tool', () 
   for (const name of ['pwsh', 'plugin_manager', 'mcp__qq__qq_send_message', 'mcp__qq-memory__memory_save', '', 'unknown_future_tool']) assert.ok(check({ name }));
   assert.equal(check({ name: 'mcp__qq-learning-images__learning_images' }), undefined);
   const patch = yaml.load(learningPatch({ model: { provider: 'test', model: 'test' } }));
-  assert.ok(patch.some(p => p.id === 'tool-plugin-manager' && p.disabled));
+  for (const id of ['tool-plugin-manager', 'tool-agent-team', 'mcp-resources', 'mcp-manager', 'mcp-qq', 'mcp-qq-memory', 'mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
+    assert.ok(patch.some(p => p.id === id && p.disabled), id + ' must remain disabled');
+  }
   assert.ok(patch.some(p => p.insert?.some(i => i.id === 'qq-learning-tool-guard')));
 });
 
