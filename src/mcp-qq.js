@@ -209,16 +209,18 @@ server.tool(
 
 server.tool(
   'qq_list_conversations',
-  '按需列出当前 QQ 账号所在的群和好友，帮助你发现可读取或发送消息的 QQ 会话。只返回会话标识和显示名，不自动读取消息正文；用 kind 与 offset/limit 分页。',
+  '列出当前 QQ 会话及未读消息数量（统计上限 500，只统计数量不缓存正文）。默认只返回有未读消息或待处理提醒的会话（onlyUnread=true，已读会话不显示），并附带 suggestedReadCount（未读数+10）供 qq_get_conversation_history 读取；若想查看包含已读在内的全部群和好友，传 onlyUnread=false。',
   {
     kind: z.enum(['all', 'group', 'private']).optional().describe('来源类型：all（默认）、group 或 private'),
+    onlyUnread: z.boolean().optional().describe('是否只显示有未读消息或提醒的会话，默认 true（已读不显示）；传 false 可查看全部群与好友'),
     offset: z.number().int().nonnegative().optional().describe('分页起点，默认 0；用上次返回的 nextOffset 继续'),
     limit: z.number().int().min(1).max(500).optional().describe('返回条数，默认 100，最大 500'),
   },
-  async ({ kind, offset, limit }) => {
+  async ({ kind, onlyUnread, offset, limit }) => {
     try {
       const query = new URLSearchParams();
       if (kind) query.set('kind', kind);
+      if (onlyUnread !== undefined) query.set('onlyUnread', onlyUnread ? 'true' : 'false');
       if (offset != null) query.set('offset', String(offset));
       if (limit != null) query.set('limit', String(limit));
       const suffix = query.size ? `?${query.toString()}` : '';
@@ -337,20 +339,20 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取目标会话的 QQ 消息历史。默认获取最新记录，传 messageId 可从该消息附近继续读取。本页中能按 QQ 消息 ID 对应到本会话未读的来信自动计为已读。待阅读的提醒可用 qq_get_unread_messages 补读。',
+  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可根据未读数自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandledAt（本轮前上次处理该会话的时间）、lastAiReplyAt 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示之前已看过仅作上下文的旧消息；同一回合内多次读取不会冲掉 previousHandledAt 与 isNew）。本页中能按 QQ 消息 ID 对应到本会话未读的来信自动计为已读。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
-    count: z.number().int().min(1).max(100).optional().describe('最多返回多少条，默认 20，最大 100'),
+    count: z.number().int().min(1).max(500).optional().describe('最多返回多少条，可根据未读数多读约 10 条（如 未读数+10），默认自动取 max(20, 未读数+10)，最大 500'),
     reverseOrder: z.boolean().optional().describe('有锚点时 true 读取该条及更早消息，false 读取该条及更新消息，默认 true')
   },
   async ({ key, messageId, count, reverseOrder }) => {
     try {
       const q = new URLSearchParams({
         key,
-        count: String(count ?? 20),
         reverseOrder: reverseOrder === false ? 'false' : 'true'
       });
+      if (count != null) q.set('count', String(count));
       if (messageId !== undefined && messageId !== null && String(messageId).trim() !== '') q.set('messageId', String(messageId));
       const data = await agentApi(`/api/socialV2/conversation-history?${q.toString()}`);
       return { content: [{ type: 'text', text: serializeModelData(data) }] };

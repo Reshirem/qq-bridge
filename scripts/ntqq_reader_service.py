@@ -104,7 +104,7 @@ def read(db, action, params, account, self_uid):
     table = TABLES[params["kind"]]
     peer_expr = peer_column(table)
     peer = int(params["peer"])
-    count = max(1, min(100, int(params["count"])))
+    count = max(1, min(500, int(params["count"])))
     if count == 1 and params.get("anchor"):
         row = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND {peer_expr}=?",
                          (int(params["anchor"]),peer)).fetchone()

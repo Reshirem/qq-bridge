@@ -4992,7 +4992,6 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/socialV2/conversation-history') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           const messageId = String(url.searchParams.get('messageId') ?? '').trim();
-          const count = Math.min(100, Math.max(1, Number(url.searchParams.get('count')) || 20));
           const reverseOrder = url.searchParams.get('reverseOrder') !== 'false';
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
@@ -5003,6 +5002,10 @@ async function main() {
           const id = Number(keyMatch[2]);
           const action = kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history';
           const st = getSocialV2State(key);
+          const unreadBeforeRead = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread.length || 0));
+          const rawCount = Number(url.searchParams.get('count'));
+          const defaultCount = !messageId && unreadBeforeRead > 0 ? Math.min(QQ_UNREAD_LIMIT, Math.max(20, unreadBeforeRead + 10)) : 20;
+          const count = Math.min(QQ_UNREAD_LIMIT, Math.max(1, rawCount || defaultCount));
           let anchor;
           if (messageId) {
             const reference = findQQMessageReference(st, messageId);
@@ -5022,11 +5025,48 @@ async function main() {
             anchor = anchorId;
           }
           try {
-            const messages = await readQQHistory(key, count, anchor, reverseOrder);
+            const rawMessages = await readQQHistory(key, count, anchor, reverseOrder);
+            const now = Date.now();
+            const previousHandledAt = st.handledThroughAt || 0;
+            const previousHandledMessageId = st.handledThroughMessageId || null;
+            const newestFirst = !anchor || reverseOrder !== false;
+            const handledIdx = newestFirst && previousHandledMessageId
+              ? rawMessages.findIndex(m => m.messageId != null && String(m.messageId) === String(previousHandledMessageId))
+              : -1;
+            let remainingNewBudget = previousHandledAt === 0 && handledIdx === -1 ? unreadBeforeRead : Infinity;
+            const messages = rawMessages.map((m, idx) => {
+              let isNew = false;
+              if (!m.isSelf) {
+                if (handledIdx >= 0) isNew = idx < handledIdx;
+                else if (previousHandledAt > 0) isNew = (Number(m.time) || 0) > previousHandledAt;
+                else if (!anchor && remainingNewBudget > 0) { isNew = true; remainingNewBudget -= 1; }
+              }
+              return { ...m, isNew };
+            });
             const ids = new Set(messages.filter(m => !m.isSelf).map(m => qqMessageId(m.messageId)).filter(Boolean));
+            if (req.headers['x-agent-token'] && !anchor && reverseOrder !== false) {
+              res.once('finish', () => {
+                if (st.bufferId !== socialV2.bufferId) return;
+                const newest = messages[0];
+                const newestTime = Math.max(Number(newest?.time) || 0, st.lastIncomingAt || 0, now);
+                st.pendingHandledAt = Math.max(st.pendingHandledAt || 0, newestTime);
+                if (newest?.messageId != null) st.pendingHandledMessageId = String(newest.messageId);
+                if (!desktopAgentTurnActive) {
+                  st.handledThroughAt = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0);
+                  if (st.pendingHandledMessageId) st.handledThroughMessageId = st.pendingHandledMessageId;
+                  st.pendingHandledAt = 0;
+                  st.pendingHandledMessageId = null;
+                }
+                st.unreadMessageCount = count >= unreadBeforeRead ? 0 : Math.max(0, (st.unreadMessageCount || 0) - count);
+                try { saveSocialV2State(key); } catch (error) { log('保存 QQ 会话处理水位失败：', error?.message ?? error); }
+              });
+            }
             sendQQReadResult(key, st, {
               ok: true, key, source: native ? 'ntqq-history' : 'snowluma-history', action, messageId: messageId || null,
-              count: messages.length, messages, now: Date.now(),
+              unreadBeforeRead,
+              previousHandled: previousHandledAt > 0 ? compactModelMessage({ time: previousHandledAt }, { now }) : null,
+              lastAiReply: st.lastAiReplyAt > 0 ? compactModelMessage({ time: st.lastAiReplyAt }, { now }) : null,
+              count: messages.length, messages, now,
               slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
             }, st.unread.filter(m => ids.has(qqMessageId(m.messageId))));
           } catch (error) {
@@ -6104,13 +6144,31 @@ async function main() {
             sendJson({ ok: false, error: 'kind 必须是 all、group 或 private' }, 400);
             return;
           }
+          const onlyUnread = url.searchParams.get('onlyUnread') !== 'false';
           const offset = Math.min(100000, Math.max(0, Number(url.searchParams.get('offset')) || 0));
           const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 100));
           try {
-            const conversations = await qqDirectory(kind);
+            const now = Date.now();
+            const allConversations = await qqDirectory(kind);
+            const enriched = allConversations.map((item) => {
+              const st = socialV2.conversations.get(item.key);
+              const reminderCount = st ? (native ? st.unread.length : st.unread.filter((m) => m.reason).length) : 0;
+              const unreadCount = st ? Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread.length || 0)) : 0;
+              const lastHandledAt = st?.handledThroughAt || 0;
+              return {
+                ...item,
+                unreadCount,
+                ...(reminderCount > 0 ? { reminderCount } : {}),
+                ...(unreadCount > 0 ? { suggestedReadCount: Math.min(QQ_UNREAD_LIMIT, unreadCount + 10) } : {}),
+                ...(st?.lastIncomingAt ? { lastIncoming: compactModelMessage({ time: st.lastIncomingAt }, { now }) } : {}),
+                ...(lastHandledAt > 0 ? { lastHandled: compactModelMessage({ time: lastHandledAt }, { now }) } : {}),
+                ...(st?.lastAiReplyAt ? { lastAiReply: compactModelMessage({ time: st.lastAiReplyAt }, { now }) } : {}),
+              };
+            });
+            const conversations = onlyUnread ? enriched.filter((c) => c.unreadCount > 0 || (c.reminderCount || 0) > 0) : enriched;
             const page = conversations.slice(offset, offset + limit);
             const nextOffset = offset + page.length < conversations.length ? offset + page.length : null;
-            sendJson({ ok: true, source:native ? '桌面 QQ 群与好友' : 'QQ 群与好友', offset, limit, total: conversations.length, nextOffset, conversations: page });
+            sendJson({ ok: true, source:native ? '桌面 QQ 群与好友' : 'QQ 群与好友', onlyUnread, offset, limit, total: conversations.length, totalAllConversations: enriched.length, nextOffset, conversations: page });
           } catch (error) {
             log(`QQ 会话目录读取失败: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `读取 QQ 会话目录失败：${error?.message ?? error}` }, 502);
@@ -7148,6 +7206,7 @@ async function main() {
       desktopAgentTurnActive = false;
       desktopAgentRetry = null;
       desktopAgentManualPromptPending = 0;
+      commitPendingHandledConversations();
       KNOWN_AGENT_TOKENS.delete(desktopAgentToken);
       desktopAgentToken = crypto.randomBytes(32).toString('hex');
       KNOWN_AGENT_TOKENS.add(desktopAgentToken);
@@ -7213,6 +7272,7 @@ async function main() {
   }
 
   async function submitDesktopAgentPrompt(sessionId, text, { mode = 'queue' } = {}) {
+    if (!desktopAgentTurnActive) commitPendingHandledConversations();
     // Serialize the first prompt so overlapping WebUI/QQ submissions cannot both
     // append the memory bootstrap to the same persistent DSH session.
     if (desktopAgentInitialContextPrompt) {
@@ -7576,6 +7636,7 @@ async function main() {
   }
 
   function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_MAX_MS) {
+    commitPendingHandledConversations();
     desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
@@ -8150,6 +8211,12 @@ async function main() {
       st = {
         bufferId: socialV2.bufferId,
         unread: [],
+        unreadMessageCount: 0,
+        handledThroughAt: 0,
+        handledThroughMessageId: null,
+        pendingHandledAt: 0,
+        pendingHandledMessageId: null,
+        lastCountedMessageId: null,
         lastAiReplyAt: 0,
         lastActionAt: 0,
         stickerCollectTimes: [],
@@ -8262,10 +8329,19 @@ async function main() {
               if (Number.isSafeInteger(message?.seq)) lastUnreadSeq = Math.max(lastUnreadSeq, message.seq);
             }
           }
+          const unread = Array.isArray(val.unread) ? val.unread.filter(m => Number.isSafeInteger(m?.seq) && m.seq > 0).slice(native ? 0 : -QQ_UNREAD_LIMIT) : [];
+          const loadedHandledAt = Math.max(Number(val.handledThroughAt) || 0, Number(val.pendingHandledAt) || 0);
+          const loadedHandledId = val.pendingHandledMessageId || val.handledThroughMessageId || null;
           const st = {
             bufferId: socialV2.bufferId,
             name: String(val.name || '').slice(0, 100),
-            unread: Array.isArray(val.unread) ? val.unread.filter(m => Number.isSafeInteger(m?.seq) && m.seq > 0).slice(native ? 0 : -QQ_UNREAD_LIMIT) : [],
+            unread,
+            unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, Math.max(0, Number(val.unreadMessageCount) || unread.length)),
+            handledThroughAt: loadedHandledAt,
+            handledThroughMessageId: loadedHandledId ? String(loadedHandledId) : null,
+            pendingHandledAt: 0,
+            pendingHandledMessageId: null,
+            lastCountedMessageId: val.lastCountedMessageId ? String(val.lastCountedMessageId) : null,
             lastAiReplyAt: Number(val.lastAiReplyAt) || 0,
             lastActionAt: Number(val.lastActionAt) || 0,
             stickerCollectTimes: Array.isArray(val.stickerCollectTimes) ? val.stickerCollectTimes : [],
@@ -8307,6 +8383,10 @@ async function main() {
     return {
       name: st.name || '', lastAiReplyAt: st.lastAiReplyAt, lastActionAt: st.lastActionAt,
       lastIncomingAt: st.lastIncomingAt, lastUnreadSeq: st.lastUnreadSeq, lastReadThroughSeq: readThroughSeqV2(st),
+      unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, Math.max(0, Number(st.unreadMessageCount) || 0)),
+      handledThroughAt: Math.max(Number(st.handledThroughAt) || 0, Number(st.pendingHandledAt) || 0),
+      handledThroughMessageId: st.pendingHandledMessageId || st.handledThroughMessageId || null,
+      lastCountedMessageId: st.lastCountedMessageId || null,
       stickerCollectTimes: st.stickerCollectTimes.slice(-500), seenForwardIds: Array.from(seenForwardIds.get(key) || []).slice(-1000),
     };
   }
@@ -8318,8 +8398,35 @@ async function main() {
 
   function saveSocialV2State(key) {
     const st = getSocialV2State(key);
-    if (native) return;
-    unreadStore.save(canonicalV2Key(key), qqSourceMetadata(key, st), st.unread);
+    unreadStore?.save?.(canonicalV2Key(key), qqSourceMetadata(key, st), st.unread);
+  }
+
+  function commitPendingHandledConversations() {
+    for (const [key, st] of socialV2.conversations) {
+      if ((st.pendingHandledAt || 0) > (st.handledThroughAt || 0) || st.pendingHandledMessageId) {
+        st.handledThroughAt = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0);
+        if (st.pendingHandledMessageId) st.handledThroughMessageId = st.pendingHandledMessageId;
+        st.pendingHandledAt = 0;
+        st.pendingHandledMessageId = null;
+        saveSocialV2State(key);
+      }
+    }
+  }
+
+  function recordIncomingMessageCount(key, messageId, rawTime = Date.now(), isReplay = false) {
+    const st = getSocialV2State(key);
+    const numTime = Number(rawTime);
+    const time = Number.isFinite(numTime) && numTime > 0 ? (numTime > 1e12 ? numTime : numTime * 1000) : Date.now();
+    if (messageId && st.lastCountedMessageId === String(messageId)) return;
+    const knownWatermark = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0, st.lastIncomingAt || 0);
+    if (isReplay && knownWatermark > 0 && time <= knownWatermark) return;
+    if ((st.handledThroughAt || 0) === 0 && (st.pendingHandledAt || 0) === 0 && (st.unreadMessageCount || 0) === 0) {
+      st.handledThroughAt = Math.max(1, time - 1);
+    }
+    if (messageId) st.lastCountedMessageId = String(messageId);
+    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, (st.unreadMessageCount || 0) + 1);
+    st.lastIncomingAt = Math.max(st.lastIncomingAt || 0, time);
+    saveSocialV2State(key);
   }
 
   if (!native) loadSocialV2State();
@@ -8598,10 +8705,14 @@ async function main() {
       time: Date.now()
     };
     st.lastUnreadSeq = msg.seq;
-    st.lastIncomingAt = Date.now();
+    st.lastIncomingAt = msg.time;
+    if ((st.handledThroughAt || 0) === 0 && (st.pendingHandledAt || 0) === 0 && st.unread.length === 0) {
+      st.handledThroughAt = Math.max(1, msg.time - 1);
+    }
 
     st.unread.push(msg);
     if (st.unread.length > QQ_UNREAD_LIMIT) st.unread.splice(0, st.unread.length - QQ_UNREAD_LIMIT);
+    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unread.length, (st.unreadMessageCount || 0) + 1));
     saveSocialV2State(key);
     return msg;
   }
@@ -8633,10 +8744,14 @@ async function main() {
       time: Date.now()
     };
     st.lastUnreadSeq = msg.seq;
-    st.lastIncomingAt = Date.now();
+    st.lastIncomingAt = msg.time;
+    if ((st.handledThroughAt || 0) === 0 && (st.pendingHandledAt || 0) === 0 && st.unread.length === 0) {
+      st.handledThroughAt = Math.max(1, msg.time - 1);
+    }
 
     st.unread.push(msg);
     if (st.unread.length > QQ_UNREAD_LIMIT) st.unread.splice(0, st.unread.length - QQ_UNREAD_LIMIT);
+    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unread.length, (st.unreadMessageCount || 0) + 1));
     saveSocialV2State(key);
     return msg;
   }
@@ -8805,6 +8920,19 @@ async function main() {
     if (!matched.length) return 0;
     const unread = st.unread.filter(m => !selected.has(m));
     const sequences = new Set(matched.map(m => m.seq));
+    st.unreadMessageCount = Math.max(unread.length, Math.max(0, (st.unreadMessageCount || 0) - matched.length));
+    const newestAckTime = Math.max(...matched.map(m => Number(m.time) || 0), 0);
+    if (newestAckTime > 0) {
+      st.pendingHandledAt = Math.max(st.pendingHandledAt || 0, newestAckTime);
+      const lastId = matched.at(-1)?.messageId;
+      if (lastId != null) st.pendingHandledMessageId = String(lastId);
+      if (!desktopAgentTurnActive) {
+        st.handledThroughAt = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0);
+        if (st.pendingHandledMessageId) st.handledThroughMessageId = st.pendingHandledMessageId;
+        st.pendingHandledAt = 0;
+        st.pendingHandledMessageId = null;
+      }
+    }
     unreadStore.acknowledge(key, qqSourceMetadata(key, { ...st, unread }), sequences);
     st.unread = unread;
     // Keep the last page addressable for follow-up quotes and media, including ID-less pokes.
@@ -8920,6 +9048,9 @@ async function main() {
         chatLearning?.enqueue(key, {messageId, plain:plainContent, media:mediaList, userId:senderId,
           isOwner, nativeAccount:reminderAccount}, cfg.chatLearning);
       }
+      if (senderId !== String(event.self_id) && !['sleeping', 'stopped'].includes(desktopAgentLifecycle)) {
+        recordIncomingMessageCount(key, messageId, event?.time, !!event.replay);
+      }
       if (!wakeTrigger || !acceptReminder || reminderGeneration !== desktopAttentionGeneration) return;
       const st = getSocialV2State(key);
       const ref = {seq:st.lastUnreadSeq + 1, messageId, reason:wakeTrigger, time:Date.now(), userId:senderId};
@@ -9017,6 +9148,7 @@ async function main() {
       && !['sleeping', 'stopped'].includes(desktopAgentLifecycle);
     if (native) {
       if (!shouldRemind || unreadStore.seen(key, messageId)) return;
+      recordIncomingMessageCount(key, messageId, event?.time, !!event.replay);
       const st = getSocialV2State(key);
       const ref = {seq: st.lastUnreadSeq + 1, messageId, reason: 'poke', time: Date.now(), userId: senderId};
       unreadStore.add(key, ref);
