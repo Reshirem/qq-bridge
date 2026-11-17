@@ -183,17 +183,19 @@ def history_rows(db, source, limit, before_id=None):
     if not match:
         raise ValueError("来源格式应为 group:群号 或 private:QQ号")
     table = TABLES[match[1]]
+    cols = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+    peer_expr = "COALESCE(NULLIF([40030],0),[40027])" if match[1] == "group" and "40027" in cols else "[40030]"
     peer = int(match[2])
     params = [peer]
     before = ""
     if before_id is not None:
-        cursor = db.execute(f"SELECT [40050], [40001] FROM {table} WHERE [40030]=? AND [40001]=?",
+        cursor = db.execute(f"SELECT [40050], [40001] FROM {table} WHERE {peer_expr}=? AND [40001]=?",
                             (peer, before_id)).fetchone()
         if not cursor:
             raise ValueError("该来源中没有这个 NT 消息 ID")
         before = " AND ([40050], [40001]) < (?, ?)"
         params.extend(cursor)
-    return db.execute(f"SELECT [40001], [40033], [40050], [40800] FROM {table} WHERE [40030]=?{before} "
+    return db.execute(f"SELECT [40001], [40033], [40050], [40800] FROM {table} WHERE {peer_expr}=?{before} "
                       f"ORDER BY [40050] DESC, [40001] DESC LIMIT ?", [*params, limit]).fetchall()
 
 

@@ -80,6 +80,25 @@ class NativeHistoryTest(unittest.TestCase):
                 self.assertIsNone(second["next"])
                 self.assertEqual(db.total_changes, before)
 
+    def test_group_bucket_peer_for_self_messages_quotes_and_notices(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE group_msg_table ([40001] INTEGER PRIMARY KEY, [40003] INTEGER, "
+                       "[40033] INTEGER, [40050] INTEGER, [40800] BLOB, [40027] INTEGER, [40030] INTEGER)")
+            # Self-sent group messages and group gray-tip notices store 0 in [40030] and group_id in [40027].
+            db.execute("INSERT INTO group_msg_table VALUES (201,10,42,100,?,575,0)", (body((1, "self reply")),))
+            quote = nt.MsgBody()
+            rep = quote.segments.add(kind=7, quote_seq=10, quote_uid=b"u_self")
+            quote.segments.add(kind=1, text="follow up".encode())
+            db.execute("INSERT INTO group_msg_table VALUES (202,11,99,101,?,575,575)", (quote.SerializeToString(),))
+            db.execute("INSERT INTO group_msg_table VALUES (203,12,0,102,?,575,0)", (body((8, None)),))
+            rows = read_service(db, "history", {"kind": "group", "peer": "575", "count": 10, "older": True}, "42", b"u_self")
+            self.assertEqual([r["message_id"] for r in rows], ["203", "202", "201"])
+            self.assertEqual(rows[1]["message"][0], {"type": "reply", "data": {"id": "201", "nativeSelf": True}})
+            single = read_service(db, "history", {"kind": "group", "peer": "575", "count": 1, "anchor": "201", "older": True}, "42", b"u_self")
+            self.assertEqual([r["message_id"] for r in single], ["201"])
+            replay = read_service(db, "catchup", {"kind": "group", "start": 99, "end": 105}, "42", b"u_self")
+            self.assertEqual([r["message_id"] for r in replay["events"]], ["202", "203"])
+
     def test_media_segments_and_local_cache_roles(self):
         png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
         digest = hashlib.md5(png).digest()

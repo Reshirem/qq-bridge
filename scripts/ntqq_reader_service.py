@@ -10,6 +10,13 @@ from ntqq_key import cached_key, key_header, key_identity
 from ntqq_media import MediaCache, resolve_media
 
 
+def peer_column(table):
+    if table == TABLES["group"]:
+        return "COALESCE(NULLIF([40030],0),[40027])"
+    return ("COALESCE(NULLIF([40030],0),"
+            "(SELECT p.[40030] FROM c2c_msg_table p WHERE p.[40027]>0 AND p.[40027]=c2c_msg_table.[40027] AND p.[40030]>0 LIMIT 1),0)")
+
+
 def format_row(db, table, peer, row, account, self_uid):
     mid, sender, timestamp, blob, bucket = row
     decoded = decode_segments(blob)
@@ -28,10 +35,10 @@ def format_row(db, table, peer, row, account, self_uid):
             seq = part.quote_seq or part.private_quote_seq
             original = []
             if seq:
-                original = db.execute(f"SELECT [40001] FROM {table} WHERE [40027]=? AND [40003]=? AND [40030]=? LIMIT 2",
+                original = db.execute(f"SELECT [40001] FROM {table} WHERE [40027]=? AND [40003]=? AND [40030] IN (?,0) LIMIT 2",
                                       (bucket, seq, peer)).fetchall()
                 if not original:
-                    original = db.execute(f"SELECT [40001] FROM {table} WHERE [40030]=? AND [40003]=? LIMIT 2",
+                    original = db.execute(f"SELECT [40001] FROM {table} WHERE {peer_column(table)}=? AND [40003]=? LIMIT 2",
                                           (peer, seq)).fetchall()
             data = {"id": str(original[0][0]) if len(original) == 1 else None,
                     "nativeSelf": bool(self_uid and part.quote_uid == self_uid)}
@@ -59,13 +66,14 @@ def read(db, action, params, account, self_uid):
     if action == "catchup":
         group = params["kind"] == "group"
         table = TABLES[params["kind"]]
+        peer_expr = peer_column(table)
         cursor = params.get("cursor")
         extra = " AND ([40050],[40001]) > (?,?)" if cursor else ""
         args = [int(params["start"]), int(params["end"])]
         if cursor:
             args.extend(int(v) for v in cursor)
-        rows = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027],[40030] FROM {table} "
-                          "WHERE [40050] BETWEEN ? AND ? AND [40030]>0"
+        rows = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027],{peer_expr} FROM {table} "
+                          f"WHERE [40050] BETWEEN ? AND ? AND {peer_expr}>0"
                           + extra + " ORDER BY [40050],[40001] LIMIT 100", args).fetchall()
         events = []
         for mid, sender, stamp, blob, bucket, peer in rows:
@@ -88,22 +96,24 @@ def read(db, action, params, account, self_uid):
     if action in ("get_group_list", "get_friend_list"):
         group = action == "get_group_list"
         table = TABLES["group" if group else "private"]
+        peer_expr = peer_column(table)
         return [{("group_id" if group else "user_id"): str(row[0])} for row in db.execute(
-            f"SELECT DISTINCT [40030] FROM {table} WHERE [40030]>0")]
+            f"SELECT DISTINCT {peer_expr} FROM {table} WHERE {peer_expr}>0")]
     if action != "history":
         raise ValueError("未知的 QQ 数据库查询")
     table = TABLES[params["kind"]]
+    peer_expr = peer_column(table)
     peer = int(params["peer"])
     count = max(1, min(100, int(params["count"])))
     if count == 1 and params.get("anchor"):
-        row = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND [40030]=?",
+        row = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND {peer_expr}=?",
                          (int(params["anchor"]),peer)).fetchone()
         return [format_row(db, table, peer, row, account, self_uid)] if row else []
     # Sort small metadata rows first. Read/decrypt bodies only on explicit QQ lookups.
     bind = [peer]
     clause = ""
     if params.get("anchor"):
-        row = db.execute(f"SELECT [40050],[40001] FROM {table} WHERE [40030]=? AND [40001]=?",
+        row = db.execute(f"SELECT [40050],[40001] FROM {table} WHERE {peer_expr}=? AND [40001]=?",
                          (peer, int(params["anchor"]))).fetchone()
         if not row:
             return []
@@ -112,9 +122,9 @@ def read(db, action, params, account, self_uid):
         bind.extend(row)
     direction = "ASC" if clause and not params["older"] else "DESC"
     ids = [row[0] for row in db.execute(
-        f"SELECT [40001] FROM {table} WHERE [40030]=?{clause} ORDER BY [40050] {direction},[40001] {direction} LIMIT ?",
+        f"SELECT [40001] FROM {table} WHERE {peer_expr}=?{clause} ORDER BY [40050] {direction},[40001] {direction} LIMIT ?",
         [*bind, count])]
-    rows = [db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND [40030]=?",
+    rows = [db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND {peer_expr}=?",
                        (mid,peer)).fetchone() for mid in ids]
     return [format_row(db, table, peer, row, account, self_uid) for row in rows if row]
 
