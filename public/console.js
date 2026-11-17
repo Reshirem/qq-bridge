@@ -1315,7 +1315,7 @@ document.getElementById('desktopAgentStart').addEventListener('click', async () 
   const task = document.getElementById('desktopAgentMessage').value.trim();
   const message = task ?
     `请按当前人格卡优先处理这项任务：\n${task}\n\n完成后可顺着结果自然交流或继续你感兴趣的事；本轮活动告一段落后再调用 agent_rest 挂起回合。`
-    : '请按当前人格卡在这个长期会话里自然活动：可以先用工具看看电脑屏幕、最近有动静的 QQ 聊天或你感兴趣的事，按自己的好奇心和心情去探索、玩耍或找人搭话；本轮活动告一段落后再调用 agent_rest 挂起回合。';
+    : '请按当前人格卡在这个长期会话里自然活动：可以先用工具看看电脑屏幕、有未读的 QQ 聊天或你感兴趣的事，按自己的好奇心和心情去探索或交流（群聊只接自己真懂或先搜索弄懂的话题，不必逢图必评或没话找话）；本轮活动告一段落后再调用 agent_rest 挂起回合。';
   button.disabled = true;
   status.textContent = '正在启动自主探索…';
   status.className = 'meta';
