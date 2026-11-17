@@ -1314,8 +1314,8 @@ document.getElementById('desktopAgentStart').addEventListener('click', async () 
   const status = document.getElementById('desktopAgentMessageStatus');
   const task = document.getElementById('desktopAgentMessage').value.trim();
   const message = task ?
-    `请按当前角色优先处理这项任务：\n${task}\n\n完成后只在有自然且有价值的下一步时继续；没有就结束行动。每个主动回合结束前都必须调用 agent_rest 并将它作为最后一个工具调用，自行选择休息时长；不要用长等待工具维持会话在线，也不要做周期性心跳。`
-    : '请按当前人格卡在这个长期会话里自然活动。你可以从电脑上看到的线索、QQ 提醒、其他可用工具或之前聊到的事情里，挑一件你真感兴趣或觉得有用的事；也可以判断现在没什么想做的，直接结束行动。不要为了证明自主而反复巡查、制造目标或汇报每一步。每个主动回合结束前都必须调用 agent_rest 并将它作为最后一个工具调用，自行选择休息时长；不要用长等待工具维持会话在线，也不要做周期性心跳。';
+    `请按当前人格卡优先处理这项任务：\n${task}\n\n完成后可顺着结果自然交流或继续你感兴趣的事；本轮活动告一段落后再调用 agent_rest 挂起回合。`
+    : '请按当前人格卡在这个长期会话里自然活动：可以先用工具看看电脑屏幕、最近有动静的 QQ 聊天或你感兴趣的事，按自己的好奇心和心情去探索、玩耍或找人搭话；本轮活动告一段落后再调用 agent_rest 挂起回合。';
   button.disabled = true;
   status.textContent = '正在启动自主探索…';
   status.className = 'meta';
