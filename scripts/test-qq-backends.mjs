@@ -163,3 +163,88 @@ test('unread conversation list and turn-scoped handled watermark preserve isNew 
     await h.close();
   }
 });
+
+test('native runtime receives and sends non-friend group temporary private messages (chatType=100)', async t => {
+  const net = await import('node:net');
+  const { createInterface } = await import('node:readline');
+  const { once } = await import('node:events');
+  const { default: startNativeRuntime } = await import('./ntqq-probe/runtime.cjs');
+
+  const oldAuth = globalThis.authData, pending = new Map(), prepared = [], sentPeers = [];
+  let socket, lines, listener, next = 0, eventWaiter = Promise.withResolvers();
+  const hello = Promise.withResolvers(), removed = Promise.withResolvers();
+  const svc = {
+    addKernelMsgListener: l => { listener = l; return 1; },
+    removeKernelMsgListener: () => removed.resolve(),
+    generateMsgUniqueId: () => '9001',
+    getTempChatInfo: async (chatType, uid) => ({
+      result: 0,
+      tmpChatInfo: { chatType: 100, peerUid: uid, groupCode: '575000000', fromNick: '测试群', sig: new Uint8Array([1, 2, 3]) }
+    }),
+    prepareTempChat: async info => { prepared.push(info); return { result: 0 }; },
+    getMsgsByMsgId: async (peer, ids) => ({
+      result: 0,
+      msgList: [{ msgId: ids[0], msgSeq: '1', msgTime: '1000', chatType: 100, peerUid: peer.peerUid, senderUin: '156365184', senderUid: 'u_stranger' }]
+    }),
+    sendMsg: async (_id, peer, elements) => {
+      sentPeers.push({ peer, elements });
+      setImmediate(() => listener.onMsgInfoListUpdate([{
+        msgId: '9002', msgSeq: '2', sendStatus: 2, chatType: 100, peerUid: peer.peerUid, senderUin: '42', guildId: ''
+      }]));
+      return { result: 0 };
+    }
+  };
+  const receiver = {
+    getMsgService: () => svc,
+    getBuddyService: () => ({ isBuddy: async uid => uid === 'u_friend' })
+  };
+  const server = net.createServer(peer => {
+    socket = peer;
+    lines = createInterface({ input: peer });
+    lines.on('line', line => {
+      const packet = JSON.parse(line);
+      if (packet.hello) hello.resolve(packet);
+      else if (packet.event) eventWaiter.resolve(packet.event);
+      else { pending.get(packet.id)?.resolve(packet); pending.delete(packet.id); }
+    });
+  });
+  t.after(async () => {
+    socket?.destroy(); lines?.close();
+    await new Promise(resolve => server.close(resolve));
+    await removed.promise;
+    if (oldAuth === undefined) delete globalThis.authData; else globalThis.authData = oldAuth;
+  });
+  globalThis.authData = { uid: 'u_self', uin: '42' };
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  startNativeRuntime(receiver, { pipe: { host: '127.0.0.1', port: server.address().port }, token: 'fixture' });
+  await hello.promise;
+
+  // 1. Incoming chatType=100 temporary message is forwarded as private message
+  await listener.onRecvMsg([{
+    msgId: '8001', msgTime: '1700000000', chatType: 100, peerUid: 'u_stranger',
+    senderUid: 'u_stranger', senderUin: '156365184', sendNickName: '路人',
+    elements: [{ textElement: { content: 'hello' } }]
+  }]);
+  const incomingEvent = await eventWaiter.promise;
+  assert.equal(incomingEvent.message_type, 'private');
+  assert.equal(incomingEvent.user_id, '156365184');
+
+  // 2. Sending to { chatType: 1, peerUid: 'u_stranger' } upgrades to chatType=100, prepares temp chat, and resolves receipt
+  const id = ++next, reply = Promise.withResolvers();
+  pending.set(id, reply);
+  socket.write(JSON.stringify({
+    id, action: 'send',
+    params: {
+      peer: { chatType: 1, peerUid: 'u_stranger' },
+      message: [{ type: 'reply', data: { id: '8001' } }, { type: 'text', data: { text: '你好呀' } }]
+    }
+  }) + '\n');
+  const res = await reply.promise;
+  assert.equal(res.error, undefined);
+  assert.equal(res.data?.message_id, '9002');
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].chatType, 100);
+  assert.equal(prepared[0].fromGroupCode, '575000000');
+  assert.equal(sentPeers.length, 1);
+  assert.equal(sentPeers[0].peer.chatType, 100);
+});

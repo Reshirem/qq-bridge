@@ -15,9 +15,14 @@ module.exports = function startChannel(receiver, endpoint) {
   // Bodies remain in QQ; these bounded entries only serve subsequent nested/media reads.
   const forwards = new Map();
   let forwardRows = 0;
+  const TEMP_C2C_TYPES = new Set([100, 101, 102, 103, 104, 105, 106, 107, 108, 111, 113, 114, 115, 116, 117, 118, 119]);
+  const isPrivateChat = t => t === 1 || TEMP_C2C_TYPES.has(Number(t)) || (Number.isInteger(t) && t !== 2 && Boolean(svc.IsC2CStyleChatType?.(t)));
+  const isSupportedChat = t => t === 2 || isPrivateChat(t);
+  const sameChatKind = (a, b) => a === b || (isPrivateChat(a) && isPrivateChat(b));
+  const privateChatTypes = new Map();
   const messageId = value => typeof value === 'string' && /^-?[1-9]\d{0,19}$/.test(value) &&
     BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
-  const forwardKey = (peer, id) => JSON.stringify([peer.chatType, peer.peerUid, id]);
+  const forwardKey = (peer, id) => JSON.stringify([peer.chatType === 2 ? 2 : 1, peer.peerUid, id]);
   const sameAccount = () => {
     if (socket.destroyed || String(globalThis.authData?.uin) !== account) throw Error('QQ 连接或登录账号已改变');
   };
@@ -101,7 +106,8 @@ module.exports = function startChannel(receiver, endpoint) {
     async onRecvMsg(rows) {
       if (String(globalThis.authData?.uin) !== account) return socket.destroy();
       for (const r of rows || []) {
-        if (![1, 2].includes(r.chatType)) continue;
+        if (!isSupportedChat(r.chatType)) continue;
+        if (isPrivateChat(r.chatType) && r.peerUid) privateChatTypes.set(r.peerUid, Number(r.chatType));
         try {
           const event = await message(r);
           if (event.message_type === 'group' && !event.group_id) continue;
@@ -115,10 +121,16 @@ module.exports = function startChannel(receiver, endpoint) {
     },
     onMsgInfoListUpdate(rows) {
       for (const row of rows || []) {
-        const receipt = slides.get(String(row.guildId)) || slides.get(String(row.msgId));
-        if (!receipt || row.peerUid !== receipt.peer.peerUid || row.chatType !== receipt.peer.chatType || String(row.senderUin) !== account) continue;
+        let receipt = slides.get(String(row.guildId)) || slides.get(String(row.msgId));
+        if (!receipt && String(row.senderUin) === account) {
+          const matches = [...slides.values()].filter(c => c.peer.peerUid === row.peerUid && sameChatKind(row.chatType, c.peer.chatType));
+          if (matches.length === 1) receipt = matches[0];
+        }
+        if (!receipt || row.peerUid !== receipt.peer.peerUid || !sameChatKind(row.chatType, receipt.peer.chatType) || String(row.senderUin) !== account) continue;
         if (row.sendStatus === 0) receipt.reject(Error('QQ 报告发送失败'));
-        if (row.sendStatus === 2 && number(row.msgSeq)) receipt.resolve({ message_id: String(row.msgId) });
+        if (row.sendStatus === 2 && (number(row.msgSeq) || (row.chatType !== 1 && row.chatType !== 2 && number(row.clientSeq)))) {
+          receipt.resolve({ message_id: String(row.msgId) });
+        }
       }
     },
     onRichMediaDownloadComplete(info) {
@@ -127,15 +139,91 @@ module.exports = function startChannel(receiver, endpoint) {
       mediaDownloads.get(mediaKey(info.msgId, info.msgElementId))?.finish(info);
     },
   }, { get: (obj, prop) => prop in obj ? obj[prop] : typeof prop === 'string' && prop.startsWith('on') ? () => {} : undefined });
+  async function findSharedGroupForUid(uid) {
+    if (typeof receiver.getGroupService !== 'function') return null;
+    try {
+      const groups = await perform('get_group_list', {});
+      for (const g of groups || []) {
+        const res = await receiver.getGroupService().getAllMemberList(String(g.group_id), false).catch(() => null);
+        const member = res?.result?.infos instanceof Map ? res.result.infos.get(uid) : null;
+        if (member) {
+          return { groupCode: String(g.group_id), nick: String(member.cardName || member.nick || g.group_name || '') };
+        }
+      }
+    } catch {}
+    return null;
+  }
+  async function resolvePrivatePeer(peer, { prepareForSend = false } = {}) {
+    if (!peer || peer.chatType === 2 || typeof peer.peerUid !== 'string' || !peer.peerUid) return peer;
+    const uid = peer.peerUid;
+    const buddySvc = typeof receiver.getBuddyService === 'function' ? receiver.getBuddyService() : null;
+    if (!buddySvc || typeof buddySvc.isBuddy !== 'function') return peer;
+    const isBuddy = await buddySvc.isBuddy(uid);
+    if (isBuddy) {
+      privateChatTypes.set(uid, 1);
+      return { chatType: 1, peerUid: uid };
+    }
+    let chatType = privateChatTypes.get(uid) || (peer.chatType !== 1 ? Number(peer.chatType) : 0);
+    let groupCode = peer.groupCode ? String(peer.groupCode) : '';
+    let fromNick = '';
+    let sig = new Uint8Array(0);
+    if (typeof svc.getTempChatInfo === 'function') {
+      const info = await svc.getTempChatInfo(chatType || 100, uid).catch(() => null);
+      if (info?.result === 0 && info.tmpChatInfo?.peerUid === uid) {
+        chatType = Number(info.tmpChatInfo.chatType) || chatType || 100;
+        if (info.tmpChatInfo.groupCode) groupCode = String(info.tmpChatInfo.groupCode);
+        if (info.tmpChatInfo.fromNick) fromNick = String(info.tmpChatInfo.fromNick);
+        if (info.tmpChatInfo.sig) sig = info.tmpChatInfo.sig;
+      }
+    }
+    if ((!chatType || (prepareForSend && !groupCode)) && typeof svc.getMsgsIncludeSelf === 'function') {
+      const recent = await svc.getMsgsIncludeSelf({ chatType: chatType || 1, peerUid: uid }, '0', 5, true).catch(() => null);
+      for (const r of recent?.msgList || []) {
+        if (!chatType && isPrivateChat(r.chatType) && r.chatType !== 1) chatType = Number(r.chatType);
+        if (!groupCode) {
+          const tip = (r.elements || []).find(e => e.grayTipElement?.aioOpGrayTipElement)?.grayTipElement?.aioOpGrayTipElement;
+          if (tip?.fromGrpCodeOfTmpChat) groupCode = String(tip.fromGrpCodeOfTmpChat);
+        }
+      }
+    }
+    if (prepareForSend && !groupCode) {
+      const shared = await findSharedGroupForUid(uid);
+      if (shared) {
+        groupCode = shared.groupCode;
+        if (!fromNick) fromNick = shared.nick;
+      }
+    }
+    chatType = chatType || 100;
+    privateChatTypes.set(uid, chatType);
+    if (prepareForSend && typeof svc.prepareTempChat === 'function' && (groupCode || sig?.length || Object.keys(sig || {}).length)) {
+      const sigBytes = sig instanceof Uint8Array ? sig
+        : (sig && typeof sig === 'object' ? Uint8Array.from(Object.values(sig)) : new Uint8Array(0));
+      await svc.prepareTempChat({
+        chatType,
+        peerUid: uid,
+        peerNickname: fromNick,
+        fromGroupCode: String(groupCode || ''),
+        sig: sigBytes,
+        selfPhone: '',
+        selfUid: self.uid,
+        gameSession: {
+          appId: '', fromRoleId: '', fromOpenId: '', toRoleId: '', toOpenId: '',
+          fromTinyId: '0', toTinyId: '0', pushWindowFlag: 0, nickName: '', redpointSwitch: 0, sayHiType: 0
+        }
+      }).catch(() => {});
+    }
+    return { chatType, peerUid: uid };
+  }
   async function original(peer, id) {
-    const rows = checked(await svc.getMsgsByMsgId(peer, [String(id)])).msgList;
-    const row = rows.find(r => r.chatType === peer.chatType && r.peerUid === peer.peerUid && String(r.msgId) === String(id));
+    const resolvedPeer = await resolvePrivatePeer(peer);
+    const rows = checked(await svc.getMsgsByMsgId(resolvedPeer, [String(id)])).msgList;
+    const row = rows.find(r => sameChatKind(r.chatType, resolvedPeer.chatType) && r.peerUid === resolvedPeer.peerUid && String(r.msgId) === String(id));
     if (!row) throw Error('QQ 当前会话中找不到此消息');
     return row;
   }
   function forwardReference(peer, id) {
     const parts = String(id ?? '').split(':');
-    if (!peer || ![1, 2].includes(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid ||
+    if (!peer || !isSupportedChat(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid ||
       parts[0] !== 'native' || ![2,3].includes(parts.length) || !parts.slice(1).every(messageId)) {
       throw Error('QQ 转发定位无效');
     }
@@ -258,7 +346,7 @@ module.exports = function startChannel(receiver, endpoint) {
     if (p.quality !== undefined && !['preview','original'].includes(p.quality)) throw Error('图片 quality 必须是 preview 或 original');
     const peer = p.peer;
     const messageId = String(p.messageId ?? '');
-    if (!peer || ![1, 2].includes(Number(peer.chatType)) || !peer.peerUid ||
+    if (!peer || !isSupportedChat(Number(peer.chatType)) || !peer.peerUid ||
         !/^-?[1-9]\d{0,19}$/.test(messageId)) throw Error('QQ 图片定位信息无效');
     const digest = String(p.md5 ?? '').toLowerCase();
     if (!/^[a-f0-9]{32}$/.test(digest)) throw Error('QQ 图片标识无效');
@@ -308,7 +396,7 @@ module.exports = function startChannel(receiver, endpoint) {
     const result = await svc.getRichMediaElement({
       downSourceType: 1,
       msgId: String(row.msgId),
-      peerUid: String(peer.peerUid), chatType: Number(peer.chatType),
+      peerUid: String(peer.peerUid), chatType: Number(row.chatType || peer.chatType),
       elementId: String(element.elementId), downloadType: 1,
       // Ordinary images need QQ's original destination; stickers choose their own cache.
       ...(sticker ? {} : {thumbSize: 0, filePath: target}),
@@ -318,9 +406,10 @@ module.exports = function startChannel(receiver, endpoint) {
   }
 
   async function sendMessage(p) {
+    const peer = await resolvePrivatePeer(p.peer, { prepareForSend: true });
     const elements = [];
     let stickerFormat;
-    const tag = String(svc.generateMsgUniqueId(p.peer.chatType, String(Date.now())));
+    const tag = String(svc.generateMsgUniqueId(peer.chatType, String(Date.now())));
     if (!number(tag)) throw Error('QQ 未生成发送标识');
     let timer;
     try {
@@ -331,7 +420,7 @@ module.exports = function startChannel(receiver, endpoint) {
           elements.push({ elementType: 1, elementId: '', textElement: { content: at ? '@' + d.qq : d.text, atType: at ? 2 : 0,
             atUid: at ? String(d.qq) : '', atNtUid: at ? d.uid : '', atTinyId: '' } });
         } else if (seg.type === 'reply') {
-          const row = await original(p.peer, d.id);
+          const row = await original(peer, d.id);
           elements.push({ elementType: 7, elementId: '', replyElement: { replayMsgSeq: String(row.msgSeq),
             replayMsgId: String(row.msgId), senderUin: String(row.senderUin), senderUidStr: row.senderUid,
             replyMsgTime: String(row.msgTime), sourceMsgIdInRecords: String(row.msgId) } });
@@ -378,10 +467,10 @@ module.exports = function startChannel(receiver, endpoint) {
       }
       if (socket.destroyed || String(globalThis.authData?.uin) !== account) throw Error('QQ 连接已关闭');
       const delivered = new Promise((resolve, reject) => {
-        slides.set(tag, {peer: p.peer, resolve, reject});
+        slides.set(tag, {peer, resolve, reject});
         timer = setTimeout(() => reject(Error('QQ 发送回执超时，投递结果未知')), 12000);
       });
-      const [, receipt] = await Promise.all([svc.sendMsg('0', {...p.peer, guildId: tag}, elements, new Map()).then(checked), delivered]);
+      const [, receipt] = await Promise.all([svc.sendMsg('0', {...peer, guildId: tag}, elements, new Map()).then(checked), delivered]);
       return stickerFormat ? {...receipt, stickerFormat} : receipt;
     } finally {
       slides.delete(tag); clearTimeout(timer);
@@ -394,16 +483,18 @@ module.exports = function startChannel(receiver, endpoint) {
     if (action === 'check_forward_image') { forwardImage(p); return {verified:true}; }
     if (action === 'poke') {
       const {peer, targetUin, aioUin} = p;
-      if (!peer || ![1, 2].includes(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid
+      if (!peer || !isSupportedChat(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid
         || ![targetUin, aioUin].every(id => typeof id === 'string' && /^[1-9]\d{0,19}$/.test(id) && BigInt(id) <= 9223372036854775807n)
         || (peer.chatType === 2 ? peer.peerUid !== aioUin : targetUin !== aioUin)) {
         throw Error('QQ 戳一戳目标与会话不匹配');
       }
       if (typeof svc.sendNudge !== 'function') throw Error('当前 QQ 不支持原生戳一戳');
       if (socket.destroyed) throw Error('QQ 连接已关闭，未发送戳一戳');
+      const resolvedPeer = await resolvePrivatePeer(peer);
+      if (socket.destroyed || String(globalThis.authData?.uin) !== account) throw Error('QQ 连接已关闭，未发送戳一戳');
       // QQ takes the native contact, target QQ number, and conversation QQ
       // number. Both numbers are decimal strings in its N-API binding.
-      checked(await svc.sendNudge(peer, targetUin, aioUin));
+      checked(await svc.sendNudge(resolvedPeer, targetUin, aioUin));
       return {accepted: true};
     }
     if (action === 'market_pack_availability') {
@@ -411,15 +502,29 @@ module.exports = function startChannel(receiver, endpoint) {
       return {available: p.faceIds.filter(id => resources.has(id)).length, total: p.faceIds.length};
     }
     if (action === 'history') {
-      const res = p.ids ? await svc.getMsgsByMsgId(p.peer,p.ids)
-        : await svc.getMsgsIncludeSelf(p.peer, p.anchor || '0', p.count, p.older);
-      const rows = checked(res).msgList.filter(r => r.chatType === p.peer.chatType && r.peerUid === p.peer.peerUid);
+      const peer = await resolvePrivatePeer(p.peer);
+      const res = p.ids ? await svc.getMsgsByMsgId(peer,p.ids)
+        : await svc.getMsgsIncludeSelf(peer, p.anchor || '0', p.count, p.older);
+      const rows = checked(res).msgList.filter(r => sameChatKind(r.chatType, peer.chatType) && r.peerUid === peer.peerUid);
       return Promise.all(rows.map(message));
     }
     if (action === 'fetch_message_image') return fetchMessageImage(p);
     if (action === 'resolveUid') {
       const map = await receiver.getUixConvertService?.().getUid([p.uin]);
-      return map?.uidInfo?.get(p.uin) || '';
+      const uid = map?.uidInfo?.get(p.uin) || '';
+      if (uid) return uid;
+      if (typeof receiver.getGroupService === 'function') {
+        const groups = await perform('get_group_list', {}).catch(() => []);
+        for (const g of groups || []) {
+          const res = await receiver.getGroupService().getAllMemberList(String(g.group_id), false).catch(() => null);
+          if (res?.result?.infos instanceof Map) {
+            for (const m of res.result.infos.values()) {
+              if (String(m.uin) === String(p.uin) && m.uid) return m.uid;
+            }
+          }
+        }
+      }
+      return '';
     }
     if (action === 'send') return sendMessage(p);
     if (action === 'get_friend_list' && receiver.getBuddyService) {

@@ -184,8 +184,21 @@ export class NativeQQ extends EventEmitter {
       return call('poke', {peer, targetUin, aioUin});
     }
     if (['get_group_list','get_friend_list'].includes(action)) {
-      try { return await this.call(action,p); } catch (error) { if (!this.read) throw error; }
-      return this.read(action,p);
+      let list;
+      try { list = await this.call(action,p); } catch (error) { if (!this.read) throw error; return this.read(action,p); }
+      if (action === 'get_friend_list' && this.read && Array.isArray(list)) {
+        try {
+          const fromDb = await this.read(action, p);
+          if (Array.isArray(fromDb)) {
+            const seen = new Set(list.map(item => String(item?.user_id ?? '')));
+            for (const row of fromDb) {
+              const id = String(row?.user_id ?? '');
+              if (id && !seen.has(id)) { seen.add(id); list.push(row); }
+            }
+          }
+        } catch {}
+      }
+      return list;
     }
     if (action === 'get_image') {
       const quality = imageQuality(p.quality);

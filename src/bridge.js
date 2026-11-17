@@ -1391,7 +1391,7 @@ async function main() {
       kind === 'private' ? Promise.resolve([]) : onebotReadAction('get_group_list').then((data) => Array.isArray(data) ? data : []),
       kind === 'group' ? Promise.resolve([]) : onebotReadAction('get_friend_list').then((data) => Array.isArray(data) ? data : [])
     ]);
-    const conversations = [
+    const list = [
       ...groups.map((item) => {
         const id = String(item?.group_id ?? item?.groupId ?? '').trim();
         if (!/^\d+$/.test(id)) return null;
@@ -1404,7 +1404,18 @@ async function main() {
         const remark = String(item?.remark ?? item?.remark_name ?? '');
         return { key: `private:${id}`, kind: 'private', id, name: truncateText(remark || nickname || id, 100), ...(remark ? { remark: truncateText(remark, 100) } : {}), ...(nickname ? { nickname: truncateText(nickname, 100) } : {}) };
       })
-    ].filter(Boolean).sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id, 'en', { numeric: true }));
+    ].filter(Boolean);
+    const seenKeys = new Set(list.map((c) => c.key));
+    if (kind !== 'group') {
+      for (const [key, st] of socialV2.conversations) {
+        if (!key.startsWith('private:') || seenKeys.has(key)) continue;
+        const id = key.slice('private:'.length);
+        if (!/^\d+$/.test(id)) continue;
+        seenKeys.add(key);
+        list.push({ key, kind: 'private', id, name: truncateText(st.name || id, 100) });
+      }
+    }
+    const conversations = list.sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id, 'en', { numeric: true }));
     for (const item of conversations) {
       const cached = socialV2.conversations.get(item.key);
       if (cached && item.name) cached.name = item.name;

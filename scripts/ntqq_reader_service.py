@@ -85,13 +85,22 @@ def read(db, action, params, account, self_uid):
             events.append(item)
         return {"events": events, "next": [rows[-1][2],str(rows[-1][0])] if len(rows)==100 else None}
     if action == "uid":
-        for table, column, uin in (("c2c_msg_table", "40021", "40030"),
-                                   ("group_msg_table", "40020", "40033"),
-                                   ("c2c_msg_table", "40020", "40033")):
-            row = db.execute(f"SELECT [{column}] FROM {table} WHERE [{uin}]=? AND substr([{column}],1,2)='u_' LIMIT 1",
-                             (int(params["uin"]),)).fetchone()
+        uin = int(params["uin"])
+        for table, column, uin_col in (("c2c_msg_table", "40021", "40030"),
+                                       ("group_msg_table", "40020", "40033"),
+                                       ("c2c_msg_table", "40020", "40033")):
+            row = db.execute(f"SELECT [{column}] FROM {table} WHERE [{uin_col}]=? AND substr([{column}],1,2)='u_' LIMIT 1",
+                             (uin,)).fetchone()
             if row:
                 return row[0]
+        for query in ("SELECT [48902] FROM nt_uid_mapping_table WHERE [1002]=? AND substr([48902],1,2)='u_' LIMIT 1",
+                      "SELECT [40021] FROM recent_contact_v3_table WHERE [40030]=? AND substr([40021],1,2)='u_' LIMIT 1"):
+            try:
+                row = db.execute(query, (uin,)).fetchone()
+                if row:
+                    return row[0]
+            except Exception:
+                pass
         return None
     if action in ("get_group_list", "get_friend_list"):
         group = action == "get_group_list"
