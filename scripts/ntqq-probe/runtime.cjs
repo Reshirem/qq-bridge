@@ -342,6 +342,26 @@ module.exports = function startChannel(receiver, endpoint) {
     })();
     return entry.promise;
   }
+  function ordinarySourcePreview(pic, root, digest) {
+    const {sourcePath, picWidth:width, picHeight:height} = pic;
+    if (![0, '0'].includes(pic.picSubType) || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+        width < 1 || height < 1 || width > 32768 || height > 32768 || width * height > 64_000_000 ||
+        typeof sourcePath !== 'string' || !path.isAbsolute(sourcePath)) return null;
+    const relative = path.relative(root, sourcePath).split(path.sep).join('/');
+    if (!new RegExp(`^Pic/[0-9]{4}-(?:0[1-9]|1[0-2])/Ori/${digest}\\.[a-z0-9]+$`, 'i').test(relative)) return null;
+    let real;
+    try {
+      real = fs.realpathSync(sourcePath);
+      if (path.relative(sourcePath, real) === '' && fs.statSync(real).isFile()) {
+        return {path:real, width, height};
+      }
+    } catch (error) {
+      // QQ writes some files after acknowledging the download. The reader
+      // repeats the realpath and file checks on each poll before opening one.
+      if (real === undefined && error.code === 'ENOENT') return {path:sourcePath, width, height};
+    }
+    return null;
+  }
   async function fetchMessageImage(p) {
     if (p.quality !== undefined && !['preview','original'].includes(p.quality)) throw Error('图片 quality 必须是 preview 或 original');
     const peer = p.peer;
@@ -360,9 +380,8 @@ module.exports = function startChannel(receiver, endpoint) {
     const target = element.picElement.sourcePath;
     const relative = typeof target === 'string' && path.isAbsolute(target) ? path.relative(root, target) : '..';
     const sticker = Number(element.picElement.picSubType) === 1;
-    // QQ can store a converted JPEG in Ori under the source PNG's digest. Only
-    // the exact native element's thumbnail mapping authorizes it as a preview;
-    // a caller-supplied path or a digest-mismatched Ori alone never does.
+    // QQ can store a converted JPEG in Ori under the source PNG's digest.
+    // Prefer the exact native element's thumbnail mapping when available.
     let verifiedPreviewPath;
     if (p.quality !== 'original') {
       const thumbnail = element.picElement.thumbPath instanceof Map ? element.picElement.thumbPath.get(0) : null;
@@ -402,7 +421,12 @@ module.exports = function startChannel(receiver, endpoint) {
       ...(sticker ? {} : {thumbSize: 0, filePath: target}),
     });
     if (result?.result != null) checked(result);
-    return {requested: true, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {})};
+    sameAccount();
+    // Submit the normal download even when QQ has a converted source candidate.
+    // The reader validates its decoded dimensions before accepting a preview.
+    const verifiedSourcePreview = p.quality !== 'original' && ordinarySourcePreview(element.picElement, root, digest);
+    return {requested:true, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {}),
+      ...(verifiedSourcePreview ? {verifiedSourcePreview} : {})};
   }
 
   async function sendMessage(p) {

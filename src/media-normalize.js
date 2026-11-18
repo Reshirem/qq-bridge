@@ -413,6 +413,8 @@ export async function validateImageDecode(buf, opts = {}) {
   try { info = sniffImage(buf); } catch { return failure('图片格式或尺寸无效'); }
   if (!info || !Number.isSafeInteger(info.width) || !Number.isSafeInteger(info.height)
     || info.width <= 0 || info.height <= 0) return failure('图片格式或尺寸无效');
+  if (opts.sourcePreviewSize && (info.format !== 'jpeg' || info.width !== opts.sourcePreviewSize.width
+    || info.height !== opts.sourcePreviewSize.height)) return failure('QQ 转换预览与消息中的图片尺寸或格式不符');
   if (info.width * info.height > maxPixels) return failure('图片超过 6400 万像素解码上限');
   if (info.frames > maxFrames) return failure('图片超过 300 帧完整解码上限');
   if (info.format === 'gif' && !completeGifContainer(buf)) return failure('GIF 图片数据不完整，未尝试解码');

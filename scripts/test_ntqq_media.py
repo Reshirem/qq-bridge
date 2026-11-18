@@ -457,6 +457,115 @@ class NativeMediaCacheTest(unittest.TestCase):
             preview.unlink()
             self.assertIsNone(resolve_media(MediaCache(root), params)["file"])
 
+    def test_verified_source_preview_requires_matching_jpeg_and_declared_dimensions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            digest = "a" * 32
+            path = root / "Pic/2026-11/Ori" / f"{digest}.png"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(JPEG)
+            source = {"path":str(path), "width":4, "height":4}
+            params = {"type":"image", "md5":digest, "quality":"preview"}
+            cache = MediaCache(root)
+            self.assertIsNone(resolve_media(cache, params)["file"])
+            result = resolve_media(cache, {**params, "verifiedSourcePreview":source})
+            self.assertEqual(result["file"], str(path.resolve()))
+            self.assertEqual((result["representation"], result["width"], result["height"]), ("preview", 4, 4))
+            self.assertTrue(result["requiresDecode"])
+            self.assertTrue(result["sourcePreview"])
+            self.assertFalse(result["originalAvailable"])
+            self.assertEqual(result["originalUnavailableReason"], "invalid_cache")
+            self.assertIsNone(resolve_media(cache, {**params, "quality":"original"})["file"])
+            self.assertIsNone(resolve_media(cache, {"type":"image", "md5":digest}))
+            for mismatch in ({"width":3}, {"height":5}, {"path":str(path.with_suffix(".jpg"))}):
+                result = resolve_media(cache, {**params, "verifiedSourcePreview":{**source, **mismatch}})
+                self.assertIsNone(result["file"])
+                self.assertNotIn("sourcePreview", result)
+            with self.assertRaisesRegex(ValueError, "大小上限"):
+                resolve_media(cache, {**params, "verifiedSourcePreview":source, "maxBytes":len(JPEG)-1})
+            for data in (png_size(4, 4), b"\xff\xd8\xff", b"not an image"):
+                path.write_bytes(data)
+                with self.subTest(data=data):
+                    result = resolve_media(MediaCache(root), {**params, "verifiedSourcePreview":source})
+                    self.assertIsNone(result["file"])
+                    self.assertNotIn("requiresDecode", result)
+                    self.assertNotIn("sourcePreview", result)
+
+    def test_verified_source_preview_is_the_last_preview_fallback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = png_size(15, 20, 1000)
+            digest = hashlib.md5(data).hexdigest()
+            source = root / "Pic/2026-11/Ori" / f"{digest}.png"
+            verified = source.with_name(f"{digest}_0.png")
+            original = root / "Pic/2026-10/Ori" / f"{digest}.png"
+            thumb = root / "Pic/2026-11/Thumb" / f"{digest}_100.jpg"
+            for path in (source, original, thumb):
+                path.parent.mkdir(parents=True)
+            source.write_bytes(JPEG)
+            verified.write_bytes(png_size(2, 2))
+            original.write_bytes(data)
+            thumb.write_bytes(png_size(3, 3))
+            params = {"type":"image", "md5":digest, "quality":"preview", "verifiedPreviewPath":str(verified),
+                      "verifiedSourcePreview":{"path":str(source), "width":4, "height":4}}
+            for expected in (thumb, original, verified):
+                result = resolve_media(MediaCache(root), params)
+                self.assertEqual(result["file"], str(expected.resolve()))
+                self.assertNotIn("sourcePreview", result)
+                if expected == original:
+                    # Preserve valid original metadata when it exceeds this
+                    # request's budget and both QQ-reported previews compete.
+                    verified.write_bytes(png_size(2, 2, 2000))
+                    small = resolve_media(MediaCache(root), {**params, "maxBytes":len(JPEG)})
+                    self.assertEqual(small["file"], str(source.resolve()))
+                    self.assertTrue(small["sourcePreview"])
+                    self.assertTrue(small["originalAvailable"])
+                    self.assertEqual((small["originalWidth"], small["originalHeight"]), (15, 20))
+                    verified.write_bytes(png_size(2, 2))
+                expected.unlink()
+            self.assertTrue(resolve_media(MediaCache(root), params)["sourcePreview"])
+
+    def test_verified_source_preview_is_internal_and_has_bounded_dimensions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = MediaCache(Path(folder))
+            digest = "a" * 32
+            source = {"path":str(Path(folder) / "Pic/2026-11/Ori" / f"{digest}.jpg"), "width":4, "height":4}
+            params = {"type":"image", "md5":digest}
+            for request in (params, {**params, "quality":"original"},
+                            {"type":"marketFace", "quality":"preview", "emojiId":digest, "packageId":"42"}):
+                with self.subTest(request=request), self.assertRaisesRegex(ValueError, "verifiedSourcePreview"):
+                    resolve_media(cache, {**request, "verifiedSourcePreview":source})
+            for invalid in (None, [], {}, True, {"path":source["path"]}, {**source, "path":"a\x00b"},
+                            {**source, "path":""}, {**source, "width":False}, {**source, "height":True},
+                            {**source, "height":0}, {**source, "width":-1}, {**source, "width":4.0},
+                            {**source, "height":"4"}, {**source, "width":32769},
+                            {**source, "width":8001, "height":8000}):
+                with self.subTest(source=invalid), self.assertRaisesRegex(ValueError, "verifiedSourcePreview"):
+                    resolve_media(cache, {**params, "quality":"preview", "verifiedSourcePreview":invalid})
+
+    def test_verified_source_preview_checks_exact_path_and_realpath(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "account-a/nt_data"
+            digest = "a" * 32
+            allowed = root / "Pic/2026-11/Ori" / f"{digest}.png"
+            cache = MediaCache(root)
+            cache.indexes[False] = {}
+            params = {"type":"image", "md5":digest, "quality":"preview"}
+            source = {"path":str(allowed), "width":4, "height":4}
+            for invalid in (allowed.with_name("b" * 32 + ".png"), allowed.with_name(f"{digest}_0.png"),
+                            root / "Pic/2026-11/Thumb" / allowed.name,
+                            root / "Emoji/emoji-recv/2026-11/Ori" / allowed.name,
+                            root / "Pic/2026-13/Ori" / allowed.name,
+                            Path(folder) / "account-b/nt_data/Pic/2026-11/Ori" / allowed.name):
+                with self.subTest(path=invalid):
+                    with self.assertRaisesRegex(ValueError, "当前图片缓存"):
+                        resolve_media(cache, {**params, "verifiedSourcePreview":{**source, "path":str(invalid)}})
+                    with patch.object(Path, "resolve", return_value=invalid), self.assertRaisesRegex(ValueError, "当前图片缓存"):
+                        resolve_media(cache, {**params, "verifiedSourcePreview":source})
+            alias = root / "Pic/2026-12/Ori" / allowed.name
+            with patch.object(Path, "resolve", return_value=alias), self.assertRaisesRegex(ValueError, "当前图片缓存"):
+                resolve_media(cache, {**params, "verifiedSourcePreview":source})
+
     def test_quality_and_limits_are_strict_and_market_previews_have_no_original(self):
         with tempfile.TemporaryDirectory() as folder:
             cache = MediaCache(Path(folder))

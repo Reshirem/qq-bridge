@@ -157,7 +157,7 @@ await test('native forward media reject forged sources and use QQ node cache coo
   } finally { await h.close(); }
 });
 
-await test('native converted previews require the exact message thumbnail mapping in ordinary and forwarded reads', async t => {
+await test('native converted previews use the exact message thumbnail mapping in ordinary and forwarded reads', async t => {
   const h = await harness();
   const realpath = fs.realpathSync, stat = fs.statSync;
   t.mock.method(fs, 'realpathSync', file => file === imagePath ? file : realpath(file));
@@ -194,6 +194,85 @@ await test('native converted previews require the exact message thumbnail mappin
     t.mock.method(fs, 'realpathSync', file => file === imagePath ? path.join(os.tmpdir(),'escape.png') : realpath(file));
     assert.deepEqual((await h.rpc('fetch_message_image',ordinary)).data, {requested:true}, 'symlink escape cannot authorize preview');
   } finally { await h.close(); }
+});
+
+await test('ordinary previews can use the exact native source and dimensions after download submission', async t => {
+  const h = await harness();
+  t.after(() => h.close());
+  const row = picture(), pic = row.elements[0].picElement;
+  const params = {peer:{chatType:2,peerUid:'456'},messageId:'202',md5:digest};
+  const locator = {path:imagePath,width:1920,height:1080};
+  Object.assign(pic, {picWidth:locator.width,picHeight:locator.height});
+  h.setOrdinaryRows([row]);
+  h.setRows([row]);
+  t.mock.method(fs, 'realpathSync', file => file);
+  t.mock.method(fs, 'statSync', () => ({isFile:() => true}));
+
+  const forged = {path:path.join(os.tmpdir(),'other.png'),width:1,height:1};
+  for (const quality of [undefined, 'preview']) {
+    const response = await h.rpc('fetch_message_image', {...params,quality,verifiedSourcePreview:forged});
+    assert.deepEqual(response.data,{requested:true,verifiedSourcePreview:locator});
+  }
+  assert.equal(h.downloads.length,2,'a source candidate must not suppress a normal download');
+  pic.thumbPath.set(0,imagePath);
+  assert.deepEqual((await h.rpc('fetch_message_image',params)).data,{requested:false,verifiedPreviewPath:imagePath});
+  assert.equal(h.downloads.length,2,'the native thumbnail takes priority');
+  assert.deepEqual((await h.rpc('fetch_message_image',{...params,quality:'original'})).data,{requested:true});
+  pic.thumbPath.clear();
+  await h.rpc('get_forward_msg',{peer:origin,id:'native:101'});
+  assert.deepEqual((await h.rpc('fetch_message_image',{...params,peer:origin,forwardId:'native:101'})).data,{requested:true});
+  for (const change of [{peer:origin}, {messageId:'404'}, {md5:'b'.repeat(32)}]) {
+    assert.ok((await h.rpc('fetch_message_image',{...params,...change,verifiedSourcePreview:locator})).error);
+  }
+  assert.equal(h.downloads.length,3);
+});
+
+await test('ordinary source previews require an exact account cache file and bounded native pixel dimensions', async t => {
+  const h = await harness();
+  t.after(() => h.close());
+  const row = picture(), pic = row.elements[0].picElement;
+  const params = {peer:{chatType:2,peerUid:'456'},messageId:'202',md5:digest,quality:'preview'};
+  h.setOrdinaryRows([row]);
+  let real = imagePath, regularFile = true, realpathError;
+  t.mock.method(fs, 'realpathSync', () => {
+    if (realpathError) throw Object.assign(Error('fixture realpath error'), {code:realpathError});
+    return real;
+  });
+  t.mock.method(fs, 'statSync', () => ({isFile:() => regularFile}));
+  const checkDownloadOnly = async () => assert.deepEqual((await h.rpc('fetch_message_image',params)).data,{requested:true});
+  Object.assign(pic,{picWidth:8000,picHeight:8000});
+  assert.deepEqual((await h.rpc('fetch_message_image',params)).data.verifiedSourcePreview,{path:imagePath,width:8000,height:8000});
+  for (const [width,height] of [[8001,8000],[32769,1],[1,32769],[0,1],[-1,1],[1,0],[1,1.5],['1',1],[undefined,1]]) {
+    Object.assign(pic,{picWidth:width,picHeight:height});
+    await checkDownloadOnly();
+  }
+  Object.assign(pic,{picWidth:1920,picHeight:1080});
+  for (const subtype of [1, 42, null, undefined]) {
+    pic.picSubType = subtype;
+    await checkDownloadOnly();
+  }
+  pic.picSubType = 0;
+  for (const target of [imagePath.replace('Ori','Thumb'),imagePath.replace('Pic',path.join('Emoji','emoji-recv')),
+    imagePath.replace(digest,digest+'_1'),imagePath.replace(digest,'b'.repeat(32)),imagePath.replace('2026-11','2026-13')]) {
+    pic.sourcePath = real = target;
+    await checkDownloadOnly();
+  }
+  pic.sourcePath = imagePath.replace('999','998');
+  assert.match((await h.rpc('fetch_message_image',params)).error,/缓存位置无效/);
+  pic.sourcePath = imagePath;
+  for (real of [imagePath.replace('999','998'), imagePath.replace('2026-11','2025-11')]) await checkDownloadOnly();
+  real = imagePath;
+  realpathError = 'EACCES';
+  await checkDownloadOnly();
+  realpathError = 'ENOENT';
+  assert.deepEqual((await h.rpc('fetch_message_image',params)).data,{requested:true,
+    verifiedSourcePreview:{path:imagePath,width:1920,height:1080}},'the reader can poll a QQ file that arrives after submission');
+  pic.sourcePath = imagePath.replace('Ori','Thumb');
+  await checkDownloadOnly();
+  pic.sourcePath = imagePath;
+  realpathError = undefined;
+  regularFile = false;
+  await checkDownloadOnly();
 });
 
 await test('native forward downloads match completion events and propagate server failures with retry', async () => {

@@ -201,16 +201,40 @@ test('prefetch retains its path result while marking native converted previews f
   assert.equal(reads[1].maxBytes, 20 * MiB);
 });
 
+test('ordinary converted source previews use only the native element path and dimensions', async t => {
+  const bot = fixture(t), reads = [];
+  const candidate = {path:'native-source.png',width:1172,height:1192};
+  bot.call = async (_action, params) => {
+    assert.equal(params.verifiedSourcePreview, undefined);
+    return {requested:true, verifiedSourcePreview:candidate};
+  };
+  bot.read = async (_action, params) => {
+    reads.push(params);
+    return params.verifiedSourcePreview
+      ? metadata({file:candidate.path, sourcePreview:true, requiresDecode:true,
+        width:candidate.width,height:candidate.height,originalUnavailableReason:'invalid_cache'})
+      : metadata({file:null, originalUnavailableReason:'invalid_cache'});
+  };
+  const result = await bot.getImage({...locator,quality:'preview',verifiedSourcePreview:{path:'untrusted.jpg'}});
+  assert.equal(reads[0].verifiedSourcePreview, undefined);
+  assert.deepEqual(reads[1].verifiedSourcePreview, candidate);
+  assert.equal(result.file, candidate.path);
+  assert.equal(result.requiresDecode, true);
+  assert.deepEqual(result.sourcePreviewSize,{width:1172,height:1192});
+  assert.equal(result.representation,'preview');
+  assert.equal(result.originalAvailable,false);
+});
+
 test('original reads ignore native preview locators even if an older runtime returns one', async t => {
   const bot = fixture(t), reads = [];
   bot.read = async (_action, params) => {
     reads.push(params);
     return reads.length === 1 ? missingOriginal() : original();
   };
-  bot.call = async () => ({verifiedPreviewPath:'converted.png'});
+  bot.call = async () => ({verifiedPreviewPath:'converted.png',verifiedSourcePreview:{path:'source.png',width:1,height:1}});
   const result = await bot.getImage({...locator,quality:'original'});
   assert.equal(result.representation, 'original');
-  assert.ok(reads.every(p => !p.verifiedPreviewPath && p.quality === 'original'));
+  assert.ok(reads.every(p => !p.verifiedPreviewPath && !p.verifiedSourcePreview && p.quality === 'original'));
 });
 
 test('account or reader changes during native preview lookup cancel before reading that path', async t => {

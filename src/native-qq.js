@@ -296,16 +296,25 @@ export class NativeQQ extends EventEmitter {
         ...(quality ? {quality} : {}),
       }, 30000);
       checkConnection();
-      // Only the authenticated native runtime may supply a preview locator.
-      // Original reads never use this fallback, including on a stale runtime.
-      const verifiedPreview = quality !== 'original' && typeof fetched?.verifiedPreviewPath === 'string';
-      const retryImage = verifiedPreview ? {...image, quality:'preview',
-        maxBytes:maxBytes ?? 20 * 1024 * 1024, verifiedPreviewPath:fetched.verifiedPreviewPath} : image;
+      // Only QQ's matched message element may supply either preview locator.
+      const previewPath = quality !== 'original' && fetched?.verifiedPreviewPath;
+      const sourcePreview = quality !== 'original' && !p.forwardId && fetched?.verifiedSourcePreview;
+      const verifiedPreview = typeof previewPath === 'string' || !!sourcePreview;
+      const retryImage = verifiedPreview ? {
+        ...image, quality:'preview', maxBytes:maxBytes ?? 20 * 1024 * 1024,
+        ...(typeof previewPath === 'string' ? {verifiedPreviewPath:previewPath} : {}),
+        ...(sourcePreview ? {verifiedSourcePreview:sourcePreview} : {}),
+      } : image;
       const deadline = Date.now() + 12000;
       do {
         checkConnection();
-        result = imageResult(await read('media', retryImage), verifiedPreview);
+        const cached = await read('media', retryImage);
+        result = imageResult(cached, verifiedPreview);
         checkConnection();
+        if (result.file && cached?.sourcePreview === true && sourcePreview) {
+          result.requiresDecode = true;
+          result.sourcePreviewSize = {width:sourcePreview.width, height:sourcePreview.height};
+        }
         if (result.file) return result;
         await new Promise(resolve => setTimeout(resolve, 250));
       } while (!this.closed && this.read && Date.now() < deadline);

@@ -203,7 +203,10 @@ await test('validateImageDecode：JPEG 缓存误标 .png 仍按字节完整校�
   assert.equal(made.status, 0, 'ffmpeg must create the JPEG fixture');
   const bytes = fs.readFileSync(mislabeled), before = Buffer.from(bytes);
   assert.equal(sniffImage(bytes)?.format, 'jpeg');
-  assert.deepEqual(await validateImageDecode(bytes, { enabled: false, ffmpegPath: ffmpeg, tmpDir: tmp }), { ok: true });
+  const opts = {enabled:false, ffmpegPath:ffmpeg, tmpDir:tmp, sourcePreviewSize:{width:32,height:24}};
+  assert.deepEqual(await validateImageDecode(bytes, opts), {ok:true});
+  assert.match((await validateImageDecode(bytes, {...opts, sourcePreviewSize:{width:24,height:32}})).error, /尺寸或格式/);
+  assert.match((await validateImageDecode(GIF_1, {...opts, sourcePreviewSize:{width:1,height:1}})).error, /尺寸或格式/);
   assert.deepEqual(bytes, before, 'validation must not replace or mutate the supplied bytes');
   const truncated = await validateImageDecode(bytes.subarray(0, bytes.length - 5), { ffmpegPath: ffmpeg, tmpDir: tmp });
   assert.equal(truncated.ok, false, 'a recognizable JPEG header cannot rescue truncated image data');

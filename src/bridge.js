@@ -6690,6 +6690,7 @@ async function main() {
                 const reader = bot.read, connection = bot.call;
                 const decoded = await validateImageDecode(accepted.buffer, {
                   ffmpegPath:modelMediaLimits.ffmpegPath, timeoutMs:modelMediaLimits.timeoutMs,
+                  sourcePreviewSize:obj.sourcePreviewSize,
                 });
                 if (bot.closed || bot.account !== account || bot.read !== reader || bot.call !== connection || String(selfUserId) !== String(account)) {
                   throw Error('QQ 图片读取期间账号或连接已改变，请重新读取');
