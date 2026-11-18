@@ -5,7 +5,7 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
   roleCard: '【当前角色卡：{roleName}】\n{roleContent}',
   qqAttention: '【QQ 提醒】\n{sources}',
   qqSource: '- {key}{senderId}{messageId}{count}',
-  restExpired: '【回合等待结束】等待时间到了。先留意当前情况，再按自己的兴趣和判断决定下一步。',
+  restExpired: '【回合等待结束】这一段等待已结束（等待期间既是你在电脑前活动与休息的自然间隙，也让群聊消息自然聚合）。你可以按自己的兴趣继续电脑上的探索或未完事项，或顺手瞄一眼聚合后的 QQ 未读；若群里只是日常闲聊、刷屏、发表情包/配图或聊你不熟的事，看完直接略过即可，不必每轮找话发言，更不要专门挑图片点评。',
   qqWake: '',
   recovery: '【状态恢复检查】桥接需要重新确认会话状态。先查看当前会话和已有操作，避免重复已完成的事，再按当前情况继续。',
   missingRest: '【回合收尾提醒】上一轮已正常结束，但桥接尚未收到 agent_rest。不要重复刚才的回复或已完成的操作。若当前事项已处理完，请现在直接调用 agent_rest 作为最后一个工具调用（选择 1 至 5 分钟的等待间隔，无需向对话方发消息道别或声称去休息）；若仍有未完成事项，处理完后再调用。',
@@ -79,6 +79,7 @@ const LEGACY_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
   qqWake: ['【休息被 QQ 提醒提前结束】'],
   restExpired: [
     '【休息结束】休息时间到了。先留意当前情况，再按自己的兴趣和判断决定下一步。',
+    '【回合等待结束】等待时间到了。先留意当前情况，再按自己的兴趣和判断决定下一步。',
   ],
   missingRest: [
     '【回合收尾提醒】上一轮已正常结束，但桥接尚未收到 agent_rest。不要重复刚才的回复或已完成的操作。若当前事项已处理完，请现在调用 agent_rest 作为最后一个工具调用，并自行选择 1 至 5 分钟的休息时间；若仍有未完成事项，处理完后再调用。',
