@@ -69,7 +69,11 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
     if (initial.slang.some(e => !e || typeof e.id !== 'string' || !e.content || !validScope(e.scope) || !STATUSES.has(e.status) || !Array.isArray(e.evidence))
       || initial.stickers.some(e => !validStickerIdentity(e) || !validScope(e.scope) || !STATUSES.has(e.status) || !Array.isArray(e.tags))
       || initial.queue.some(e => !e || !KEY.test(e.key) || typeof e.id !== 'string' || typeof e.text !== 'string' || !Array.isArray(e.media) || !Number.isFinite(e.time))
-      || initial.seen.some(id => typeof id !== 'string')) throw new Error('聊天学习库条目损坏，拒绝覆盖原文件');
+      || initial.seen.some(id => typeof id !== 'string')
+      || (initial.sessionIds !== undefined && (!Array.isArray(initial.sessionIds)
+        || initial.sessionIds.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim() || id.length > 160)))) {
+      throw new Error('聊天学习库条目损坏，拒绝覆盖原文件');
+    }
   }
   // Old files remain untouched. Unscoped legacy words must be assigned by an admin.
   if (!initial && legacyFile) {
@@ -88,6 +92,15 @@ export function createChatLearningStore(file, { legacyFile, persist = writeLearn
 
   return {
     snapshot: () => copy(state),
+    sessionIds: () => [...(state.sessionIds ?? [])],
+    rememberSessions(ids) {
+      if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim() || id.length > 160)) {
+        throw new Error('学习会话编号无效');
+      }
+      const sessionIds = [...new Set([...(state.sessionIds ?? []), ...ids])];
+      if (sessionIds.length === (state.sessionIds ?? []).length) return;
+      commit({ ...copy(state), sessionIds });
+    },
     enqueue(key, message, config) {
       if (!config.enabled || (!config.slang && !config.stickers) || !KEY.test(key) || message.isSelf || (config.sources.length && !config.sources.includes(key))) return false;
       const prefix = message.nativeAccount ? 'ntqq:' + message.nativeAccount + ':' : '';

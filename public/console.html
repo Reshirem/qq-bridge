@@ -381,6 +381,9 @@
   </div>
   <p class="meta">学习使用当前配置的 DSH 模型，会产生额外模型用量。没有新消息时不会调用模型；默认每批最多 30 条消息、3 张表情，至少间隔 5 分钟。关闭学习会取消当前批次，保留队列和已有记录。这里的开关独立于数字角色的休息与停止。</p>
   <div class="row"><button id="learningSave" class="primary">保存学习设置</button><button id="learningRun" class="small">立即分析一批</button><span id="learningActionStatus" class="meta" role="status"></span></div>
+  <div class="row"><button id="learningCleanup" class="small" disabled>清理已结束学习会话</button><span id="learningSessionSummary" class="meta"></span></div>
+  <p class="meta">归档聊天学习和商城表情分析产生的已结束会话，在 DSH 会话列表中隐藏。学习结果、待处理队列、用量和会话日志保留；正在运行的会话会跳过。</p>
+  <p id="learningCleanupStatus" class="meta" role="status"></p>
 </section>
 <section id="section-slang" data-page="slang" hidden class="card span-all">
   <div class="memory-heading"><div><h2>黑话记录</h2><p class="meta">保留词义、使用场景和原文证据。自动学得的词义仍可能有误；人工确认或拒绝后，后台不会覆盖判断。</p></div><button id="slangNew" class="small">新增词条</button></div>

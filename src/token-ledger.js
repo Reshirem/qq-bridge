@@ -392,6 +392,12 @@ export function createTokenLedger({
     recent,
     series,
     legacySymbol,
+    recordedSessionIds(feature) {
+      if (!featureKeys.has(feature)) throw new Error('未知用量分类 ' + feature);
+      // Exclude synthetic aggregate baselines such as learning-history.
+      return sql('SELECT sid FROM sessions WHERE feature=? AND EXISTS (SELECT 1 FROM calls WHERE calls.sid=sessions.sid) ORDER BY sid')
+        .all(feature).map(row => row.sid);
+    },
     ingestSnapshotRecords(input) {
       transaction(() => ingestRecords(input));
     },

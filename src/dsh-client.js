@@ -309,9 +309,9 @@ export function requireSequencedSessionProjection(value) {
 }
 
 /** An absent endpoint is the only reason to fall back; service faults remain visible. */
-function sessionStateUnsupported(error) {
+function remoteMethodUnsupported(error, endpoint) {
   return error?.code === 'gateway/invocation-unavailable'
-    && error.details?.endpoint === 'session/state'
+    && error.details?.endpoint === endpoint
     && String(error.message ?? '').includes('no active Remote method exports this endpoint');
 }
 
@@ -517,7 +517,7 @@ export class NodeApiClient extends AbstractApiClient {
     const response = await this.callUnary('session/state', { sessionId }, signal);
     if (response.result?.ok) return validateSessionState(response.result.value);
     if (response.result?.error?.code === 'session/not-found') return null;
-    if (!sessionStateUnsupported(response.result?.error)) return unwrap(response, 'session/state');
+    if (!remoteMethodUnsupported(response.result?.error, 'session/state')) return unwrap(response, 'session/state');
 
     signal?.throwIfAborted();
     const listed = unwrap(await this.callUnary('session/list', {}, signal), 'session/list');
@@ -535,6 +535,78 @@ export class NodeApiClient extends AbstractApiClient {
       ...(typeof session.blank === 'boolean' ? { blank: session.blank } : {}),
       ...(typeof session.agentAvailable === 'boolean' ? { agentAvailable: session.agentAvailable } : {})
     };
+  }
+
+  /** Read the workspace/follow baseline once, then release the subscription. */
+  async readWorkspaceState({ signal, timeoutMs = 8000 } = {}) {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const baseUrl = this.baseUrl;
+    await this.ensureAuth(sig);
+    sig.throwIfAborted();
+    const checkEndpoint = () => {
+      if (this.baseUrl !== baseUrl) throw new Error('DSH 地址在读取工作区状态期间发生变化，请重试');
+    };
+    checkEndpoint();
+    let state;
+    try {
+      state = await new Promise((resolve, reject) => {
+        const url = new URL('/api/remote.mux', baseUrl);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(url, { headers: { cookie: this.cookie } });
+        const streamId = randomUUID();
+        let settled = false;
+        const finish = (error, value) => {
+          if (settled) return;
+          settled = true;
+          sig.removeEventListener('abort', onAbort);
+          for (const [event, handler] of Object.entries(listeners)) socket.removeEventListener(event, handler);
+          try { socket.close(); } catch { /* Already disconnected. */ }
+          if (error) reject(error); else resolve(value);
+        };
+        const onAbort = () => finish(sig.reason);
+        const listeners = {
+          open: () => {
+            try {
+              checkEndpoint();
+              socket.send(JSON.stringify({ type: 'open', streamId, endpoint: 'workspace/follow', payload: { args: {} } }));
+            } catch (error) { finish(error); }
+          },
+          message: (event) => {
+            try {
+              checkEndpoint();
+              const frame = JSON.parse(event.data);
+              if (frame?.streamId !== streamId) return;
+              if (frame.type === 'item') {
+                if (frame.value?.type !== 'baseline') throw new Error('DSH 工作区状态流未返回初始快照');
+                finish(null, frame.value.value);
+              } else if (frame.type === 'error') {
+                unwrap({ result: { ok: false, error: frame.error ?? {} } }, 'workspace/follow');
+              } else if (frame.type === 'end') {
+                throw new Error('DSH 工作区状态流在返回快照前结束');
+              }
+            } catch (error) { finish(error); }
+          },
+          error: () => finish(new Error('无法连接 DSH 工作区状态流')),
+          close: () => finish(new Error('DSH 工作区状态连接在返回快照前关闭')),
+        };
+        for (const [event, handler] of Object.entries(listeners)) socket.addEventListener(event, handler);
+        sig.addEventListener('abort', onAbort, { once: true });
+        if (sig.aborted) onAbort();
+      });
+    } catch (error) {
+      // Older Hosts expose workspace/list. Never mask auth, transport or service failures.
+      if (!remoteMethodUnsupported(error, 'workspace/follow')) throw error;
+      sig.throwIfAborted();
+      checkEndpoint();
+      state = unwrap(await this.callUnary('workspace/list', {}, sig), 'workspace/list');
+    }
+    checkEndpoint();
+    if (!state || !Array.isArray(state.items) || !Array.isArray(state.archivedSessionIds)
+      || state.archivedSessionIds.some((id) => typeof id !== 'string' || !id.trim())) {
+      throw sessionReadError('workspace/state-invalid', 'DSH 未返回有效的工作区归档状态');
+    }
+    return state;
   }
 
   /**

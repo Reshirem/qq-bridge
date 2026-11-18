@@ -20,6 +20,80 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const model = { provider: 'fixture', model: 'fixture' };
 const missing = { code: 'not_found', message: 'memory not found' };
 
+test('cleanup uses workspace state, protects unfinished and active sessions, and retries failures', async () => {
+  const organizerIds = ['completed', 'archived', 'retry', 'running', 'available', 'missing', 'unfinished', 'source', 'desktop'];
+  const state = { version: 1, sources: { source: { lastProcessedSeq: 1, lastScheduledSeq: 1 } },
+    sessionsByDay: { '2026-11-18': 'completed', '2026-11-19': 'unfinished-day' },
+    jobs: organizerIds.map((id, index) => ({ jobId: `job-${index}`, sourceSessionId: 'source',
+      fromSeq: index, throughSeq: index + 1, organizerSessionId: id, organizerSessionIds: [id],
+      day: id === 'unfinished' ? '2026-11-19' : '2026-11-18', status: id === 'unfinished' ? 'failed' : 'completed' })) };
+  const h = await bridgeHarness({ files: {
+    'state/memory-organizer.json': state,
+    'state/desktop-agent.json': { sessionId: 'desktop', agentToken: 'fixture-agent-token' },
+  } });
+  const server = h.startConsoleServer();
+  try {
+    if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/api/memory/organizer`;
+    const cleanup = async () => {
+      const response = await fetch(url, { method: 'POST', headers: {
+        'content-type': 'application/json', 'x-console-token': 'fixture-console-token'
+      }, body: JSON.stringify({ action: 'cleanup' }), signal: AbortSignal.timeout(5000) });
+      return { status: response.status, body: await response.json() };
+    };
+    const archived = new Set(['archived']);
+    let failRead = true;
+    h.api.readWorkspaceState = async () => {
+      if (failRead) throw new Error('fixture workspace unavailable');
+      return { items: [], archivedSessionIds: [...archived] };
+    };
+    h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [...organizerIds, 'unfinished-day']
+      .filter(id => id !== 'missing').map(sessionId => ({ sessionId, running: sessionId === 'running', agentAvailable: sessionId === 'available' })) } } });
+    const attempts = [];
+    let failArchive = true;
+    h.api.workspace.archiveSession = async ({ sessionId }) => {
+      attempts.push(sessionId);
+      if (sessionId === 'retry' && failArchive) return { result: { ok: false, error: { code: 'fixture', message: 'try again' } } };
+      archived.add(sessionId);
+      return { result: { ok: true, value: { archivedSessionIds: [...archived] } } };
+    };
+    const unavailable = await cleanup();
+    assert.equal(unavailable.status, 502);
+    assert.deepEqual(attempts, [], 'failed state reads must not archive anything');
+    failRead = false;
+    const first = await cleanup();
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.deepEqual(first.body.archived.map(row => row.sessionId), ['completed']);
+    assert.deepEqual(first.body.alreadyArchived.map(row => row.sessionId), ['archived']);
+    assert.deepEqual(first.body.failed.map(row => row.sessionId), ['retry']);
+    assert.deepEqual(first.body.skipped.map(row => row.sessionId).sort(),
+      ['available', 'desktop', 'missing', 'running', 'source', 'unfinished', 'unfinished-day']);
+    failArchive = false;
+    const retry = await cleanup();
+    assert.equal(retry.status, 200);
+    assert.deepEqual(retry.body.archived.map(row => row.sessionId), ['retry']);
+    assert.deepEqual(retry.body.failed, []);
+    const repeated = await cleanup();
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(repeated.body.archived, []);
+    assert.deepEqual(attempts, ['completed', 'retry', 'retry']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.temp, 'state/memory-organizer.json'), 'utf8')), state,
+      'archival must preserve organizer jobs and source cursors');
+
+    let release;
+    let started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    h.api.readWorkspaceState = () => new Promise(resolve => { release = resolve; started(); });
+    const pending = cleanup();
+    await waiting;
+    try { assert.equal((await cleanup()).status, 409); }
+    finally { release({ items: [], archivedSessionIds: [...archived] }); await pending; }
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await h.close();
+  }
+});
+
 test('organizer excludes managed and legacy QQ tools and guards its exact memory namespace', async () => {
   const h = await bridgeHarness();
   try {

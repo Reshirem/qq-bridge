@@ -41,7 +41,7 @@ export function parseLearningResult(text, mode = 'chat') {
 
 // A separate headless process receives only batch text + an image-only MCP.
 // No QQ, memory, shell, browser or arbitrary file tools are mounted here.
-export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, mode = 'chat', signal, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
+export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, mode = 'chat', signal, onSession, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
   if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('DSH CLI 路径含不支持的命令字符');
   signal?.throwIfAborted();
   const prefix = path.join(stateDir, `chat-learning-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
@@ -68,7 +68,11 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
         if (!line.trim()) return;
         try {
           const event = JSON.parse(line), type = String(event.type).replace(/[./-]+/g, '_');
-          if (type === 'session') sessionId = String(event.sessionId || '');
+          if (type === 'session') {
+            sessionId = String(event.sessionId || '');
+            try { onSession?.(sessionId); }
+            catch { stop('无法保存学习会话编号，已停止本批学习'); }
+          }
           if (type === 'status' && event.phase === 'turn_start') terminalReason = null;
           if (type === 'status' && event.phase === 'turn_end') terminalReason = event.reason;
           if (type === 'status' && event.phase === 'step_end' && event.usage) {

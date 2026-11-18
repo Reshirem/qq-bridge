@@ -14,6 +14,8 @@ import { analyzeMarketPack } from '../src/market-analysis.js';
 import { learningPatch, runLearningHeadless } from '../src/learning-runner.js';
 import { apply as guard } from '../src/learning-tool-guard.mjs';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
+import { createTokenLedger } from '../src/token-ledger.js';
+import { createLearningSessionCleanup } from '../src/learning-sessions.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=', 'base64');
 const config = normalizeLearningConfig({ minMessages: 2 });
@@ -30,6 +32,137 @@ function fixture(t) {
 function enqueue(store, key = 'group:123', messageId = '1', text = '今天又开始摸鱼了', media = []) {
   return store.enqueue(key, { messageId, plain: text, media, userId: '456' }, config);
 }
+
+test('learning cleanup migrates recorded sessions, isolates management and preserves knowledge and usage', async t => {
+  const f = fixture(t);
+  enqueue(f.store);
+  f.store.edit('slang', { content: '摸鱼', meaning: '偷闲', scope: 'group:123', status: 'confirmed' });
+  const oldState = { ...f.store.snapshot(), usage: { inputTokens: 10, outputTokens: 20 },
+    lastResult: { sessionId: 'last-success' }, sessionIds: ['local-failure', 'running', 'unknown', 'missing', 'main', 'memory'] };
+  let ledger;
+  const h = await bridgeHarness({ files: {
+    'state/chat-learning.json': oldState,
+    'state/desktop-agent.json': { sessionId: 'main', agentToken: 'fixture-agent' },
+    'state/memory-organizer.json': { version: 1, sources: {}, jobs: [], sessionsByDay: { '2026-11-18': 'memory' } },
+  }, globals: { createTokenLedger(options) {
+    ledger = createTokenLedger(options);
+    for (const [sessionId, feature] of [['old-chat', 'learning'], ['old-market', 'learning'], ['archived', 'learning'], ['unrelated', 'other']]) {
+      ledger.ingestSample({ sessionId, feature, turn: 1, step: 1, seq: -1, usage: { inputTokens: 1, outputTokens: 1 } });
+    }
+    return ledger;
+  } } });
+  const server = h.startConsoleServer();
+  try {
+    if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const call = async (route, body, extra = {}) => {
+      const response = await fetch(base + '/api/learning/' + route, { method: body === undefined ? 'GET' : 'POST',
+        headers: { 'x-console-token': 'fixture-console-token', 'content-type': 'application/json', ...extra },
+        body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+      return { status: response.status, body: await response.json() };
+    };
+    const cleanup = extra => call('sessions/cleanup', { sessionIds: ['unrelated'] }, extra);
+    assert.equal((await cleanup({ 'x-console-token': 'wrong' })).status, 401);
+    assert.equal((await cleanup({ 'x-agent-token': 'fixture-agent', 'x-agent-session-id': 'main' })).status, 403);
+    assert.equal((await cleanup({ origin: 'https://untrusted.invalid' })).status, 403);
+    const before = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/chat-learning.json'), 'utf8'));
+    assert.deepEqual(new Set(before.sessionIds), new Set([...oldState.sessionIds, 'last-success', 'old-chat', 'old-market', 'archived']));
+    assert.equal((await call('status')).body.sessions.tracked, 10);
+    const archives = new Set(['archived']);
+    let failRead = true, failArchive = true;
+    const attempts = [];
+    h.api.readWorkspaceState = async () => {
+      if (failRead) throw new Error('fixture disconnected');
+      return { items: [], archivedSessionIds: [...archives] };
+    };
+    h.api.callUnary = async (method, request) => {
+      if (method === 'session/list') return { result: { ok: true, value: { items: before.sessionIds.filter(id => id !== 'missing').map(sessionId => ({
+        sessionId, running: sessionId === 'running', ...(sessionId === 'unknown' ? {} : { agentAvailable: false }),
+      })) } } };
+      assert.equal(method, 'workspace/archiveSession');
+      assert.deepEqual(Object.keys(request), ['sessionId'], 'cleanup must not force-stop a session');
+      attempts.push(request.sessionId);
+      if (request.sessionId === 'old-market' && failArchive) return { result: { ok: false, error: { code: 'workspace/session-active', message: 'fixture active' } } };
+      archives.add(request.sessionId);
+      return { result: { ok: true, value: {} } };
+    };
+    h.setReady(false);
+    assert.equal((await cleanup()).status, 503);
+    h.setReady(true);
+    assert.equal((await cleanup()).status, 502);
+    assert.deepEqual(attempts, []);
+    failRead = false;
+    const first = await cleanup();
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.deepEqual(first.body.archived.map(x => x.sessionId).sort(), ['last-success', 'local-failure', 'old-chat']);
+    assert.deepEqual(first.body.alreadyArchived.map(x => x.sessionId), ['archived']);
+    assert.deepEqual(first.body.skipped.map(x => x.sessionId).sort(), ['main', 'memory', 'missing', 'running', 'unknown']);
+    assert.deepEqual(first.body.failed.map(x => x.sessionId), ['old-market']);
+    failArchive = false;
+    assert.deepEqual((await cleanup()).body.archived.map(x => x.sessionId), ['old-market']);
+    assert.deepEqual((await cleanup()).body.archived, []);
+    assert.equal(attempts.length, 5);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.temp, 'state/chat-learning.json'), 'utf8')), before);
+    assert.equal(ledger.recordedSessionIds('learning').length, 3);
+    ledger.reset();
+    assert.equal((await call('status')).body.sessions.tracked, 10, 'usage reset retains migrated session ownership');
+
+    let release, started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    h.api.readWorkspaceState = () => new Promise(resolve => { release = resolve; started(); });
+    const pending = cleanup();
+    await waiting;
+    try {
+      assert.equal((await call('status')).body.sessions.cleanupBusy, true);
+      assert.equal((await cleanup()).status, 409);
+    } finally { release({ archivedSessionIds: [...archives] }); await pending; }
+    assert.equal((await call('status')).body.sessions.cleanupBusy, false);
+  } finally { await new Promise(resolve => server.close(resolve)); await h.close(); }
+});
+
+test('learning cleanup rechecks active local processes before each archive and rejects invalid lists', async () => {
+  const active = new Set(['active-chat', 'active-market']);
+  const attempts = [];
+  let invalid = true;
+  const cleanup = createLearningSessionCleanup({ isReady: () => true, sanitize: String,
+    getSessionIds: () => ['first', 'newly-active', 'active-chat', 'active-market'], getProtectedSessionIds: () => active,
+    api: { readWorkspaceState: async () => ({ archivedSessionIds: [] }), callUnary: async (method, request) => {
+      if (method === 'session/list') return { result: { ok: true, value: invalid ? {} : { items:
+        ['first', 'newly-active', 'active-chat', 'active-market'].map(sessionId => ({ sessionId, running: false, agentAvailable: false })) } } };
+      attempts.push(request.sessionId); active.add('newly-active');
+      return { result: { ok: true, value: {} } };
+    } },
+  });
+  await assert.rejects(cleanup.cleanup(), error => error.statusCode === 502);
+  assert.deepEqual(attempts, []);
+  invalid = false;
+  assert.equal((await cleanup.cleanup()).skipped.length, 3);
+  assert.deepEqual(attempts, ['first']);
+});
+
+test('headless registers chat and market sessions before usage, including failures and cancellation', async t => {
+  const f = fixture(t);
+  for (const mode of ['chat', 'market']) {
+    const sessionId = `${mode}-failed`;
+    const options = { cli: { command: 'fake', args: [], env: {}, shell: false }, root: f.root, stateDir: path.join(f.root, 'runs'),
+      model: { provider: 'fixture', model: 'fixture' }, task: '{}', images: [], mode,
+      onSession: id => f.store.rememberSessions([id]),
+      onUsage: () => assert.fail('fixture has no usage'),
+      spawnProcess: fakeSpawn([{ type: 'session', sessionId }, { type: 'final', reason: { kind: 'error' }, text: '{}' }]),
+    };
+    await assert.rejects(runLearningHeadless(options), /未正常完成/);
+    const controller = new AbortController();
+    await assert.rejects(runLearningHeadless({ ...options, signal: controller.signal,
+      onSession: id => { f.store.rememberSessions([id]); controller.abort(); },
+      spawnProcess: fakeSpawn([{ type: 'session', sessionId: `${mode}-cancelled` }]),
+    }), /取消/);
+  }
+  assert.deepEqual(createChatLearningStore(f.file).sessionIds(), ['chat-failed', 'chat-cancelled', 'market-failed', 'market-cancelled']);
+  const before = f.store.snapshot();
+  const broken = createChatLearningStore(f.file, { persist: () => { throw Error('disk full'); } });
+  assert.throws(() => broken.rememberSessions(['lost']), /disk full/);
+  assert.deepEqual(broken.snapshot(), before);
+});
 
 test('manual market packs commit as a group, keep annotations on retry, and remain usable with learning off', async t => {
   const { store, file, assets } = fixture(t);

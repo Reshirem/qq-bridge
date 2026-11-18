@@ -188,7 +188,7 @@ test('non-loopback baseUrl is refused unless allowRemote is set explicitly', asy
 class FakeWebSocket {
   static CONNECTING = 0; static OPEN = 1; static CLOSED = 3;
   static sockets = [];
-  constructor() { this.readyState = 0; this.listeners = new Map(); this.frames = []; FakeWebSocket.sockets.push(this); }
+  constructor(url, options) { this.url = url; this.options = options; this.readyState = 0; this.listeners = new Map(); this.frames = []; FakeWebSocket.sockets.push(this); }
   addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
   removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
   emit(type, data = {}) { for (const fn of [...(this.listeners.get(type) || [])]) fn(data); }
@@ -197,6 +197,97 @@ class FakeWebSocket {
   close() { this.readyState = 3; this.emit('close'); }
   frame(frame) { this.emit('message', { data: JSON.stringify(frame) }); }
 }
+
+async function workspaceRead(api = client(), options) {
+  globalThis.WebSocket = FakeWebSocket;
+  api.cookie = 'fixture=ok';
+  const read = api.readWorkspaceState(options);
+  await tick();
+  const socket = FakeWebSocket.sockets.at(-1);
+  socket.open();
+  return { api, read, socket, streamId: socket.frames[0]?.streamId };
+}
+
+function assertWorkspaceSocketReleased(socket) {
+  assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+  assert.ok([...socket.listeners.values()].every(listeners => listeners.size === 0));
+}
+
+test('workspace state reads the correlated baseline and releases the subscription', async () => {
+  const { read, socket, streamId } = await workspaceRead();
+  assert.equal(String(socket.url), 'ws://127.0.0.1:9/api/remote.mux');
+  assert.equal(socket.options.headers.cookie, 'fixture=ok');
+  assert.deepEqual(socket.frames, [{ type: 'open', streamId, endpoint: 'workspace/follow', payload: { args: {} } }]);
+  socket.frame({ type: 'item', streamId: 'unrelated', value: { type: 'baseline', value: {} } });
+  socket.frame({ type: 'opened', streamId });
+  const baseline = { items: [], archivedSessionIds: ['archived'], pinnedSessionIds: [] };
+  socket.frame({ type: 'item', streamId, value: { type: 'baseline', value: baseline } });
+  assert.deepEqual(await read, baseline);
+  assertWorkspaceSocketReleased(socket);
+});
+
+test('workspace state falls back only when the Host explicitly lacks workspace/follow', async () => {
+  const api = client();
+  const calls = [];
+  const baseline = { items: [], archivedSessionIds: ['old-archive'] };
+  api.callUnary = async (method, args, signal) => {
+    calls.push(method);
+    assert.deepEqual(args, {});
+    assert.ok(signal instanceof AbortSignal);
+    return { result: { ok: true, value: baseline } };
+  };
+  const { read, socket, streamId } = await workspaceRead(api);
+  socket.frame({ type: 'error', streamId, error: { code: 'gateway/invocation-unavailable',
+    message: 'no active Remote method exports this endpoint', details: { endpoint: 'workspace/follow' } } });
+  assert.deepEqual(await read, baseline);
+  assert.deepEqual(calls, ['workspace/list']);
+  assertWorkspaceSocketReleased(socket);
+});
+
+test('workspace read failures do not become an empty archive set or a legacy retry', async () => {
+  for (const failure of ['service', 'closed', 'error', 'end', 'missing-archives', 'invalid-id', 'increment', 'send', 'endpoint-change']) {
+    const api = client();
+    api.callUnary = async () => { assert.fail('unexpected workspace/list fallback'); };
+    const { read, socket, streamId } = await workspaceRead(api);
+    const rejected = assert.rejects(read);
+    if (failure === 'service') socket.frame({ type: 'error', streamId, error: { code: 'gateway/internal', message: 'fixture' } });
+    if (failure === 'closed') socket.close();
+    if (failure === 'error') socket.emit('error');
+    if (failure === 'end') socket.frame({ type: 'end', streamId });
+    if (failure === 'send') { socket.failSend = true; socket.open(); }
+    if (failure === 'endpoint-change') api.setBaseUrl('http://127.0.0.1:10');
+    if (['missing-archives', 'invalid-id', 'increment', 'endpoint-change'].includes(failure)) {
+      socket.frame({ type: 'item', streamId, value: {
+        type: failure === 'increment' ? 'archived' : 'baseline',
+        value: { items: [], ...(failure === 'missing-archives' ? {} : { archivedSessionIds: [null] }) }
+      } });
+    }
+    await rejected;
+    assertWorkspaceSocketReleased(socket);
+  }
+});
+
+test('workspace read cancellation and timeout release sockets and bound authentication', async () => {
+  const controller = new AbortController();
+  const { read, socket } = await workspaceRead(client(), { signal: controller.signal });
+  const rejected = assert.rejects(read, error => error.name === 'AbortError');
+  controller.abort();
+  await rejected;
+  assertWorkspaceSocketReleased(socket);
+  const before = FakeWebSocket.sockets.length;
+  await assert.rejects(client().readWorkspaceState({ signal: controller.signal }), error => error.name === 'AbortError');
+  assert.equal(FakeWebSocket.sockets.length, before);
+
+  // AbortSignal.timeout is unref'ed; keep this offline fixture alive until its deadline.
+  const keepAlive = setTimeout(() => {}, 2000);
+  try {
+    const timed = await workspaceRead(client(), { timeoutMs: 30 });
+    await assert.rejects(timed.read, error => error.name === 'TimeoutError');
+    assertWorkspaceSocketReleased(timed.socket);
+    globalThis.fetch = async () => new Promise(() => {});
+    await assert.rejects(client().readWorkspaceState({ timeoutMs: 30 }), error => error.name === 'TimeoutError');
+  } finally { clearTimeout(keepAlive); }
+});
 
 // Retiring a session reads its pending inbox through the current session/projections RPC.
 const projectionValues = (inbox) => ({ title: null, ...(inbox === undefined ? {} : { inbox }) });

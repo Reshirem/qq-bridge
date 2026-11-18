@@ -204,7 +204,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             }
             return json({ ok: true, pack });
           }
-          case '/api/learning/status': return json({ ok: true, config: state.learning, running: false, pending: 12, runs: 4, words: state.slang.length, pictures: state.learnedStickers.length, dropped: 0 });
+          case '/api/learning/status': return json({ ok: true, config: state.learning, sessions: { tracked: 4, cleanupBusy: false, dshReady: true }, running: false, pending: 12, runs: 4, words: state.slang.length, pictures: state.learnedStickers.length, dropped: 0 });
           case '/api/slang':
           case '/api/learning/stickers': {
             const collection = path === '/api/slang' ? state.slang : state.learnedStickers;
@@ -337,6 +337,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
         switch (path) {
           case '/api/learning/settings': state.learning = { ...state.learning, ...body }; return json({ ok: true, config: state.learning });
           case '/api/learning/run': return json({ ok: true, running: true });
+          case '/api/learning/sessions/cleanup': return json({ ok: true, archived: [{ sessionId: 'old-chat' }, { sessionId: 'old-market' }], alreadyArchived: [{ sessionId: 'archived' }], skipped: [{ sessionId: 'active' }], failed: [] });
           case '/api/learning/sticker-reviews': {
             const review = state.stickerReviews.find(r => r.id === body.id);
             if (!review) return json({ ok: false, error: '建议已处理' }, 400);

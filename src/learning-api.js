@@ -1,5 +1,5 @@
 // Console-only management. The bridge's central token/Origin checks run first.
-export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, marketPacks, mimeFromBuffer, nativeAccount, checkMarketPack, favorites, favoriteImage, error = '' }) {
+export async function handleLearningRequest({ req, url, readBody, sendJson, res, headers, store, worker, config, saveConfig, assets, marketPacks, sessionCleanup, mimeFromBuffer, nativeAccount, checkMarketPack, favorites, favoriteImage, error = '' }) {
   const route = url.pathname;
   if (!(route === '/api/slang' || route.startsWith('/api/slang/') || route.startsWith('/api/learning/'))) return false;
   try {
@@ -27,7 +27,10 @@ export async function handleLearningRequest({ req, url, readBody, sendJson, res,
     } else if (req.method === 'GET' && route === '/api/learning/status') {
       const state = store.snapshot(), sources = new Map();
       for (const item of state.queue) sources.set(item.key, (sources.get(item.key) || 0) + 1);
-      sendJson({ ok: true, config, running: worker.running, pending: state.queue.length, failedMessages: state.queue.filter(m => (m.attempts || 0) >= 3).length, sources: [...sources].map(([key, count]) => ({ key, count })), lastRunAt: state.lastRunAt, nextRunAt: state.nextRunAt, lastError: state.lastError, lastResult: state.lastResult, runs: state.runs, dropped: state.dropped, words: state.slang.length, pictures: state.stickers.filter(e => e.source !== 'market').length, usage: state.usage });
+      sendJson({ ok: true, config, sessions: sessionCleanup.status(), running: worker.running, pending: state.queue.length, failedMessages: state.queue.filter(m => (m.attempts || 0) >= 3).length, sources: [...sources].map(([key, count]) => ({ key, count })), lastRunAt: state.lastRunAt, nextRunAt: state.nextRunAt, lastError: state.lastError, lastResult: state.lastResult, runs: state.runs, dropped: state.dropped, words: state.slang.length, pictures: state.stickers.filter(e => e.source !== 'market').length, usage: state.usage });
+    } else if (req.method === 'POST' && route === '/api/learning/sessions/cleanup') {
+      await readBody();
+      sendJson({ ok: true, ...await sessionCleanup.cleanup() });
     } else if (req.method === 'POST' && route === '/api/learning/settings') {
       const body = await readBody();
       if (body.sources !== undefined && (!Array.isArray(body.sources) || body.sources.some(k => typeof k !== 'string' || !/^(group|private):\d+$/.test(k)))) throw new Error('学习来源必须是合法 QQ 会话 key 列表');
@@ -79,6 +82,6 @@ export async function handleLearningRequest({ req, url, readBody, sendJson, res,
         sendJson({ ok: true });
       } else sendJson({ ok: false, error: '未知学习接口' }, 404);
     }
-  } catch (error) { sendJson({ ok: false, error: error.message }, 400); }
+  } catch (error) { sendJson({ ok: false, error: error.message }, error.statusCode ?? 400); }
   return true;
 }

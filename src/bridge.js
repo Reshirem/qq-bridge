@@ -51,6 +51,7 @@ import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import { createAMemorixGateway, STICKER_NAMESPACE } from './a-memorix-gateway.js';
 import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig, stickerWording } from './chat-learning.js';
+import { createLearningSessionCleanup } from './learning-sessions.js';
 import { createLearningAssets } from './learning-assets.js';
 import { runLearningHeadless } from './learning-runner.js';
 import { createStickerMemory } from './sticker-memory.js';
@@ -1240,6 +1241,7 @@ async function main() {
   // ── QQ 会话表情包缓存 ───────────────────────────────────────────────────
   let chatLearning = null;
   let chatLearningError = '';
+  const activeLearningSessions = new Set();
   const learningAssets = createLearningAssets(path.join(STATE_DIR, 'learned-stickers'));
   try {
     chatLearning = createChatLearningStore(CHAT_LEARNING_FILE, { legacyFile: path.join(STATE_DIR, 'slang.json'), persist: atomicWriteJson });
@@ -1286,15 +1288,25 @@ async function main() {
     const cli = memoryOrganizerCliLaunch();
     const capabilities = await getMemoryOrganizerCliCapabilities(cli);
     const model = { provider: cfg.dsh.provider, model: cfg.dsh.model, ...(cfg.dsh.reasoningEffort ? { reasoningEffort: cfg.dsh.reasoningEffort } : {}) };
-    return runLearningHeadless({
-      cli, approvalPolicy: capabilities.approvalPolicy, root: ROOT, stateDir: STATE_DIR,
-      model, provider: memoryOrganizerDesktopProvider(model), task, images, signal, mode,
-      onUsage: (sessionId, event) => {
-        try {
-          tokenLedger.ingestSample({ sessionId, feature:'learning', ...model, turn:event.turn, step:event.step, seq:-1, usage:event.usage });
-        } catch (error) { log('后台学习用量记录失败', error.message); }
-      },
-    });
+    const sessionIds = new Set();
+    try {
+      return await runLearningHeadless({
+        cli, approvalPolicy: capabilities.approvalPolicy, root: ROOT, stateDir: STATE_DIR,
+        model, provider: memoryOrganizerDesktopProvider(model), task, images, signal, mode,
+        onSession: sessionId => {
+          sessionIds.add(sessionId);
+          activeLearningSessions.add(sessionId);
+          chatLearning.rememberSessions([sessionId]);
+        },
+        onUsage: (sessionId, event) => {
+          try {
+            tokenLedger.ingestSample({ sessionId, feature:'learning', ...model, turn:event.turn, step:event.step, seq:-1, usage:event.usage });
+          } catch (error) { log('后台学习用量记录失败', error.message); }
+        },
+      });
+    } finally {
+      for (const sessionId of sessionIds) activeLearningSessions.delete(sessionId);
+    }
   }
   const seenMarketIds = new Set();
   const marketPacks = chatLearning && createMarketPacks({ store: chatLearning, assets: learningAssets, log,
@@ -1703,6 +1715,29 @@ async function main() {
       : mainSources.has(sid) || key === 'desktop-agent' || /^(group|private):/.test(key ?? '') ? 'main' : 'other'
   });
   tokenLedger.settle();
+  // Additive upgrade: preserve historical learning IDs independently of usage resets.
+  if (chatLearning) {
+    try {
+      chatLearning.rememberSessions([
+        ...tokenLedger.recordedSessionIds('learning'),
+        ...[chatLearning.snapshot().lastResult?.sessionId].filter(Boolean),
+      ]);
+    } catch (error) { log('补录历史学习会话失败：' + error.message); }
+  }
+  const learningSessions = createLearningSessionCleanup({
+    api, isReady: () => dshReady, sanitize: redactSensitiveText,
+    getSessionIds: () => [...(chatLearning?.sessionIds() ?? []), ...tokenLedger.recordedSessionIds('learning')],
+    getProtectedSessionIds: () => {
+      const organizer = memoryOrganizer?.snapshot();
+      return new Set([
+        ...activeLearningSessions, desktopAgentSessionId,
+        ...Object.keys(organizer?.sources ?? {}), ...Object.values(organizer?.sessionsByDay ?? {}),
+        ...(organizer?.jobs ?? []).flatMap(job => [job.sourceSessionId, job.organizerSessionId, ...(job.organizerSessionIds ?? [])]),
+      ]);
+    },
+    onArchived: count => appendActivity(`已归档 ${count} 个已结束的后台学习会话；学习结果和会话日志保留`),
+    timeoutMs: DSH_CONTROL_TIMEOUT_MS,
+  });
   const refreshModelPrices = () => modelCatalog.auto(tokenLedger.hasUnpriced());
   refreshModelPrices();
   setInterval(refreshModelPrices, 3600000).unref();
@@ -3412,7 +3447,7 @@ async function main() {
         if (await handleLearningRequest({
           req, url, readBody, sendJson, res, headers: SECURITY_HEADERS,
           store: chatLearning, worker: learningWorker, config: cfg.chatLearning, nativeAccount:native ? selfUserId || 'offline' : null,
-          assets: learningAssets, marketPacks, mimeFromBuffer, error: chatLearningError, favorites: favoriteCatalog,
+          assets: learningAssets, marketPacks, sessionCleanup: learningSessions, mimeFromBuffer, error: chatLearningError, favorites: favoriteCatalog,
           checkMarketPack: native ? (packId, faceIds) => bot.raw('market_pack_availability', {packId, faceIds}) : null,
           favoriteImage: async id => {
             const entry = (await favoriteCatalog()).find(item => item.id === id);
@@ -3675,8 +3710,7 @@ async function main() {
               }
 
               const [workspaceState, listed] = await Promise.all([
-                withTimeout(api.workspace.list({}), DSH_CONTROL_TIMEOUT_MS, 'workspace.list')
-                  .then((response) => unwrap(response, 'workspace.list')),
+                api.readWorkspaceState({ timeoutMs: DSH_CONTROL_TIMEOUT_MS }),
                 withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list')
                   .then((response) => unwrap(response, 'session.list'))
               ]);

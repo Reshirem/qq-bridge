@@ -1822,6 +1822,7 @@ document.getElementById('consoleTokenRandom').addEventListener('click', () => ch
 // ── 后台学习与按来源的知识库 ─────────────────────────────────────────────
 let learningPoll = null;
 let learningStatusRequest = 0;
+let learningCleanupPending = false;
 const knowledgeState = {
   slang: { items: [], offset: 0, total: 0, selected: null, request: 0 },
   sticker: { items: [], offset: 0, total: 0, selected: null, request: 0 },
@@ -1856,6 +1857,9 @@ async function refreshLearning(loadConfig = true) {
       + (data.dropped ? ` · 队列满时累计跳过 ${data.dropped} 条最早消息` : '');
     document.getElementById('learningSummary').innerHTML = [['待处理消息', data.pending], ['已完成批次', data.runs], ['黑话记录', data.words], ['本地表情', data.pictures], ['累计输入 token', data.usage?.inputTokens || 0], ['累计输出 token', data.usage?.outputTokens || 0]].map(([label, count]) => `<span>${label} <b>${esc(count)}</b></span>`).join('');
     document.getElementById('learningRun').disabled = data.running || !config.enabled || !data.pending;
+    document.getElementById('learningCleanup').disabled = learningCleanupPending || data.sessions?.cleanupBusy || !data.sessions?.dshReady || !data.sessions?.tracked;
+    document.getElementById('learningSessionSummary').textContent = `已记录 ${data.sessions?.tracked || 0} 个学习会话`
+      + (data.sessions?.cleanupBusy ? ' · 正在清理' : data.sessions?.dshReady ? '' : ' · DSH 当前不可用');
     if (!document.hidden && currentConsolePage === 'learning') learningPoll = setTimeout(() => refreshLearning(false), 5000);
   } catch (error) { document.getElementById('learningStatus').textContent = error.message; }
 }
@@ -1879,6 +1883,20 @@ document.getElementById('learningRun').addEventListener('click', async () => {
   const status = document.getElementById('learningActionStatus');
   try { await consoleApiResult('/api/learning/run', 'POST', {}); status.textContent = '已开始分析一批消息'; refreshLearning(false); }
   catch (error) { status.textContent = error.message; }
+});
+document.getElementById('learningCleanup').addEventListener('click', async () => {
+  if (learningCleanupPending) return;
+  learningCleanupPending = true;
+  const button = document.getElementById('learningCleanup');
+  const status = document.getElementById('learningCleanupStatus');
+  button.disabled = true;
+  status.textContent = '正在清理已结束的学习会话…';
+  try {
+    const data = await consoleApiResult('/api/learning/sessions/cleanup', 'POST', {});
+    status.textContent = `已归档 ${data.archived.length} 个，已归档过 ${data.alreadyArchived.length} 个，跳过 ${data.skipped.length} 个，失败 ${data.failed.length} 个。`
+      + data.failed.slice(0, 3).map(item => ` ${item.sessionId}：${item.error}`).join('');
+  } catch (error) { status.textContent = `清理失败：${error.message}`; }
+  finally { learningCleanupPending = false; await refreshLearning(false); }
 });
 function stickerImageUrl(entry) {
   return '/api/learning/stickers/image?' + new URLSearchParams({ id: entry.id, scope: entry.scope });

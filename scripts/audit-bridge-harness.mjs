@@ -26,6 +26,7 @@ import * as sticker from '../src/sticker-lib.js';
 import * as chatLearning from '../src/chat-learning.js';
 import * as learningAssets from '../src/learning-assets.js';
 import * as learningApi from '../src/learning-api.js';
+import * as learningSessions from '../src/learning-sessions.js';
 import * as memoryOrganizer from '../src/memory-organizer.js';
 import { createModelCatalog } from '../src/model-catalog.js';
 import * as modelPrices from '../src/model-prices.js';
@@ -124,6 +125,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       prompt: async (params) => { calls.prompts.push(params); return success({}); },
     },
     respond: async () => success({}),
+    readWorkspaceState: async () => ({ items: [], archivedSessionIds: [] }),
     readSessionState: async (sessionId) => {
       const listed = unwrap(await api.sessions.list({}), 'fixture session/list');
       const session = listed.items.find((item) => item.sessionId === sessionId);
@@ -272,7 +274,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       close() {},
     }),
     openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
-    ...chatLearning, ...learningAssets, ...learningApi, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
+    ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,
