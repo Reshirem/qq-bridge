@@ -92,33 +92,48 @@ server.tool(
   }
 );
 
+const memoryFields = {
+  content: z.string().trim().min(1).max(20000).describe('要保存的完整记忆，写清来源、说话人、关键事实与确定程度'),
+  tags: z.array(z.string().max(80)).max(20).optional().describe('可选检索标签'),
+  participants: z.array(z.string().max(120)).max(20).optional().describe('可选涉及的人或主体'),
+  observedAt: z.string().optional().describe('可选 ISO 观察时间'),
+  sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
+  confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
+  evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('每条记忆最多 20 项证据引用。选与这条记忆直接相关的消息 ID、会话事件序号或任务记录标题并去重。'),
+  externalId: z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重')
+};
+
+function writeMemory(operation) {
+  return async ({ sourceContext, confidence, evidenceReferences, supersedes, ...memory }) => {
+    try {
+      const metadata = { sourceContext, confidence, evidenceReferences, supersedes };
+      return toolResult(await memoryApi(operation, { ...memory, metadata }));
+    } catch (error) { return toolError(error); }
+  };
+}
+
 server.tool(
   'memory_save',
   '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；数字角色自身的经历、发现和未完成事项使用现有数据标记 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。批处理重试时可复用 externalId 去重；明确更正旧记忆时，可用 supersedes 记录被更正的 memoryId 以保留追溯关系。',
   {
-    content: z.string().min(1).max(20000).describe('要保存的记忆，尽量写清来源、时间、背景与确定程度'),
+    ...memoryFields,
     origin: z.enum(['qq', 'assistant']).default('assistant').describe('来源类别：qq 或 assistant'),
-    tags: z.array(z.string().max(80)).max(20).optional().describe('可选检索标签'),
-    participants: z.array(z.string().max(120)).max(20).optional().describe('可选涉及的人或主体'),
-    observedAt: z.string().optional().describe('可选 ISO 观察时间'),
-    sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
-    confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
-    evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('每条记忆最多 20 项证据引用。选与这条记忆直接相关的消息 ID、会话事件序号或任务记录标题并去重。'),
-    externalId: z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重'),
     supersedes: z.string().max(300).optional().describe('可选被明确更正的旧 memoryId；保留新旧关系供追溯，不会自动删除旧记录')
   },
-  async (args) => {
-    try {
-      const { sourceContext, confidence, evidenceReferences, supersedes, ...memory } = args;
-      const metadata = {
-        ...(sourceContext ? { sourceContext } : {}),
-        ...(confidence ? { confidence } : {}),
-        ...(evidenceReferences?.length ? { evidenceReferences } : {}),
-        ...(supersedes ? { supersedes } : {})
-      };
-      return toolResult(await memoryApi('save', { ...memory, metadata }));
-    } catch (error) { return toolError(error); }
-  }
+  writeMemory('save')
+);
+
+const targetId = z.string().trim().min(1).max(300);
+server.tool(
+  'memory_replace',
+  '补充同一课题的新收获、更正过时事实，或将同主题同来源的 1 至 10 条碎片合并为一条完整记忆。先用 memory_search 找到候选，再用 memory_read 核实每个真实 memoryId 和原文。正文保留关键事实、来源和说话人归属。严禁跨 QQ 群、私聊合并。新记录保存成功后删除旧记录；回执中的 retainedIds 列出未确认删除的旧 ID。',
+  {
+    ...memoryFields,
+    memoryIds: z.union([targetId, z.array(targetId).min(1).max(10)]).describe('已逐条读取的旧 memoryId，单个字符串或 1 至 10 个 ID 的数组'),
+    origin: z.enum(['qq', 'assistant']).optional().describe('省略时继承第一条旧记录的来源类别'),
+    reason: z.string().max(500).optional().describe('更正或合并原因')
+  },
+  writeMemory('replace')
 );
 
 server.tool(

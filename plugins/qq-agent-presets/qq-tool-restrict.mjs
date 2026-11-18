@@ -210,6 +210,9 @@ export function apply(ctx) {
     if (name === 'mcp__web-search-safe__web_search' || name === 'mcp__web-search-safe__web_fetch') {
       return `旧版桥接网页工具 "${name}" 已停用，请使用 DSH 自带的 web_search 或 web_fetch；如未显示，请重启 DSH 并重建会话。`
     }
+    if (name.includes('agent_rest')) {
+      return `工具名 "${name}" 含有多余前缀，不在白名单内；请去掉 "default." 前缀，直接调用 "mcp__qq__agent_rest" 或 "mcp__qq__qq_agent_rest"。`
+    }
     return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（允许 Windows computer-use、QQ、A_Memorix 记忆及 DSH 自带网页工具）`
   })
 }

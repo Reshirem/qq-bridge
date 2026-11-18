@@ -22,6 +22,7 @@
 | [guides/NTQQ_ATTENTION.md](guides/NTQQ_ATTENTION.md) | Windows 独立通道的新装、取钥与导入、运行状态核对及提醒实测 |
 | [guides/NTQQ_SEND.md](guides/NTQQ_SEND.md) | 桌面 QQ 进程内观察器的运行方法、原生收发验证及参考项目许可证 |
 | [guides/MEMORY_ARCHITECTURE.md](guides/MEMORY_ARCHITECTURE.md) | 长期记忆目标、MaiBot/A_Memorix 对齐方式、调用与上下文职责 |
+| [guides/MEMORY_CONSOLIDATION_PLAN.md](guides/MEMORY_CONSOLIDATION_PLAN.md) | 长期记忆检索去重、`memory_replace` 合并升级与后台整理方案 |
 | [guides/CHAT_LEARNING.md](guides/CHAT_LEARNING.md) | 黑话记录、表情包后台学习、来源范围、资源限制与验证 |
 | [guides/MAA_AGENT.md](guides/MAA_AGENT.md) | 安装、验证或禁用可选的明日方舟游戏工具 |
 | [guides/COMPANION_PROMPT_MEMORY_PLAN.md](guides/COMPANION_PROMPT_MEMORY_PLAN.md) | 数字角色聊天、隐私、记忆和上下文压缩改进计划与进度 |

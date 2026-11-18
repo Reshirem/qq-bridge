@@ -56,7 +56,7 @@
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__qq__*` QQ 工具 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
-| 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` / `memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。执行守卫严格限于 `mcp__qq-memory-organizer__` 命名空间的 `memory_search/save/read/forget`，其他工具即使被继承也拒绝执行。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
+| 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` / `memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。执行守卫严格限于 `mcp__qq-memory-organizer__` 命名空间的 `memory_search/save/read/replace/forget`，其他工具即使被继承也拒绝执行。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 压缩宿主依赖 | `plugins/qq-agent-presets/dsh-host-modules.mjs` | 只从当前 DSH 宿主/CLI 运行入口解析共享模块，校验压缩与 LLM 模块身份；缺失、不支持或分裂时拒绝加载。不回退插件私有旧依赖、不探测另一个安装，也不修改 DSH。隔离验收使用临时空 DSH_HOME 与模拟流，无模型或 QQ 调用。 |
@@ -70,7 +70,7 @@
 
 ### 2.1 桌面应用范围（提示词边界）
 
-`desktop-agent` 的会话提示要求：使用 computer-use 操作电脑时，ChatGPT、DeepSeek Harness、qq-bridge 和 SnowLuma 的 GUI 在无关任务中属于受保护界面，不读取或改动其中内容、设置、会话或运行控制；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化。数字角色可按需观察用户的电脑活动。电脑操作插件支持部分后台操作和由用户通过 Esc 停止桌面操作，但普通鼠标移动或按键不会自动停止工具。该界面规则不禁用 QQ MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
+`desktop-agent` 的会话提示要求：使用 computer-use 观察或操作电脑时，看到 ChatGPT、DeepSeek Harness、qq-bridge、SnowLuma 或相关开发窗口属于正常现象（这些是维持数字角色自身运行或开发调试的程序），但不得关闭、停止这些程序或改动其中的运行控制、配置与代码，也不得将屏幕上看到的内部凭据、路径或日志外发到聊天中；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化（网页浏览优先走不抢前台的 `browserTab` 后台浏览器通道）。数字角色可按需观察用户的电脑活动。电脑操作插件支持后台操作和由用户通过 Esc 停止前台桌面操作，但普通鼠标移动或按键不会自动停止工具。该界面规则不禁用 QQ MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
 
 这是模型行为规则，不是 computer-use 服务端的应用级访问控制。当前工具守卫不按窗口标题或应用名拦截操作；用户明确提出涉及这些应用的任务时，仍由会话提示限定到所请求的范围。
 
@@ -107,7 +107,7 @@
 | WebUI 长期记忆设置 | `/api/memory/settings`、`/api/memory/providers`、`/api/memory/service` | 仅控制台令牌可配置或启停本机服务；状态接口只返回密钥是否已设置，不回显密钥。Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径；Provider 保存后重启 A_Memorix。 |
 | 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token；调用会保存定时休息状态，并在返回工具结果后取消当前 DSH turn。该状态不限制后续工具调用；休息到期只发起一次恢复回合。 |
 | 漏调用休息工具 | DSH `turn/end` 与会话快照 | 正常完成但未调用工具时，桥接只向原主会话发收尾提醒，不自动进入休息。首次立即提醒，连续遗漏指数退避；持久停止、睡眠及休息时不发此提醒。模板沿用已认证控制台的配置接口，发送沿用现有会话与生命周期校验。 |
-| 记忆工具 | `/api/desktop-agent/memory/*` | 校验全局 agent token，并固定访问 `config.json` 中的 A_Memorix namespace，不受 `agent_rest` 生命周期限制。参数正文与检索词不写入工具参数日志。 |
+| 记忆工具 | `/api/desktop-agent/memory/*` | 校验全局 agent token，并固定访问 `config.json` 中的 A_Memorix namespace，不受 `agent_rest` 生命周期限制。参数正文与检索词不写入工具参数日志。`memory_replace` 逐条预读目标；多条 QQ 记录的来源 key 须明确且一致。确认新 ID 后才经 Gateway 请求删除旧记录。 |
 | 记忆管理 | `/api/memory/*` | 受控制台令牌保护；用于 WebUI 搜索、查看、保存、替代和删除。A_Memorix namespace API key 留在桥接本地配置，不返回给页面或 DSH。 |
 | 记忆全量浏览 | `POST /api/memory/records/list` | 受控制台令牌与 JSON/Origin 校验保护；带 `x-agent-token` 时因默认拒绝白名单而返回 403。仅读取配置 namespace 的 `paragraphs` 表，校验 storage key 路径与必需列，使用 SQLite `mode=ro` + `query_only` 和参数化查询；不读向量/图存储，不写数据库。 |
 | 记忆开场摘要 | `submitDesktopAgentPrompt()` | 只在新/重建会话首次提示查询 `assistant` 来源；QQ 来源不自动注入。检索失败不阻止提示提交。 |

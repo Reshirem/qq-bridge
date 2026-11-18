@@ -48,6 +48,14 @@ A_Memorix 的独立服务单独运行，Gateway 与 gRPC 服务只监听本机�
 - 数字角色可以按需搜索、读取和维护记忆。交流涉及过去的共同经历、约定或偏好，或对方提到“上次”“还记得吗”等内容时，固定前缀和 `memory_search` 工具说明会引导它结合当前话题、人物和场景主动检索，必要时读取原记录并核对来源；这不要求每条消息都查。收到 QQ 提醒本身不强制触发记忆检索或保存。
 - 工具参数可提供自然语言记忆内容和可选的关联元数据；来源标记应由可信的工具调用上下文限制为 `qq` 或 `assistant`，不允许写入任意来源类别。`assistant` 是现有数据格式中的来源值，表示数字角色自身经历，不规定它的人格形态。
 
+## 写入与合并
+
+主角色和独立整理器在写入前先用 `memory_search` 找同一事项的记录。新事项用 `memory_save`。已有同题笔记时，逐条用 `memory_read` 核实内容和真实 ID，再用 `memory_replace` 提交完整正文。MCP 的 `memoryIds` 接受单个 ID 或 1 至 10 个 ID 的数组。桥接 API 也接受旧的单条 `memoryId` 字段。
+
+桥接先读齐目标并核对来源，再通过 Gateway 写入新记录。多条 QQ 记录的每个 `sourceContext` 必须能识别出同一个 `group:群号` 或 `private:QQ号`。缺失或冲突时整次合并失败。整理后的正文应保留发言归属，元数据保留来源说明，并对旧证据和新增 `evidenceReferences` 取并集，最多 20 项。`tags` 和 `participants` 默认取并集，也可显式指定。
+
+新记录以 `supersedes` 保存直接取代的 ID，单条为字符串，多条为数组。若被取代记录本身已经更正过旧信息，`supersededIds` 延续其已知的更早 ID。只有收到有效的 `storedIds[0]` 才逐条删除旧记录。回执的 `memoryId` 指向新记录，`replacedIds` 列出已确认删除的旧 ID，`retainedIds` 与 `warning` 标出删除未确认的项目。需要保留旧原文时，也可用 `memory_save` 携带 `supersedes` 写入更正。
+
 ## 独立整理的读取失败与恢复
 
 QQ 读取结果的 `text`、`plain`、`tail` 若完整值恰为通用占位 `[notice]`，整理器只保留该次读取的消息身份、来源、发送者和时间等元数据，不把占位当成聊天正文。同一来源、同一消息在主会话其他成功读取中已有正文时，保留已读正文；先见占位、后见正文时可补全，并以 `bodySourceSeq` 标明实际提供正文的 DSH 事件。只有占位时不推测内容，也不解释为撤回。含 `[notice]` 的正常文字及其他括号标记不受影响；真实正文、账号、时间等字段冲突仍阻断任务，不推进游标。整理不会为此回查当前 QQ 数据补证据。
@@ -60,6 +68,8 @@ QQ 读取结果的 `text`、`plain`、`tail` 若完整值恰为通用占位 `[no
 
 2026-11-04 排查发现，11 月 1 日的 190 段积压任务曾在第 76、133、163 段因不存在的 `memoryId` 返回 404；其中两次参数为 `PLACEHOLDER` 和 `see summary`。此前将所有读取错误统一判为整段失败，导致同来源后续任务等待。针对这条故障链，已补充 `npm run test:memory-organizer`：覆盖明确的缺失记录、真正的服务/写入错误、真实 MCP stdio 返回、CLI 完成状态、中文流分片，以及重启后完成分段的核对；全部使用隔离数据和模拟服务。
 
+整理器的实时处理与重启恢复使用相同的写入回执判定。`memory_save` 以接收或去重的 ID 确认写入，`memory_replace` 以本次调用返回的新 `memoryId` 计为一次写入。旧记录部分保留时，新记录仍已落盘。回执需与对应工具调用和分段的稳定 `externalId` 匹配，结合正常结束和完成标记才推进该段游标。
+
 ## 新会话启动上下文
 
 每个新建或重建的全局 DSH 会话，在第一次工作提示中得到一份精简摘要，内容优先包括：
@@ -69,6 +79,8 @@ QQ 读取结果的 `text`、`plain`、`tail` 若完整值恰为通用占位 `[no
 - 少量长期稳定且对当前工作有帮助的用户或项目偏好。
 
 QQ 联系人或群聊记忆按当前任务和对象按需检索，不把所有 QQ 记忆一并注入。摘要只在新会话首次引导时注入，不在每轮重复注入。单一 DSH 全局会话、停止/休息/异常恢复规则保持不变。
+
+`memory_search` 和首次会话摘要共享检索逻辑。桥接扩大候选集（最多 50 条），从本次命中的元数据收集被取代的 ID，兼容单个字符串、数组与逗号分隔格式。按来源筛选后，相同正文（忽略首尾和连续空白）只保留 Gateway 排在前面的命中，再截取请求条数。检索摘要只引用最终可见的记录。若更正记录不在本次候选集中，检索无法据此判断旧记录是否已被取代。
 
 ## WebUI 管理
 
@@ -109,13 +121,13 @@ qq-bridge 现有客户端只调用记忆写入、批量写入、读取、删除�
 
 ## 首期实现与部署前提
 
-桥接首期已接入 Gateway 客户端、四个 DSH 工具（搜索、保存、读取、删除）、全局会话令牌校验、记忆参数日志省略、首次会话自身经历摘要，以及 WebUI 搜索/查看/新建/编辑/删除。`agent_rest` 不限制记忆工具调用。WebUI 可配置本机 Gateway 地址、已创建的 namespace、桥接启用状态、namespace API key、请求超时和启动摘要上限；Gateway 地址仅允许本机回环地址。Embedding/LLM Provider 由用户在 WebUI 手动配置 OpenAI 兼容服务地址、模型和密钥。A_Memorix 目前使用 OpenAI Chat Completions；请确保配置的服务兼容该协议。Provider 密钥只写入本机 `state/a-memorix/secrets/`，不回显，保存 Provider 变更会重启 A_Memorix。Windows 部署入口为 `scripts/a-memorix.ps1 setup|start|stop|status`；未启用时桥接照常工作，WebUI 会说明当前状态，记忆工具返回明确的配置错误。
+桥接首期已接入 Gateway 客户端、五个 DSH 工具（`memory_search`、`memory_save`、`memory_read`、`memory_replace`、`memory_forget`）、全局会话令牌校验、记忆参数日志省略、首次会话自身经历摘要，以及 WebUI 搜索/查看/新建/编辑/删除。`agent_rest` 不限制记忆工具调用。WebUI 可配置本机 Gateway 地址、已创建的 namespace、桥接启用状态、namespace API key、请求超时和启动摘要上限；Gateway 地址仅允许本机回环地址。Embedding/LLM Provider 由用户在 WebUI 手动配置 OpenAI 兼容服务地址、模型和密钥。A_Memorix 目前使用 OpenAI Chat Completions；请确保配置的服务兼容该协议。Provider 密钥只写入本机 `state/a-memorix/secrets/`，不回显，保存 Provider 变更会重启 A_Memorix。Windows 部署入口为 `scripts/a-memorix.ps1 setup|start|stop|status`；未启用时桥接照常工作，WebUI 会说明当前状态，记忆工具返回明确的配置错误。
 
 Windows 部署脚本已将 A_Memorix `v2.0.0a4` 启动在 `127.0.0.1:8080`，创建 `qq-bridge` namespace 和 namespace API key，并启用本地 `config.json`。Embedding/LLM Provider 可在 WebUI 设置，配置之后仍需检查模型服务实际可用性：Gateway 的 `/healthz` 通过只说明服务可访问，不代表 namespace 的向量检索或模型调用正常。2026-10-30 本机检查发现原部署缺少 `faiss-cpu`，导致搜索使用 `sparse_graph`；补装 Faiss 并为已有 385 条段落/实体/关系记录重建向量后，双向量池 manifest 报告 15 条段落向量和 370 条图向量。首次重启时，A_Memorix 会先跳过实际 Embedding 自检，并因当前指纹尚未观测到而暂时禁用向量通道；本机观察到后台默认 180 秒探测后恢复，搜索切换为 `hybrid`，命中来源为 `dual_vector_pool`。具体观察及排查方向见 [改进计划](COMPANION_PROMPT_MEMORY_PLAN.md#2026-10-30-faiss-向量通道恢复)。带时间边界的 `TIME` 请求可返回记录；`HYBRID` 不带时间边界会被 Gateway 拒绝。记忆写入/删除、WebUI 页面和 DSH 工具的完整链路仍待核验。使用 `start.bat` 时会在桥接启动前尝试启动已安装的 A_Memorix 服务；直接运行 `npm start` 时需先手动运行部署脚本的 `start`。部署步骤见 [DSH_SETUP.md](DSH_SETUP.md)。桥接管理 API 只供带控制台令牌的 WebUI 使用；DSH MCP 工具只通过受全局会话令牌保护的 agent API 使用，`agent_rest` 不限制工具调用。记忆内容会经本机 Gateway 交给 A_Memorix；配置 Embedding/LLM Provider 后，记忆内容会按配置发送到相应服务。
 
 `memory.timeoutMs` 默认 45 秒；新会话摘要有独立的 8 秒请求上限，超时后继续提交首次提示。`bootstrapLimit` 默认最多检索 6 条自身经历来源记录，`bootstrapMaxChars` 默认最多注入 2500 字符，均可在 `config.json` 调整。
 
-本机 A_Memorix 服务已经通过 Gateway `/healthz` 检查，桥接重启后 `/api/memory/status` 返回已配置。Gateway 的只读检索已核验；尚未执行记忆写入/检索的 WebUI 与 DSH 端到端核验，也未执行自动化测试。仍需核验 WebUI 页面状态和 DSH 工具链路。
+本机 A_Memorix 服务已经通过 Gateway `/healthz` 检查，桥接重启后 `/api/memory/status` 返回已配置。Gateway 的只读检索已核验；离线回归覆盖 MCP stdio、桥接路由与模拟 Gateway 的合并及整理回执。生产 namespace 的 WebUI 与 DSH 端到端写入仍待单独核验。
 
 ## 边界与非目标
 

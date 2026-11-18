@@ -246,7 +246,8 @@ export function createMemoryOrganizerState(initialState, persist) {
 function normalizedToolName(value) {
   const name = String(value ?? '').trim().toLowerCase();
   const tail = name.split(/__|[./:]/).filter(Boolean).at(-1) ?? name;
-  return tail.replace(/[^a-z0-9_-]/g, '');
+  const cleaned = tail.replace(/[^a-z0-9_-]/g, '');
+  return cleaned === 'qq_agent_rest' ? 'agent_rest' : cleaned;
 }
 
 export function organizerToolLeafName(value) {

@@ -105,10 +105,10 @@ test('organizer excludes managed and legacy QQ tools and guards its exact memory
     assert.ok(patch.some(row => row.insert?.some(entry => entry.id === 'qq-bridge-memory-organizer' && entry.name === '@deepseek-ai/dsh-mcp-client')));
     let check;
     organizerGuard({ tools: { guard: fn => { check = fn; } } });
-    for (const name of ['memory_search', 'memory_save', 'memory_read', 'memory_forget']) {
+    for (const name of ['memory_search', 'memory_save', 'memory_read', 'memory_replace', 'memory_forget']) {
       assert.equal(check({ name: 'mcp__qq-memory-organizer__' + name }), undefined);
     }
-    for (const name of ['memory_save', 'mcp__qq-memory__memory_save', 'mcp__qq__qq_send_message', 'mcp__qq-memory-organizer__unknown', 'plugin_manager', 'unknown_future_tool', '', null]) {
+    for (const name of ['memory_save', 'mcp__qq-memory__memory_save', 'mcp__qq-memory__memory_replace', 'mcp__qq__qq_send_message', 'mcp__qq-memory-organizer__unknown', 'plugin_manager', 'unknown_future_tool', '', null]) {
       assert.ok(check({ name }), String(name) + ' must be denied');
     }
     assert.ok(check(null));
@@ -137,7 +137,7 @@ test('only a confirmed missing-memory response becomes null; infrastructure and 
   assert.equal(await gateway.read({ memoryId: 'PLACEHOLDER' }), null);
   assert.equal(await gateway.read({ externalId: 'fixture:missing' }), null);
   const before = requests.length;
-  await assert.rejects(gateway.replace({ memoryId: 'missing', content: 'replacement' }), /未找到要替换/);
+  await assert.rejects(gateway.replace({ memoryId: 'missing', content: 'replacement' }), /未找到要合并\/替换的旧记忆：missing/);
   assert.equal(requests.length, before + 1, 'no write is attempted after a missing replacement target');
   await assert.rejects(gateway.remove({ memoryId: 'missing' }), /HTTP 404/);
   await assert.rejects(gateway.save({ content: 'fixture' }), /HTTP 404/);
@@ -317,6 +317,56 @@ test('live and replayed writes clear a save error only for a confirmed retry of 
         ? { asOfSeq: records.length - 1, values: {} } : { records } } });
       const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', job.jobId, 1);
       assert.equal(receipts.has(1), recovered);
+    }
+  } finally { await h.close(); }
+});
+
+test('live and recovered chunks require a matching replacement receipt, including when old IDs were retained', async () => {
+  const events = [];
+  const h = await bridgeHarness({ globals: { spawn: spawnFixture(events) } });
+  const job = { jobId: 'fixture' };
+  const externalId = 'qq-bridge:organizer:fixture:chunk-1:item-1';
+  const tool = 'mcp__qq-memory-organizer__memory_replace';
+  try {
+    for (const [result, status, noChange, confirmed] of [
+      [{ memoryId: 'new', oldMemoryRetained: true, retainedIds: ['a'] }, 'completed', false, true],
+      [{ memoryId: '' }, 'completed', false, false],
+      [{ memoryId: 'PLACEHOLDER' }, 'completed', false, false],
+      [{ storedIds: ['a'], skippedIds: [] }, 'completed', false, false],
+      [{ memoryId: 'new' }, 'failed', false, false],
+      [{ memoryId: 'new' }, 'completed', true, false],
+      [null, null, true, false]
+    ]) {
+      const text = JSON.stringify(result);
+      const finalText = 'MEMORY_ORGANIZER_DONE' + (noChange ? ' MEMORY_ORGANIZER_NO_CHANGE' : '');
+      const records = [];
+      const push = (type, data) => records.push({ seq: records.length, type, data });
+      events.splice(0, events.length, ...cliEvents({ write: true }).slice(0, 2));
+      events.push({ type: 'tool_call', callId: 'merge', tool, input: { externalId } });
+      push('turn/start', { turn: 1 });
+      push('user/message', { content: '整理任务 fixture，当前是第 1/1 段' });
+      push('tool/call', { name: tool, callId: 'merge', arguments: { externalId } });
+      if (status) {
+        events.push({ type: 'tool_result', callId: 'merge', status, result: text });
+        push('tool/result', { message: { toolCallId: 'merge', isError: status === 'failed', content: [{ type: 'text', text }] } });
+      }
+      const reason = { kind: 'completed' };
+      events.push({ type: 'final', text: finalText, reason });
+      push('assistant/message', { content: finalText });
+      push('turn/end', { turn: 1, reason });
+      let started = 0;
+      const run = h.runMemoryOrganizerHeadless(job, 'fixture', model, 'fixture-session', () => started++, 1);
+      if (confirmed) {
+        const receipt = await run;
+        assert.equal(receipt.memoryWrites, 1);
+        assert.equal(receipt.newMemories, 1);
+      } else await assert.rejects(run);
+      assert.equal(started, 1);
+      h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections'
+        ? { asOfSeq: records.length - 1, values: {} } : { records } } });
+      const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', job.jobId, 1);
+      assert.equal(receipts.has(1), confirmed);
+      if (confirmed) assert.deepEqual({ ...receipts.get(1) }, { memoryWrites: 1, newMemories: 1 });
     }
   } finally { await h.close(); }
 });

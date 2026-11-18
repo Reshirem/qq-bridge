@@ -12,7 +12,7 @@ const tests = [
   'test-forward.mjs', 'test-native-forward.mjs', 'test-forward-routes.mjs',
   'test-image-references.mjs', 'test-image-detail-routes.mjs', 'test-media-detail.mjs', 'test-native-image-quality.mjs',
   'test-chat-learning.mjs', 'test-access.mjs',
-  'test-memory-organizer.mjs',
+  'test-memory-consolidation.mjs', 'test-memory-organizer.mjs',
   'test-autonomy-policy.mjs', 'test-dsh-modules.mjs', 'test-audit-bridge.mjs', 'test-a-memorix-readonly.mjs', 'test-audit-protocol.mjs', 'test-audit-protocol-helpers.mjs',
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',

@@ -32,6 +32,63 @@ function normalizeLimit(value, fallback = 8, max = 50) {
   return Number.isInteger(n) && n > 0 ? Math.min(n, max) : fallback;
 }
 
+function extractSupersededIds(metadata) {
+  const entries = [metadata?.supersedes, metadata?.supersededIds].flat();
+  return uniqueItems(entries.filter(id => typeof id === 'string').flatMap(id => id.split(',')));
+}
+
+export function validMemoryId(id) {
+  return typeof id === 'string' && id.trim().length > 0 && id.trim().length <= 300
+    && !/placeholder|see\s+summary/i.test(id);
+}
+
+function replacementTargets(memoryId, memoryIds) {
+  if (memoryId !== undefined && memoryIds !== undefined) throw new Error('请只填写 memoryId 或 memoryIds 之一');
+  const ids = Array.isArray(memoryIds) ? memoryIds : [memoryIds ?? memoryId];
+  if (!ids.every(validMemoryId)) throw new Error('请提供真实 memoryId，不能使用空值或占位符');
+  const targets = [...new Set(ids.map(id => id.trim()))];
+  if (!targets.length || targets.length > 10) throw new Error('一次只能合并或替换 1 至 10 个 memoryId');
+  return targets;
+}
+
+function uniqueItems(items) {
+  return [...new Set(items.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean))];
+}
+
+function replacementMetadata(records, metadata, origin, targets) {
+  const ancestors = uniqueItems(records.flatMap(r => extractSupersededIds(r.metadata))).filter(id => !targets.includes(id));
+  const merged = {
+    ...records[0].metadata, ...metadata,
+    supersedes: targets.length === 1 ? targets[0] : targets,
+    evidenceReferences: uniqueItems([...records.map(r => r.metadata.evidenceReferences), metadata?.evidenceReferences].flat()).slice(0, 20)
+  };
+  // Deleting an intermediate correction must not resurrect its predecessors.
+  delete merged.supersededIds;
+  if (ancestors.length) merged.supersededIds = ancestors;
+
+  // sourceContext is free text and can include the session, event and speaker.
+  // Validate each original independently before accepting any caller override.
+  const contexts = records.map(record => record.metadata.sourceContext);
+  if (metadata && Object.hasOwn(metadata, 'sourceContext')) contexts.push(metadata.sourceContext);
+  const keys = contexts.map(ctx => typeof ctx === 'string' ? [...new Set(ctx.match(/\b(?:group|private):\d+\b/g))] : []);
+  if (targets.length === 1) {
+    // Legacy single records may still need their first explicit source key.
+    if (keys[0].length === 1 && (keys.at(-1).length !== 1 || keys.at(-1)[0] !== keys[0][0])) {
+      throw new Error('替换记忆时请保留原有的 QQ 来源');
+    }
+    return merged;
+  }
+  if (origin === 'qq' || records.some(r => String(r.metadata.origin || r.sourceType).trim().toLowerCase() === 'qq')
+      || keys.some(list => list.length)) {
+    if (keys.some(list => !list.length) || new Set(keys.flat()).size !== 1) {
+      throw new Error('QQ 记忆只能合并相同来源的记录，请核实每条 sourceContext 中的 group:群号 或 private:QQ号');
+    }
+  }
+  const sourceNotes = uniqueItems(contexts.filter(ctx => typeof ctx === 'string').flatMap(ctx => ctx.split('\n')));
+  if (sourceNotes.length) merged.sourceContext = sourceNotes.join('\n');
+  return merged;
+}
+
 function memoryOrigin(value, fallback = 'assistant') {
   const origin = String(value || fallback).trim().toLowerCase();
   if (!ORIGINS.has(origin)) throw new Error('记忆来源只能是 qq 或 assistant');
@@ -63,6 +120,7 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     configError = String(error?.message ?? error);
   }
   const apiKey = String(config.apiKey || '').trim();
+  const replacing = new Set();
 
   function status() {
     return {
@@ -124,6 +182,7 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     if (stickerScope && !stickerIndex) throw new Error('当前空间不支持表情检索');
     const requestedLimit = normalizeLimit(limit, 8, 50);
     const filterOrigin = origin ? memoryOrigin(origin) : '';
+    const fetchLimit = stickerIndex ? requestedLimit : Math.max(requestedLimit + 10, requestedLimit * 2);
     const searchMode = memorySearchMode(mode);
     if (searchMode !== 'SEARCH_MODE_SEARCH' && !timeStart && !timeEnd) {
       throw new Error('SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 至少需要 timeStart 或 timeEnd；普通内容检索请使用 SEARCH_MODE_SEARCH');
@@ -132,19 +191,35 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
       context: context(stickerScope ? { conversationId: stickerScope } : {}),
       ...(stickerScope ? { sharedConversationIds: ['global'] } : {}),
       query: String(query || '').trim().slice(0, 2000),
-      limit: filterOrigin ? Math.min(50, requestedLimit * 4) : requestedLimit,
+      limit: Math.min(50, Math.max(fetchLimit, filterOrigin ? requestedLimit * 4 : requestedLimit)),
       mode: searchMode,
       ...(timeStart ? { timeStart: new Date(timeStart).toISOString() } : {}),
       ...(timeEnd ? { timeEnd: new Date(timeEnd).toISOString() } : {}),
       respectFilter: true
     }, { requestTimeoutMs });
     const hits = Array.isArray(payload.hits) ? payload.hits : [];
-    const filtered = filterOrigin
-      ? hits.filter((hit) => String(hit?.metadata?.origin || '').toLowerCase() === filterOrigin)
-      : hits;
+    const supersededIds = new Set(stickerIndex ? [] : hits.flatMap(hit =>
+      extractSupersededIds(hit?.metadata).filter(id => id !== hit?.memoryId)));
+    const seenContent = new Set();
+    const filtered = hits.filter(hit => {
+      if (filterOrigin && String(hit?.metadata?.origin || '').toLowerCase() !== filterOrigin) return false;
+      if (stickerIndex) return true;
+      if (supersededIds.has(hit?.memoryId)) return false;
+      const content = String(hit?.content || '').trim().replace(/\s+/g, ' ');
+      if (seenContent.has(content)) return false;
+      seenContent.add(content);
+      return true;
+    }).slice(0, requestedLimit);
+    // The upstream summary quotes the first five raw hits, including any
+    // that we just removed by origin, supersession, duplication or limit.
+    const summary = filtered.length === hits.length ? String(payload.summary || '')
+      : filtered.slice(0, 5).map((hit, index) => {
+        const content = String(hit?.content || '').trim().replace(/\s+/g, ' ');
+        return `${index + 1}. ${content.length > 120 ? content.slice(0, 120) + '...' : content}`;
+      }).join('\n');
     return {
-      summary: String(payload.summary || ''),
-      hits: filtered.slice(0, requestedLimit).map((hit) => ({
+      summary,
+      hits: filtered.map((hit) => ({
         memoryId: String(hit?.memoryId || ''),
         kind: String(hit?.kind || ''),
         title: String(hit?.title || ''),
@@ -183,8 +258,10 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
       metadata: { ...safeMetadata, origin: source, participants: safeParticipants, tags: safeTags, observedAt: observed },
       respectFilter: true
     });
+    const storedIds = Array.isArray(payload.storedIds) ? payload.storedIds : [];
+    if (!storedIds.every(validMemoryId)) throw new Error('A_Memorix 返回了无效的 storedIds，无法确认写入');
     return {
-      storedIds: Array.isArray(payload.storedIds) ? payload.storedIds.map(String) : [],
+      storedIds,
       skippedIds: Array.isArray(payload.skippedIds) ? payload.skippedIds.map(String) : [],
       warnings: Array.isArray(payload.warnings) ? payload.warnings.map(String) : [],
       relationExtractionJobId: String(payload.relationExtractionJobId || '')
@@ -231,29 +308,50 @@ export function createAMemorixGateway(config = {}, { fetchImpl = globalThis.fetc
     };
   }
 
-  async function replace({ memoryId, content, origin, metadata = {}, tags, participants, observedAt, reason = 'Edited in qq-bridge WebUI' } = {}) {
-    const previous = await read({ memoryId });
-    if (!previous) throw new Error('未找到要替换的记忆');
-    const nextOrigin = memoryOrigin(origin || previous.metadata?.origin || previous.sourceType || 'assistant');
-    const saved = await save({
-      content,
-      origin: nextOrigin,
-      metadata: { ...previous.metadata, ...metadata, supersedes: previous.memoryId },
-      participants: Array.isArray(participants) ? participants : previous.participants,
-      tags: Array.isArray(tags) ? tags : previous.tags,
-      observedAt: observedAt || previous.observedAt || undefined
-    });
-    const newId = saved.storedIds[0];
-    if (!newId) throw new Error('新记忆未被 A_Memorix 接收，旧记录仍保留');
+  async function replace({ memoryId, memoryIds, content, origin, metadata, tags, participants, observedAt, externalId, reason = 'Edited in qq-bridge WebUI' } = {}) {
+    const targets = replacementTargets(memoryId, memoryIds);
+    if (targets.some(id => replacing.has(id))) throw new Error('目标记忆正在被替换，请重新检索后再试');
+    for (const id of targets) replacing.add(id);
     try {
-      const removed = await remove({ memoryId, reason });
-      if (removed.deletedCount < 1) {
-        return { memoryId: newId, oldMemoryRetained: true, warning: '新记录已保存，但 Gateway 未确认旧记录已删除' };
+      const records = [];
+      for (const id of targets) {
+        const record = await read({ memoryId: id });
+        if (!record || record.memoryId !== id) {
+          throw new Error(`未找到要合并/替换的旧记忆：${id}（请先通过 memory_search / memory_read 确认真实 memoryId）`);
+        }
+        records.push(record);
       }
-    } catch (error) {
-      return { memoryId: newId, oldMemoryRetained: true, warning: `新记录已保存，但旧记录未删除：${error.message}` };
+      const primary = records[0];
+      const nextOrigin = memoryOrigin(origin || primary.metadata.origin || primary.sourceType);
+      const saved = await save({
+        content, origin: nextOrigin, externalId,
+        metadata: replacementMetadata(records, metadata, nextOrigin, targets),
+        participants: participants ?? uniqueItems(records.flatMap(r => r.participants)),
+        tags: tags ?? uniqueItems(records.flatMap(r => r.tags)),
+        observedAt: observedAt || primary.observedAt || undefined
+      });
+      const newId = saved.storedIds[0]?.trim();
+      if (!newId) throw new Error('新记忆未被 A_Memorix 接收，旧记录仍保留');
+      const replacedIds = [];
+      const retainedIds = [];
+      const warnings = [];
+      for (const id of targets) {
+        if (id === newId) continue;
+        try {
+          const removed = await remove({ memoryId: id, reason });
+          if (!(removed.deletedCount > 0) || (removed.deletedMemoryIds.length && !removed.deletedMemoryIds.includes(id))) {
+            throw new Error('Gateway 未确认删除');
+          }
+          replacedIds.push(id);
+        } catch (error) {
+          retainedIds.push(id);
+          warnings.push(`新记录已保存，但旧记录 ${id} 未确认删除：${error.message}`);
+        }
+      }
+      return { memoryId: newId, replacedIds, oldMemoryRetained: retainedIds.length > 0, retainedIds, warning: warnings.join('；') };
+    } finally {
+      for (const id of targets) replacing.delete(id);
     }
-    return { memoryId: newId, oldMemoryRetained: false, warning: '' };
   }
 
   return { status, search, save, read, remove, replace };

@@ -339,7 +339,7 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可根据未读数自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandled（本轮前上次处理该会话的时间）、lastAiReply 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示之前已看过仅作背景参考的旧消息；同一回合内多次读取不会冲掉 previousHandled 与 isNew）。注意：默认 reverseOrder=true 时 messages 数组按【最新在前、最旧在后（倒序）】排列，阅读时请从后往前（从旧到新）串起聚合消息的前因后果、语气与群友态度（看清大家是在吐槽暗讽、玩梗接龙还是正常分享），不要孤立抓单条消息或单张图片硬评。本页中能对应到本会话未读的来信自动计为已读；若聚合的新消息只是群友之间闲聊、复读、斗图或你不熟的话题，看完直接略过即可，无需每次读完历史都发言。',
+  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可根据未读数自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandled（本轮前上次处理该会话的时间）、lastAiReply 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示之前已看过仅作背景参考的旧消息；同一回合内多次读取不会冲掉 previousHandled 与 isNew）。注意：默认 reverseOrder=true 时 messages 数组按【最新在前、最旧在后（倒序）】排列，阅读时请从后往前（从旧到新）串起聚合消息的前因后果、语气与群友态度（看清大家是在吐槽暗讽、玩梗接龙还是正常分享），不要孤立抓单条消息或单张图片硬评。本页中能对应到本会话未读的来信自动计为已读；若聚合的新消息只是群友之间闲聊、复读、斗图或你不熟的话题，无需强行发言——看完不回不等于必须立刻结束本回合，你完全可以把视线转回电脑/浏览器去做自己的探索（比如顺着群里刚聊到的新鲜话题去搜一下/开网页看看，或继续你手头没逛完的页面），玩尽兴后再调用 agent_rest。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
@@ -393,23 +393,33 @@ server.tool(
   }
 );
 
+const agentRestSchema = {
+  durationMs: z.number().int().positive().optional().describe('无事可做时的后台挂起等待时长，单位毫秒；建议 60000 至 300000，超出范围自动调整，省略时为 300000')
+};
+async function handleAgentRest({ durationMs }) {
+  try {
+    const data = await agentApi('/api/desktop-agent/rest', {
+      method: 'POST',
+      body: JSON.stringify({ durationMs })
+    });
+    return { content: [{ type: 'text', text: serializeModelData(data) }] };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `休息失败：${error?.message ?? error}` }], isError: true };
+  }
+}
+
 server.tool(
   'agent_rest',
-  '结束当前全局数字角色活动回合，进入一段活动间隙与消息聚合窗口。每个活动回合必须将此工具作为最后一个工具调用；调用后桥接会结束当前 DSH 回合，并在 1 至 5 分钟后（或收到有效 QQ 提醒时提前）启动新回合，以便在你在电脑前活动/休息的同时让零散的群聊消息自然聚合，避免来一条回一条。省略时默认 5 分钟，超出范围会自动调整（正在热聊或有连续探索事项可设 1～2 分钟，平时潜水或无事可设 3～5 分钟）。注意：此工具仅用于后台回合挂起与消息聚合，不代表角色在聊天剧情中困倦、休息或睡觉；调用前不要因此向对方说要去歇会儿或睡觉。',
-  {
-    durationMs: z.number().int().positive().optional().describe('后台回合挂起时长，单位毫秒；建议 60000 至 300000，超出范围自动调整，省略时为 300000')
-  },
-  async ({ durationMs }) => {
-    try {
-      const data = await agentApi('/api/desktop-agent/rest', {
-        method: 'POST',
-        body: JSON.stringify({ durationMs })
-      });
-      return { content: [{ type: 'text', text: serializeModelData(data) }] };
-    } catch (error) {
-      return { content: [{ type: 'text', text: `休息失败：${error?.message ?? error}` }], isError: true };
-    }
-  }
+  '仅在当前所有想做的事（如浏览器冲浪、看视频/帖子、网页搜索、QQ 交流）都已全部做完、手头真正无事可做时，调用此工具结束当前回合进入等待（用于无事时挂起等待群聊消息聚合）。只要你手头还有事（如刚打开网页还没看够、列表里还有想点的视频/帖子、或还想顺着话题继续搜），就不要调用此工具，也不要把事情留到“下一轮”，而是直接在当前回合继续调用工具一直运行下去（回合运行期间若有新 QQ 提醒会自动通过 steer 实时插进来，无需为了等消息而中断正在做的事去休息）。当确实无事可做调用此工具时，省略默认等待 5 分钟（刚回完群聊在等对方打字回话可设 1～2 分钟，平时完全空闲设 3～5 分钟）。注意：此工具仅用于后台空闲挂起，不代表角色在聊天剧情中困倦或睡觉；调用前不要向对方说要去歇会儿或睡觉。',
+  agentRestSchema,
+  handleAgentRest
+);
+
+server.tool(
+  'qq_agent_rest',
+  'agent_rest 的同义别名（兼容 mcp__qq__qq_* 命名习惯）：仅在当前所有想做的事都已做完、手头真正无事可做时调用，结束当前回合进入 1 至 5 分钟的后台空闲等待。',
+  agentRestSchema,
+  handleAgentRest
 );
 
 server.tool(

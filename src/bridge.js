@@ -49,7 +49,7 @@ import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardR
 import { createModelCatalog } from './model-catalog.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
-import { createAMemorixGateway, STICKER_NAMESPACE } from './a-memorix-gateway.js';
+import { createAMemorixGateway, STICKER_NAMESPACE, validMemoryId } from './a-memorix-gateway.js';
 import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig, stickerWording } from './chat-learning.js';
 import { createLearningSessionCleanup } from './learning-sessions.js';
 import { createLearningAssets } from './learning-assets.js';
@@ -2107,9 +2107,9 @@ async function main() {
     '整理关系记忆时保留来源、说话人和证据性质；明确表达的关系与配置账号标记分开记录。某一来源内持续、清楚形成的关系扮演可以作为该来源内的相处设定记录，不推断为现实身份、跨来源关系或操作权限。生活状态、行程、自称、昵称、亲近语气、玩笑或孤立称呼只能作为该来源中说话人的表达，不单独证明主人/owner身份、固定关系或跨来源账号归属。QQ 好友或好友列表只表示平台联系人关系，不单独证明信任程度或信息分享授权。关系依据不足时保留未知，不把推测保存成事实。人格卡用于解释关系设定，不要仅为重复卡片内容而创建记忆.',
     '优先挑选未来仍有价值的信息：稳定偏好、关系与称呼、重要决定、承诺和未完成事项、反复出现且有意义的经历、数字角色实际做过的事与结果。不要备份整段聊天，也不要为普通闲聊强行造记忆。一时的困倦、道晚安、说去睡觉/歇会儿，或者当场的擦边、软吞、消化、转化等幻想扮演互动随当段话题结束即止，不要把它们保存为客观现实状态或跨回合待办；若对方表现出稳定的个人喜好或边界，只记录其偏好本身。',
     '工具调用参数只是计划，只有对应的成功结果才能说明事情做成；失败、取消和部分成功要如实保留。',
-    '发现当事人明确更正旧信息时，检索并读取相关旧记忆，再保存更正后的内容，在 supersedes 字段记录旧 memoryId；保留旧记录以供追溯，不要删除。',
+    '准备写入前先用 memory_search 检索同主题、同来源的旧记录。若同一 QQ 来源或自身同一课题已有零散笔记，或当事人明确更正了信息，先用 memory_read 逐条核实原文，再用 memory_replace 合并关键事实、新证据和说话人归属。不同群或私聊严禁合并，未经 memory_read 核实的 ID 严禁传入 memory_replace。需保留旧原文时可用 memory_save 并以 supersedes 指向已核实的旧 ID。',
     'memory_read 的 memoryId 只能原样取自记忆工具实际返回的 ID，禁止猜测、编造或使用 PLACEHOLDER、see summary 等占位文字。found=false 是未找到记录，可重新检索；仍找不到时只依据本段原始证据判断，保留不确定性，不虚构旧记录或 supersedes，也不把未找到当成事实不存在。',
-    '每次 memory_save 都填写本任务指定的 externalId、准确 sourceContext、confidence 和 evidenceReferences。QQ 信息标记 origin=qq；数字角色自身经历或直接会话中值得保留的用户偏好使用 origin=assistant。',
+    '每次 memory_save 或 memory_replace 都填写本任务指定的 externalId、准确 sourceContext、confidence 和 evidenceReferences。QQ 信息标记 origin=qq；数字角色自身经历或直接会话中值得保留的用户偏好使用 origin=assistant。',
     '不要调用 QQ、浏览器、文件或休息工具，不要发消息。完成本段后，最终答复必须包含 MEMORY_ORGANIZER_DONE；若没有写入且也没有值得保存的信息，另包含 MEMORY_ORGANIZER_NO_CHANGE。'
   ].join('\n');
 
@@ -2419,11 +2419,14 @@ async function main() {
               let input = event.input ?? event.arguments;
               if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = null; } }
               const id = input?.externalId;
-              const saveId = tool === 'memory_save' && typeof id === 'string' && id.startsWith(itemPrefix)
+              const saveId = isOrganizerWrite(tool) && typeof id === 'string' && id.startsWith(itemPrefix)
                 && /^\d+$/.test(id.slice(itemPrefix.length)) ? id : '';
+              if (isOrganizerWrite(tool) && Number.isSafeInteger(chunkNumber) && !saveId) {
+                failure ||= `${tool} 缺少本段有效的 externalId`;
+              }
               toolCalls.set(callId, { tool, saveId });
             }
-            if (tool === 'memory_save' && typeof onMemoryWrite === 'function') onMemoryWrite();
+            if (isOrganizerWrite(tool) && typeof onMemoryWrite === 'function') onMemoryWrite();
           } else if (eventType === 'tool_result' || eventType === 'toolresult') {
             const callId = String(event.callId ?? event.toolCallId ?? event.id ?? '');
             const call = toolCalls.get(callId);
@@ -2431,25 +2434,27 @@ async function main() {
               event.tool ?? event.toolName ?? event.name ?? event.data?.name ?? call?.tool ?? ''
             );
             if (callId) toolCalls.delete(callId);
+            if (call && call.tool !== tool) {
+              failure ||= '记忆工具回执与调用名称不符';
+              return;
+            }
             const status = String(event.status ?? event.result?.status ?? '').toLowerCase();
             const isError = status === 'error' || status === 'failed' || event.isError === true || Boolean(event.error);
             if (tool.startsWith('memory_') && isError) {
               const detail = redactSensitiveText(memoryOrganizerMessageText(event.error ?? event.result ?? event.output ?? event.content)).trim().slice(0, 500);
               const message = `记忆工具 ${tool} 返回失败${detail ? `：${detail}` : ''}`;
-              if (tool === 'memory_save' && call?.saveId) failedSaves.set(call.saveId, message);
+              if (isOrganizerWrite(tool) && call?.saveId) failedSaves.set(call.saveId, message);
               else failure ||= message;
             }
-            if (!isError && tool === 'memory_save' && (status === 'completed' || status === 'success' || status === 'succeeded')) {
-              let result = event.result ?? event.output ?? event.content;
-              if (typeof result === 'string') {
-                try { result = JSON.parse(result); } catch { result = null; }
-              }
-              if (!result || !Array.isArray(result.storedIds) || !Array.isArray(result.skippedIds)) {
-                failure ||= 'memory_save 返回值无法确认 A_Memorix 是否接收写入';
+            if (!isError && isOrganizerWrite(tool)) {
+              const receipt = call && ['completed', 'success', 'succeeded'].includes(status)
+                && memoryOrganizerSaveResult(tool, event.result ?? event.output ?? event.content);
+              if (!receipt) {
+                failure ||= failedSaves.get(call?.saveId) || `${tool} 返回值无法确认 A_Memorix 是否接收写入`;
               } else {
                 memoryWrites += 1;
-                newMemories += result.storedIds.length;
-                if (call?.saveId && (result.storedIds.length || result.skippedIds.length)) failedSaves.delete(call.saveId);
+                newMemories += receipt.stored;
+                failedSaves.delete(call.saveId);
               }
             }
           } else if (eventType === 'final') {
@@ -2488,6 +2493,7 @@ async function main() {
           if (lineBuffer.trim()) parseEvent(lineBuffer);
           void syncOrganizerUsage(sessionId, modelSelection);
           if (failedSaves.size) failure ||= failedSaves.values().next().value;
+          if ([...toolCalls.values()].some(call => isOrganizerWrite(call.tool))) failure ||= '缺少记忆写入回执';
           if (!sessionId) failure ||= `DSH headless 未创建或恢复整理 Session（退出码 ${code}）`;
           if (code !== 0) failure ||= `DSH headless 退出码 ${code}`;
           const reason = finalEvent && Object.hasOwn(finalEvent, 'reason') ? finalEvent.reason : terminalReason;
@@ -2523,9 +2529,11 @@ async function main() {
     return '';
   }
 
-  function memoryOrganizerSaveResult(event) {
-    const message = event?.data?.message ?? {};
-    const content = Array.isArray(message.content) ? message.content : [];
+  function isOrganizerWrite(tool) {
+    return tool === 'memory_save' || tool === 'memory_replace';
+  }
+
+  function memoryOrganizerSaveResult(tool, content) {
     const findResult = (value, depth = 0) => {
       if (depth > 5 || value == null) return null;
       let parsed = value;
@@ -2539,21 +2547,22 @@ async function main() {
         }
         return null;
       }
-      if (typeof parsed !== 'object') return null;
-      if (Array.isArray(parsed.storedIds) && Array.isArray(parsed.skippedIds)) return parsed;
-      for (const key of ['result', 'output', 'content', 'data']) {
+      if (!parsed || typeof parsed !== 'object' || parsed.isError === true || parsed.ok === false || parsed.found === false) return null;
+      if (tool === 'memory_replace' && validMemoryId(parsed.memoryId)) {
+        return { stored: 1, skipped: 0 };
+      }
+      if (tool === 'memory_save' && Array.isArray(parsed.storedIds) && Array.isArray(parsed.skippedIds)
+          && (parsed.storedIds.length || parsed.skippedIds.length)) {
+        return { stored: parsed.storedIds.length, skipped: parsed.skippedIds.length };
+      }
+      for (const key of ['text', 'result', 'output', 'content', 'data']) {
         if (parsed[key] === undefined) continue;
         const found = findResult(parsed[key], depth + 1);
         if (found) return found;
       }
       return null;
     };
-    for (const block of content) {
-      if (block?.isError === true) return { error: true, result: null };
-      const result = findResult(block?.text ?? block);
-      if (result) return { error: message.isError === true || event?.data?.error != null, result };
-    }
-    return { error: message.isError === true || event?.data?.error != null, result: null };
+    return findResult(content);
   }
 
   async function ensureMemoryOrganizerSessionTitle(sessionId, day, ordinal = 1) {
@@ -2674,10 +2683,10 @@ async function main() {
           }
           let chunk = null;
           let saveId = '';
-          if (name === 'memory_save') {
+          if (isOrganizerWrite(name)) {
             const match = String(args?.externalId ?? '').match(externalIdPattern);
             if (match) { chunk = Number(match[1]); saveId = args.externalId; }
-            else if (taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
+            if (chunk !== taskChunk && taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
           }
           if (callId) pendingCalls.set(callId, { name, chunk, saveId });
         } else if (event?.type === 'tool/result') {
@@ -2693,9 +2702,9 @@ async function main() {
             else memoryToolFailure = true;
             continue;
           }
-          if (call.name !== 'memory_save') continue;
-          const parsed = memoryOrganizerSaveResult(event);
-          if (!parsed.result) {
+          if (!isOrganizerWrite(call.name)) continue;
+          const saved = memoryOrganizerSaveResult(call.name, message.content);
+          if (!saved) {
             if (Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
             continue;
           }
@@ -2703,16 +2712,15 @@ async function main() {
             if (taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
             continue;
           }
-          const saved = { stored: parsed.result.storedIds.length, skipped: parsed.result.skippedIds.length };
-          if (saved.stored || saved.skipped) failedSaves.delete(call.saveId);
+          failedSaves.delete(call.saveId);
           if (!saveResultsByChunk.has(call.chunk)) saveResultsByChunk.set(call.chunk, []);
           saveResultsByChunk.get(call.chunk).push(saved);
           if (!writesInTurn.has(call.chunk)) writesInTurn.set(call.chunk, []);
           writesInTurn.get(call.chunk).push(saved);
         }
       }
-      for (const [callId, call] of pendingCalls) {
-        if (call.name === 'memory_save' && Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
+      for (const call of pendingCalls.values()) {
+        if (isOrganizerWrite(call.name) && Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
       }
       if (!finalText.includes('MEMORY_ORGANIZER_DONE') || memoryToolFailure || failedSaves.size) return;
       const noChange = finalText.includes('MEMORY_ORGANIZER_NO_CHANGE');
@@ -2724,7 +2732,7 @@ async function main() {
       }
       if (taskChunk !== null && taskChunk >= 1 && taskChunk <= chunkCount
           && noChange && !unconfirmedSaveChunks.has(taskChunk)
-          && ![...pendingCalls.values()].some((call) => call.name === 'memory_save')
+          && ![...pendingCalls.values()].some((call) => isOrganizerWrite(call.name))
           && !writesInTurn.has(taskChunk)) {
         confirmedTurns.add(taskChunk);
       }
@@ -4006,6 +4014,7 @@ async function main() {
             } else if (url.pathname === '/api/memory/replace') {
               result = await memoryGateway.replace({
                 memoryId: body.memoryId,
+                memoryIds: body.memoryIds,
                 content: String(body.content ?? '').slice(0, 20_000),
                 origin: body.origin,
                 metadata: body.metadata,
@@ -4014,7 +4023,7 @@ async function main() {
                 observedAt: body.observedAt,
                 reason: 'Replaced in qq-bridge WebUI'
               });
-              appendActivity(`控制台更新了长期记忆 ${String(body.memoryId ?? '').slice(0, 100)}`);
+              appendActivity(`控制台更新了长期记忆 ${result.memoryId.slice(0, 100)}`);
             } else {
               result = await memoryGateway.remove({
                 memoryId: body.memoryId,
@@ -5197,6 +5206,19 @@ async function main() {
                 participants: body.participants,
                 observedAt: body.observedAt,
                 externalId: body.externalId
+              });
+            } else if (operation === 'replace') {
+              result = await memoryGateway.replace({
+                memoryId: body.memoryId,
+                memoryIds: body.memoryIds,
+                content: String(body.content ?? '').slice(0, 20_000),
+                origin: body.origin,
+                metadata: body.metadata,
+                tags: body.tags,
+                participants: body.participants,
+                observedAt: body.observedAt,
+                externalId: body.externalId,
+                reason: body.reason || 'Consolidated by desktop agent'
               });
             } else if (operation === 'read') {
               result = await memoryGateway.read({ memoryId: body.memoryId, externalId: body.externalId });
