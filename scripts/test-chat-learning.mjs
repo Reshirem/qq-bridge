@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import yaml from 'js-yaml';
-import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig } from '../src/chat-learning.js';
+import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig, MAX_SLANG_EVIDENCE, MAX_SLANG_ENTRIES, MAX_LEARNED_STICKERS } from '../src/chat-learning.js';
 import { createStickerMemory } from '../src/sticker-memory.js';
 import { createLearningAssets } from '../src/learning-assets.js';
 import { createMarketPacks } from '../src/market-packs.js';
@@ -32,6 +32,150 @@ function fixture(t) {
 function enqueue(store, key = 'group:123', messageId = '1', text = '今天又开始摸鱼了', media = []) {
   return store.enqueue(key, { messageId, plain: text, media, userId: '456' }, config);
 }
+
+const learningKey = 'group:123';
+function seedSlang(t, entries, options) {
+  const { file, store } = fixture(t);
+  const slang = entries.map(e => ({
+    id: e.content, scope: learningKey, source: 'ai', status: 'learned', meaning: '测试释义',
+    confidence: 0.9, count: 2, evidence: [], ...e,
+  }));
+  fs.writeFileSync(file, JSON.stringify({ ...store.snapshot(), slang }));
+  return { file, store: createChatLearningStore(file, options) };
+}
+
+test('single characters need two distinct occurrences and retain a confident interpretation', t => {
+  const { store } = fixture(t);
+  enqueue(store, learningKey, '1', '草，摸鱼，6，e');
+  enqueue(store, learningKey, '2', '只是上下文');
+  const batch = store.batch(config);
+  const terms = ['草', '摸鱼', '6', 'e'];
+  const slang = terms.map(content => ({ content, meaning: '最初释义', usage: '原用法', confidence: 0.9, evidenceIds: ['1', '2'] }));
+  store.complete(batch, { slang: [...slang, slang[0]], stickers: [] }, [], config);
+  assert.deepEqual(store.query(learningKey).map(e => e.content), ['摸鱼']);
+  assert.equal(store.snapshot().slang[0].count, 1);
+  assert.equal(store.snapshot().slang[0].status, 'candidate');
+  enqueue(store, learningKey, '3', '草，摸鱼，6，e');
+  const recurrence = slang.map(e => ({ ...e, confidence: 0.3, meaning: '', usage: '猜测用法', evidenceIds: ['3'] }));
+  store.complete(store.batch(config, Date.now(), true), { slang: recurrence, stickers: [] }, [], config);
+  const grass = store.snapshot().slang[0];
+  assert.deepEqual([grass.status, grass.count, grass.meaning, grass.usage, grass.confidence], ['learned', 2, '最初释义', '原用法', 0.9]);
+  assert.equal(store.query(learningKey, '草')[0].content, '草');
+  const match = text => store.query(learningKey, text, { matchText: true }).map(e => e.content);
+  assert.deepEqual(match('这波操作真６，Ｅ技能空了'), ['6', 'e']);
+  assert.deepEqual(match('房间号16800，hello world'), []);
+  assert.deepEqual(match('nice e 6'), ['6', 'e']);
+});
+
+test('duplicate proposals cannot count the same occurrence twice when the evidence window rolls', t => {
+  const { store } = fixture(t);
+  const evidenceIds = Array.from({ length: 10 }, (_, i) => String(i + 1));
+  for (const id of evidenceIds) enqueue(store, learningKey, id, id === '1' ? '寄' : '补充上下文');
+  const proposal = { content: '寄', meaning: '失败了', confidence: 0.9, evidenceIds };
+  store.complete(store.batch(config), { slang: [proposal, proposal], stickers: [] }, [], config);
+  const [entry] = store.snapshot().slang;
+  assert.deepEqual([entry.status, entry.count], ['candidate', 1]);
+  assert.deepEqual(entry.evidence.map(e => e.messageId), evidenceIds.slice(-8));
+});
+
+test('old slang normalizes in memory and persists the latest eight citations on the next commit', t => {
+  assert.deepEqual([MAX_SLANG_ENTRIES, MAX_SLANG_EVIDENCE, MAX_LEARNED_STICKERS], [3000, 8, 300]);
+  const evidence = Array.from({ length: 20 }, (_, i) => ({ id: String(i) }));
+  const { file, store } = seedSlang(t, [
+    { content: '🦊', count: 1, evidence }, { content: '水', count: 0, source: 'manual' },
+    { content: '站', count: 1, status: 'confirmed' }, { content: '摸鱼', count: 1 },
+  ]);
+  assert.equal(JSON.parse(fs.readFileSync(file)).slang[0].evidence.length, 20);
+  const entries = store.snapshot().slang;
+  assert.deepEqual(entries.map(e => e.status), ['candidate', 'learned', 'confirmed', 'learned']);
+  assert.deepEqual(entries[0].evidence, evidence.slice(-8));
+  enqueue(store, learningKey, '30', '🦊');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file)).slang, entries);
+  const batch = store.batch(config, Date.now(), true);
+  store.complete(batch, { slang: [{ content: '🦊', evidenceIds: ['30'] }], stickers: [] }, [], config);
+  const [word] = createChatLearningStore(file).snapshot().slang;
+  assert.equal(word.status, 'learned');
+  assert.deepEqual(word.evidence.map(e => e.id), [...evidence.slice(-7).map(e => e.id), batch.messages[0].id]);
+});
+
+test('slang query ranks review, scope, term length, frequency and recency before truncation', t => {
+  const { store } = seedSlang(t, [
+    { content: '全球梗', scope: 'global', count: 99 }, { content: '草' }, { content: '寄', count: 9 },
+    { content: '旧梗', updatedAt: '2025-01-01' }, { content: '新梗', updatedAt: '2026-01-01' },
+    { content: '乐', scope: 'global', status: 'confirmed' },
+  ]);
+  const expected = ['乐', '新梗', '旧梗', '寄'];
+  for (const [text, matchText] of [['全球梗草寄旧梗新梗乐', true], ['测试释义', false]]) {
+    assert.deepEqual(store.query(learningKey, text, { matchText, limit: 4 }).map(e => e.content), expected);
+  }
+});
+
+test('slang eviction rolls through tiers and protects manual entries on both insertion paths', t => {
+  const { store } = seedSlang(t, [
+    { content: '已确认', status: 'confirmed' }, { content: '常见梗', count: 3 },
+    { content: '一次梗', count: 1 }, { content: '僵尸词', status: 'candidate', count: 1 },
+  ], { maxSlang: 4 });
+  const contents = () => store.snapshot().slang.map(e => e.content);
+  enqueue(store, learningKey, '1', '候选词');
+  enqueue(store, learningKey, '2', '候选词');
+  store.complete(store.batch(config), { slang: [{ content: '候选词', evidenceIds: ['1', '2'] }], stickers: [] }, [], config);
+  assert.deepEqual(contents(), ['已确认', '常见梗', '一次梗', '候选词']);
+  const add = (content, status) => store.edit('slang', { content, status, scope: learningKey, meaning: '测试' });
+  assert.throws(() => add('候选词', 'confirmed'), /已有该词条/);
+  add('已拒绝', 'rejected');
+  assert.deepEqual(contents(), ['已确认', '常见梗', '一次梗', '已拒绝']);
+  add('手工候选', 'candidate');
+  assert.deepEqual(contents(), ['已确认', '常见梗', '已拒绝', '手工候选']);
+  add('手工新增', 'confirmed');
+  assert.deepEqual(contents(), ['已确认', '已拒绝', '手工候选', '手工新增']);
+  enqueue(store, learningKey, '3', '新词');
+  const before = store.snapshot();
+  assert.throws(() => store.complete(store.batch(config, Date.now(), true),
+    { slang: [{ content: '新词', evidenceIds: ['3'] }], stickers: [] }, [], config), /黑话库已被人工确认\/拒绝词条占满/);
+  assert.deepEqual(store.snapshot(), before);
+});
+
+test('slang eviction resolves ties by count, oldest activity and original array order', t => {
+  const { store } = seedSlang(t, [
+    { content: '高频', count: 8, updatedAt: '2020' }, { content: '活跃', updatedAt: '2026' },
+    { content: '先入', createdAt: '2024' }, { content: '后入', updatedAt: '2024' },
+  ], { maxSlang: 4 });
+  store.edit('slang', { content: '新增', meaning: '测试', scope: learningKey });
+  assert.deepEqual(store.snapshot().slang.map(e => e.content), ['高频', '活跃', '后入', '新增']);
+});
+
+test('local sticker eviction considers usage and age, excluding market, reviewed and global stickers', t => {
+  const { file } = fixture(t);
+  const store = createChatLearningStore(file, { maxStickers: 2 });
+  function add(id) {
+    const hash = String(id).padStart(64, '0'), image = { hash, id: 'learned:' + hash };
+    enqueue(store, learningKey, String(id));
+    store.complete(store.batch(config, Date.now(), true), { slang: [], stickers: [
+      { id: image.id, isSticker: true, description: '表情' },
+    ] }, [image], config);
+    return image.id;
+  }
+  const marketId = 'a'.repeat(32);
+  store.addMarketPack({ id: '123', name: '商城包' }, [{ faceId: marketId, hash: '0'.repeat(64), tags: [] }]);
+  const first = add(1), second = add(2), third = add(3);
+  const locals = () => store.snapshot().stickers.filter(e => e.source !== 'market').map(e => e.id);
+  assert.deepEqual(locals(), [second, third]);
+  assert.ok(!locals().includes(first));
+  store.used(second, learningKey);
+  const fourth = add(4);
+  assert.deepEqual(locals(), [second, fourth]);
+  store.proposeSticker(store.stickers(learningKey).find(e => e.id === fourth), { desc: '待确认' });
+  const fifth = add(5);
+  assert.deepEqual(locals(), [fourth, fifth]);
+  store.edit('stickers', { id: fifth, originalScope: learningKey, scope: 'global' });
+  assert.throws(() => add(6), /本地表情库已被人工确认条目占满/);
+  assert.deepEqual(locals(), [fourth, fifth]);
+  store.decideStickerReview(store.snapshot().stickerReviews[0].id, false);
+  store.edit('stickers', { id: fourth, originalScope: learningKey, status: 'confirmed' });
+  assert.throws(() => add(6), /本地表情库已被人工确认条目占满/);
+  assert.equal(store.snapshot().queue.length, 1);
+  assert.equal(store.marketStickers('123')[0].faceId, marketId);
+});
 
 test('learning cleanup migrates recorded sessions, isolates management and preserves knowledge and usage', async t => {
   const f = fixture(t);
