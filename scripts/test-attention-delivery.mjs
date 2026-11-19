@@ -518,3 +518,31 @@ test('a persisted QQ wake without a surviving source batch still has a non-empty
     assert.equal(h.calls.prompts[0].content[0].text, '【QQ 提醒】\n- 来源未保留');
   } finally { await h.close(); }
 });
+
+test('rest-expired wake includes compact unread summary when conversations are populated', async () => {
+  const { h, clock, setRunning } = await fixture();
+  try {
+    h.setDesktopAgentTurnActive(false);
+    setRunning(false);
+    h.enterDesktopAgentRest(60_000);
+    await clock.run(60_000);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.at(-1).content[0].text, '【空闲等待结束｜QQ 暂无新未读】');
+
+    await h.handleEvent({
+      post_type: 'message',
+      message_type: 'group',
+      group_id: 456,
+      user_id: 123,
+      message_id: 88,
+      raw_message: '普通群聊消息',
+      message: [{ type: 'text', data: { text: '普通群聊消息' } }],
+      sender: { nickname: '群友' }
+    });
+    h.setDesktopAgentTurnActive(false);
+    h.enterDesktopAgentRest(60_000);
+    await clock.run(60_000);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.at(-1).content[0].text, '【空闲等待结束｜QQ 未读：group:456(1条)】');
+  } finally { await h.close(); }
+});

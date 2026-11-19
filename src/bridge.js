@@ -2955,6 +2955,14 @@ async function main() {
     return allowed(kind, id, cfg);
   }
 
+  function v2SessionAllowed(key, token = '') {
+    const canonical = canonicalV2Key(key);
+    if (!canonical) return false;
+    if (isDesktopAgentToken(token)) return true;
+    const match = /^(group|private):(\d+)$/.exec(canonical);
+    return !!match && allowed(match[1], Number(match[2]), cfg);
+  }
+
   let dshCheckPromise = null;
   let dshDiscoveryNotice = '';
   async function checkDsh() {
@@ -3187,15 +3195,6 @@ async function main() {
       consoleCookieToken(req)
     ].some((candidate) => tokenEq(candidate, consoleToken));
     const agentTokenOk = (_key, token) => isDesktopAgentToken(token);
-    // The global credential can address any valid QQ key. Admin-only console requests
-    // without an agent token continue to use the configured allow/deny lists.
-    const v2SessionAllowed = (key, token = '') => {
-      const canonical = canonicalV2Key(key);
-      if (!canonical) return false;
-      if (isDesktopAgentToken(token)) return true;
-      const match = /^(group|private):(\d+)$/.exec(canonical);
-      return !!match && allowed(match[1], Number(match[2]), cfg);
-    };
     const server = http.createServer(async (req, res) => {
       let url;
       try { url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`); }
@@ -8173,8 +8172,8 @@ async function main() {
         });
         const unreadEntries = [];
         for (const [key, st] of socialV2.conversations) {
-          if (!v2SessionAllowed(key, desktopAgentToken)) continue;
-          const unreadCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread.length || 0));
+          if (!canonicalV2Key(key)) continue;
+          const unreadCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread?.length || 0));
           if (unreadCount > 0) unreadEntries.push(`${key}(${unreadCount}条)`);
         }
         const unreadSummary = unreadEntries.length > 0
