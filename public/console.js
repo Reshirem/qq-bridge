@@ -1313,9 +1313,9 @@ document.getElementById('desktopAgentStart').addEventListener('click', async () 
   const button = document.getElementById('desktopAgentStart');
   const status = document.getElementById('desktopAgentMessageStatus');
   const task = document.getElementById('desktopAgentMessage').value.trim();
-  const message = task ?
-    `请按当前人格卡优先处理这项任务：\n${task}\n\n有事可做时直接在当前回合连续往下运行；等所有想做的事都做完、真正无事可做时再调用 agent_rest。`
-    : '请按当前人格卡在这个长期会话里自然活动：你既有挂着的 QQ 社交圈，也有旺盛的求知欲与上进心。你可以顺手看看有未读的 QQ 聊天，或者挑一个刚才群里出现但还没摸透的话题、又或自己感兴趣的小课题，用搜索与后台浏览器通道（windows_computer_use_set_value 往 new-tab 写网址，再用 browserTab 点击滚屏）在当前回合里连续深挖弄懂，把学到的真东西存进长期记忆（memory_save），全部尽兴且无事可做时再调用 agent_rest。';
+  const message = task
+    ? `请处理这项任务：\n${task}`
+    : '【会话启动】';
   button.disabled = true;
   status.textContent = '正在启动自主探索…';
   status.className = 'meta';

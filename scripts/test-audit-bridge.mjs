@@ -26,14 +26,14 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(status, 400);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
-await test('agent rest clamps durations and defaults to five minutes', async (h) => {
+await test('agent rest clamps durations (1-15 min) and defaults to five minutes', async (h) => {
   h.setReady(true);
   await h.ensureDesktopAgentSession();
   const token = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'desktop-agent.json'), 'utf8')).agentToken;
   const server = h.startConsoleServer();
   if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
   try {
-    for (const [body, expected] of [[{}, 300000], [{ durationMs: 1000 }, 60000], [{ durationMs: 120000 }, 120000], [{ durationMs: 7200000 }, 300000]]) {
+    for (const [body, expected] of [[{}, 300000], [{ durationMs: 1000 }, 60000], [{ durationMs: 120000 }, 120000], [{ durationMs: 600000 }, 600000], [{ durationMs: 7200000 }, 900000]]) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/api/desktop-agent/rest`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token', 'x-agent-token': token },
@@ -47,13 +47,13 @@ await test('agent rest clamps durations and defaults to five minutes', async (h)
     }
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
-for (const previousRest of [0, Date.now() + 3600000]) {
+for (const [previousRest, expectedClamp] of [[0, 300000], [Date.now() + 3600000, 900000]]) {
   const h = await bridgeHarness({ files: { 'state/desktop-agent.json': {
     sessionId: 'fixture-session', agentToken: 'fixture-agent-token', lifecycle: 'resting', restUntil: previousRest,
   } } });
   try {
     const remaining = h.attentionSnapshot().restUntil - Date.now();
-    assert.ok(remaining > 295000 && remaining <= 300000, `old rest not clamped: ${remaining}`);
+    assert.ok(remaining > expectedClamp - 5000 && remaining <= expectedClamp, `old rest not clamped: ${remaining}`);
     console.log('PASS old unlimited or long rest is limited on startup');
   } catch (error) { failures++; console.error('FAIL old rest migration:', error.message); }
   finally { await h.close(); }

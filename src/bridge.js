@@ -92,7 +92,8 @@ const DESKTOP_AGENT_FILE = path.join(STATE_DIR, 'desktop-agent.json');
 const DESKTOP_AGENT_RECOVERY_BASE_MS = 60_000;
 const DESKTOP_AGENT_RECOVERY_MAX_MS = 30 * 60_000;
 const DESKTOP_AGENT_REST_MIN_MS = 60_000;
-const DESKTOP_AGENT_REST_MAX_MS = 5 * 60_000;
+const DESKTOP_AGENT_REST_DEFAULT_MS = 5 * 60_000;
+const DESKTOP_AGENT_REST_MAX_MS = 15 * 60_000;
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 let roleCardPromptTemplate = DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.roleCard;
 let closeQQUnreadStore = () => {};
@@ -1813,7 +1814,9 @@ async function main() {
     : 0;
   const desktopAgentRestNeedsClamp = desktopAgentLifecycle === 'resting'
     && (desktopAgentRestUntil === 0 || desktopAgentRestUntil > Date.now() + DESKTOP_AGENT_REST_MAX_MS);
-  if (desktopAgentRestNeedsClamp) desktopAgentRestUntil = Date.now() + DESKTOP_AGENT_REST_MAX_MS;
+  if (desktopAgentRestNeedsClamp) {
+    desktopAgentRestUntil = Date.now() + (desktopAgentRestUntil === 0 ? DESKTOP_AGENT_REST_DEFAULT_MS : DESKTOP_AGENT_REST_MAX_MS);
+  }
   let desktopAgentRecoveryAttempt = Math.max(0, Math.floor(Number(desktopAgentSavedState.recoveryAttempt) || 0));
   let desktopAgentRecoveryAt = Number(desktopAgentSavedState.recoveryAt) || 0;
   let desktopAgentRestReminderSent = desktopAgentSavedState.restReminderSent === true;
@@ -5151,11 +5154,11 @@ async function main() {
             sendJson({ ok: false, error: '数字角色正在睡眠' }, 409);
             return;
           }
-          let durationMs = DESKTOP_AGENT_REST_MAX_MS;
+          let durationMs = DESKTOP_AGENT_REST_DEFAULT_MS;
           if (body.durationMs !== undefined && body.durationMs !== null) {
             durationMs = Number(body.durationMs);
             if (!Number.isFinite(durationMs) || durationMs <= 0) {
-              sendJson({ ok: false, error: 'durationMs 必须为正数；休息时间为 1 至 5 分钟，省略时为 5 分钟' }, 400);
+              sendJson({ ok: false, error: 'durationMs 必须为正数；休息时间为 1 至 15 分钟，省略时为 5 分钟' }, 400);
               return;
             }
             durationMs = Math.min(Math.max(Math.round(durationMs), DESKTOP_AGENT_REST_MIN_MS), DESKTOP_AGENT_REST_MAX_MS);
@@ -7703,7 +7706,7 @@ async function main() {
     timer.unref?.();
   }
 
-  function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_MAX_MS) {
+  function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_DEFAULT_MS) {
     commitPendingHandledConversations();
     desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
@@ -8168,10 +8171,19 @@ async function main() {
             count,
           }) + (String(item.reason).endsWith('poke') ? '，事件：QQ 戳一戳（功能事件）' : '');
         });
+        const unreadEntries = [];
+        for (const [key, st] of socialV2.conversations) {
+          if (!v2SessionAllowed(key, desktopAgentToken)) continue;
+          const unreadCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread.length || 0));
+          if (unreadCount > 0) unreadEntries.push(`${key}(${unreadCount}条)`);
+        }
+        const unreadSummary = unreadEntries.length > 0
+          ? `｜QQ 未读：${unreadEntries.slice(0, 4).join('、')}${unreadEntries.length > 4 ? `等${unreadEntries.length}个会话` : ''}`
+          : '｜QQ 暂无新未读';
         const wakeInstructionByReason = {
-          'rest-expired': cfg.desktopAgent.promptTemplates.restExpired,
-          'sleep-ended': '【睡眠结束】ownerQQ 已发送起床命令，你可以继续活动。',
-          'scheduled-wake': '【睡眠结束】管理员设置的每日起床闹钟已触发，你可以继续活动。',
+          'rest-expired': renderDesktopAgentPromptTemplate(cfg.desktopAgent.promptTemplates.restExpired, { unreadSummary }),
+          'sleep-ended': '【睡眠结束｜ownerQQ 已发起床命令】',
+          'scheduled-wake': '【睡眠结束｜每日起床闹钟触发】',
           'qq-attention': cfg.desktopAgent.promptTemplates.qqWake,
           recovery: cfg.desktopAgent.promptTemplates.recovery,
           'missing-rest': cfg.desktopAgent.promptTemplates.missingRest,
