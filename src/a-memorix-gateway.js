@@ -44,7 +44,14 @@ export function validMemoryId(id) {
 
 function replacementTargets(memoryId, memoryIds) {
   if (memoryId !== undefined && memoryIds !== undefined) throw new Error('请只填写 memoryId 或 memoryIds 之一');
-  const ids = Array.isArray(memoryIds) ? memoryIds : [memoryIds ?? memoryId];
+  let raw = memoryIds ?? memoryId;
+  if (typeof raw === 'string' && raw.trim().startsWith('[') && raw.trim().endsWith(']')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) raw = parsed;
+    } catch {}
+  }
+  const ids = Array.isArray(raw) ? raw : [raw];
   if (!ids.every(validMemoryId)) throw new Error('请提供真实 memoryId，不能使用空值或占位符');
   const targets = [...new Set(ids.map(id => id.trim()))];
   if (!targets.length || targets.length > 10) throw new Error('一次只能合并或替换 1 至 10 个 memoryId');

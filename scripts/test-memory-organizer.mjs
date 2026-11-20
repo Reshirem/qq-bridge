@@ -368,6 +368,33 @@ test('live and recovered chunks require a matching replacement receipt, includin
       assert.equal(receipts.has(1), confirmed);
       if (confirmed) assert.deepEqual({ ...receipts.get(1) }, { memoryWrites: 1, newMemories: 1 });
     }
+    // A failed memory_replace without externalId followed by a confirmed memory_save with externalId recovers the chunk.
+    const savedText = JSON.stringify({ storedIds: ['saved-1'], skippedIds: [] });
+    const records = [];
+    const push = (type, data) => records.push({ seq: records.length, type, data });
+    events.splice(0, events.length, ...cliEvents({ write: true }).slice(0, 2));
+    events.push(
+      { type: 'tool_call', callId: 'bad-replace', tool, input: { memoryIds: '["a"]' } },
+      { type: 'tool_result', callId: 'bad-replace', status: 'failed', result: '未找到要合并/替换的旧记忆' },
+      { type: 'tool_call', callId: 'good-save', tool: 'memory_save', input: { externalId } },
+      { type: 'tool_result', callId: 'good-save', status: 'completed', result: savedText },
+      { type: 'final', text: 'MEMORY_ORGANIZER_DONE', reason: { kind: 'completed' } }
+    );
+    push('turn/start', { turn: 1 });
+    push('user/message', { content: '整理任务 fixture，当前是第 1/1 段' });
+    push('tool/call', { name: tool, callId: 'bad-replace', arguments: { memoryIds: '["a"]' } });
+    push('tool/result', { message: { toolCallId: 'bad-replace', isError: true, content: [{ type: 'text', text: '未找到要合并/替换的旧记忆' }] } });
+    push('tool/call', { name: 'memory_save', callId: 'good-save', arguments: { externalId } });
+    push('tool/result', { message: { toolCallId: 'good-save', isError: false, content: [{ type: 'text', text: savedText }] } });
+    push('assistant/message', { content: 'MEMORY_ORGANIZER_DONE' });
+    push('turn/end', { turn: 1, reason: { kind: 'completed' } });
+    const fallbackOutcome = await h.runMemoryOrganizerHeadless(job, 'fixture', model, 'fixture-session', undefined, 1);
+    assert.equal(fallbackOutcome.memoryWrites, 1);
+    assert.equal(fallbackOutcome.newMemories, 1);
+    h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections'
+      ? { asOfSeq: records.length - 1, values: {} } : { records } } });
+    const { receipts: fallbackReceipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', job.jobId, 1);
+    assert.equal(fallbackReceipts.has(1), true);
   } finally { await h.close(); }
 });
 

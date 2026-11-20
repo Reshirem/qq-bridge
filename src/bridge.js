@@ -2196,7 +2196,7 @@ async function main() {
             serverName: 'qq-memory-organizer',
             transport: 'stdio',
             command: process.execPath,
-            args: [memoryServer],
+            args: [memoryServer, '--organizer'],
             toolCallTimeoutMs: 150_000
           }
         }]
@@ -2238,7 +2238,7 @@ async function main() {
     return [
       `整理任务 ${job.jobId}，源 DSH 会话 ${job.sourceSessionId}，事件范围 (${job.fromSeq}, ${job.throughSeq}]。当前是第 ${chunkIndex + 1}/${chunkCount} 段。`,
       '以下 JSON 是这段范围内的用户可见消息、工具调用和工具结果。只有成功工具结果中实际返回的内容才算主会话收到；QQ 消息列表和单条详情会单独标为 qq-message，其他 QQ 读取结果保留在 tool-result。readThroughSeq 记录 qq-bridge 当时同一来源的连续已展示水位；对有本地 seq 的缓冲消息可用 bufferId 与 seq 核对水位，对历史详情等结果不能把水位误当成该消息的序号。partial=true 表示当前只返回一页；可整理这页明确可见的事实，但不能把未返回内容当成已读或据此推断其不存在。工具结果 truncated=true 表示只返回部分集合，只能依据可见项目。QQ 消息 textTruncated=true 时正文已移除，不能据此保存具体消息事实。重复本地消息按 source key + QQ messageId，或 source key + bufferId + 本地 seq 合并；字段只在双方都提供时比较，缺失与补全不算冲突。单独的 tool-call 只表示尝试读取，不能当成读过。',
-      `先判断哪些信息值得跨会话保留，再按系统说明调用记忆工具。不要把不同 source key 的内容混成一条记忆。更正时保留 supersedes 关联。每条新记忆的 externalId 使用 qq-bridge:organizer:${job.jobId}:chunk-${chunkIndex + 1}:item-N（N 从 1 开始，按本段稳定编号）。sourceContext 写清源 DSH session 和事件序号；涉及 QQ 时还写 source key 和说话人。evidenceReferences 写 DSH 事件序号，并尽量写 QQ 本地 seq 或 messageId。`,
+      `先判断哪些信息值得跨会话保留，再按系统说明调用记忆工具。不要把不同 source key 的内容混成一条记忆。更正时保留 supersedes 关联。每次调用 memory_save 或 memory_replace 时，externalId 都必须使用 qq-bridge:organizer:${job.jobId}:chunk-${chunkIndex + 1}:item-N（N 从 1 开始，按本段稳定编号）。sourceContext 写清源 DSH session 和事件序号；涉及 QQ 时还写 source key 和说话人。evidenceReferences 写 DSH 事件序号，并尽量写 QQ 本地 seq 或 messageId。`,
       'QQ 通用占位 [notice] 不提供正文证据，不能据此推测消息内容或认定撤回。正文字段缺失时只保留已有元数据；同一消息合并后若有 bodySourceSeq，它是实际读到正文的 DSH 事件序号，引用正文时使用该序号。',
       ...(events.some(event => event.resultTruncated) ? ['外部工具事件 resultTruncated=true 表示结果仅保留了部分内容。只引用可见部分，不据此推断未列出的内容不存在。'] : []),
       '若检索发现该事实已存在且没有新信息，不要重复写。若没有值得保存的内容，直接明确报告无新增记忆。不要声称未经记忆工具确认的写入已经成功。',
@@ -2425,9 +2425,6 @@ async function main() {
               const id = input?.externalId;
               const saveId = isOrganizerWrite(tool) && typeof id === 'string' && id.startsWith(itemPrefix)
                 && /^\d+$/.test(id.slice(itemPrefix.length)) ? id : '';
-              if (isOrganizerWrite(tool) && Number.isSafeInteger(chunkNumber) && !saveId) {
-                failure ||= `${tool} 缺少本段有效的 externalId`;
-              }
               toolCalls.set(callId, { tool, saveId });
             }
             if (isOrganizerWrite(tool) && typeof onMemoryWrite === 'function') onMemoryWrite();
@@ -2448,9 +2445,14 @@ async function main() {
               const detail = redactSensitiveText(memoryOrganizerMessageText(event.error ?? event.result ?? event.output ?? event.content)).trim().slice(0, 500);
               const message = `记忆工具 ${tool} 返回失败${detail ? `：${detail}` : ''}`;
               if (isOrganizerWrite(tool) && call?.saveId) failedSaves.set(call.saveId, message);
+              else if (isOrganizerWrite(tool)) failedSaves.set(callId || `${tool}-${failedSaves.size}`, message);
               else failure ||= message;
             }
             if (!isError && isOrganizerWrite(tool)) {
+              if (Number.isSafeInteger(chunkNumber) && !call?.saveId) {
+                failure ||= `${tool} 缺少本段有效的 externalId`;
+                return;
+              }
               const receipt = call && ['completed', 'success', 'succeeded'].includes(status)
                 && memoryOrganizerSaveResult(tool, event.result ?? event.output ?? event.content);
               if (!receipt) {
@@ -2459,6 +2461,9 @@ async function main() {
                 memoryWrites += 1;
                 newMemories += receipt.stored;
                 failedSaves.delete(call.saveId);
+                for (const [failedKey, failedMsg] of failedSaves) {
+                  if (!failedKey.startsWith(itemPrefix)) failedSaves.delete(failedKey);
+                }
               }
             }
           } else if (eventType === 'final') {
@@ -2690,7 +2695,6 @@ async function main() {
           if (isOrganizerWrite(name)) {
             const match = String(args?.externalId ?? '').match(externalIdPattern);
             if (match) { chunk = Number(match[1]); saveId = args.externalId; }
-            if (chunk !== taskChunk && taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
           }
           if (callId) pendingCalls.set(callId, { name, chunk, saveId });
         } else if (event?.type === 'tool/result') {
@@ -2702,8 +2706,12 @@ async function main() {
           const failed = message.isError === true || data.error != null
             || (Array.isArray(message.content) && message.content.some((block) => block?.isError === true));
           if (failed) {
-            if (call.saveId && call.chunk === taskChunk) failedSaves.add(call.saveId);
-            else memoryToolFailure = true;
+            if (isOrganizerWrite(call.name)) {
+              if (call.saveId && call.chunk === taskChunk) failedSaves.add(call.saveId);
+              else failedSaves.add(`untagged:${callId || failedSaves.size}`);
+            } else {
+              memoryToolFailure = true;
+            }
             continue;
           }
           if (!isOrganizerWrite(call.name)) continue;
@@ -2712,11 +2720,14 @@ async function main() {
             if (Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
             continue;
           }
-          if (!Number.isSafeInteger(call.chunk) || call.chunk < 1 || call.chunk > chunkCount) {
+          if (!Number.isSafeInteger(call.chunk) || call.chunk < 1 || call.chunk > chunkCount || call.chunk !== taskChunk) {
             if (taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
             continue;
           }
           failedSaves.delete(call.saveId);
+          for (const key of failedSaves) {
+            if (key.startsWith('untagged:')) failedSaves.delete(key);
+          }
           if (!saveResultsByChunk.has(call.chunk)) saveResultsByChunk.set(call.chunk, []);
           saveResultsByChunk.get(call.chunk).push(saved);
           if (!writesInTurn.has(call.chunk)) writesInTurn.set(call.chunk, []);

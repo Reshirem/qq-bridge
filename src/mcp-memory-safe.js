@@ -74,6 +74,7 @@ function toolError(error) {
   return { content: [{ type: 'text', text: `长期记忆操作失败：${error?.message ?? error}` }], isError: true };
 }
 
+const ORGANIZER_MODE = process.argv.includes('--organizer');
 const server = new McpServer({ name: 'qq-bridge-memory', version: '1.0.0' });
 
 server.tool(
@@ -92,6 +93,10 @@ server.tool(
   }
 );
 
+const externalIdField = ORGANIZER_MODE
+  ? z.string().trim().min(1).max(500).describe('必填稳定外部 ID（格式：qq-bridge:organizer:<jobId>:chunk-<段号>:item-<序号>），用于 A_Memorix 幂等去重')
+  : z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重');
+
 const memoryFields = {
   content: z.string().trim().min(1).max(20000).describe('要保存的完整记忆，写清来源、说话人、关键事实与确定程度'),
   tags: z.array(z.string().max(80)).max(20).optional().describe('可选检索标签'),
@@ -100,7 +105,7 @@ const memoryFields = {
   sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
   confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
   evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('每条记忆最多 20 项证据引用。选与这条记忆直接相关的消息 ID、会话事件序号或任务记录标题并去重。'),
-  externalId: z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重')
+  externalId: externalIdField
 };
 
 function writeMemory(operation) {
@@ -124,12 +129,21 @@ server.tool(
 );
 
 const targetId = z.string().trim().min(1).max(300);
+const targetIdsField = z.preprocess((val) => {
+  if (typeof val === 'string' && val.trim().startsWith('[') && val.trim().endsWith(']')) {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return val;
+}, z.union([targetId, z.array(targetId).min(1).max(10)]));
 server.tool(
   'memory_replace',
   '补充同一课题的新收获、更正过时事实，或将同主题同来源的 1 至 10 条碎片合并为一条完整记忆。先用 memory_search 找到候选，再用 memory_read 核实每个真实 memoryId 和原文。正文保留关键事实、来源和说话人归属。严禁跨 QQ 群、私聊合并。新记录保存成功后删除旧记录；回执中的 retainedIds 列出未确认删除的旧 ID。',
   {
     ...memoryFields,
-    memoryIds: z.union([targetId, z.array(targetId).min(1).max(10)]).describe('已逐条读取的旧 memoryId，单个字符串或 1 至 10 个 ID 的数组'),
+    memoryIds: targetIdsField.describe('已逐条读取的旧 memoryId，单个字符串或 1 至 10 个 ID 的数组'),
     origin: z.enum(['qq', 'assistant']).optional().describe('省略时继承第一条旧记录的来源类别'),
     reason: z.string().max(500).optional().describe('更正或合并原因')
   },

@@ -173,9 +173,10 @@ test('stdio memory_replace validates inputs and forwards single and multi-ID wri
   const headers = { 'content-type': 'application/json', 'x-console-token': consoleToken };
   const post = (route, body) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method: 'POST', headers, body: JSON.stringify(body) });
   assert.equal((await post('desktop-agent/memory/replace', { memoryId: 'a', content: 'fixture' })).status, 403);
-  for (const memoryIds of ['a', ['a', 'b']]) {
+  for (const memoryIds of ['a', ['a', 'b'], '["a", "b"]']) {
     const result = await replace({ memoryIds, externalId: 'fixture-id', evidenceReferences: ['msg-c'], confidence: 'reported' });
-    assert.deepEqual(JSON.parse(result.content[0].text).replacedIds, [memoryIds].flat());
+    const expectedIds = typeof memoryIds === 'string' && memoryIds.startsWith('[') ? JSON.parse(memoryIds) : [memoryIds].flat();
+    assert.deepEqual(JSON.parse(result.content[0].text).replacedIds, expectedIds);
     const body = f.calls.findLast(c => c.op === 'ingest').body;
     assert.equal(body.externalId, 'fixture-id');
     assert.equal(body.sourceType, 'qq');
