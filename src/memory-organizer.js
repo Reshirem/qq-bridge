@@ -317,7 +317,7 @@ export function organizerEvidenceVersion(job) {
   const hasChunks = Number.isSafeInteger(job.progress?.total)
     || Number(job.progress?.completed) > 0
     || Boolean(job.organizerSessionId) || Boolean(job.organizerSessionIds?.length);
-  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 3;
+  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 4;
 }
 
 function compactQQMessage(message, omitNoticePlaceholders) {
@@ -393,12 +393,92 @@ function mergeQQMessageFields(previous, current) {
   return merged;
 }
 
-function containsTruncationMarker(value) {
-  if (Array.isArray(value)) return value.some(containsTruncationMarker);
+const DSH_SPILL_FOOTER = /\(Omitted \d+ bytes\. Full formatted result stored at:/;
+
+function containsTruncationMarker(value, includeSpill = false) {
+  if (Array.isArray(value)) return value.some(item => containsTruncationMarker(item, includeSpill));
   if (value && typeof value === 'object') {
-    return Object.values(value).some(containsTruncationMarker);
+    return Object.values(value).some(item => containsTruncationMarker(item, includeSpill));
   }
-  return typeof value === 'string' && /(?:…\(truncated\)|\[truncated\]|content was truncated)/i.test(value);
+  return typeof value === 'string' && (/(?:…\(truncated\)|\[truncated\]|content was truncated)/i.test(value)
+    || (includeSpill && DSH_SPILL_FOOTER.test(value)));
+}
+
+function compactDesktopObject(value) {
+  const out = { ...value };
+  for (const key of ['lines', 'words', 'boxes']) {
+    if (!Array.isArray(out[key])) continue;
+    if (key === 'lines') out.lineCount = out.lines.length;
+    delete out[key];
+    out.truncated = true;
+  }
+  if (out.tree && typeof out.tree === 'object') {
+    out.tree = Object.fromEntries(['name', 'controlType', 'className']
+      .filter(key => typeof out.tree[key] === 'string' && out.tree[key])
+      .map(key => [key, out.tree[key]]));
+    out.truncated = true;
+  }
+  if ('screenshot' in out) {
+    delete out.screenshot;
+    out.truncated = true;
+  }
+  if (typeof out.text === 'string' && out.text.length > 2000) {
+    out.text = out.text.slice(0, 2000);
+    out.truncated = true;
+  }
+  for (const key of ['windows', 'matches']) {
+    if (Array.isArray(out[key]) && out[key].length > 30) {
+      out[key] = out[key].slice(0, 30);
+      out.truncated = true;
+    }
+  }
+  return out;
+}
+
+function compactDesktopToolResult(value, sanitize) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return compactDesktopObject(value);
+  if (typeof value !== 'string') return value;
+  const footer = value.search(DSH_SPILL_FOOTER);
+  const visible = footer < 0 ? value : value.slice(0, footer).trimEnd();
+  const [first, ...lines] = visible.split(/\r?\n/);
+  const header = parseJsonText(first);
+  if (header && typeof header === 'object' && !Array.isArray(header)) {
+    const summary = compactDesktopObject(sanitize(header));
+    if (lines[0]?.startsWith('tab ')) summary.tabSummary = lines.shift();
+    const labels = [];
+    let length = 0;
+    for (const line of lines) {
+      const label = line.match(/"((?:\\.|[^"\\])+)"/)?.[1];
+      if (!label) continue;
+      labels.push(label);
+      length += label.length + 1;
+      if (labels.length >= 40 || length >= 1500) break;
+    }
+    if (labels.length) summary.pageExcerpt = labels.join('\n').slice(0, 1500);
+    return { ...summary, truncated: true };
+  }
+  if (footer < 0) return value;
+  const summary = { compactedFromSpill: true, truncated: true, excerpt: first.slice(0, 1200) };
+  if (!visible.trimStart().startsWith('{')) return summary;
+  // Read only complete values in the prefix. A nested control's name or action
+  // must not be attributed to the root window or the tool itself.
+  const prefix = visible.split(/\r?\n\r?\n\[\.\.\.\]/, 1)[0];
+  const tokens = /[\s,]*(?:"((?:\\.|[^"\\])*)"\s*:\s*)?("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?=\s*[,}\]])|[[\]{}])/gy;
+  let depth = 0;
+  let inTree = false;
+  for (const [, key, token] of prefix.matchAll(tokens)) {
+    if (token === '{' || token === '[') {
+      if (depth === 1) inTree = key === 'tree' && token === '{';
+      depth++;
+    } else if (token === '}' || token === ']') {
+      depth--;
+    } else if (depth === 1 && ['ok', 'scope', 'action', 'nodeCount'].includes(key)) {
+      summary[key] = parseJsonText(token);
+    } else if (depth === 2 && inTree && key === 'name' && token.startsWith('"')) {
+      summary.windowName = parseJsonText(token);
+    }
+  }
+  return sanitize(summary);
 }
 
 /**
@@ -406,7 +486,8 @@ function containsTruncationMarker(value) {
  * Calls are retained for context, but only successful tool results carry returned data.
  */
 export function organizerTranscriptRecords(records, {
-  sanitize = (value) => value, legacyChunkLayout = false, omitNoticePlaceholders = !legacyChunkLayout
+  sanitize = (value) => value, legacyChunkLayout = false, omitNoticePlaceholders = !legacyChunkLayout,
+  compactDesktopToolResults = !legacyChunkLayout
 } = {}) {
   const ordered = (Array.isArray(records) ? records : [])
     .filter((record) => record && typeof record === 'object')
@@ -460,8 +541,28 @@ export function organizerTranscriptRecords(records, {
       });
       const result = sanitize(content.length === 1 ? content[0] : content);
       const ok = !isFailedToolResult(event);
-      if (containsTruncationMarker(result) || (event?.surfaceOp && event.surfaceOp !== 'append')) {
+      const external = compactDesktopToolResults && !toolLeaf.startsWith('qq_')
+        && !toolLeaf.startsWith('memory_') && toolLeaf !== 'agent_rest';
+      const marked = containsTruncationMarker(result, compactDesktopToolResults);
+      if ((!external && marked) || (event?.surfaceOp && event.surfaceOp !== 'append')) {
         markIncomplete(`DSH 事件 ${seq} 的工具结果含截断标记或被替换`);
+      }
+      if (external) {
+        const evidence = { seq, time: Number(event?.time) || undefined, kind: 'tool-result', name, ok, result };
+        let blocks = Array.isArray(result) && content.length !== 1 ? result : [result];
+        if (toolLeaf.startsWith('windows_computer_use_')) {
+          blocks = blocks.map(block => compactDesktopToolResult(block, sanitize));
+          evidence.result = blocks.length === 1 ? blocks[0] : blocks;
+        }
+        if (marked || blocks.some(block => block?.truncated === true)) evidence.resultTruncated = true;
+        if (Buffer.byteLength(JSON.stringify(evidence)) > 16_000) {
+          const preview = typeof evidence.result === 'string' ? evidence.result : JSON.stringify(evidence.result);
+          evidence.result = { truncated: true, preview: (preview ?? '').slice(0, 4000) };
+          evidence.resultTruncated = true;
+          evidence.name = name.slice(0, 1000);
+        }
+        events.push(evidence);
+        continue;
       }
       const resultValue = content.length === 1 ? content[0] : content;
       const resultObject = resultValue && typeof resultValue === 'object' && !Array.isArray(resultValue)

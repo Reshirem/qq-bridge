@@ -541,11 +541,103 @@ test('quoted reply alignment uses the tool that first supplied a body after a no
   }
 });
 
-test('existing chunk receipts retain evidence layout while unread jobs adopt notice handling', () => {
-  for (const job of [{}, { progress: { evidenceVersion: 2, total: null, completed: 0 } }]) {
-    assert.equal(organizerEvidenceVersion(job), 3);
+function toolResult(seq, toolName, ...blocks) {
+  return { seq, type: 'tool/result', data: { message: { source: { toolName },
+    content: blocks.map(text => ({ type: 'text', text })) } } };
+}
+
+test('browser snapshots and clicks retain tab, action and visible labels within a bounded excerpt', () => {
+  const tab = { title: '操作指南', url: 'https://example.invalid/help' };
+  const tabSummary = 'tab tb8 · Google Chrome · 操作指南 · ' + tab.url;
+  const nodes = Array.from({ length: 400 }, (_, i) => '  [tb8:' + i + '] button "继续阅读 ' + 'x'.repeat(32) + '"');
+  for (const action of ['snapshot', 'click']) {
+    const header = { channel: 'browser', ok: true, action, target: 'button', tab, screenshot: { data: 'image-data' } };
+    const raw = [JSON.stringify(header), tabSummary, '[tb8:99] image', ...nodes].join('\r\n');
+    const records = [toolResult(1, 'mcp__wincu__windows_computer_use_' + action, raw)];
+    const { events: [event], incomplete } = organizerTranscriptRecords(records);
+    assert.equal(incomplete, false);
+    assert.ok(Buffer.byteLength(raw) > 20_000);
+    assert.ok(Buffer.byteLength(JSON.stringify(event)) < 3000);
+    assert.deepEqual(event.result.tab, tab);
+    assert.equal(event.result.action, action);
+    assert.equal(event.result.target, 'button');
+    assert.equal(event.result.tabSummary, tabSummary);
+    assert.equal(event.result.truncated, true);
+    assert.equal(event.resultTruncated, true);
+    assert.match(event.result.pageExcerpt, /^继续阅读/);
+    assert.ok(event.result.pageExcerpt.length <= 1500);
+    assert.doesNotMatch(JSON.stringify(event), /\[tb8:|image-data/);
+    for (const options of [{ compactDesktopToolResults: false }, { legacyChunkLayout: true }]) {
+      assert.equal(organizerTranscriptRecords(records, options).events[0].result, raw);
+    }
   }
-  for (const evidenceVersion of [1, 2, 3]) {
+});
+
+test('spilled accessibility trees and OCR evidence fit the organizer chunker', async () => {
+  const name = '搜索 "资料"';
+  const root = { boundingBox: { width: 640 }, name, controlType: 'Window', className: 'Fixture', children: [] };
+  const tree = JSON.stringify({ ok: false, scope: 'window', nodeCount: 300, tree: root });
+  const raw = tree.slice(0, tree.indexOf('[]')) + '[{"action":"nested-control"},' + '{"id":100},'.repeat(5300)
+    + '\n\n[...]\n\n]}}\n(Omitted 39767 bytes. Full formatted result stored at: fixture-private-path)';
+  const ocr = { text: '识别文字'.repeat(600), query: '资料', matched: true, lines: Array(1100).fill({ words: ['坐标'], bbox: [1, 2, 3, 4] }) };
+  const records = [
+    toolResult(3303, 'mcp__wincu__windows_computer_use_accessibility_tree', raw),
+    toolResult(3304, 'windows_computer_use_ocr', JSON.stringify(ocr)),
+    toolResult(3305, 'windows_computer_use_accessibility_tree', tree),
+    toolResult(3306, 'windows_computer_use_list_windows', JSON.stringify({ windows: Array(35).fill('title'), boxes: [], words: [] }))
+  ];
+  assert.ok(Buffer.byteLength(raw) > 50_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(ocr)) > 38_000);
+  const { events, incomplete } = organizerTranscriptRecords(records);
+  assert.equal(incomplete, false);
+  assert.ok(events.every(event => event.resultTruncated && event.result.truncated));
+  const [spill, text, window, list] = events.map(event => event.result);
+  assert.equal(spill.compactedFromSpill, true);
+  assert.equal(spill.ok, false);
+  assert.equal(spill.scope, 'window');
+  assert.equal(spill.windowName, name);
+  assert.equal(spill.nodeCount, 300);
+  assert.equal(spill.action, undefined);
+  assert.doesNotMatch(JSON.stringify(events), /fixture-private-path|"children"|"lines"|"boxes"|"words"/);
+  assert.equal(text.text, ocr.text.slice(0, 2000));
+  assert.deepEqual([text.query, text.matched, text.lineCount], ['资料', true, ocr.lines.length]);
+  assert.deepEqual(window.tree, { name, controlType: 'Window', className: 'Fixture' });
+  assert.equal(list.windows.length, 30);
+  const h = await bridgeHarness();
+  try {
+    assert.equal(h.chunkMemoryOrganizerEvents(events).length, 1);
+    const old = organizerTranscriptRecords(records, { compactDesktopToolResults: false });
+    assert.throws(() => h.chunkMemoryOrganizerEvents(old.events), /超过 45000 字节/);
+  } finally { await h.close(); }
+});
+
+test('external previews are sanitized and flagged while QQ, memory and replaced records stay strict', () => {
+  const marker = '[truncated]';
+  const spill = 'partial\n(Omitted 999 bytes. Full formatted result stored at: fixture)';
+  for (const tool of ['mcp__qq__qq_get_conversation_history', 'mcp__qq-memory__memory_read', 'qq_agent_rest']) {
+    for (const text of [marker, spill]) assert.equal(organizerTranscriptRecords([toolResult(1, tool, text)]).incomplete, true);
+    const raw = '资料'.repeat(10_000);
+    assert.equal(organizerTranscriptRecords([toolResult(1, tool, raw)]).events[0].result, raw);
+  }
+  const records = [toolResult(1, 'web_search', marker, spill), toolResult(2, 'web_fetch', JSON.stringify({
+    token: 'fixture-secret', text: '字'.repeat(6000)
+  }))];
+  const sanitize = value => value?.token ? { ...value, token: '***' } : value;
+  const { events, incomplete } = organizerTranscriptRecords(records, { sanitize });
+  assert.equal(incomplete, false);
+  assert.ok(events.every(event => event.resultTruncated));
+  assert.equal(events[1].result.truncated, true);
+  assert.equal(events[1].result.preview.length, 4000);
+  assert.doesNotMatch(events[1].result.preview, /fixture-secret/);
+  assert.equal(organizerTranscriptRecords(records, { compactDesktopToolResults: false }).incomplete, true);
+  assert.equal(organizerTranscriptRecords([{ ...records[0], surfaceOp: 'replace' }]).incomplete, true);
+});
+
+test('existing chunk receipts retain evidence layout while unread jobs adopt version 4', () => {
+  for (const job of [{}, { progress: { evidenceVersion: 2, total: null, completed: 0 } }]) {
+    assert.equal(organizerEvidenceVersion(job), 4);
+  }
+  for (const evidenceVersion of [1, 2, 3, 4]) {
     for (const checkpoint of [{ total: 5 }, { completed: 1 }]) {
       assert.equal(organizerEvidenceVersion({ progress: { evidenceVersion, ...checkpoint } }), evidenceVersion);
     }
