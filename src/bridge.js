@@ -1895,6 +1895,7 @@ async function main() {
   let desktopAgentTurnActive = false;
   let desktopAgentRetry = null;
   let desktopAgentLastTurnBoundary = null;
+  let conversationReadCycle = 0;
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
   let memoryOrganizerWorkerPromise = null;
@@ -3393,14 +3394,18 @@ async function main() {
         res.end(JSON.stringify(obj, null, 2));
       };
       // A console preview is passive. Only a completed agent response consumes its rows.
-      const sendQQReadResult = (key, st, result, offered) => {
+      const sendQQReadResult = (key, st, result, offered, visit) => {
         const displayed = new Set(req.headers['x-agent-token'] ? offered : []);
         const remaining = st.unread.filter(message => !displayed.has(message));
-        if (remaining.length < st.unread.length) {
+        if (req.headers['x-agent-token'] && (displayed.size || visit)) {
           res.once('finish', () => {
-            if (st.bufferId !== socialV2.bufferId) return;
-            try { acknowledgeQQMessages(key, st, displayed, true); }
-            catch (error) { log('保存 QQ 已读记录失败：', error?.message ?? error); }
+            if (socialV2.conversations.get(canonicalV2Key(key)) !== st) return;
+            try {
+              acknowledgeQQMessages(key, st, displayed, true);
+              if (visit && visit.cycle === conversationReadCycle && visit.order > (st.pendingVisit?.order ?? 0)) {
+                st.pendingVisit = visit;
+              }
+            } catch (error) { log('保存 QQ 已读记录失败：', error?.message ?? error); }
           });
         }
         sendJson({ ...result, bufferId: st.bufferId, unreadCount: remaining.length, readThroughSeq: readThroughSeqV2(st, remaining) });
@@ -5128,7 +5133,7 @@ async function main() {
             ok: true,
             key,
             unreadCount: st.unread.length,
-
+            conversationUnreadCount: st.unreadMessageCount,
             lastIncomingAt: st.lastIncomingAt,
             lastAiReplyAt: st.lastAiReplyAt
           });
@@ -5150,6 +5155,7 @@ async function main() {
           // Read oldest first so a backlog larger than one response drains in order.
           const messages = afterSeq === null ? st.unread.slice(0, limit)
             : st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq > afterSeq).slice(0, limit);
+          const visit = req.headers['x-agent-token'] && messages.length ? snapshotConversationVisit(st) : null;
           const rows = native ? await Promise.all(messages.map(async ref => {
             const [row] = await readQQHistory(key, 1, ref.messageId);
             if (!row || String(row.messageId) !== ref.messageId) throw Error('QQ 暂未找到原消息，提醒仍待阅读');
@@ -5160,13 +5166,13 @@ async function main() {
             ok: true, key, nextAfterSeq, hasMore: st.unread.some(m => m.seq > nextAfterSeq),
             messages: rows.map(withCurrentOwnerIdentity),
             slang: chatLearning?.query(key, rows.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
-          }, messages);
+          }, messages, visit);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/conversation-history') {
           const key = String(url.searchParams.get('key') ?? '').trim();
           const messageId = String(url.searchParams.get('messageId') ?? '').trim();
-          const reverseOrder = url.searchParams.get('reverseOrder') !== 'false';
+          const reverseOrder = !messageId || url.searchParams.get('reverseOrder') !== 'false';
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
@@ -5176,7 +5182,8 @@ async function main() {
           const id = Number(keyMatch[2]);
           const action = kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history';
           const st = getSocialV2State(key);
-          const unreadBeforeRead = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread.length || 0));
+          const unreadBeforeRead = st.unreadMessageCount;
+          const visit = req.headers['x-agent-token'] && !messageId ? snapshotConversationVisit(st) : null;
           const rawCount = Number(url.searchParams.get('count'));
           const defaultCount = !messageId && unreadBeforeRead > 0 ? Math.min(QQ_UNREAD_LIMIT, Math.max(20, unreadBeforeRead + 10)) : 20;
           const count = Math.min(QQ_UNREAD_LIMIT, Math.max(1, rawCount || defaultCount));
@@ -5218,22 +5225,12 @@ async function main() {
               return { ...m, isNew };
             });
             const ids = new Set(messages.filter(m => !m.isSelf).map(m => qqMessageId(m.messageId)).filter(Boolean));
-            if (req.headers['x-agent-token'] && !anchor && reverseOrder !== false) {
-              res.once('finish', () => {
-                if (st.bufferId !== socialV2.bufferId) return;
-                const newest = messages[0];
-                const newestTime = Math.max(Number(newest?.time) || 0, st.lastIncomingAt || 0, now);
-                st.pendingHandledAt = Math.max(st.pendingHandledAt || 0, newestTime);
-                if (newest?.messageId != null) st.pendingHandledMessageId = String(newest.messageId);
-                if (!desktopAgentTurnActive) {
-                  st.handledThroughAt = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0);
-                  if (st.pendingHandledMessageId) st.handledThroughMessageId = st.pendingHandledMessageId;
-                  st.pendingHandledAt = 0;
-                  st.pendingHandledMessageId = null;
-                }
-                st.unreadMessageCount = count >= unreadBeforeRead ? 0 : Math.max(0, (st.unreadMessageCount || 0) - count);
-                try { saveSocialV2State(key); } catch (error) { log('保存 QQ 会话处理水位失败：', error?.message ?? error); }
-              });
+            if (visit && messages.length && st.incomingVersion === visit.version) {
+              const newest = messages[0];
+              if (newest.time >= visit.time || !visit.messageId) {
+                visit.time = Math.max(visit.time, newest.time);
+                visit.messageId = newest.messageId == null ? visit.messageId : String(newest.messageId);
+              }
             }
             sendQQReadResult(key, st, {
               ok: true, key, source: native ? 'ntqq-history' : 'snowluma-history', action, messageId: messageId || null,
@@ -5242,7 +5239,7 @@ async function main() {
               lastAiReply: st.lastAiReplyAt > 0 ? compactModelMessage({ time: st.lastAiReplyAt }, { now }) : null,
               count: messages.length, messages, now,
               slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
-            }, st.unread.filter(m => ids.has(qqMessageId(m.messageId))));
+            }, st.unread.filter(m => ids.has(qqMessageId(m.messageId))), messages.length ? visit : null);
           } catch (error) {
             sendJson({ ok: false, error: `读取会话历史失败：${error?.message ?? error}` }, 502);
           }
@@ -6345,7 +6342,7 @@ async function main() {
             const enriched = allConversations.map((item) => {
               const st = socialV2.conversations.get(item.key);
               const reminderCount = st ? (native ? st.unread.length : st.unread.filter((m) => m.reason).length) : 0;
-              const unreadCount = st ? Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread.length || 0)) : 0;
+              const unreadCount = st?.unreadMessageCount ?? 0;
               const lastHandledAt = st?.handledThroughAt || 0;
               return {
                 ...item,
@@ -7399,7 +7396,7 @@ async function main() {
       desktopAgentTurnActive = false;
       desktopAgentRetry = null;
       desktopAgentManualPromptPending = 0;
-      commitPendingHandledConversations();
+      finishConversationVisits(false);
       KNOWN_AGENT_TOKENS.delete(desktopAgentToken);
       desktopAgentToken = crypto.randomBytes(32).toString('hex');
       KNOWN_AGENT_TOKENS.add(desktopAgentToken);
@@ -7465,7 +7462,7 @@ async function main() {
   }
 
   async function submitDesktopAgentPrompt(sessionId, text, { mode = 'queue' } = {}) {
-    if (!desktopAgentTurnActive) commitPendingHandledConversations();
+    if (!desktopAgentTurnActive) finishConversationVisits(false);
     // Serialize the first prompt so overlapping WebUI/QQ submissions cannot both
     // append the memory bootstrap to the same persistent DSH session.
     if (desktopAgentInitialContextPrompt) {
@@ -7644,6 +7641,7 @@ async function main() {
   }
 
   function stopDesktopAgentLifecycle() {
+    finishConversationVisits(false);
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
     clearDesktopAgentRecoveryTimer();
@@ -7755,6 +7753,7 @@ async function main() {
       desktopAgentLifecycleEpoch += 1;
       return cancelSleepingSession();
     }
+    finishConversationVisits(false);
     expireNativeReminders();
     desktopAgentLifecycleEpoch += 1;
     desktopAttentionGeneration += 1;
@@ -7829,7 +7828,7 @@ async function main() {
   }
 
   function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_DEFAULT_MS) {
-    commitPendingHandledConversations();
+    finishConversationVisits(true);
     desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
@@ -8296,7 +8295,7 @@ async function main() {
         const unreadEntries = [];
         for (const [key, st] of socialV2.conversations) {
           if (!canonicalV2Key(key)) continue;
-          const unreadCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unreadMessageCount || 0, st.unread?.length || 0));
+          const unreadCount = st.unreadMessageCount;
           if (unreadCount > 0) unreadEntries.push(`${key}(${unreadCount}条)`);
         }
         const unreadSummary = unreadEntries.length > 0
@@ -8416,8 +8415,7 @@ async function main() {
         unreadMessageCount: 0,
         handledThroughAt: 0,
         handledThroughMessageId: null,
-        pendingHandledAt: 0,
-        pendingHandledMessageId: null,
+        incomingVersion: 0, visitOrder: 0, pendingVisit: null,
         lastCountedMessageId: null,
         lastAiReplyAt: 0,
         lastActionAt: 0,
@@ -8538,11 +8536,10 @@ async function main() {
             bufferId: socialV2.bufferId,
             name: String(val.name || '').slice(0, 100),
             unread,
-            unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, Math.max(0, Number(val.unreadMessageCount) || unread.length)),
+            unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, Math.max(0, Number(val.unreadMessageCount ?? unread.length) || 0)),
             handledThroughAt: loadedHandledAt,
             handledThroughMessageId: loadedHandledId ? String(loadedHandledId) : null,
-            pendingHandledAt: 0,
-            pendingHandledMessageId: null,
+            incomingVersion: 0, visitOrder: 0, pendingVisit: null,
             lastCountedMessageId: val.lastCountedMessageId ? String(val.lastCountedMessageId) : null,
             lastAiReplyAt: Number(val.lastAiReplyAt) || 0,
             lastActionAt: Number(val.lastActionAt) || 0,
@@ -8586,8 +8583,8 @@ async function main() {
       name: st.name || '', lastAiReplyAt: st.lastAiReplyAt, lastActionAt: st.lastActionAt,
       lastIncomingAt: st.lastIncomingAt, lastUnreadSeq: st.lastUnreadSeq, lastReadThroughSeq: readThroughSeqV2(st),
       unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, Math.max(0, Number(st.unreadMessageCount) || 0)),
-      handledThroughAt: Math.max(Number(st.handledThroughAt) || 0, Number(st.pendingHandledAt) || 0),
-      handledThroughMessageId: st.pendingHandledMessageId || st.handledThroughMessageId || null,
+      handledThroughAt: st.handledThroughAt,
+      handledThroughMessageId: st.handledThroughMessageId,
       lastCountedMessageId: st.lastCountedMessageId || null,
       stickerCollectTimes: st.stickerCollectTimes.slice(-500), seenForwardIds: Array.from(seenForwardIds.get(key) || []).slice(-1000),
     };
@@ -8603,16 +8600,42 @@ async function main() {
     unreadStore?.save?.(canonicalV2Key(key), qqSourceMetadata(key, st), st.unread);
   }
 
-  function commitPendingHandledConversations() {
+  // The badge counts arrivals. The separate queue tracks exactly which rows were delivered.
+  function snapshotConversationVisit(st) {
+    return {
+      cycle: conversationReadCycle, order: ++st.visitOrder, version: st.incomingVersion,
+      time: st.lastIncomingAt, messageId: st.lastCountedMessageId,
+    };
+  }
+
+  function commitConversationVisit(key, st) {
+    const visit = st.pendingVisit;
+    const next = {
+      ...st, unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, st.incomingVersion - visit.version),
+      handledThroughAt: Math.max(st.handledThroughAt, visit.time),
+      handledThroughMessageId: visit.messageId ?? st.handledThroughMessageId,
+      pendingVisit: null,
+    };
+    unreadStore?.save?.(canonicalV2Key(key), qqSourceMetadata(key, next), st.unread);
+    Object.assign(st, next);
+  }
+
+  function finishConversationVisits(completed) {
+    conversationReadCycle++;
     for (const [key, st] of socialV2.conversations) {
-      if ((st.pendingHandledAt || 0) > (st.handledThroughAt || 0) || st.pendingHandledMessageId) {
-        st.handledThroughAt = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0);
-        if (st.pendingHandledMessageId) st.handledThroughMessageId = st.pendingHandledMessageId;
-        st.pendingHandledAt = 0;
-        st.pendingHandledMessageId = null;
-        saveSocialV2State(key);
+      if (!st.pendingVisit) continue;
+      if (completed) {
+        try { commitConversationVisit(key, st); }
+        catch (error) { log('保存 QQ 会话未读数失败：', error?.message ?? error); }
       }
+      st.pendingVisit = null;
     }
+  }
+
+  function countConversationArrival(st, messageId) {
+    st.incomingVersion++;
+    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, st.unreadMessageCount + 1);
+    st.lastCountedMessageId = messageId == null ? null : String(messageId);
   }
 
   function recordIncomingMessageCount(key, messageId, rawTime = Date.now(), isReplay = false) {
@@ -8620,13 +8643,12 @@ async function main() {
     const numTime = Number(rawTime);
     const time = Number.isFinite(numTime) && numTime > 0 ? (numTime > 1e12 ? numTime : numTime * 1000) : Date.now();
     if (messageId && st.lastCountedMessageId === String(messageId)) return;
-    const knownWatermark = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0, st.lastIncomingAt || 0);
+    const knownWatermark = Math.max(st.handledThroughAt || 0, st.lastIncomingAt || 0);
     if (isReplay && knownWatermark > 0 && time <= knownWatermark) return;
-    if ((st.handledThroughAt || 0) === 0 && (st.pendingHandledAt || 0) === 0 && (st.unreadMessageCount || 0) === 0) {
+    if ((st.handledThroughAt || 0) === 0 && (st.unreadMessageCount || 0) === 0) {
       st.handledThroughAt = Math.max(1, time - 1);
     }
-    if (messageId) st.lastCountedMessageId = String(messageId);
-    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, (st.unreadMessageCount || 0) + 1);
+    countConversationArrival(st, messageId);
     st.lastIncomingAt = Math.max(st.lastIncomingAt || 0, time);
     saveSocialV2State(key);
   }
@@ -8908,13 +8930,13 @@ async function main() {
     };
     st.lastUnreadSeq = msg.seq;
     st.lastIncomingAt = msg.time;
-    if ((st.handledThroughAt || 0) === 0 && (st.pendingHandledAt || 0) === 0 && st.unread.length === 0) {
+    if ((st.handledThroughAt || 0) === 0 && st.unread.length === 0) {
       st.handledThroughAt = Math.max(1, msg.time - 1);
     }
 
     st.unread.push(msg);
     if (st.unread.length > QQ_UNREAD_LIMIT) st.unread.splice(0, st.unread.length - QQ_UNREAD_LIMIT);
-    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unread.length, (st.unreadMessageCount || 0) + 1));
+    countConversationArrival(st, msg.messageId);
     saveSocialV2State(key);
     return msg;
   }
@@ -8947,13 +8969,13 @@ async function main() {
     };
     st.lastUnreadSeq = msg.seq;
     st.lastIncomingAt = msg.time;
-    if ((st.handledThroughAt || 0) === 0 && (st.pendingHandledAt || 0) === 0 && st.unread.length === 0) {
+    if ((st.handledThroughAt || 0) === 0 && st.unread.length === 0) {
       st.handledThroughAt = Math.max(1, msg.time - 1);
     }
 
     st.unread.push(msg);
     if (st.unread.length > QQ_UNREAD_LIMIT) st.unread.splice(0, st.unread.length - QQ_UNREAD_LIMIT);
-    st.unreadMessageCount = Math.min(QQ_UNREAD_LIMIT, Math.max(st.unread.length, (st.unreadMessageCount || 0) + 1));
+    countConversationArrival(st, msg.messageId);
     saveSocialV2State(key);
     return msg;
   }
@@ -9122,19 +9144,6 @@ async function main() {
     if (!matched.length) return 0;
     const unread = st.unread.filter(m => !selected.has(m));
     const sequences = new Set(matched.map(m => m.seq));
-    st.unreadMessageCount = Math.max(unread.length, Math.max(0, (st.unreadMessageCount || 0) - matched.length));
-    const newestAckTime = Math.max(...matched.map(m => Number(m.time) || 0), 0);
-    if (newestAckTime > 0) {
-      st.pendingHandledAt = Math.max(st.pendingHandledAt || 0, newestAckTime);
-      const lastId = matched.at(-1)?.messageId;
-      if (lastId != null) st.pendingHandledMessageId = String(lastId);
-      if (!desktopAgentTurnActive) {
-        st.handledThroughAt = Math.max(st.handledThroughAt || 0, st.pendingHandledAt || 0);
-        if (st.pendingHandledMessageId) st.handledThroughMessageId = st.pendingHandledMessageId;
-        st.pendingHandledAt = 0;
-        st.pendingHandledMessageId = null;
-      }
-    }
     unreadStore.acknowledge(key, qqSourceMetadata(key, { ...st, unread }), sequences);
     st.unread = unread;
     // Keep the last page addressable for follow-up quotes and media, including ID-less pokes.
@@ -9398,19 +9407,22 @@ async function main() {
             if (frame.sessionId === desktopAgentSessionId) {
               recordSessionSnapshot(frame.sessionId, frame.snapshot);
               desktopAgentRetry = llmRetryFromSnapshot(frame.snapshot?.records, redactSensitiveText);
+              const boundary = frame.snapshot?.records?.findLast(({ event }) =>
+                event?.type === 'turn/start' || event?.type === 'turn/end');
+              const lastStart = desktopAgentLastTurnBoundary;
+              if (lastStart?.type === 'turn/start' && boundary?.event.type === 'turn/end'
+                && boundary.event.data?.turn === lastStart.data?.turn) {
+                finishConversationVisits(boundary.event.data?.reason?.kind === 'completed');
+              }
               // A follow stream can reconnect independently of HTTP. Use its
               // snapshot boundary for rest: a later running turn may be a new
               // direct DSH prompt whose turn/start is still on this stream.
               if (desktopAgentLifecycle === 'resting') {
-                const boundary = frame.snapshot?.records?.findLast(({ event }) =>
-                  event?.type === 'turn/start' || event?.type === 'turn/end');
                 if (boundary?.event.type === 'turn/end') {
                   desktopAgentTurnActive = false;
                   resumeDesktopAgentRestForAttention();
                 }
               } else if (desktopAgentLifecycle === 'recovering' || (desktopAgentLifecycle === 'active' && desktopAgentTurnActive)) {
-                const boundary = frame.snapshot?.records?.findLast(({ event }) =>
-                  event?.type === 'turn/start' || event?.type === 'turn/end');
                 if (!desktopAgentRestReminderSent && desktopAgentManualPromptPending === 0
                   && (!desktopAgentPendingWakeReason || desktopAgentPendingWakeReason === 'recovery')
                   && boundary?.event.type === 'turn/end' && boundary.event.data?.reason?.kind === 'completed') {
@@ -9429,6 +9441,7 @@ async function main() {
             recordSessionUsage(frame.sessionId, event);
             desktopAgentRetry = nextLlmRetryState(desktopAgentRetry, event, { redact: redactSensitiveText });
             if (event?.type === 'turn/start') {
+              finishConversationVisits(false);
               desktopAgentLastTurnBoundary = event;
               const turnWasAlreadyActive = desktopAgentTurnActive;
               desktopAgentTurnActive = true;
@@ -9513,6 +9526,7 @@ async function main() {
             }
 
             if (event?.type === 'turn/end') {
+              finishConversationVisits(event.data?.reason?.kind === 'completed');
               desktopAgentLastTurnBoundary = event;
               desktopAgentTurnActive = false;
               toolCallNames.delete(frame.sessionId);

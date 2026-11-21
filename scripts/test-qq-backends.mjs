@@ -85,7 +85,11 @@ test('SnowLuma mode opens only its own message buffer', async () => {
 });
 
 test('unread conversation list and turn-scoped handled watermark preserve isNew across in-turn lookups', async () => {
-  const h = await bridgeHarness({config:{qqBackend:'native',qqBackendSince:Date.now()}});
+  // The fixture drives turn boundaries directly, including recovery after a transport error.
+  const h = await bridgeHarness({
+    config: {qqBackend: 'native', qqBackendSince: Date.now()},
+    globals: {setTimeout: () => ({unref() {}}), clearTimeout() {}},
+  });
   h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open');
   h.setDesktopAgentLifecycle('active');
   h.setReady(true);
@@ -151,13 +155,88 @@ test('unread conversation list and turn-scoped handled watermark preserve isNew 
       ['1003', true], ['1002', true], ['1001', true], ['999', false]
     ]);
 
-    // Once the turn ends (agent_rest), handledThroughAt advances; subsequent reads see isNew=false for 1001..1003
+    // Reading the latest page only stages the source badge. Exact queue acknowledgements
+    // can be persisted by other code while the turn is still in progress.
+    assert.equal(read2.unreadBeforeRead, 3);
+    const readBadge = async () => {
+      const response = await fetch(`${base}/api/socialV2/conversations?onlyUnread=false`, { headers });
+      const data = await response.json();
+      assert.equal(response.status, 200, data.error);
+      return data.conversations.find(row => row.key === 'group:456').unreadCount;
+    };
+    assert.equal(await readBadge(), 3);
     h.enterDesktopAgentRest();
     h.setDesktopAgentTurnActive(false);
-    const readAfterRest = await (await fetch(`${base}/api/socialV2/conversation-history?key=group:456`, { headers })).json();
+    assert.equal(await readBadge(), 0);
+    const readAfterRest = await (await fetch(`${base}/api/socialV2/conversation-history?key=group:456`, {
+      headers: { 'x-console-token': 'fixture-console-token' },
+    })).json();
     assert.deepEqual(readAfterRest.messages.map(m => [m.messageId, m.isNew]), [
       ['1003', false], ['1002', false], ['1001', false], ['999', false]
     ]);
+
+    h.setDesktopAgentLifecycle('active');
+    h.setDesktopAgentTurnActive(true);
+    const send = (group, id) => h.handleIncomingForTest('group', group, msg(group, id, '来信', id));
+    await send(789, 2000);
+    h.getSocialV2State('group:456').unreadMessageCount = 499;
+    await send(456, 2500);
+    await send(456, 2501);
+    const originalRaw = h.bot.raw;
+    let duringRead = false;
+    h.bot.raw = async (action, params) => {
+      if (action !== 'get_group_msg_history') return originalRaw(action, params);
+      if (duringRead) { duringRead = false; await send(456, 2502); }
+      return { messages: [msg(456, 2501, '最新一条', 2501)] };
+    };
+    const route = base + '/api/socialV2/conversation-history?key=group:456&count=1';
+    const read = async (suffix = '', auth = headers) => {
+      const response = await fetch(route + suffix, { headers: auth });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    await read('', { 'x-console-token': 'fixture-console-token' });
+    await read('&messageId=id:2001');
+    h.enterDesktopAgentRest();
+    assert.equal(await readBadge(), 500);
+    h.setDesktopAgentLifecycle('active');
+    duringRead = true;
+    const partial = await read();
+    assert.equal(partial.count, 1);
+    assert.equal(partial.unreadBeforeRead, 500);
+    await send(456, 2503);
+    assert.equal(await readBadge(), 500);
+    const loadStored = () => {
+      const store = openNativeReminders(path.join(h.temp, 'state/ntqq-reminders-42.sqlite'));
+      try { return store.load().conversations; } finally { store.close(); }
+    };
+    assert.equal(loadStored()['group:456'].unreadMessageCount, 500);
+    h.enterDesktopAgentRest();
+    assert.equal(await readBadge(), 2);
+    assert.equal(loadStored()['group:456'].unreadMessageCount, 2);
+    assert.equal(loadStored()['group:789'].unreadMessageCount, 1);
+
+    const endTurn = async kind => {
+      const consumed = Promise.withResolvers();
+      h.api.events.mux = async function* () {
+        yield { payload: { type: 'session/event', sessionId: session,
+          event: { type: 'turn/end', data: { turn: 1, reason: { kind } } } } };
+        consumed.resolve();
+        await new Promise(() => {});
+      };
+      void h.pumpMux();
+      await consumed.promise;
+    };
+    h.setDesktopAgentLifecycle('active');
+    h.setDesktopAgentTurnActive(true);
+    await read();
+    await endTurn('error');
+    assert.equal(await readBadge(), 2);
+    h.setDesktopAgentLifecycle('active');
+    h.setDesktopAgentTurnActive(true);
+    await read();
+    await endTurn('completed');
+    assert.equal(await readBadge(), 0);
   } finally {
     await new Promise(resolve => server.close(resolve));
     await h.close();

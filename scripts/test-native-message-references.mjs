@@ -116,6 +116,25 @@ test('native unread acknowledgement keeps sequence images and details backed by 
   assert.deepEqual(f.h.calls.sent,[]);
 });
 
+test('a partial private history read clears the conversation badge at rest and preserves unseen reminders', async t => {
+  const f = await fixture(t), key = 'private:123';
+  await f.incoming('1001');
+  await f.incoming('1002');
+  const read = await f.call('/api/socialV2/conversation-history', {query: {key, count: 1}});
+  assert.equal(read.unreadBeforeRead, 2);
+  assert.equal(read.messages[0].messageId, '1002');
+  const state = () => f.call('/api/socialV2/state', {query: {key}});
+  assert.equal((await state()).conversationUnreadCount, 2);
+  f.h.enterDesktopAgentRest();
+  const after = await state();
+  assert.equal(after.conversationUnreadCount, 0);
+  assert.equal(after.unreadCount, 1);
+  f.h.bot.account = '43'; f.h.bot.emit('open');
+  f.h.bot.account = '42'; f.h.bot.emit('open');
+  assert.equal((await state()).conversationUnreadCount, 0);
+  assert.equal((await f.unread(key)).messages[0].messageId, '1001');
+});
+
 test('native read references retain only source locators, never history bodies or attachments', async t => {
   const f = await fixture(t), key = 'private:123';
   const message = await f.incoming('910000000000000002');
