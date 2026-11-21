@@ -69,7 +69,7 @@ async function fetchImage(faceId, original) {
   throw new Error('腾讯商城缺少这张表情的图片（' + faceId + '）');
 }
 
-export function createMarketPacks({ knownIds, store, assets, analyze, log = () => {}, manifest = readManifest, image = fetchImage }) {
+export function createMarketPacks({ knownIds, store, assets, analyze, afterBatch, log = () => {}, manifest = readManifest, image = fetchImage }) {
   const pending = new Map(), catalog = new Map(), imports = new Map();
   let draining = null, current = null, closing = false;
   async function lookup(id) {
@@ -166,7 +166,7 @@ export function createMarketPacks({ knownIds, store, assets, analyze, log = () =
           store.updateMarketAnalysis(job, 'failed', { error: error.message });
           log(`商城表情包 ${job.id} 分析失败：${error.message}`);
         }
-      } finally { current = null; }
+      } finally { current = null; await afterBatch?.(); }
     }
   }
   function resume() {

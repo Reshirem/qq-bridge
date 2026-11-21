@@ -49,14 +49,14 @@
 
 ### 2. 工具面（agent 能做什么）
 
-后台黑话/表情学习明确允许在主角色未读取消息时分析有界的新消息批次。这是独立的 headless 进程，不能向主角色注入任务或向 QQ 发消息。`learning-tool-guard.mjs` 在执行前仅放行本批图片工具；通用执行、文件、联网、插件管理与子代理工具同时在临时 patch 中禁用。学习与记忆整理的 patch 还显式禁用 MCP manager、新旧 QQ/记忆注册、团队和 MCP 资源工具，避免从自定义 base/headless profile 继承主角色的连接；任务自身的直连 MCP 独立注册。最终 JSON 只作为数据处理，证据须来自本批且黑话须在所引用的原文出现；匹配仅归一化大小写、Unicode NFKC 与空白，证据原文不改写，不以同义改写或模板替代原词。图片编号须来自本批桥接准备的清单。含义和表情分类仍可能被模型误判，管理端可以确认或拒绝。
+后台黑话/表情学习明确允许在主角色未读取消息时分析有界的新消息批次。Host 学习 preset 只向模型提供本批图片工具，`learning-tool-guard.mjs` 再校验实际调用。桥接通过控制台鉴权和执行会话 ID 查找内存中的图片批次，批次结束即解绑。隔离 headless 回退使用临时 patch 禁用通用工具和继承的 MCP 连接，仅注册本批图片 MCP。最终 JSON 只作为数据处理，证据须来自本批且黑话须在所引用的原文出现；匹配仅归一化大小写、Unicode NFKC 与空白，证据原文不改写，不以同义改写或模板替代原词。图片编号须来自本批桥接准备的清单。含义和表情分类仍可能被模型误判，管理端可以确认或拒绝。
 
 学习管理端 `/api/learning/*` 与 `/api/slang*` 受现有控制台鉴权、Host/Origin 和请求体限制保护，agent 默认拒绝白名单不扩张。`/api/socialV2/slang-query` 复用内部 token 与全局 session 绑定。新知识读取按目标来源和管理员明确指定的 global 筛选；这不改变全局会话上下文本身共享的残余风险。本地表情只读哈希命名的 `state/learned-stickers/` 文件，校验真实路径和 SHA-256，并在发送排队结束后重新检查来源与状态；没有开放任意文件发送。完整数据和资源上限见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
 | 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__qq__*` QQ 工具 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
-| 独立记忆整理工具面 | `memoryOrganizerPatchText()` / `runMemoryOrganizerHeadless()` / `memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料；每次 headless 启动用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。执行守卫严格限于 `mcp__qq-memory-organizer__` 命名空间的 `memory_search/save/read/replace/forget`，其他工具即使被继承也拒绝执行。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
+| 独立记忆整理工具面 | `background-tools.mjs` / `memoryOrganizerPatchText()` / `memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料。Host 整理 preset 仅注册五个记忆工具，桥接对原生整理工具携带的执行会话 ID 校验当前任务绑定。回退到 headless 时用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。执行守卫严格限于 `mcp__qq-memory-organizer__` 命名空间的 `memory_search/save/read/replace/forget`，其他工具即使被继承也拒绝执行。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
 | 压缩宿主依赖 | `plugins/qq-agent-presets/dsh-host-modules.mjs` | 只从当前 DSH 宿主/CLI 运行入口解析共享模块，校验压缩与 LLM 模块身份；缺失、不支持或分裂时拒绝加载。不回退插件私有旧依赖、不探测另一个安装，也不修改 DSH。隔离验收使用临时空 DSH_HOME 与模拟流，无模型或 QQ 调用。 |

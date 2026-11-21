@@ -9,6 +9,7 @@
     "bundle": {
       "patch": [
         "./presets/desktop-agent.patch.yml",
+        "./presets/background.patch.yml",
         "./owner-settings.patch.yml"
       ]
     }

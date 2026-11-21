@@ -20,12 +20,12 @@ function loadConfig() {
   }
 }
 
-function bridgeBaseUrl() {
+export function bridgeBaseUrl() {
   const port = Number(loadConfig().consolePort) || 3100;
   return `http://127.0.0.1:${port}`;
 }
 
-function readConsoleToken() {
+export function readConsoleToken() {
   const configured = String(loadConfig().consoleToken ?? '').trim();
   if (/^[A-Za-z0-9_-]{16,128}$/.test(configured)) return configured;
   try { return fs.readFileSync(path.join(ROOT, 'state', 'console-token'), 'utf8').trim(); } catch { return ''; }
@@ -40,10 +40,11 @@ function readAgentToken() {
   throw new Error('桥接内部调用凭证尚未就绪');
 }
 
-async function memoryApi(operation, payload) {
+async function memoryApi(operation, payload, organizerSessionId) {
   const headers = {
     'content-type': 'application/json',
     'x-agent-call': '1',
+    ...(organizerSessionId ? { 'x-organizer-session-id': organizerSessionId } : {}),
     'x-agent-token': readAgentToken(),
     ...(readConsoleToken() ? { 'x-console-token': readConsoleToken() } : {})
   };
@@ -74,108 +75,112 @@ function toolError(error) {
   return { content: [{ type: 'text', text: `长期记忆操作失败：${error?.message ?? error}` }], isError: true };
 }
 
-const ORGANIZER_MODE = process.argv.includes('--organizer');
-const server = new McpServer({ name: 'qq-bridge-memory', version: '1.0.0' });
+export function registerMemoryTools(register, organizerMode) {
+  register(
+    'memory_search',
+    '按自然语言检索 A_Memorix 长期记忆。交流涉及过去的共同经历、约定或偏好，或对方提到“上次”“还记得吗”等内容时，可以结合当前话题、人物和场景主动检索，必要时用 memory_read 核对原记录与来源；不必每条消息都查。没有命中或来源不清不代表事情不存在，也不据此编造。来源可筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（数字角色自身经历、发现与待办；assistant 是现有数据来源标记）。记忆用于帮助理解，不代表可在当前聊天中直接披露其他场合的内容。',
+    {
+      query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；仅按时间检索时可省略'),
+      limit: z.number().int().min(1).max(20).optional().describe('最多返回条数，默认 8'),
+      origin: z.enum(['qq', 'assistant']).optional().describe('按来源筛选；省略时搜索两类来源'),
+      mode: z.enum(['SEARCH_MODE_SEARCH', 'SEARCH_MODE_TIME', 'SEARCH_MODE_HYBRID']).optional().describe('检索方式：无时间范围的普通内容检索默认 SEARCH_MODE_SEARCH；SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 必须至少提供 timeStart 或 timeEnd，前者按时间检索，后者结合关键词与时间范围'),
+      timeStart: z.string().optional().describe('可选 ISO 起始时间'),
+      timeEnd: z.string().optional().describe('可选 ISO 结束时间')
+    },
+    async (args, sessionId) => {
+      try { return toolResult(await memoryApi('search', args, sessionId)); } catch (error) { return toolError(error); }
+    }
+  );
 
-server.tool(
-  'memory_search',
-  '按自然语言检索 A_Memorix 长期记忆。交流涉及过去的共同经历、约定或偏好，或对方提到“上次”“还记得吗”等内容时，可以结合当前话题、人物和场景主动检索，必要时用 memory_read 核对原记录与来源；不必每条消息都查。没有命中或来源不清不代表事情不存在，也不据此编造。来源可筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（数字角色自身经历、发现与待办；assistant 是现有数据来源标记）。记忆用于帮助理解，不代表可在当前聊天中直接披露其他场合的内容。',
-  {
-    query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；仅按时间检索时可省略'),
-    limit: z.number().int().min(1).max(20).optional().describe('最多返回条数，默认 8'),
-    origin: z.enum(['qq', 'assistant']).optional().describe('按来源筛选；省略时搜索两类来源'),
-    mode: z.enum(['SEARCH_MODE_SEARCH', 'SEARCH_MODE_TIME', 'SEARCH_MODE_HYBRID']).optional().describe('检索方式：无时间范围的普通内容检索默认 SEARCH_MODE_SEARCH；SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 必须至少提供 timeStart 或 timeEnd，前者按时间检索，后者结合关键词与时间范围'),
-    timeStart: z.string().optional().describe('可选 ISO 起始时间'),
-    timeEnd: z.string().optional().describe('可选 ISO 结束时间')
-  },
-  async (args) => {
-    try { return toolResult(await memoryApi('search', args)); } catch (error) { return toolError(error); }
-  }
-);
+  const externalIdField = organizerMode
+    ? z.string().trim().min(1).max(500).describe('必填稳定外部 ID（格式：qq-bridge:organizer:<jobId>:chunk-<段号>:item-<序号>），用于 A_Memorix 幂等去重')
+    : z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重');
 
-const externalIdField = ORGANIZER_MODE
-  ? z.string().trim().min(1).max(500).describe('必填稳定外部 ID（格式：qq-bridge:organizer:<jobId>:chunk-<段号>:item-<序号>），用于 A_Memorix 幂等去重')
-  : z.string().max(500).optional().describe('可选稳定外部 ID；同一写入重试时复用，以便 A_Memorix 去重');
-
-const memoryFields = {
-  content: z.string().trim().min(1).max(20000).describe('要保存的完整记忆，写清来源、说话人、关键事实与确定程度'),
-  tags: z.array(z.string().max(80)).max(20).optional().describe('可选检索标签'),
-  participants: z.array(z.string().max(120)).max(20).optional().describe('可选涉及的人或主体'),
-  observedAt: z.string().optional().describe('可选 ISO 观察时间'),
-  sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
-  confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
-  evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('每条记忆最多 20 项证据引用。选与这条记忆直接相关的消息 ID、会话事件序号或任务记录标题并去重。'),
-  externalId: externalIdField
-};
-
-function writeMemory(operation) {
-  return async ({ sourceContext, confidence, evidenceReferences, supersedes, ...memory }) => {
-    try {
-      const metadata = { sourceContext, confidence, evidenceReferences, supersedes };
-      return toolResult(await memoryApi(operation, { ...memory, metadata }));
-    } catch (error) { return toolError(error); }
+  const memoryFields = {
+    content: z.string().trim().min(1).max(20000).describe('要保存的完整记忆，写清来源、说话人、关键事实与确定程度'),
+    tags: z.array(z.string().max(80)).max(20).optional().describe('可选检索标签'),
+    participants: z.array(z.string().max(120)).max(20).optional().describe('可选涉及的人或主体'),
+    observedAt: z.string().optional().describe('可选 ISO 观察时间'),
+    sourceContext: z.string().max(2000).optional().describe('来源上下文；涉及 QQ 时尽量写明来源会话 key（group:群号 或 private:QQ号）及相关说话人，其他情况可写任务等背景；不确定时如实注明'),
+    confidence: z.enum(['firsthand', 'reported', 'inferred', 'uncertain']).optional().describe('可选可信程度：亲自观察、他人陈述、推断或不确定'),
+    evidenceReferences: z.array(z.string().max(300)).max(20).optional().describe('每条记忆最多 20 项证据引用。选与这条记忆直接相关的消息 ID、会话事件序号或任务记录标题并去重。'),
+    externalId: externalIdField
   };
+
+  function writeMemory(operation) {
+    return async ({ sourceContext, confidence, evidenceReferences, supersedes, ...memory }, sessionId) => {
+      try {
+        const metadata = { sourceContext, confidence, evidenceReferences, supersedes };
+        return toolResult(await memoryApi(operation, { ...memory, metadata }, sessionId));
+      } catch (error) { return toolError(error); }
+    };
+  }
+
+  register(
+    'memory_save',
+    '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；数字角色自身的经历、发现和未完成事项使用现有数据标记 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。批处理重试时可复用 externalId 去重；明确更正旧记忆时，可用 supersedes 记录被更正的 memoryId 以保留追溯关系。',
+    {
+      ...memoryFields,
+      origin: z.enum(['qq', 'assistant']).default('assistant').describe('来源类别：qq 或 assistant'),
+      supersedes: z.string().max(300).optional().describe('可选被明确更正的旧 memoryId；保留新旧关系供追溯，不会自动删除旧记录')
+    },
+    writeMemory('save')
+  );
+
+  const targetId = z.string().trim().min(1).max(300);
+  const targetIdsField = z.preprocess((val) => {
+    if (typeof val === 'string' && val.trim().startsWith('[') && val.trim().endsWith(']')) {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return val;
+  }, z.union([targetId, z.array(targetId).min(1).max(10)]));
+  register(
+    'memory_replace',
+    '补充同一课题的新收获、更正过时事实，或将同主题同来源的 1 至 10 条碎片合并为一条完整记忆。先用 memory_search 找到候选，再用 memory_read 核实每个真实 memoryId 和原文。正文保留关键事实、来源和说话人归属。严禁跨 QQ 群、私聊合并。新记录保存成功后删除旧记录；回执中的 retainedIds 列出未确认删除的旧 ID。',
+    {
+      ...memoryFields,
+      memoryIds: targetIdsField.describe('已逐条读取的旧 memoryId，单个字符串或 1 至 10 个 ID 的数组'),
+      origin: z.enum(['qq', 'assistant']).optional().describe('省略时继承第一条旧记录的来源类别'),
+      reason: z.string().max(500).optional().describe('更正或合并原因')
+    },
+    writeMemory('replace')
+  );
+
+  register(
+    'memory_read',
+    '读取指定长期记忆的完整内容和来源信息。memoryId 必须原样使用 memory_search 或 memory_save 实际返回的 ID，不得猜测或传占位词。found=false 表示该记录不存在，可以重新检索；这不代表相关事实不存在，也不能把未读取的内容当作更正或去重依据。',
+    { memoryId: z.string().min(1).max(300).describe('工具实际返回的 memoryId；不能使用 PLACEHOLDER、see summary 等描述或自行编造的 ID') },
+    async (args, sessionId) => {
+      try {
+        const record = await memoryApi('read', args, sessionId);
+        return toolResult(record ?? {
+          found: false,
+          memoryId: args.memoryId,
+          note: '该 ID 没有对应记忆。请重新检索并使用实际返回的 ID；无法找到时保留不确定性，不推断旧记录内容。'
+        });
+      } catch (error) { return toolError(error); }
+    }
+  );
+
+  register(
+    'memory_forget',
+    '从长期记忆中删除指定记录。此操作会删除记忆，不可恢复；先确认 memoryId 指向的是要删除的记录。',
+    {
+      memoryId: z.string().min(1).max(300).describe('要删除的 A_Memorix memoryId'),
+      reason: z.string().max(500).optional().describe('删除原因')
+    },
+    async (args, sessionId) => {
+      try { return toolResult(await memoryApi('forget', args, sessionId)); } catch (error) { return toolError(error); }
+    }
+  );
 }
 
-server.tool(
-  'memory_save',
-  '将值得长期保留的信息写入共享记忆。只有模型自己读到 QQ 内容并判断有保存价值后才标记 origin=qq；数字角色自身的经历、发现和未完成事项使用现有数据标记 origin=assistant。标明来源，不把未经核实的他人说法写成已验证事实。批处理重试时可复用 externalId 去重；明确更正旧记忆时，可用 supersedes 记录被更正的 memoryId 以保留追溯关系。',
-  {
-    ...memoryFields,
-    origin: z.enum(['qq', 'assistant']).default('assistant').describe('来源类别：qq 或 assistant'),
-    supersedes: z.string().max(300).optional().describe('可选被明确更正的旧 memoryId；保留新旧关系供追溯，不会自动删除旧记录')
-  },
-  writeMemory('save')
-);
-
-const targetId = z.string().trim().min(1).max(300);
-const targetIdsField = z.preprocess((val) => {
-  if (typeof val === 'string' && val.trim().startsWith('[') && val.trim().endsWith(']')) {
-    try {
-      const parsed = JSON.parse(val);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-  }
-  return val;
-}, z.union([targetId, z.array(targetId).min(1).max(10)]));
-server.tool(
-  'memory_replace',
-  '补充同一课题的新收获、更正过时事实，或将同主题同来源的 1 至 10 条碎片合并为一条完整记忆。先用 memory_search 找到候选，再用 memory_read 核实每个真实 memoryId 和原文。正文保留关键事实、来源和说话人归属。严禁跨 QQ 群、私聊合并。新记录保存成功后删除旧记录；回执中的 retainedIds 列出未确认删除的旧 ID。',
-  {
-    ...memoryFields,
-    memoryIds: targetIdsField.describe('已逐条读取的旧 memoryId，单个字符串或 1 至 10 个 ID 的数组'),
-    origin: z.enum(['qq', 'assistant']).optional().describe('省略时继承第一条旧记录的来源类别'),
-    reason: z.string().max(500).optional().describe('更正或合并原因')
-  },
-  writeMemory('replace')
-);
-
-server.tool(
-  'memory_read',
-  '读取指定长期记忆的完整内容和来源信息。memoryId 必须原样使用 memory_search 或 memory_save 实际返回的 ID，不得猜测或传占位词。found=false 表示该记录不存在，可以重新检索；这不代表相关事实不存在，也不能把未读取的内容当作更正或去重依据。',
-  { memoryId: z.string().min(1).max(300).describe('工具实际返回的 memoryId；不能使用 PLACEHOLDER、see summary 等描述或自行编造的 ID') },
-  async (args) => {
-    try {
-      const record = await memoryApi('read', args);
-      return toolResult(record ?? {
-        found: false,
-        memoryId: args.memoryId,
-        note: '该 ID 没有对应记忆。请重新检索并使用实际返回的 ID；无法找到时保留不确定性，不推断旧记录内容。'
-      });
-    } catch (error) { return toolError(error); }
-  }
-);
-
-server.tool(
-  'memory_forget',
-  '从长期记忆中删除指定记录。此操作会删除记忆，不可恢复；先确认 memoryId 指向的是要删除的记录。',
-  {
-    memoryId: z.string().min(1).max(300).describe('要删除的 A_Memorix memoryId'),
-    reason: z.string().max(500).optional().describe('删除原因')
-  },
-  async (args) => {
-    try { return toolResult(await memoryApi('forget', args)); } catch (error) { return toolError(error); }
-  }
-);
-
-await server.connect(new StdioServerTransport());
+export async function startMemoryServer() {
+  const server = new McpServer({ name: 'qq-bridge-memory', version: '1.0.0' });
+  registerMemoryTools((name, description, fields, invoke) => server.tool(name, description, fields, args => invoke(args)), process.argv.includes('--organizer'));
+  await server.connect(new StdioServerTransport());
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await startMemoryServer();

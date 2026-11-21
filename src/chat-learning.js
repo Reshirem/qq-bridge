@@ -478,7 +478,7 @@ export const LEARNING_SYSTEM_PROMPT = [
   '只返回严格 JSON：{"slang":[{"content":"词","meaning":"含义","usage":"用法","confidence":0.9,"evidenceIds":["原编号"]}],"stickers":[{"id":"图片编号","isSticker":true,"description":"画面和含义","tags":["开心"],"usage":"使用场景"}]}。黑话最多30条，表情不超过输入图片数；标签最多5个；无结果返回空数组。',
 ].join('\n');
 
-export function createChatLearningWorker({ store, getConfig, hydrateBatch, prepareImages, analyze, log = () => {} }) {
+export function createChatLearningWorker({ store, getConfig, hydrateBatch, prepareImages, analyze, afterBatch, log = () => {} }) {
   let running = null, controller = null;
   return {
     get running() { return Boolean(running); },
@@ -512,7 +512,7 @@ export function createChatLearningWorker({ store, getConfig, hydrateBatch, prepa
           if (signal.aborted) store.cancelled(error.usage ?? usage);
           else store.failed(error.message, config, batch, error.usage ?? usage);
           log(`后台学习${signal.aborted ? '取消' : '失败'} ${batch.key}：${error.message}`); return null;
-        }
+        } finally { await afterBatch?.(); }
       }).finally(() => { running = null; controller = null; });
       return running;
     },

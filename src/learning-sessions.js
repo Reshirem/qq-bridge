@@ -2,15 +2,17 @@ import { unwrap } from './dsh-client.js';
 
 // Only bridge-recorded headless sessions are candidates. Titles are not ownership evidence.
 export function createLearningSessionCleanup({ api, getSessionIds, getProtectedSessionIds, isReady, sanitize, onArchived = () => {}, timeoutMs = 15000 }) {
-  let busy = false;
+  let pending = null;
   const candidates = () => [...new Set(getSessionIds())];
   const failure = (statusCode, message) => Object.assign(new Error(message), { statusCode });
   return {
-    status: () => ({ tracked: candidates().length, cleanupBusy: busy, dshReady: isReady() }),
-    async cleanup() {
-      if (busy) throw failure(409, '正在清理学习会话，请稍后再试');
+    status: () => ({ tracked: candidates().length, cleanupBusy: Boolean(pending), dshReady: isReady() }),
+    async cleanup({ wait = false } = {}) {
+      while (wait && pending) await pending;
+      if (pending) throw failure(409, '正在清理学习会话，请稍后再试');
       if (!isReady()) throw failure(503, 'DSH 当前不可用');
-      busy = true;
+      let release;
+      pending = new Promise(resolve => { release = resolve; });
       try {
         const result = { archived: [], alreadyArchived: [], skipped: [], failed: [] };
         const ids = candidates();
@@ -36,7 +38,7 @@ export function createLearningSessionCleanup({ api, getSessionIds, getProtectedS
             result.alreadyArchived.push(label);
           } else if (!item) {
             result.skipped.push({ ...label, reason: 'DSH 会话列表中不存在' });
-          } else if (item.running !== false || item.agentAvailable !== false) {
+          } else if (item.running !== false) {
             result.skipped.push({ ...label, reason: 'DSH 会话仍在运行或无法确认已结束' });
           } else {
             try {
@@ -52,7 +54,7 @@ export function createLearningSessionCleanup({ api, getSessionIds, getProtectedS
         return result;
       } catch (error) {
         throw failure(502, sanitize(String(error?.message ?? error)).slice(0, 700));
-      } finally { busy = false; }
+      } finally { pending = null; release(); }
     },
   };
 }

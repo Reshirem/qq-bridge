@@ -26,6 +26,8 @@ import * as sticker from '../src/sticker-lib.js';
 import * as chatLearning from '../src/chat-learning.js';
 import * as learningAssets from '../src/learning-assets.js';
 import * as learningApi from '../src/learning-api.js';
+import * as backgroundSessions from '../src/background-sessions.js';
+import * as learningRunner from '../src/learning-runner.js';
 import * as learningSessions from '../src/learning-sessions.js';
 import * as memoryOrganizer from '../src/memory-organizer.js';
 import { createModelCatalog } from '../src/model-catalog.js';
@@ -33,7 +35,7 @@ import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import { createStickerMemory } from '../src/sticker-memory.js';
 import { createMarketPacks, localMarketPackIds } from '../src/market-packs.js';
-import { analyzeMarketPack } from '../src/market-analysis.js';
+import { analyzeMarketPack, MARKET_PAGE_SIZE } from '../src/market-analysis.js';
 import * as memorixGateway from '../src/a-memorix-gateway.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as desktopAgentPromptTemplates from '../src/desktop-agent-prompt-templates.js';
@@ -200,7 +202,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   return {
     closeUnreadStore: () => { dshMcp.close(); tokenLedger.close(); closeQQUnreadStore(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, getStickerImageData, visibleStickers,
-    runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, readMemoryOrganizerModel, memoryOrganizerPatchText,
+    learningWorker, runVisualLearning, runMemoryOrganizerQueue, runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, readMemoryOrganizerModel, memoryOrganizerPatchText,
     chunkMemoryOrganizerEvents,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
     isDshReady() { return dshReady; },
@@ -275,7 +277,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       close() {},
     }),
     openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
-    ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
+    ...backgroundSessions, ...learningRunner, MARKET_PAGE_SIZE, ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,

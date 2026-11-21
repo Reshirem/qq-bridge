@@ -161,7 +161,7 @@ test('stdio memory_replace validates inputs and forwards single and multi-ID wri
   fs.writeFileSync(path.join(h.temp, 'config.json'), JSON.stringify({ consolePort: port, consoleToken }));
   const source = fs.readFileSync(new URL('../src/mcp-memory-safe.js', import.meta.url), 'utf8')
     .replace("const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');", `const ROOT = ${JSON.stringify(h.temp)};`);
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['--input-type=module', '--eval', source],
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['--input-type=module', '--eval', source + '\nawait startMemoryServer();'],
     cwd: fileURLToPath(new URL('..', import.meta.url)), stderr: 'pipe' }));
   assert.ok((await client.listTools()).tools.some(tool => tool.name === 'memory_replace'));
   const replace = args => client.callTool({ name: 'memory_replace', arguments: { content: 'fixture', ...args } });

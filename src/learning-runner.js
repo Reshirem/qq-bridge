@@ -41,8 +41,9 @@ export function parseLearningResult(text, mode = 'chat') {
 
 // A separate headless process receives only batch text + an image-only MCP.
 // No QQ, memory, shell, browser or arbitrary file tools are mounted here.
-export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, mode = 'chat', signal, onSession, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
+export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir, model, provider, task, images, mode = 'chat', requestedSessionId = '', signal, onSession, onUsage, spawnProcess = spawn, timeoutMs = 300000 }) {
   if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('DSH CLI 路径含不支持的命令字符');
+  if (cli.shell && requestedSessionId && !/^[a-zA-Z0-9_.-]+$/.test(requestedSessionId)) throw new Error('DSH 学习会话编号含不支持的命令字符');
   signal?.throwIfAborted();
   const prefix = path.join(stateDir, `chat-learning-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
   const patch = `${prefix}.yml`, manifest = `${prefix}.json`;
@@ -51,7 +52,7 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
     fs.writeFileSync(manifest, JSON.stringify(mode === 'market' ? { mode, images } : images), { mode: 0o600 });
     fs.writeFileSync(patch, learningPatch({ model, provider, mode, imageServer: path.join(root, 'src', 'mcp-learning-images.js'), imageManifest: images.length ? manifest : null }), { mode: 0o600 });
     return await new Promise((resolve, reject) => {
-      const child = spawnProcess(cli.command, [...cli.args, '--profile', 'headless', '--patch', patch, ...(approvalPolicy ? ['--approval-policy', 'never'] : []), '--json', '-'], {
+      const child = spawnProcess(cli.command, [...cli.args, '--profile', 'headless', '--patch', patch, ...(approvalPolicy ? ['--approval-policy', 'never'] : []), '--json', ...(requestedSessionId ? ['--session-id', requestedSessionId] : []), '-'], {
         cwd: root, env: { ...process.env, ...cli.env }, shell: cli.shell, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
       });
       let buffer = '', final = null, terminalReason = null, sessionId = '', failure = '', imageRead = false, outputBytes = 0;
@@ -65,11 +66,16 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
       const deadline = setTimeout(() => stop('后台学习超过 5 分钟，已终止'), timeoutMs);
       deadline.unref?.();
       const readLine = line => {
-        if (!line.trim()) return;
+        if (failure || !line.trim()) return;
         try {
           const event = JSON.parse(line), type = String(event.type).replace(/[./-]+/g, '_');
           if (type === 'session') {
-            sessionId = String(event.sessionId || '');
+            if (typeof event.sessionId !== 'string' || !event.sessionId || (requestedSessionId && event.sessionId !== requestedSessionId)
+                || (sessionId && event.sessionId !== sessionId)) {
+              stop('DSH headless 返回了不同或无效的学习会话编号');
+              return;
+            }
+            sessionId = event.sessionId;
             try { onSession?.(sessionId); }
             catch { stop('无法保存学习会话编号，已停止本批学习'); }
           }

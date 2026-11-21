@@ -21,7 +21,7 @@ const model = { provider: 'fixture', model: 'fixture' };
 const missing = { code: 'not_found', message: 'memory not found' };
 
 test('cleanup uses workspace state, protects unfinished and active sessions, and retries failures', async () => {
-  const organizerIds = ['completed', 'archived', 'retry', 'running', 'available', 'missing', 'unfinished', 'source', 'desktop'];
+  const organizerIds = ['completed', 'archived', 'retry', 'running', 'available', 'unknown', 'missing', 'unfinished', 'source', 'desktop'];
   const state = { version: 1, sources: { source: { lastProcessedSeq: 1, lastScheduledSeq: 1 } },
     sessionsByDay: { '2026-11-18': 'completed', '2026-11-19': 'unfinished-day' },
     jobs: organizerIds.map((id, index) => ({ jobId: `job-${index}`, sourceSessionId: 'source',
@@ -48,7 +48,7 @@ test('cleanup uses workspace state, protects unfinished and active sessions, and
       return { items: [], archivedSessionIds: [...archived] };
     };
     h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [...organizerIds, 'unfinished-day']
-      .filter(id => id !== 'missing').map(sessionId => ({ sessionId, running: sessionId === 'running', agentAvailable: sessionId === 'available' })) } } });
+      .filter(id => id !== 'missing').map(sessionId => ({ sessionId, running: sessionId === 'unknown' ? undefined : sessionId === 'running', agentAvailable: sessionId === 'available' })) } } });
     const attempts = [];
     let failArchive = true;
     h.api.workspace.archiveSession = async ({ sessionId }) => {
@@ -63,11 +63,11 @@ test('cleanup uses workspace state, protects unfinished and active sessions, and
     failRead = false;
     const first = await cleanup();
     assert.equal(first.status, 200, JSON.stringify(first.body));
-    assert.deepEqual(first.body.archived.map(row => row.sessionId), ['completed']);
+    assert.deepEqual(first.body.archived.map(row => row.sessionId), ['completed', 'available']);
     assert.deepEqual(first.body.alreadyArchived.map(row => row.sessionId), ['archived']);
     assert.deepEqual(first.body.failed.map(row => row.sessionId), ['retry']);
     assert.deepEqual(first.body.skipped.map(row => row.sessionId).sort(),
-      ['available', 'desktop', 'missing', 'running', 'source', 'unfinished', 'unfinished-day']);
+      ['desktop', 'missing', 'running', 'source', 'unfinished', 'unfinished-day', 'unknown']);
     failArchive = false;
     const retry = await cleanup();
     assert.equal(retry.status, 200);
@@ -76,7 +76,7 @@ test('cleanup uses workspace state, protects unfinished and active sessions, and
     const repeated = await cleanup();
     assert.equal(repeated.status, 200);
     assert.deepEqual(repeated.body.archived, []);
-    assert.deepEqual(attempts, ['completed', 'retry', 'retry']);
+    assert.deepEqual(attempts, ['completed', 'retry', 'available', 'retry']);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.temp, 'state/memory-organizer.json'), 'utf8')), state,
       'archival must preserve organizer jobs and source cursors');
 
@@ -170,7 +170,7 @@ test('memory MCP returns an explicit not-found result and preserves actual read 
   fs.writeFileSync(path.join(directory, 'state/desktop-agent.json'), JSON.stringify({ agentToken: 'a'.repeat(64) }));
   const source = fs.readFileSync(path.join(root, 'src/mcp-memory-safe.js'), 'utf8')
     .replace("const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');", `const ROOT = ${JSON.stringify(directory)};`);
-  const transport = new StdioClientTransport({ command: process.execPath, args: ['--input-type=module', '--eval', source], cwd: root, stderr: 'pipe' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ['--input-type=module', '--eval', source + '\nawait startMemoryServer();'], cwd: root, stderr: 'pipe' });
   const client = new Client({ name: 'memory-regression-fixture', version: '1.0.0' });
   try {
     await client.connect(transport);

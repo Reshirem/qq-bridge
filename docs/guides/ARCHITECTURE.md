@@ -51,8 +51,8 @@ QQ 有时将转换后的图片放在 `Ori` 目录，沿用原件摘要与扩展�
 
 - `token-ledger.js` 将主会话、记忆整理和后台学习的用量存入 SQLite。`model-catalog.js` 缓存 models.dev 目录，按服务商和模型提供美元单价，账本保存每次采用的费率与金额。旧 JSONL 账本在一次事务内迁移。详见[令牌与花费](TOKEN_USAGE_CONSOLE.md)。
 
-- `chat-learning.js` 独立持有后台学习队列、证据与知识库，`learning-runner.js` 负责批次专用 DSH headless 进程，`learning-api.js` 提供控制台管理，`learning-assets.js` 保存按内容哈希寻址的本地表情。`learning-sessions.js` 按桥接登记的会话编号归档已结束的聊天学习与商城分析会话，保留日志、学习结果和用量，并保护仍活动的会话；会话登记兼容旧库，在启动时从学习用量账本补录。新消息可自动进入该学习进程；主角色仍仅按需读取 QQ 正文。学习不创建逐 QQ 的聊天会话、不改变角色说话风格，也不调用 QQ 发送或 A_Memorix 工具。运行与持久化约定见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
-- 后台学习与独立记忆整理的临时 headless patch 显式禁用 MCP manager、新旧 QQ/记忆注册、插件管理、团队和 MCP 资源工具，避免自定义 base/headless profile 把主角色的连接带入后台任务。任务只注册自身需要的直连 MCP；学习执行守卫只允许本批图片工具，`memory-organizer-tool-guard.mjs` 只允许 `mcp__qq-memory-organizer__` 下的 `memory_search/save/read/replace/forget`，其他工具即使被继承也拒绝执行。隔离验收使用实际安装版 DSH、临时空 `DSH_HOME`、假模型与假 MCP，不修改生产 profile。
+- `chat-learning.js` 按 QQ 来源分批保存学习队列、证据与知识，`learning-api.js` 提供控制台管理，`learning-assets.js` 按内容哈希保存本地表情。后台任务沿用主角色的 Host Workspace 和 Session 创建接口。`memory-organizer` 归入「长期记忆整理」，`chat-learning` 和 `market-analysis` 共用「后台黑话与表情学习」。桥接只在首次创建时命名分组，提交任务前登记并命名会话。`background-sessions.js` 按请求 ID 读取本回合的持久事件，模型选择只作用于当前会话。学习批次处理结束或整理任务完成后，桥接按登记的 ID 归档空闲后台会话。控制台也可手动重试。详见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
+- `qq-agent-presets` 为后台 Session 分别注册专属工具和执行守卫。学习仅能读取绑定到当前会话的批次图片，记忆整理仅能调用五个记忆工具。Host 无法预建会话时，桥接沿用原有隔离 headless 流程和临时 patch。旧整理会话可继续通过原方式恢复。
 
 - `sticker-memory.js` 由桥接把表情目录投影到独立的 A_Memorix 空间。QQ 工具按当前会话和普通表情、商城表情各自的使用开关，把检索命中映射回可发送的稳定 ID。关闭使用保留索引与本地素材。角色复检建议保存在学习库，WebUI 采纳后生效。
 - `market-packs.js` 按包 ID 读取腾讯商城目录，WebUI 支持按包查找、预览、收录、编辑注解与移除。手动收录的商城表情和聊天学习条目共用本地素材存储、检索和发送机制，各有独立的管理视图。

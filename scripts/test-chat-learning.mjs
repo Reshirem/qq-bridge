@@ -33,6 +33,47 @@ function enqueue(store, key = 'group:123', messageId = '1', text = '今天又开
   return store.enqueue(key, { messageId, plain: text, media, userId: '456' }, config);
 }
 
+test('chat worker titles and records its grouped session before prompting and archives idle sessions after commit', async t => {
+  const { store } = fixture(t);
+  enqueue(store);
+  store.rememberSessions(['legacy']);
+  const ok = value => ({ result: { ok: true, value } });
+  let title, groupTitle;
+  const archived = [];
+  const h = await bridgeHarness({
+    config: { chatLearning: { enabled: true, slang: true, stickers: false } },
+    files: { 'state/chat-learning.json': store.snapshot() },
+    globals: { async runBackgroundTurn({ sessionId, preset, onEvent }) {
+      assert.equal(sessionId, 'fixture-1');
+      assert.equal(preset, 'chat-learning');
+      assert.ok(snapshot().sessionIds.includes(sessionId));
+      assert.match(title, /^后台学习 · group:123 · \d{4}-\d\d-\d\d \d\d:\d\d$/);
+      onEvent({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '{"slang":[],"stickers":[]}' }] } } });
+    } },
+  });
+  t.after(() => h.close());
+  const snapshot = () => JSON.parse(fs.readFileSync(path.join(h.temp, 'state/chat-learning.json'), 'utf8'));
+  h.setReady(true);
+  h.api.workspace.create = async ({ path: dir }) => {
+    assert.equal(dir, path.join(h.temp, 'state', 'chat-learning-workspace'));
+    return ok({ created: true, workspace: { workspaceId: 'learning' } });
+  };
+  h.api.workspace.rename = async args => { groupTitle = args.title; return ok({}); };
+  h.api.sessions.rename = async args => { title = args.title; return ok({}); };
+  h.api.callUnary = async (method, { sessionId }) => {
+    if (method === 'session/list') return ok({ items: ['fixture-1', 'legacy'].map(id => ({ sessionId: id, running: false, agentAvailable: true })) });
+    assert.equal(method, 'workspace/archiveSession');
+    assert.equal(snapshot().queue.length, 0);
+    archived.push(sessionId);
+    return ok({});
+  };
+  assert.equal((await h.learningWorker.tick(true))?.messages, 1);
+  assert.equal(groupTitle, '后台黑话与表情学习');
+  assert.equal(h.calls.created[0].workspaceId, 'learning');
+  assert.equal(h.calls.created[0].agentPreset, 'chat-learning');
+  assert.deepEqual(archived.sort(), ['fixture-1', 'legacy']);
+});
+
 const learningKey = 'group:123';
 function seedSlang(t, entries, options) {
   const { file, store } = fixture(t);
@@ -221,7 +262,7 @@ test('learning cleanup migrates recorded sessions, isolates management and prese
     };
     h.api.callUnary = async (method, request) => {
       if (method === 'session/list') return { result: { ok: true, value: { items: before.sessionIds.filter(id => id !== 'missing').map(sessionId => ({
-        sessionId, running: sessionId === 'running', ...(sessionId === 'unknown' ? {} : { agentAvailable: false }),
+        sessionId, running: sessionId === 'unknown' ? undefined : sessionId === 'running', agentAvailable: sessionId === 'old-chat',
       })) } } };
       assert.equal(method, 'workspace/archiveSession');
       assert.deepEqual(Object.keys(request), ['sessionId'], 'cleanup must not force-stop a session');
@@ -706,6 +747,26 @@ function fakeSpawn(events) {
     return child;
   };
 }
+test('headless uses the requested session and rejects an unexpected identity before registration', async t => {
+  const f = fixture(t);
+  const events = [{ type: 'session', sessionId: 'reserved' },
+    { type: 'final', reason: { kind: 'completed' }, text: '{"slang":[],"stickers":[]}' }];
+  const registered = [];
+  const run = () => runLearningHeadless({
+    cli: { command: 'fixture', args: [], shell: false }, root: f.root, stateDir: f.root,
+    model: { provider: 'test', model: 'test' }, task: '{}', images: [], requestedSessionId: 'reserved',
+    onSession: id => registered.push(id),
+    spawnProcess: (command, args, options) => {
+      assert.deepEqual(args.slice(-4), ['--json', '--session-id', 'reserved', '-']);
+      return fakeSpawn(events)(command, args, options);
+    },
+  });
+  assert.equal((await run()).sessionId, 'reserved');
+  events[0].sessionId = 'other';
+  await assert.rejects(run(), /不同或无效/);
+  assert.deepEqual(registered, ['reserved']);
+});
+
 test('headless parser rejects incomplete runs and unseen images, preserves UTF-8 and removes temporary files', async t => {
   const f = fixture(t), events = [{ type: 'session', sessionId: 'test-session' }, { type: 'final', reason: { kind: 'completed' }, text: JSON.stringify({ slang: [{ content: '摸鱼' }], stickers: [] }) }];
   const options = { cli: { command: 'fake', args: [], env: {}, shell: false }, root: f.root, stateDir: f.root, model: { provider: 'fixture', model: 'fixture' }, task: '{}', images: [] };
