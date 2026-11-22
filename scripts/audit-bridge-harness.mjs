@@ -294,7 +294,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   // Execute the pure model view in the bridge realm. Its plain-object checks
   // should see the same prototypes as real bridge messages, just as in Node.
   const modelViewSource = fs.readFileSync(path.join(root, 'src/qq-model-view.js'), 'utf8').replace(/^export /gm, '');
-  vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData, describeAge }; })());`, context);
+  vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData, describeAge, QQ_READ_MAX_MODEL_BYTES, fitQQReadPayloadToByteBudget }; })());`, context);
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
   bridge.setReady(true);

@@ -35,7 +35,7 @@ import { SENSITIVE_RE } from './sensitive.js';
 import { openQQUnreadStore, QQ_UNREAD_LIMIT } from './qq-unread-store.js';
 import { classifyIncomingWake, isPokeToSelf, reminderEnabled } from './autonomy-policy.js';
 import { findQQMessageReference, parseQQMessageReference } from './qq-message-reference.js';
-import { compactModelMessage, describeAge } from './qq-model-view.js';
+import { compactModelMessage, describeAge, fitQQReadPayloadToByteBudget } from './qq-model-view.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel, sniffImage, validateImageDecode } from './media-normalize.js';
 import { prepareImageDetail } from './media-detail.js';
@@ -2288,7 +2288,7 @@ async function main() {
       '以下 JSON 是这段范围内的用户可见消息、工具调用和工具结果。只有成功工具结果中实际返回的内容才算主会话收到；QQ 消息列表和单条详情会单独标为 qq-message，其他 QQ 读取结果保留在 tool-result。readThroughSeq 记录 qq-bridge 当时同一来源的连续已展示水位；对有本地 seq 的缓冲消息可用 bufferId 与 seq 核对水位，对历史详情等结果不能把水位误当成该消息的序号。partial=true 表示当前只返回一页；可整理这页明确可见的事实，但不能把未返回内容当成已读或据此推断其不存在。工具结果 truncated=true 表示只返回部分集合，只能依据可见项目。QQ 消息 textTruncated=true 时正文已移除，不能据此保存具体消息事实。重复本地消息按 source key + QQ messageId，或 source key + bufferId + 本地 seq 合并；字段只在双方都提供时比较，缺失与补全不算冲突。单独的 tool-call 只表示尝试读取，不能当成读过。',
       `先判断哪些信息值得跨会话保留，再按系统说明调用记忆工具。不要把不同 source key 的内容混成一条记忆。更正时保留 supersedes 关联。每次调用 memory_save 或 memory_replace 时，externalId 都必须使用 qq-bridge:organizer:${job.jobId}:chunk-${chunkIndex + 1}:item-N（N 从 1 开始，按本段稳定编号）。sourceContext 写清源 DSH session 和事件序号；涉及 QQ 时还写 source key 和说话人。evidenceReferences 写 DSH 事件序号，并尽量写 QQ 本地 seq 或 messageId。`,
       'QQ 通用占位 [notice] 不提供正文证据，不能据此推测消息内容或认定撤回。正文字段缺失时只保留已有元数据；同一消息合并后若有 bodySourceSeq，它是实际读到正文的 DSH 事件序号，引用正文时使用该序号。',
-      ...(events.some(event => event.resultTruncated) ? ['外部工具事件 resultTruncated=true 表示结果仅保留了部分内容。只引用可见部分，不据此推断未列出的内容不存在。'] : []),
+      ...(events.some(event => event.resultTruncated) ? ['工具事件 resultTruncated=true 表示结果仅保留了部分可见内容（例如超长返回被截断）。只引用实际可见的部分，不据此推断省略或未列出的内容不存在。'] : []),
       '若检索发现该事实已存在且没有新信息，不要重复写。若没有值得保存的内容，直接明确报告无新增记忆。不要声称未经记忆工具确认的写入已经成功。',
       '完成后最终答复包含 MEMORY_ORGANIZER_DONE；若本段没有新增或更新的记忆，包含 MEMORY_ORGANIZER_NO_CHANGE。',
       '```json',
@@ -2887,7 +2887,8 @@ async function main() {
     if (!range.complete) throw new Error(range.error || '源 DSH 事件范围不完整');
     const transcript = organizerTranscriptRecords(range.records, {
       sanitize: redactSensitive, legacyChunkLayout: evidenceVersion === 1,
-      omitNoticePlaceholders: evidenceVersion >= 3, compactDesktopToolResults: evidenceVersion >= 4
+      omitNoticePlaceholders: evidenceVersion >= 3, compactDesktopToolResults: evidenceVersion >= 4,
+      recoverSpilledQQReads: evidenceVersion >= 5
     });
     if (transcript.incomplete) {
       const reasons = transcript.incompleteReasons?.slice(0, 5).join('；');
@@ -5161,12 +5162,34 @@ async function main() {
             if (!row || String(row.messageId) !== ref.messageId) throw Error('QQ 暂未找到原消息，提醒仍待阅读');
             return {...row, seq:ref.seq};
           })) : messages;
-          const nextAfterSeq = messages.at(-1)?.seq ?? afterSeq ?? 0;
+          const now = Date.now();
+          const decoratedRows = rows.map(withCurrentOwnerIdentity);
+          const buildUnreadPayload = (msgs, slang, truncated) => {
+            const keptSet = new Set(messages.slice(0, msgs.length));
+            const remaining = st.unread.filter((m) => !keptSet.has(m));
+            const nextSeq = msgs.at(-1)?.seq ?? afterSeq ?? 0;
+            return {
+              ok: true, key, nextAfterSeq: nextSeq, hasMore: st.unread.some(m => m.seq > nextSeq),
+              ...(truncated ? { partial: true } : {}),
+              messages: msgs,
+              slang,
+              bufferId: st.bufferId,
+              unreadCount: remaining.length,
+              readThroughSeq: readThroughSeqV2(st, remaining)
+            };
+          };
+          const fitted = fitQQReadPayloadToByteBudget(buildUnreadPayload, decoratedRows, {
+            now,
+            resolveSlang: (msgs) => chatLearning?.query(key, msgs.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
+          });
+          const keptMessages = messages.slice(0, fitted.messages.length);
+          const nextAfterSeq = keptMessages.at(-1)?.seq ?? afterSeq ?? 0;
           sendQQReadResult(key, st, {
             ok: true, key, nextAfterSeq, hasMore: st.unread.some(m => m.seq > nextAfterSeq),
-            messages: rows.map(withCurrentOwnerIdentity),
-            slang: chatLearning?.query(key, rows.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
-          }, messages, visit);
+            ...(fitted.truncated ? { partial: true } : {}),
+            messages: fitted.messages,
+            slang: fitted.slang
+          }, keptMessages, visit);
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/socialV2/conversation-history') {
@@ -5215,7 +5238,7 @@ async function main() {
               ? rawMessages.findIndex(m => m.messageId != null && String(m.messageId) === String(previousHandledMessageId))
               : -1;
             let remainingNewBudget = previousHandledAt === 0 && handledIdx === -1 ? unreadBeforeRead : Infinity;
-            const messages = rawMessages.map((m, idx) => {
+            const allMessages = rawMessages.map((m, idx) => {
               let isNew = false;
               if (!m.isSelf) {
                 if (handledIdx >= 0) isNew = idx < handledIdx;
@@ -5223,6 +5246,40 @@ async function main() {
                 else if (!anchor && remainingNewBudget > 0) { isNew = true; remainingNewBudget -= 1; }
               }
               return { ...m, isNew };
+            });
+            const historyEnvelope = {
+              ok: true, key, source: native ? 'ntqq-history' : 'snowluma-history', action, messageId: messageId || null,
+              unreadBeforeRead,
+              previousHandled: previousHandledAt > 0 ? compactModelMessage({ time: previousHandledAt }, { now }) : null,
+              lastAiReply: st.lastAiReplyAt > 0 ? compactModelMessage({ time: st.lastAiReplyAt }, { now }) : null,
+              now
+            };
+            const historyTruncationMeta = (msgs) => {
+              const lastId = qqMessageId(msgs.at(-1)?.messageId);
+              const nextId = lastId ? `id:${lastId}` : null;
+              return {
+                partial: true,
+                hasMore: true,
+                requestedCount: count,
+                nextMessageId: nextId,
+                note: nextId
+                  ? `本页内容较多，已按响应体积上限截断为前 ${msgs.length} 条；如需继续翻页，可传入 messageId=${nextId}。`
+                  : `本页内容较多，已按响应体积上限截断为前 ${msgs.length} 条。`
+              };
+            };
+            const buildHistoryPayload = (msgs, slang, truncated) => ({
+              ...historyEnvelope,
+              count: msgs.length,
+              messages: msgs,
+              slang,
+              ...(truncated ? historyTruncationMeta(msgs) : {}),
+              bufferId: st.bufferId,
+              unreadCount: st.unread.length,
+              readThroughSeq: st.lastUnreadSeq || 0
+            });
+            const { messages, slang, truncated } = fitQQReadPayloadToByteBudget(buildHistoryPayload, allMessages, {
+              now,
+              resolveSlang: (msgs) => chatLearning?.query(key, msgs.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
             });
             const ids = new Set(messages.filter(m => !m.isSelf).map(m => qqMessageId(m.messageId)).filter(Boolean));
             if (visit && messages.length && st.incomingVersion === visit.version) {
@@ -5233,12 +5290,11 @@ async function main() {
               }
             }
             sendQQReadResult(key, st, {
-              ok: true, key, source: native ? 'ntqq-history' : 'snowluma-history', action, messageId: messageId || null,
-              unreadBeforeRead,
-              previousHandled: previousHandledAt > 0 ? compactModelMessage({ time: previousHandledAt }, { now }) : null,
-              lastAiReply: st.lastAiReplyAt > 0 ? compactModelMessage({ time: st.lastAiReplyAt }, { now }) : null,
-              count: messages.length, messages, now,
-              slang: chatLearning?.query(key, messages.map(m => m.plain || m.text).join('\n'), { matchText: true }) ?? []
+              ...historyEnvelope,
+              count: messages.length,
+              messages,
+              slang,
+              ...(truncated ? historyTruncationMeta(messages) : {})
             }, st.unread.filter(m => ids.has(qqMessageId(m.messageId))), messages.length ? visit : null);
           } catch (error) {
             sendJson({ ok: false, error: `读取会话历史失败：${error?.message ?? error}` }, 502);

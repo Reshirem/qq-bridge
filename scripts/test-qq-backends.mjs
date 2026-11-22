@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import { openNativeReminders } from '../src/native-reminders.js';
 import { createChatLearningStore } from '../src/chat-learning.js';
+import { QQ_READ_MAX_MODEL_BYTES, serializeModelData } from '../src/qq-model-view.js';
 import os from 'node:os';
 
 test('independent mode stores only reminder references and never opens the SnowLuma cache', async () => {
@@ -326,4 +327,108 @@ test('native runtime receives and sends non-friend group temporary private messa
   assert.equal(prepared[0].fromGroupCode, '575000000');
   assert.equal(sentPeers.length, 1);
   assert.equal(sentPeers[0].peer.chatType, 100);
+});
+
+test('conversation-history and unread cap model-view payload bytes, report pagination, and acknowledge only returned items', async () => {
+  // 1. Native conversation-history byte budget & pagination
+  const hNative = await bridgeHarness({
+    config: { qqBackend: 'native', qqBackendSince: Date.now() },
+    globals: { setTimeout: () => ({ unref() {} }), clearTimeout() {} }
+  });
+  hNative.bot.account = '42'; hNative.bot.health = { connected: true }; hNative.bot.emit('open');
+  hNative.setDesktopAgentLifecycle('active');
+  const nativeServer = hNative.startConsoleServer();
+  if (!nativeServer.listening) await new Promise(resolve => nativeServer.once('listening', resolve));
+  try {
+    const session = await hNative.ensureDesktopAgentSession();
+    const state = JSON.parse(fs.readFileSync(path.join(hNative.temp, 'state/desktop-agent.json'), 'utf8'));
+    const headers = {
+      'x-console-token': 'fixture-console-token',
+      'x-agent-call': '1',
+      'x-agent-session-id': session,
+      'x-agent-token': state.agentToken
+    };
+    const base = `http://127.0.0.1:${nativeServer.address().port}`;
+    const longHistory = Array.from({ length: 180 }, (_, idx) => {
+      const id = 5000 - idx;
+      return {
+        self_id: '42', group_id: 456, user_id: 100 + (idx % 5), message_id: String(id), time: 1700000000 + (180 - idx),
+        sender: { card: `群友${idx % 5}` },
+        message: [{ type: 'text', data: { text: `历史消息#${id}：` + '长文'.repeat(90) } }]
+      };
+    });
+    for (const row of longHistory.slice(0, 120)) {
+      await hNative.handleIncomingForTest('group', 456, {
+        ...row,
+        message: [{ type: 'at', data: { qq: '42' } }, ...row.message]
+      });
+    }
+    hNative.bot.raw = async (action, params) => {
+      if (action === 'get_group_msg_history') {
+        const startIdx = params?.message_id ? longHistory.findIndex(m => m.message_id === String(params.message_id)) : 0;
+        return { messages: longHistory.slice(Math.max(0, startIdx), Math.max(0, startIdx) + (params?.count || 20)) };
+      }
+      return [];
+    };
+    const res = await fetch(`${base}/api/socialV2/conversation-history?key=group:456&count=180`, { headers });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.partial, true);
+    assert.equal(data.hasMore, true);
+    assert.equal(data.requestedCount, 180);
+    assert.ok(data.count > 0 && data.count < 180);
+    assert.equal(data.nextMessageId, `id:${data.messages.at(-1).messageId}`);
+    assert.ok(Buffer.byteLength(serializeModelData(data)) <= QQ_READ_MAX_MODEL_BYTES);
+    // Only the returned unread messages are acknowledged; unreturned reminders remain pending.
+    assert.equal(data.unreadCount, 120 - data.count);
+
+    // Follow-up page using nextMessageId succeeds without hitting the spill threshold.
+    const nextRes = await fetch(`${base}/api/socialV2/conversation-history?key=group:456&count=180&messageId=${encodeURIComponent(data.nextMessageId)}`, { headers });
+    assert.equal(nextRes.status, 200);
+    const nextData = await nextRes.json();
+    assert.equal(nextData.messages[0].messageId, data.messages.at(-1).messageId);
+    assert.ok(Buffer.byteLength(serializeModelData(nextData)) <= QQ_READ_MAX_MODEL_BYTES);
+  } finally {
+    await new Promise(resolve => nativeServer.close(resolve));
+    await hNative.close();
+  }
+
+  // 2. SnowLuma unread byte budget, partial flag, and accurate readThroughSeq
+  const hSnow = await bridgeHarness({ config: { qqBackend: 'snowluma' } });
+  hSnow.setDesktopAgentLifecycle('active');
+  const snowServer = hSnow.startConsoleServer();
+  if (!snowServer.listening) await new Promise(resolve => snowServer.once('listening', resolve));
+  try {
+    const session = await hSnow.ensureDesktopAgentSession();
+    const state = JSON.parse(fs.readFileSync(path.join(hSnow.temp, 'state/desktop-agent.json'), 'utf8'));
+    const headers = {
+      'x-console-token': 'fixture-console-token',
+      'x-agent-call': '1',
+      'x-agent-session-id': session,
+      'x-agent-token': state.agentToken
+    };
+    const base = `http://127.0.0.1:${snowServer.address().port}`;
+    for (let i = 1; i <= 100; i += 1) {
+      await hSnow.handleIncomingForTest('group', 456, {
+        self_id: '42', group_id: 456, user_id: 100 + (i % 4), message_id: String(8000 + i), time: 1700001000 + i,
+        sender: { card: `群友${i % 4}` },
+        message: [{ type: 'text', data: { text: `未读#${i}：` + '长消息'.repeat(90) } }]
+      });
+    }
+    const page1 = await (await fetch(`${base}/api/socialV2/unread?key=group:456&limit=100`, { headers })).json();
+    assert.equal(page1.partial, true);
+    assert.equal(page1.hasMore, true);
+    assert.ok(page1.messages.length > 0 && page1.messages.length < 100);
+    assert.equal(page1.nextAfterSeq, page1.messages.at(-1).seq);
+    assert.equal(page1.readThroughSeq, page1.nextAfterSeq);
+    assert.equal(page1.unreadCount, 100 - page1.messages.length);
+    assert.ok(Buffer.byteLength(serializeModelData(page1)) <= QQ_READ_MAX_MODEL_BYTES);
+
+    const page2 = await (await fetch(`${base}/api/socialV2/unread?key=group:456&limit=100&afterSeq=${page1.nextAfterSeq}`, { headers })).json();
+    assert.equal(page2.messages[0].seq, page1.nextAfterSeq + 1);
+    assert.ok(Buffer.byteLength(serializeModelData(page2)) <= QQ_READ_MAX_MODEL_BYTES);
+  } finally {
+    await new Promise(resolve => snowServer.close(resolve));
+    await hSnow.close();
+  }
 });

@@ -660,11 +660,11 @@ test('external previews are sanitized and flagged while QQ, memory and replaced 
   assert.equal(organizerTranscriptRecords([{ ...records[0], surfaceOp: 'replace' }]).incomplete, true);
 });
 
-test('existing chunk receipts retain evidence layout while unread jobs adopt version 4', () => {
+test('existing chunk receipts retain evidence layout while unread jobs adopt version 5', () => {
   for (const job of [{}, { progress: { evidenceVersion: 2, total: null, completed: 0 } }]) {
-    assert.equal(organizerEvidenceVersion(job), 4);
+    assert.equal(organizerEvidenceVersion(job), 5);
   }
-  for (const evidenceVersion of [1, 2, 3, 4]) {
+  for (const evidenceVersion of [1, 2, 3, 4, 5]) {
     for (const checkpoint of [{ total: 5 }, { completed: 1 }]) {
       assert.equal(organizerEvidenceVersion({ progress: { evidenceVersion, ...checkpoint } }), evidenceVersion);
     }
@@ -678,6 +678,159 @@ test('existing chunk receipts retain evidence layout while unread jobs adopt ver
     assert.equal(organizerTranscriptRecords(qqReadRecords([
       { message: { text: '原文' } }, { message: { text: '[notice]' } }
     ]), options).incomplete, true);
+  }
+});
+
+test('version 5 recovers complete head and tail messages from DSH-spilled QQ history reads', async () => {
+  const key = 'group:123';
+  const makeMsg = (index, extra = {}) => ({
+    kind: 'group',
+    messageId: String(9000 + index),
+    sender: `用户${index % 3}`,
+    userId: String(101 + (index % 3)),
+    text: `第 ${index} 条测试消息：${'内容'.repeat(25)}`,
+    at: '01:40',
+    ago: '1m',
+    ...extra
+  });
+  const allMessages = Array.from({ length: 160 }, (_, idx) => makeMsg(idx));
+  const payload = JSON.stringify({
+    ok: true,
+    key,
+    source: 'ntqq-history',
+    action: 'get_group_msg_history',
+    messageId: null,
+    unreadBeforeRead: 1,
+    count: 160,
+    messages: allMessages,
+    now: 1789680000000,
+    slang: [
+      { id: 'slang-1', content: '梗词', meaning: '测试黑话', usage: '测试用法', scope: key, status: 'learned', confidence: 0.9 }
+    ],
+    bufferId: 'fixture-buffer',
+    unreadCount: 0,
+    readThroughSeq: 301
+  });
+  const headCut = payload.indexOf('"messageId":"9060"') + 12;
+  const tailCut = payload.indexOf('"messageId":"9120"') + 12;
+  const spilledText = `${payload.slice(0, headCut)}\n\n[...]\n\n${payload.slice(tailCut)}\n\n(Omitted 20000 bytes. Full formatted result stored at: fixture-spill-path. Use read with offset/limit, or grep this path to search within it.)`;
+
+  const callRecord = (seq, name, args) => ({ seq, type: 'tool/call', data: { name, callId: `call-${seq}`, arguments: JSON.stringify(args) } });
+  const resultRecord = (seq, name, callId, text, surfaceOp = 'append') => ({
+    seq, type: 'tool/result', surfaceOp,
+    data: { message: { source: { callId, toolName: name }, content: [{ type: 'text', text }] } }
+  });
+
+  const records = [
+    callRecord(1, 'mcp__qq__qq_get_conversation_history', { key, count: 160 }),
+    resultRecord(2, 'mcp__qq__qq_get_conversation_history', 'call-1', spilledText),
+    // Subsequent partial unread reads continue using afterSeq without conflicting with spilled history's readThroughSeq=301.
+    callRecord(3, 'mcp__qq__qq_get_unread_messages', { key }),
+    resultRecord(4, 'mcp__qq__qq_get_unread_messages', 'call-3', JSON.stringify({
+      ok: true, key, bufferId: 'fixture-buffer', readThroughSeq: 12, partial: true,
+      messages: [{ seq: 12, messageId: '9000', sender: '用户0', userId: '101', text: allMessages[0].text, at: '01:40' }]
+    })),
+    callRecord(5, 'mcp__qq__qq_get_unread_messages', { key, afterSeq: 12 }),
+    resultRecord(6, 'mcp__qq__qq_get_unread_messages', 'call-5', JSON.stringify({
+      ok: true, key, bufferId: 'fixture-buffer', readThroughSeq: 13, partial: false,
+      messages: [{ seq: 13, messageId: '9160', sender: '用户1', userId: '102', text: '新未读消息', at: '01:42' }]
+    }))
+  ];
+
+  const transcript = organizerTranscriptRecords(records);
+  assert.equal(transcript.incomplete, false, JSON.stringify(transcript.incompleteReasons));
+  assert.deepEqual(transcript.incompleteReasons, []);
+  const qqReads = transcript.events.filter(event => event.kind === 'qq-read');
+  assert.equal(qqReads[0].partial, true);
+  assert.equal(qqReads[0].resultTruncated, true);
+  assert.equal(qqReads[0].readThroughSeq, 301);
+  assert.equal(qqReads[0].messageCount, 60 + 39);
+  const qqMessages = transcript.events.filter(event => event.kind === 'qq-message');
+  assert.equal(qqMessages.length, 60 + 39 + 1); // msg 9000 deduplicated across read 2 and read 4
+  assert.equal(qqMessages.some(event => event.message.messageId === '9060'), false);
+  assert.equal(qqMessages.some(event => event.message.messageId === '9120'), false);
+  assert.equal(qqMessages.some(event => event.message.messageId === '9000' && event.message.seq === 12), true);
+  assert.doesNotMatch(JSON.stringify(transcript.events), /fixture-spill-path|"meaning":"测试黑话"/);
+
+  const h = await bridgeHarness();
+  try {
+    assert.ok(h.chunkMemoryOrganizerEvents(transcript.events).length >= 1);
+  } finally { await h.close(); }
+
+  // Conflict against another read of the same recovered message still blocks.
+  const conflicted = organizerTranscriptRecords([
+    records[0], records[1],
+    callRecord(7, 'mcp__qq__qq_get_message_detail', { key, messageId: 'id:9000' }),
+    resultRecord(8, 'mcp__qq__qq_get_message_detail', 'call-7', JSON.stringify({
+      ok: true, key, info: { messageId: '9000', sender: '用户0', userId: '101', text: '被篡改的正文', at: '01:40' }
+    }))
+  ]);
+  assert.equal(conflicted.incomplete, true);
+  assert.match(conflicted.incompleteReasons[0], /text/);
+
+  // Legacy version 4 behavior keeps spilled QQ reads incomplete.
+  assert.equal(organizerTranscriptRecords([records[0], records[1]], { recoverSpilledQQReads: false }).incomplete, true);
+});
+
+test('spilled QQ recovery handles closed head, slang-boundary cuts, clean tail boundary, and fails closed on tampering', () => {
+  const key = 'group:456';
+  const call = (name, args = { key }) => ({ seq: 1, type: 'tool/call', data: { name, callId: 'c1', arguments: JSON.stringify(args) } });
+  const res = (name, text, surfaceOp = 'append') => ({
+    seq: 2, type: 'tool/result', surfaceOp,
+    data: { message: { source: { callId: 'c1', toolName: name }, content: [{ type: 'text', text }] } }
+  });
+  const footer = '\n\n(Omitted 100 bytes. Full formatted result stored at: fixture-spill-path)';
+  const baseObj = {
+    ok: true,
+    key,
+    messages: [
+      { kind: 'group', messageId: '10', userId: '101', text: '第一条' },
+      { kind: 'group', messageId: '11', userId: '102', text: '第二条' },
+      { kind: 'group', messageId: '12', userId: '103', text: '第三条' }
+    ],
+    slang: [
+      { id: 's1', content: '黑话1', meaning: '释义1', scope: key },
+      { id: 's2', content: '黑话2', meaning: '释义2', scope: key }
+    ],
+    bufferId: 'buf-1',
+    readThroughSeq: 77
+  };
+  const json = JSON.stringify(baseObj);
+
+  // 1. Head closes messages completely, [...] cuts only inside slang.
+  const slangMid = json.indexOf('"黑话2"');
+  const closedHeadSpill = `${json.slice(0, json.indexOf('"slang":[') + 14)}\n\n[...]\n\n${json.slice(slangMid)}${footer}`;
+  const closedHead = organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', closedHeadSpill)]);
+  assert.equal(closedHead.incomplete, false);
+  assert.deepEqual(closedHead.events.filter(e => e.kind === 'qq-message').map(e => e.message.messageId), ['10', '11', '12']);
+  assert.equal(closedHead.events.find(e => e.kind === 'qq-read').readThroughSeq, 77);
+
+  // 2. [...] crosses end of messages into slang: keeps complete head messages, never leaks slang as qq-message.
+  const crossCutSpill = `${json.slice(0, json.indexOf('"第三条"'))}\n\n[...]\n\n${json.slice(slangMid)}${footer}`;
+  const crossCut = organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', crossCutSpill)]);
+  assert.equal(crossCut.incomplete, false);
+  assert.deepEqual(crossCut.events.filter(e => e.kind === 'qq-message').map(e => e.message.messageId), ['10', '11']);
+  assert.doesNotMatch(JSON.stringify(crossCut.events), /黑话|释义/);
+
+  // 3. Tail starts cleanly on a complete message object: keeps that first tail message.
+  const firstMsgEnd = json.indexOf(',{"kind":"group","messageId":"11"');
+  const thirdMsgStart = json.indexOf('{"kind":"group","messageId":"12"');
+  const cleanTailSpill = `${json.slice(0, firstMsgEnd)},\n\n[...]\n\n${json.slice(thirdMsgStart)}${footer}`;
+  const cleanTail = organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', cleanTailSpill)]);
+  assert.equal(cleanTail.incomplete, false);
+  assert.deepEqual(cleanTail.events.filter(e => e.kind === 'qq-message').map(e => e.message.messageId), ['10', '12']);
+
+  // 4. Fail-closed negative cases.
+  const validSpill = `${json.slice(0, json.indexOf('"第二条"'))}\n\n[...]\n\n${json.slice(thirdMsgStart)}${footer}`;
+  assert.equal(organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', validSpill, 'replace')]).incomplete, true);
+  assert.equal(organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', validSpill.replace('第一条', '[truncated]'))]).incomplete, true);
+  assert.equal(organizerTranscriptRecords([call('qq_get_conversation_history', { key: 'group:999' }), res('qq_get_conversation_history', validSpill)]).incomplete, true);
+  assert.equal(organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', validSpill.replace('"ok":true', '"ok":false'))]).incomplete, true);
+  assert.equal(organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', validSpill.replace('"readThroughSeq":77', '"other":1'))]).incomplete, true);
+  const zeroCompleteSpill = `${json.slice(0, json.indexOf('"第一条"'))}\n\n[...]\n\n${json.slice(json.indexOf('],"slang"'))}${footer}`;
+  assert.equal(organizerTranscriptRecords([call('qq_get_conversation_history'), res('qq_get_conversation_history', zeroCompleteSpill)]).incomplete, true);
+  for (const blockedTool of ['mcp__qq__qq_get_message_detail', 'mcp__qq-memory__memory_read', 'qq_agent_rest']) {
+    assert.equal(organizerTranscriptRecords([call(blockedTool), res(blockedTool, validSpill)]).incomplete, true);
   }
 });
 

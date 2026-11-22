@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { compactModelMessage, compactModelData, serializeModelData } from '../src/qq-model-view.js';
+import { compactModelMessage, compactModelData, serializeModelData, fitQQReadPayloadToByteBudget, QQ_READ_MAX_MODEL_BYTES } from '../src/qq-model-view.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const shortMessage = {
@@ -285,4 +285,40 @@ test('MCP exposes QQ tool schemas and forwards valid calls with their source and
       await fs.rm(resolved, { recursive: true, force: true });
     }
   }
+});
+
+test('fitQQReadPayloadToByteBudget keeps full payloads under budget and enforces byte ceiling when oversized', () => {
+  assert.equal(QQ_READ_MAX_MODEL_BYTES, 40_000);
+  const now = 1789680000000;
+  const build = (msgs, slang, truncated) => ({
+    ok: true, key: 'group:123', count: msgs.length, messages: msgs, slang,
+    ...(truncated ? { partial: true, hasMore: true } : {}), bufferId: 'buf', readThroughSeq: 10
+  });
+  const few = Array.from({ length: 5 }, (_, i) => ({ ...shortMessage, seq: i + 1, messageId: String(i + 1), text: `短消息 ${i}` }));
+  const under = fitQQReadPayloadToByteBudget(build, few, { maxBytes: 4000, now, resolveSlang: () => [{ id: 's1', content: '梗', meaning: '释义', scope: 'group:123' }] });
+  assert.equal(under.truncated, false);
+  assert.equal(under.messages.length, 5);
+  assert.equal(under.slang.length, 1);
+
+  const many = Array.from({ length: 80 }, (_, i) => ({
+    ...shortMessage, seq: i + 1, messageId: String(100 + i),
+    text: `第${i}条：` + '较长聊天正文内容'.repeat(25),
+    plain: `第${i}条：` + '较长聊天正文内容'.repeat(25),
+    tail: `第${i}条：` + '较长聊天正文内容'.repeat(25),
+  }));
+  const over = fitQQReadPayloadToByteBudget(build, many, {
+    maxBytes: 4000, now,
+    resolveSlang: (msgs) => msgs.length > 2 ? [{ id: 's1', content: '梗', meaning: '释义'.repeat(100), scope: 'group:123' }] : [{ id: 's2', content: '小梗', meaning: '短释义', scope: 'group:123' }]
+  });
+  assert.equal(over.truncated, true);
+  assert.ok(over.messages.length >= 1 && over.messages.length < many.length);
+  assert.ok(Buffer.byteLength(serializeModelData(build(over.messages, over.slang, true), { now })) <= 4000);
+
+  const singlePlusHugeSlang = fitQQReadPayloadToByteBudget(build, [many[0]], {
+    maxBytes: 1200, now,
+    resolveSlang: () => Array.from({ length: 10 }, (_, i) => ({ id: `s-${i}`, content: `词${i}`, meaning: '说明'.repeat(80), scope: 'group:123' }))
+  });
+  assert.equal(singlePlusHugeSlang.messages.length, 1);
+  assert.equal(singlePlusHugeSlang.truncated, false);
+  assert.equal(singlePlusHugeSlang.slang.length, 0);
 });

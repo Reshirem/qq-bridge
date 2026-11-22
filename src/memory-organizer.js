@@ -333,7 +333,7 @@ export function organizerEvidenceVersion(job) {
   const hasChunks = Number.isSafeInteger(job.progress?.total)
     || Number(job.progress?.completed) > 0
     || Boolean(job.organizerSessionId) || Boolean(job.organizerSessionIds?.length);
-  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 4;
+  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 5;
 }
 
 function compactQQMessage(message, omitNoticePlaceholders) {
@@ -410,6 +410,175 @@ function mergeQQMessageFields(previous, current) {
 }
 
 const DSH_SPILL_FOOTER = /\(Omitted \d+ bytes\. Full formatted result stored at:/;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSpilledQQMessageCandidate(value) {
+  if (!isPlainObject(value)) return false;
+  if ('meaning' in value && 'scope' in value) return false;
+  return ['messageId', 'seq', 'userId', 'sender', 'text', 'plain', 'tail', 'media']
+    .some((field) => Object.hasOwn(value, field));
+}
+
+function candidateReadThroughSeq(object) {
+  if (!isPlainObject(object)) return null;
+  const raw = object.readThroughSeq;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const num = Number(raw);
+  return Number.isSafeInteger(num) && num >= 0 ? num : null;
+}
+
+function recoverSpilledQQMessageList(rawText, expectedKey = '') {
+  if (typeof rawText !== 'string') return null;
+  const footerIdx = rawText.search(DSH_SPILL_FOOTER);
+  if (footerIdx < 0) return null;
+  const visible = rawText.slice(0, footerIdx).trimEnd();
+  if (containsTruncationMarker(visible, false)) return null;
+  const parts = visible.split(/\r?\n\r?\n\[\.\.\.\]\r?\n\r?\n/);
+  if (parts.length > 2) return null;
+  const head = parts[0];
+  const tail = parts.length === 2 ? parts[1] : '';
+
+  let headerObj = null;
+  let headAfter = '';
+  const markerRe = /"(?:messages|newMessages)"\s*:\s*\[/g;
+  let markerMatch;
+  while ((markerMatch = markerRe.exec(head)) !== null) {
+    const idx = markerMatch.index;
+    const prefix = head.slice(0, idx).replace(/,\s*$/, '');
+    if (!prefix.trimStart().startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(`${prefix}}`);
+      if (isPlainObject(parsed) && parsed.ok === true) {
+        headerObj = parsed;
+        headAfter = head.slice(idx + markerMatch[0].length);
+        break;
+      }
+    } catch {}
+  }
+  if (!headerObj) return null;
+
+  const headerKey = String(headerObj.key ?? '').trim();
+  const expected = String(expectedKey ?? '').trim();
+  if (headerKey && expected && headerKey !== expected) return null;
+  if (!headerKey && !expected) return null;
+
+  const headMsgs = [];
+  let headClosed = false;
+  {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let objStart = -1;
+    for (let i = 0; i < headAfter.length; i += 1) {
+      const ch = headAfter[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+      } else if (ch === '"') {
+        inStr = true;
+      } else if (ch === '{') {
+        if (depth === 0) objStart = i;
+        depth += 1;
+      } else if (ch === '[') {
+        if (depth === 0) return null;
+        depth += 1;
+      } else if (ch === '}' || ch === ']') {
+        if (depth === 0 && ch === ']') {
+          headClosed = true;
+          break;
+        }
+        if (depth === 0) return null;
+        depth -= 1;
+        if (depth === 0 && ch === '}' && objStart >= 0) {
+          let parsed;
+          try { parsed = JSON.parse(headAfter.slice(objStart, i + 1)); } catch { return null; }
+          if (!isSpilledQQMessageCandidate(parsed)) return null;
+          headMsgs.push(parsed);
+          objStart = -1;
+        }
+      } else if (depth === 0 && !/[\s,]/.test(ch)) {
+        return null;
+      }
+    }
+  }
+
+  let suffixObj = null;
+  let messagesEnd = -1;
+  if (tail) {
+    const headerHasSeq = candidateReadThroughSeq(headerObj) !== null;
+    for (let i = tail.indexOf(']'); i >= 0; i = tail.indexOf(']', i + 1)) {
+      let j = i + 1;
+      while (j < tail.length && /\s/.test(tail[j])) j += 1;
+      const nextChar = tail[j];
+      if (nextChar !== ',' && nextChar !== '}') continue;
+      if (nextChar === '}' && tail.slice(j + 1).trim() !== '') continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(nextChar === ',' ? `{${tail.slice(j + 1)}` : '{}');
+      } catch {
+        continue;
+      }
+      if (!isPlainObject(parsed)) continue;
+      if (candidateReadThroughSeq(parsed) !== null || headerHasSeq) {
+        suffixObj = parsed;
+        messagesEnd = i;
+        break;
+      }
+    }
+    if (!suffixObj || messagesEnd < 0) return null;
+  } else if (!headClosed) {
+    return null;
+  }
+
+  const readThroughSeq = candidateReadThroughSeq(suffixObj) ?? candidateReadThroughSeq(headerObj);
+  if (readThroughSeq === null) return null;
+
+  let tailMsgs = [];
+  if (!headClosed && messagesEnd > 0) {
+    const tailSlice = tail.slice(0, messagesEnd);
+    const candidates = [];
+    const trimmedOffset = tailSlice.search(/\S/);
+    if (trimmedOffset >= 0 && tailSlice[trimmedOffset] === '{') {
+      candidates.push(trimmedOffset);
+    }
+    const sepRe = /,\s*(?=\{)/g;
+    let match;
+    while ((match = sepRe.exec(tailSlice)) !== null) {
+      candidates.push(match.index + match[0].length);
+      if (candidates.length >= 500) break;
+    }
+    for (const start of candidates) {
+      let parsed;
+      try { parsed = JSON.parse(`[${tailSlice.slice(start)}]`); } catch { continue; }
+      if (!Array.isArray(parsed)) continue;
+      if (parsed.some((item) => isPlainObject(item) && 'meaning' in item && 'scope' in item)) {
+        tailMsgs = [];
+        break;
+      }
+      if (parsed.every(isSpilledQQMessageCandidate)) {
+        tailMsgs = parsed;
+        break;
+      }
+    }
+  }
+
+  const messages = [...headMsgs, ...tailMsgs];
+  if (!messages.length) return null;
+  const rawBufferId = suffixObj?.bufferId ?? headerObj.bufferId;
+  const bufferId = typeof rawBufferId === 'string' && rawBufferId.trim() ? rawBufferId.trim() : '';
+  return {
+    ok: true,
+    key: headerKey || expected,
+    ...(bufferId ? { bufferId } : {}),
+    readThroughSeq,
+    partial: true,
+    messages
+  };
+}
 
 function containsTruncationMarker(value, includeSpill = false) {
   if (Array.isArray(value)) return value.some(item => containsTruncationMarker(item, includeSpill));
@@ -503,7 +672,7 @@ function compactDesktopToolResult(value, sanitize) {
  */
 export function organizerTranscriptRecords(records, {
   sanitize = (value) => value, legacyChunkLayout = false, omitNoticePlaceholders = !legacyChunkLayout,
-  compactDesktopToolResults = !legacyChunkLayout
+  compactDesktopToolResults = !legacyChunkLayout, recoverSpilledQQReads = !legacyChunkLayout
 } = {}) {
   const ordered = (Array.isArray(records) ? records : [])
     .filter((record) => record && typeof record === 'object')
@@ -559,8 +728,15 @@ export function organizerTranscriptRecords(records, {
       const ok = !isFailedToolResult(event);
       const external = compactDesktopToolResults && !toolLeaf.startsWith('qq_')
         && !toolLeaf.startsWith('memory_') && toolLeaf !== 'agent_rest';
+      const canRecoverSpilledQQ = recoverSpilledQQReads && ok
+        && !(event?.surfaceOp && event.surfaceOp !== 'append')
+        && (toolLeaf === 'qq_get_conversation_history' || toolLeaf === 'qq_get_unread_messages')
+        && content.length === 1 && typeof content[0] === 'string' && DSH_SPILL_FOOTER.test(content[0]);
+      const recoveredSpilledQQ = canRecoverSpilledQQ
+        ? recoverSpilledQQMessageList(content[0], call?.args?.key)
+        : null;
       const marked = containsTruncationMarker(result, compactDesktopToolResults);
-      if ((!external && marked) || (event?.surfaceOp && event.surfaceOp !== 'append')) {
+      if ((!external && marked && !recoveredSpilledQQ) || (event?.surfaceOp && event.surfaceOp !== 'append')) {
         markIncomplete(`DSH 事件 ${seq} 的工具结果含截断标记或被替换`);
       }
       if (external) {
@@ -581,8 +757,9 @@ export function organizerTranscriptRecords(records, {
         continue;
       }
       const resultValue = content.length === 1 ? content[0] : content;
-      const resultObject = resultValue && typeof resultValue === 'object' && !Array.isArray(resultValue)
-        ? resultValue : null;
+      const resultObject = recoveredSpilledQQ ?? (resultValue && typeof resultValue === 'object' && !Array.isArray(resultValue)
+        ? resultValue : null);
+      const spilledQQ = Boolean(recoveredSpilledQQ);
       // Historical wait results remain evidence in transcripts created before the tool was retired.
       if (ok && (toolLeaf.startsWith('qq_get_') || toolLeaf === 'qq_wait_for_messages') && resultObject) {
         const args = call?.args && typeof call.args === 'object' && !Array.isArray(call.args) ? call.args : {};
@@ -608,23 +785,26 @@ export function organizerTranscriptRecords(records, {
         }
         events.push({
           seq, time: Number(event?.time) || undefined, kind: 'qq-read', tool: toolLeaf, key,
-          bufferId, readThroughSeq, afterSeq, partial: resultObject.partial === true, messageCount: messages.length
+          bufferId, readThroughSeq, afterSeq, partial: resultObject.partial === true,
+          ...(spilledQQ ? { resultTruncated: true } : {}),
+          messageCount: messages.length
         });
         if (hasMessageList && messages.length && readThroughSeq === null) {
           markIncomplete(`DSH 事件 ${seq} 的 QQ 消息列表缺少 readThroughSeq`);
         }
+        const tracksAfterSeqWatermark = !spilledQQ && toolLeaf !== 'qq_get_conversation_history';
         if (hasMessageList && resultObject.partial === true) {
           if (!key || readThroughSeq === null) {
             markIncomplete(`DSH 事件 ${seq} 的 partial QQ 读取缺少来源 key 或 readThroughSeq`);
           }
-          else {
+          else if (tracksAfterSeqWatermark) {
             const pendingWatermark = pendingPartialQQReads.get(key);
             if (pendingWatermark !== undefined && afterSeq !== null && afterSeq !== pendingWatermark) {
               markIncomplete(`DSH 事件 ${seq} 的 partial QQ 读取没有从前页水位 ${pendingWatermark} 接续`);
             }
             pendingPartialQQReads.set(key, readThroughSeq);
           }
-        } else if (hasMessageList && key && pendingPartialQQReads.has(key)
+        } else if (tracksAfterSeqWatermark && hasMessageList && key && pendingPartialQQReads.has(key)
           && afterSeq === pendingPartialQQReads.get(key)) {
           pendingPartialQQReads.delete(key);
         }

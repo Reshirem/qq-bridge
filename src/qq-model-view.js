@@ -132,3 +132,65 @@ export function compactModelData(data, opts = {}) {
 export function serializeModelData(data, opts = {}) {
   return JSON.stringify(compactModelData(data, opts));
 }
+
+export const QQ_READ_MAX_MODEL_BYTES = 40_000;
+
+/**
+ * Trim a QQ read response's message prefix (and trailing slang hints if needed)
+ * so the serialized model view stays within maxBytes and avoids DSH spills.
+ */
+export function fitQQReadPayloadToByteBudget(buildPayload, messages, {
+  maxBytes = QQ_READ_MAX_MODEL_BYTES,
+  now = Date.now(),
+  resolveSlang
+} = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const querySlang = (subset) => {
+    if (typeof resolveSlang !== 'function') return [];
+    const found = resolveSlang(subset);
+    return Array.isArray(found) ? found : [];
+  };
+  if (list.length === 0) {
+    return { messages: [], slang: querySlang([]), truncated: false };
+  }
+
+  const allSlang = querySlang(list);
+  if (Buffer.byteLength(serializeModelData(buildPayload(list, allSlang, false), { now })) <= maxBytes) {
+    return { messages: list, slang: allSlang, truncated: false };
+  }
+
+  const envelopeBytes = Buffer.byteLength(serializeModelData(buildPayload([], [], true), { now }));
+  const kept = [];
+  let usedBytes = envelopeBytes;
+  for (const item of list) {
+    const itemBytes = Buffer.byteLength(JSON.stringify(compactModelMessage(item, { now }))) + 1;
+    if (kept.length > 0 && usedBytes + itemBytes > maxBytes) break;
+    kept.push(item);
+    usedBytes += itemBytes;
+  }
+
+  let slang = querySlang(kept);
+  const currentBytes = () => Buffer.byteLength(
+    serializeModelData(buildPayload(kept, slang, kept.length < list.length), { now })
+  );
+
+  let bytes = currentBytes();
+  while (kept.length > 1 && bytes > maxBytes) {
+    const drop = bytes > maxBytes * 1.25
+      ? Math.max(1, Math.min(kept.length - 1, Math.floor(kept.length * (bytes - maxBytes) / bytes)))
+      : 1;
+    kept.length -= drop;
+    slang = querySlang(kept);
+    bytes = currentBytes();
+  }
+  while (kept.length === 1 && slang.length > 0 && bytes > maxBytes) {
+    slang = slang.slice(0, -1);
+    bytes = currentBytes();
+  }
+
+  return {
+    messages: kept,
+    slang,
+    truncated: kept.length < list.length
+  };
+}

@@ -321,7 +321,7 @@ server.tool(
 // ── 全局 desktop-agent 使用的 QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
-  '独立模式只列待阅读的提醒，普通聊天通过 qq_get_conversation_history 读取。SnowLuma 模式从最早未读消息开始查看。返回的消息自动计为已读。本工具的 unreadCount 是此队列剩余条数。读取非空页后，休息或回合正常结束时会清掉该会话读取前的未读计数。hasMore=true 时用 nextAfterSeq 翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
+  '独立模式只列待阅读的提醒，普通聊天通过 qq_get_conversation_history 读取。SnowLuma 模式从最早未读消息开始查看。返回的消息自动计为已读。本工具的 unreadCount 是此队列剩余条数。读取非空页后，休息或回合正常结束时会清掉该会话读取前的未读计数。hasMore=true 时用 nextAfterSeq 翻页；单页体积过大时会自动按字节上限截断并标记 partial=true，可用返回的 nextAfterSeq 继续翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),
@@ -339,7 +339,7 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可根据未读数自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandled（本轮前上次处理该会话的时间）、lastAiReply 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示上次处理时或更早的背景消息；同一回合内多次读取不会冲掉 previousHandled 与 isNew）。注意：默认 reverseOrder=true 时 messages 数组按【最新在前、最旧在后（倒序）】排列，阅读时请从后往前（从旧到新）串起聚合消息的前因后果、语气与群友态度（看清大家是在吐槽暗讽、玩梗接龙还是正常分享），不要孤立抓单条消息或单张图片硬评。积压时可抽读最新一页。需要更早上下文时用本页最旧的消息 ID 向前翻。unreadCount 是剩余的本地队列条数，unreadBeforeRead 是读取前的会话未读数；读到最新一页后，休息或回合正常结束时清掉读取前的计数。带 messageId 查旧页只确认实际返回的队列条目。若聚合的新消息只是群友之间闲聊、复读、斗图或你不熟的话题，无需强行发言——看完不回不等于必须立刻结束本回合，你完全可以把视线转回电脑/浏览器去做自己的探索（比如顺着群里刚聊到的新鲜话题去搜一下/开网页看看，或继续你手头没逛完的页面），玩尽兴后再调用 agent_rest。',
+  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可根据未读数自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandled（本轮前上次处理该会话的时间）、lastAiReply 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示上次处理时或更早的背景消息；同一回合内多次读取不会冲掉 previousHandled 与 isNew）。注意：默认 reverseOrder=true 时 messages 数组按【最新在前、最旧在后（倒序）】排列，阅读时请从后往前（从旧到新）串起聚合消息的前因后果、语气与群友态度（看清大家是在吐槽暗讽、玩梗接龙还是正常分享），不要孤立抓单条消息或单张图片硬评。积压时可抽读最新一页。需要更早上下文时用本页最旧的消息 ID 向前翻；单页体积过大时会自动按字节上限截断并标记 partial=true，可用返回的 nextMessageId 继续翻页。unreadCount 是剩余的本地队列条数，unreadBeforeRead 是读取前的会话未读数；读到最新一页后，休息或回合正常结束时清掉读取前的计数。带 messageId 查旧页只确认实际返回的队列条目。若聚合的新消息只是群友之间闲聊、复读、斗图或你不熟的话题，无需强行发言——看完不回不等于必须立刻结束本回合，你完全可以把视线转回电脑/浏览器去做自己的探索（比如顺着群里刚聊到的新鲜话题去搜一下/开网页看看，或继续你手头没逛完的页面），玩尽兴后再调用 agent_rest。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
