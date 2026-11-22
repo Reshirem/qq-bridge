@@ -65,26 +65,7 @@ $target = @('--peer', '<对方QQ号>', '--uid', '<对方NT UID>', '--sample-id',
 
 **回执能说明什么。** QQ 会先返回提交结果，再用 `onMsgInfoListUpdate` 通知消息状态。发送端应按本次关联标识和原生消息 ID 对齐回执。上游类型还区分了成功但没有服务器序号的状态，其在本机的具体表现待测。超时保留“结果未知”，避免切回 SnowLuma 后同一句发两遍。QQ 报告发送成功与收件人已读也是两件事。[发送实现][send] · [发送状态定义][status]
 
-在本轮命令行原型实验中，已验证登录账号、收藏列表、原生群消息监听，以及指定私聊的文字和纯 GIF 发送回执。后续桥接接入情况和运行依赖见[独立通道说明](NTQQ_ATTENTION.md)。
-
-## 发送方式的取舍
-
-| 方式 | 在本项目中的用途及代价 |
-| --- | --- |
-| 可选的桌面 QQ 插件 | 复用桌面 QQ 的登录态。桥接通过本机 IPC 提交目标和内容，由 QQ 构造消息并发送。可以后台操作，无需占用当前打开的聊天窗口。需要维护 QQ 版本兼容性，首次要验证插件能加载到已登录的会话。 |
-| NapCat 提供 OneBot 发送 | 现有桥接已生成 OneBot 文本、回复、@ 和图片消息段，可以先复用这层格式。要使用独立的发送端地址与凭据，确认它驱动的账号与接收侧一致，并分别处理引用 ID 和 QQ 收藏同步。NapCat Framework 需要兼容的 LiteLoader 环境，Shell 模式有自己的启动和登录流程。[NapCat 安装方式](https://napneko.github.io/guide/install) · [桌面 Framework](https://napneko.github.io/guide/boot/Framework) |
-| 操作 QQ 窗口 | 普通文字和剪贴板图片可以借用客户端的输入、发送操作。自动化需要核对目标会话、当前输入框和发送结果，引用和原生 @ 还要操作对应控件。本轮没有操作 QQ 窗口。 |
-| 独立实现个人账号协议 | Lagrange 系列提供了这个方向的参考。采用独立客户端意味着另行处理账号登录与连接生命周期，也需要验证该账号的桌面共存情况。[LagrangeV2](https://github.com/LagrangeDev/LagrangeV2) |
-
-腾讯官方机器人接口使用应用的机器人身份和用户或群的 OpenID，适合单独创建机器人时使用。现有 QQ 数据库密钥用于解密本地历史；向好友或群投递需要已认证的消息服务，本机历史行只能作为辅助核对。[腾讯机器人发送接口](https://github.com/tencent-connect/bot-docs/blob/main/docs/develop/api-v2/server-inter/message/send-receive/send.md) · [原生历史实验](NTQQ_HISTORY.md)
-
-## 怎样验证适合 qq-bridge
-
-1. 首先让插件在当前构建里取得登录账号、目标类型和事件监听能力。群聊以群号定位，私聊要将 QQ 号解析成 NT UID。用一个指定的测试会话验证目标解析，不必先切换主角色。[NapCat 的 UID 解析](https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-core/apis/user.ts#L191-L201)
-2. 从一条纯文本验证投递。记录提交结果，按本次发送的关联标识匹配 QQ 的状态更新，保存原生消息 ID，并在测试接收端确认消息出现。上游在提交后等待对应的 `onMsgInfoListUpdate`。超时后结果可能未知，先核对状态，再决定是否重试。同一条文本可能重复出现，不能仅凭正文判定哪次成功。[NapCat 的发送与回执](https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-core/apis/msg.ts#L244-L279)
-3. 再验证纯图片表情独立成一条消息、原生 @、引用回复。学习到的本地表情有文件可交给 QQ 制作图片元素；QQ 收藏仍依赖桥接的收藏同步；引用还要把接收端的 OneBot ID 解析到同一会话里的原生消息。原生 ID 按字符串保存。两条发送路径可以共用现有的顺序队列，分别保留各自的消息标识。[图片元素实现](https://github.com/xiyuesaves/lite-tools/blob/c9ea751e81735419ba1a44a677e261216a9cba61/src/renderer/utils/nativeCall.ts#L15-L108) · [桥接表情发送](../../src/bridge.js) · [原生历史与 ID 的核验范围](NTQQ_HISTORY.md)
-
-以上为选型阶段的验证步骤。当前独立通道已经将 QQ 来信、提醒、收藏和历史接入同一角色工具集。部署条件、支持范围和首次导入数据库密钥的步骤见[独立通道说明](NTQQ_ATTENTION.md)。
+当前独立通道（`src/native-qq.js`）已经将 QQ 来信、提醒、合并转发、分级看图、收藏/商城表情、戳一戳和历史查询完整接入 `mcp__qq__*` 角色工具集。部署条件、支持范围和首次导入数据库密钥的步骤见 [独立通道说明](NTQQ_ATTENTION.md)。
 
 [bootstrap]: https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-framework/napcat.cjs#L89-L169
 [ready]: https://github.com/NapNeko/NapCatQQ/blob/98d781d19815d1625b24d717ce280ecf0a4f6d0c/packages/napcat-framework/napcat.ts#L94-L188

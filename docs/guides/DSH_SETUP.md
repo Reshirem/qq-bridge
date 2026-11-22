@@ -34,7 +34,7 @@ npm install
 | 功能 | 部署与检查 |
 | --- | --- |
 | 长期记忆、记忆整理、表情语义检索 | 运行下节的 A_Memorix 安装命令，在「长期记忆 → 服务设置」检查 Gateway。表情使用独立的 `qq-bridge-stickers` 空间。已有本机记忆部署启用时，运行 `a-memorix.ps1 start` 会检查并补建表情空间和密钥。[表情检索与复检](CHAT_LEARNING.md#聊天时选图与复检) |
-| 黑话与表情后台学习 | 默认启用，使用 DSH headless 和所配置的模型。在「学习与素材 → 学习队列」选择来源、查看失败或重试。GIF 抽帧需要 FFmpeg。[后台学习](CHAT_LEARNING.md) · [图片与动图依赖](#图片与动图依赖) |
+| 黑话与表情后台学习 | 默认启用，优先使用 DSH Host 的 `chat-learning` / `market-analysis` 后台会话（Host 无法预建时回退到隔离的 DSH headless）和所配置的模型。在「学习与素材 → 后台学习」选择来源、查看失败或重试。GIF 抽帧需要 FFmpeg。[后台学习](CHAT_LEARNING.md) · [图片与动图依赖](#图片与动图依赖) |
 | 令牌与花费 | 随桥接运行。价格从 models.dev 获取，在「令牌与花费」可手动刷新。已入账的金额保留当时的单价。[用量与计价](TOKEN_USAGE_CONSOLE.md) |
 | Maa-Agent 游戏工具 | 准备 ADB、maa-cli、MaaCore 和目标设备后单独安装，运行 `node scripts/maa-agent.mjs doctor` 检查设备与资源。[Maa-Agent 安装](MAA_AGENT.md#安装) |
 
@@ -66,7 +66,7 @@ Windows 下使用 `start.bat` 启动桥接时，只要本机 A_Memorix 已通过
 
 启用后可在 WebUI「长期记忆 → 服务设置 → A_Memorix 模型服务」中手动配置 OpenAI 兼容的 Embedding / LLM 服务地址、模型、向量维度、生成参数和 API Key。A_Memorix 目前使用 OpenAI Chat Completions；请确保所填服务兼容该协议。Provider 密钥只写入本机且被 Git 忽略的 `state/a-memorix/secrets/`，文件访问遵循操作系统现有权限，页面只显示是否已保存；应用 Provider 设置会重启 A_Memorix。配置前请确认对应服务是否会接收记忆内容及是否计费。
 
-长期记忆启用且 `memoryOrganizer.enabled` 未设为 `false` 时，主会话成功休息后每天最多排队运行一次独立记忆整理，日期按 `memoryOrganizer.timeZone` 计算；当天后续休息产生的内容会在下一个可触发日接续整理。它通过 DSH 随附的 `dsh --profile headless` 执行，并按同一时区每天复用一条整理 Session；整理模型跟随触发时主会话的模型选择，A_Memorix 的 Embedding / LLM Provider 是另一套配置。Windows 下桥接会先检查标准 DSH Desktop 安装目录 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`，并直接启动其底层 `DeepSeek Harness.exe` 的 Node CLI 入口，避免带空格的安装路径经过 `cmd.exe` 解析；找不到时再尝试 `PATH` 中的 `dsh`。如使用其他安装位置，可在 `config.json` 的 `memoryOrganizer.cliPath` 指定 CLI 路径，或设置 `DSH_CLI_PATH`。桥接读取当前 Desktop profile 中所选 provider 的配置，只把该 provider 和当前模型放入本次 headless patch；当它使用 `apiKeyEnv` 时，会在这个进程内启用 DSH 本地凭据解析器，密钥值不会复制进 patch 或日志。其他 DSH 工具在整理进程中关闭，模型只保留长期记忆 MCP 工具。对于依赖 Desktop OAuth 登录态而非 DSH 本地凭据引用的 provider，仍需单独确认 headless 是否支持。
+长期记忆启用且 `memoryOrganizer.enabled` 未设为 `false` 时，主会话成功休息后每天最多排队运行一次独立记忆整理，日期按 `memoryOrganizer.timeZone` 计算；当天后续休息产生的内容会在下一个可触发日接续整理。它优先通过 DSH Host 在「长期记忆整理」分组内创建或复用 `memory-organizer` 会话（并在任务完成后自动归档空闲会话），Host 无法预建会话时回退到 DSH 随附的 `dsh --profile headless` 执行；整理模型跟随触发时主会话的模型选择，A_Memorix 的 Embedding / LLM Provider 是另一套配置。Windows 下使用 headless 回退时，桥接会先检查标准 DSH Desktop 安装目录 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`，并直接启动其底层 `DeepSeek Harness.exe` 的 Node CLI 入口，避免带空格的安装路径经过 `cmd.exe` 解析；找不到时再尝试 `PATH` 中的 `dsh`。如使用其他安装位置，可在 `config.json` 的 `memoryOrganizer.cliPath` 指定 CLI 路径，或设置 `DSH_CLI_PATH`。桥接读取当前 Desktop profile 中所选 provider 的配置，只把该 provider 和当前模型放入本次 headless patch；当它使用 `apiKeyEnv` 时，会在这个进程内启用 DSH 本地凭据解析器，密钥值不会复制进 patch 或日志。其他 DSH 工具在整理会话中关闭，模型只保留五个长期记忆工具。对于依赖 Desktop OAuth 登录态而非 DSH 本地凭据引用的 provider，若触发 headless 回退仍需单独确认是否支持。
 
 整理进度保存于 `state/memory-organizer.json`。在「长期记忆 → 整理任务」可查看已完成分段、重试失败任务，或为历史 DSH 会话创建任务。同一来源的后续任务会等待前一条处理成功。修复模型、凭据或 Gateway 后，重试会核对持久记录并从已完成分段继续。[整理与写入回执](MEMORY_ARCHITECTURE.md)
 
@@ -92,7 +92,7 @@ DSH 使用自定义根目录时，在同一 PowerShell 窗口先设置 `$env:DSH
 
 脚本会：
 
-1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，并将用于 QQ 关系对象身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
+1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，连同后台任务预设（`presets/background.patch.yml` 中的 `memory-organizer`、`chat-learning`、`market-analysis`）和用于 QQ 关系对象身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
 2. 将 `mcp-qq` 和 `mcp-qq-memory` 两个条目写入目标 profile 的 `cordis.patch.yml`，通过 `qq-agent-presets/managed-mcp.mjs` 注册到宿主 MCP manager；显式 `--legacy-mcp` 时仍用旧 `dsh-mcp-client`。仅替换桥接自己的注册项，不覆盖其他服务或 manager 配置，并清理旧的 `mcp-snowluma`、`mcp-snowluma-host` 和 `mcp-web-search-safe` 注册。网页搜索使用 DSH 自带工具。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
 3. 从目标 profile 清理不再使用的 bundle，并注册合并后的 `qq-agent-presets`。
 4. 在 `plugins/qq-agent-presets` 源码目录安装 bundle 自身依赖，并检查自定义压缩模块语法；随后尝试执行 `dsh plugin --profile <profile> install` 安装 profile bundle。若 DSH CLI 不可用，会提示手动执行 profile 安装命令。
@@ -175,11 +175,11 @@ node scripts/test-audit-setup-guards.mjs
 
 ## 唤醒与消息读取模型
 
-- 私聊、真正发给机器人的原生 @、已验证回复/引用和可选关键词只向全局数字角色发不含消息正文的提醒；是否处理由 agent 自行判断。
+- 私聊、真正发给机器人的原生 @、已验证回复/引用、群消息中提到当前选中的人格卡名称、可选关键词，以及他人对当前账号的 QQ 戳一戳功能事件只向全局数字角色发不含消息正文的提醒；是否处理由 agent 自行判断。
 - 普通群消息可以通过历史工具按需读取。独立模式保留提醒的位置和确认状态，SnowLuma 模式为每个来源保留最多 500 条未读。
 - 不靠长等待工具维持在线。每个活动回合必须以 `agent_rest`（或 `qq_agent_rest`）作为最后一个工具调用；休息限定为 1 至 15 分钟，省略时为 5 分钟，超出范围自动调整。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
 - 交流可能还有后续时可先按需等待；休息到期后会发起新的模型回合，数字角色可以按需访问 QQ。频繁定时恢复会增加模型调用。
-- 回合未调用 `agent_rest` 就结束时，桥接按 1、2、4、8、16 分钟递增恢复尝试，之后最长每 30 分钟尝试一次。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。
+- 回合以 `completed` 正常结束却未调用 `agent_rest` 时，桥接首次立即发送收尾提醒，连续遗漏按 1、2、4、8、16 分钟递增补发（之后最长间隔 30 分钟）；中断或异常失败另走指数退避恢复。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。
 - 工具等待、读取和发送都由当前 agent 回合主动决定；回合文本不会自动转发到 QQ。
 - 全局数字角色通过 QQ MCP 发送时自动使用全局 agent 令牌，任意合法群/私聊 key 均可用；`agent_rest` 不限制休息或停止状态中的后续工具调用，发送仍接受内容检查并记录审计。若数字角色通过 QQ 桌面界面操作，行为不经过这些桥接 API 检查。
 

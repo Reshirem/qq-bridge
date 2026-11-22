@@ -1,6 +1,6 @@
 # 长期记忆方案
 
-本文记录 qq-bridge 长期记忆的已对齐目标、首期实现和运行边界。关于数字角色提示、记忆整理与摘要模板的后续讨论，见 [数字角色提示、隐私与长期记忆改进计划](COMPANION_PROMPT_MEMORY_PLAN.md)。
+本文记录 qq-bridge 长期记忆的设计目标、运行时架构、合并/整理规则与安全边界。
 
 ## 目标
 
@@ -121,30 +121,24 @@ qq-bridge 现有客户端只调用记忆写入、批量写入、读取、删除�
 
 通过 A_Memorix 的删除接口删除活动记录；若该版本将删除项放入可恢复区，实际清理期限仍由后端策略决定。编辑时先保存新记录并标记 `supersedes`，成功后再请求删除旧记录。若旧记录删除失败，WebUI 会显示警告并保留新旧记录，避免更新失败造成数据丢失。
 
-## 首期实现与部署前提
+## 部署前提与回归覆盖
 
-桥接首期已接入 Gateway 客户端、五个 DSH 工具（`memory_search`、`memory_save`、`memory_read`、`memory_replace`、`memory_forget`）、全局会话令牌校验、记忆参数日志省略、首次会话自身经历摘要，以及 WebUI 搜索/查看/新建/编辑/删除。`agent_rest` 不限制记忆工具调用。WebUI 可配置本机 Gateway 地址、已创建的 namespace、桥接启用状态、namespace API key、请求超时和启动摘要上限；Gateway 地址仅允许本机回环地址。Embedding/LLM Provider 由用户在 WebUI 手动配置 OpenAI 兼容服务地址、模型和密钥。A_Memorix 目前使用 OpenAI Chat Completions；请确保配置的服务兼容该协议。Provider 密钥只写入本机 `state/a-memorix/secrets/`，不回显，保存 Provider 变更会重启 A_Memorix。Windows 部署入口为 `scripts/a-memorix.ps1 setup|start|stop|status`；未启用时桥接照常工作，WebUI 会说明当前状态，记忆工具返回明确的配置错误。
+桥接已接入 Gateway 客户端、五个 DSH 工具（`memory_search`、`memory_save`、`memory_read`、`memory_replace`、`memory_forget`）、全局会话令牌校验、记忆参数日志省略、首次会话自身经历摘要、休息后每日独立整理会话（`memory-organizer`），以及 WebUI 搜索/全量原始记录只读浏览/查看/新建/编辑/删除。`agent_rest` 不限制记忆工具调用。WebUI 可配置本机 Gateway 地址、已创建的 namespace、桥接启用状态、namespace API key、请求超时和启动摘要上限；Gateway 地址仅允许本机回环地址。Embedding/LLM Provider 由用户在 WebUI 手动配置 OpenAI 兼容服务地址、模型和密钥。A_Memorix 目前使用 OpenAI Chat Completions；请确保配置的服务兼容该协议。Provider 密钥只写入本机 `state/a-memorix/secrets/`，不回显，保存 Provider 变更会重启 A_Memorix。Windows 部署入口为 `scripts/a-memorix.ps1 setup|start|stop|status`；未启用时桥接照常工作，WebUI 会说明当前状态，记忆工具返回明确的配置错误。
 
-Windows 部署脚本已将 A_Memorix `v2.0.0a4` 启动在 `127.0.0.1:8080`，创建 `qq-bridge` namespace 和 namespace API key，并启用本地 `config.json`。Embedding/LLM Provider 可在 WebUI 设置，配置之后仍需检查模型服务实际可用性：Gateway 的 `/healthz` 通过只说明服务可访问，不代表 namespace 的向量检索或模型调用正常。2026-10-30 本机检查发现原部署缺少 `faiss-cpu`，导致搜索使用 `sparse_graph`；补装 Faiss 并为已有 385 条段落/实体/关系记录重建向量后，双向量池 manifest 报告 15 条段落向量和 370 条图向量。首次重启时，A_Memorix 会先跳过实际 Embedding 自检，并因当前指纹尚未观测到而暂时禁用向量通道；本机观察到后台默认 180 秒探测后恢复，搜索切换为 `hybrid`，命中来源为 `dual_vector_pool`。具体观察及排查方向见 [改进计划](COMPANION_PROMPT_MEMORY_PLAN.md#2026-10-30-faiss-向量通道恢复)。带时间边界的 `TIME` 请求可返回记录；`HYBRID` 不带时间边界会被 Gateway 拒绝。记忆写入/删除、WebUI 页面和 DSH 工具的完整链路仍待核验。使用 `start.bat` 时会在桥接启动前尝试启动已安装的 A_Memorix 服务；直接运行 `npm start` 时需先手动运行部署脚本的 `start`。部署步骤见 [DSH_SETUP.md](DSH_SETUP.md)。桥接管理 API 只供带控制台令牌的 WebUI 使用；DSH MCP 工具只通过受全局会话令牌保护的 agent API 使用，`agent_rest` 不限制工具调用。记忆内容会经本机 Gateway 交给 A_Memorix；配置 Embedding/LLM Provider 后，记忆内容会按配置发送到相应服务。
+Windows 部署脚本将 A_Memorix `v2.0.0a4` 启动在 `127.0.0.1:8080`，创建 `qq-bridge` 与 `qq-bridge-stickers` 两个 namespace 及各自 API key，并启用本地 `config.json`。Embedding/LLM Provider 可在 WebUI 设置，配置之后仍需检查模型服务实际可用性：Gateway 的 `/healthz` 通过只说明服务可访问，不代表 namespace 的向量检索或模型调用正常。部署脚本默认安装 `faiss-cpu`（`vector` extra）；已有向量池的服务首次重启时，A_Memorix 会先跳过实际 Embedding 自检，后台默认约 180 秒探测确认指纹后，检索从 `sparse_graph` 切换为 `hybrid`（`dual_vector_pool`）。带时间边界的 `TIME` 请求可返回记录；`HYBRID` 不带时间边界会被 Gateway 拒绝。使用 `start.bat` 时会在桥接启动前尝试启动已安装的 A_Memorix 服务；直接运行 `npm start` 时需先手动运行部署脚本的 `start`。部署步骤见 [DSH_SETUP.md](DSH_SETUP.md)。桥接管理 API 只供带控制台令牌的 WebUI 使用；DSH MCP 工具只通过受全局会话令牌保护的 agent API 使用。记忆内容会经本机 Gateway 交给 A_Memorix；配置 Embedding/LLM Provider 后，记忆内容会按配置发送到相应服务。
 
 `memory.timeoutMs` 默认 45 秒；新会话摘要有独立的 8 秒请求上限，超时后继续提交首次提示。`bootstrapLimit` 默认最多检索 6 条自身经历来源记录，`bootstrapMaxChars` 默认最多注入 2500 字符，均可在 `config.json` 调整。
 
-本机 A_Memorix 服务已经通过 Gateway `/healthz` 检查，桥接重启后 `/api/memory/status` 返回已配置。Gateway 的只读检索已核验；离线回归覆盖 MCP stdio、桥接路由与模拟 Gateway 的合并及整理回执。生产 namespace 的 WebUI 与 DSH 端到端写入仍待单独核验。
+离线回归已覆盖：
+- `scripts/test-memory-consolidation.mjs`：`memory_replace` 预读、同来源校验、`supersedes` 链延续、新写后删与检索去重；
+- `scripts/test-memory-organizer.mjs`：休息后每日整理证据提取（含 `[notice]` 占位与版本 4 桌面工具结果压缩）、缺失记录 `found=false` 处理、真实 MCP stdio 往返、写入回执与重启游标恢复；
+- `scripts/test-a-memorix-readonly.mjs`：WebUI 原始段落 SQLite 只读分页、筛选、越界拒绝与数据库零修改保证；
+- `scripts/test-background-presets-dsh.mjs`：`memory-organizer` Host preset 工具隔离与会话归档。
 
 ## 边界与非目标
 
-- [NTQQ 历史只读实验](NTQQ_HISTORY.md) 可按 QQ 来源查询客户端本机记录。目前记忆整理的证据仍来自角色实际读取过的消息，实验不会自动导入 QQ 历史。
+- [NTQQ 历史只读读取器](NTQQ_HISTORY.md) 可按 QQ 来源查询客户端本机记录；记忆整理的证据仍仅来自角色在主会话中实际读取过的消息，不会自动批量导入未读 QQ 历史。
 - 不恢复按 QQ 群/私聊拆分 DSH session 或记忆库。
-- 不设置周期性模型心跳，也不周期性运行 LLM 总结。
+- 不设置周期性模型心跳，也不在每个活动回合无条件运行 LLM 总结。
 - 不因消息提醒自动读取或保存 QQ 内容。
 - A_Memorix 的人物画像和关系图用于整理、召回证据，不取代原始来源记录。
-
-## 实施顺序
-
-1. 固定共享记忆数据契约、双来源标记和 A_Memorix Gateway 接口。——已完成
-2. 提供有界的 MCP 工具面与桥接查询/管理 API，二者访问同一 namespace。——已接入并配置，完整读写链路待核验
-3. 在全局 DSH 会话首次提示中加入自身经历来源摘要，避免每轮重复注入。——已接入，待 DSH 实际会话核验
-4. 在 WebUI 提供记忆检索和管理页面。——检索/写入/单条管理经 Gateway 接入；活动原始段落可通过本机受限只读适配器全量分页浏览；MaiBot 高级管理接口仍缺失
-5. 部署 A_Memorix 服务、配置 namespace/key，并核验真实 DSH 和 WebUI 链路。——服务已部署、桥接已重启，端到端核验待完成
-
-当前实现状态以代码和用户手册为准；上列步骤尚未完成时，不要在 README 中宣称长期记忆已经可用。

@@ -46,9 +46,9 @@ const DEFAULT_RULES = {
   // 路径/整行匹配到这些就跳过（脱敏模板、示例、测试夹具、已声明含占位符的文档）。
   // 注意：这是**误报白名单**，不是"这些文件不用检查"——加入前先确认里面确实只有占位数据。
   allowPaths: [
-    'scripts/privacy-', 'config.example.json', 'package-lock.json', 'src/sensitive.js',
+    'scripts/privacy-', 'config.example.json', 'package-lock.json', 'plugins/qq-agent-presets/package-lock.json', 'src/sensitive.js',
     // 测试夹具/回归脚本：里面是刻意构造的假 ID 与假凭据
-    'scripts/test-', 'scripts/console-ui-', 'scripts/fixtures/', 'scripts/audit-bridge-harness.mjs',
+    'scripts/test-', 'scripts/test_', 'scripts/console-ui-', 'scripts/fixtures/', 'scripts/audit-bridge-harness.mjs',
     'scripts/check-onebot-status.mjs', 'scripts/send-test-group.mjs',
     'scripts/setup-dsh.mjs', 'scripts/patch-', 'scripts/verify-', 'scripts/probe-',
     // ── 以下三项来自一次独立复核：在**全新克隆**里扫描会报 15 条命中，全部是误报，
@@ -219,7 +219,9 @@ for (const rel of files) {
   // ② 内容级：一个文件里同一规则最多报 3 处（带行号），方便直接定位；不要把整文件刷屏。
   for (const rule of rules.deny) {
     let re;
-    try { re = new RegExp(rule.pattern, rule.flags ?? 'g'); }
+    const rawFlags = String(rule.flags ?? '');
+    const flags = rawFlags.includes('g') ? rawFlags : `${rawFlags}g`;
+    try { re = new RegExp(rule.pattern, flags); }
     catch (error) { console.error(`[privacy-scan] 规则「${rule.name}」正则非法：${error.message}`); continue; }
     re.lastIndex = 0;
     let m;
@@ -256,8 +258,9 @@ for (const rel of files) {
  */
 function isNoise(value, rule) {
   if (rule.requireNonHex && /^[0-9a-f]+$/i.test(value)) return true;
-  if (/^[A-Z0-9_]+$/.test(value)) return true;                       // 环境变量名/常量
+  if (/^[A-Z0-9_-]+$/.test(value)) return true;                      // 环境变量名/常量/全大写文档标识
   if (/^[a-z0-9._-]+$/.test(value)) return true;                     // 文件名/包名/路径片段
+  if (/[:=]\s*document\.getElementById\b/.test(value)) return true;  // 前端 DOM 取值表达式，非凭据字面量
   if (/^[A-Za-z0-9]+$/.test(value) && !(/[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value))) return true;
   return false;
 }

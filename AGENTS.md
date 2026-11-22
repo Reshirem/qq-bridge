@@ -1,6 +1,6 @@
 # qq-bridge agent guidance
 
-Before changing runtime architecture, read [docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md) and [RULES.md](RULES.md). Read [docs/guides/SECURITY_BASELINE.md](docs/guides/SECURITY_BASELINE.md) before changing security-sensitive code.
+Before changing runtime architecture, read [docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md) and [RULES.md](RULES.md). Read [docs/guides/SECURITY_BASELINE.md](docs/guides/SECURITY_BASELINE.md) before changing security-sensitive code. Module and script locations are indexed in [docs/FOLDER_MAP.md](docs/FOLDER_MAP.md).
 
 ## Default change approach
 
@@ -8,9 +8,18 @@ Before changing runtime architecture, read [docs/guides/ARCHITECTURE.md](docs/gu
 - Change one cohesive responsibility at a time. Keep policy changes separate from mechanical code movement where practical.
 - Preserve persistent session/state semantics and existing API contracts unless the user explicitly asks to change them. Make any state migration explicit.
 - Keep module dependencies narrow and explicit. Extracted modules should receive the capabilities they need rather than reaching into bridge-wide mutable state.
-- Preserve the existing outbound checks for session tokens, allow/deny lists, content checks, and audit controls. Do not gate MCP tool calls on `agent_rest` lifecycle state: `agent_rest` ends the current model turn, while WebUI stop controls automatic scheduling and recovery.
-- Keep ordinary group message bodies out of the main chat agent context until it requests them. The explicitly configured background chat learner may analyze bounded, source-specific batches in its dedicated, tool-restricted DSH preset or its isolated headless fallback; it cannot send QQ messages or control the main agent. A direct private-message or verified group mention/reply wake may include only its triggering message.
-- Do not add a periodic model heartbeat or broaden the QQ agent's route allowlist as a side effect of structural work.
-- Update the architecture and security documentation when an intentional behavior or security boundary changes.
+- Preserve the existing outbound checks: global `desktop-agent` sends must validate the internal agent token, canonical target key (`^(group|private):\d+$`), sensitive-content/token-leak filters, and audit logging; `allow/deny` lists gate console test-sends (`allowed()`). Do not gate MCP tool calls on `agent_rest` lifecycle state (`idle`, `active`, `resting`, `recovering`, `sleeping`, `stopped`): `agent_rest` (or `qq_agent_rest`) ends the current model turn, while sleep and WebUI stop control automatic scheduling and wake behavior.
+- Keep all QQ message bodies out of the main agent's wake/steer prompts until it requests them via QQ tools. All six QQ attention signal types (private message, native `@`, verified reply/quote, active role card name, configured keywords, and incoming QQ poke events) deliver metadata only (conversation key, sender ID, `id:`/`seq:` locator, and count).
+- Keep background DSH tasks isolated and tool-restricted:
+  - The background chat learner (`chat-learning` / `market-analysis` DSH Host presets, with isolated headless fallback) may analyze bounded, source-specific batches using only its bound batch-image tool; it cannot send QQ messages or control the main agent.
+  - The daily memory organizer (`memory-organizer` DSH Host preset, with isolated headless fallback) may only read visible evidence already recorded in the main DSH session (`session/page` + `readThroughSeq`), never unread QQ buffers, and is restricted to the five memory tools (`memory_search/save/read/replace/forget`).
+- Preserve dual QQ backend parity (`qqBackend`: `native` desktop QQ vs `snowluma` OneBot) behind the shared `mcp__qq__*` tool surface. Respect the L6 compliance invariant (SnowLuma EULA §5.4): probe status only, never bundle or programmatically start/stop SnowLuma (`src/mcp-qq.js` must not use `child_process` or process-control primitives).
+- Do not add a periodic model heartbeat, broaden the agent's route allowlist, reintroduce per-QQ-conversation DSH sessions, or reintroduce automatic filesystem ACL mutation / UAC elevation.
+- When editing `dsh/agent-presets/desktop-agent/prompt-modules.json`, keep `agent.cordis.yml` in sync and run `node scripts/build-agent-preset-patches.mjs` to update `plugins/qq-agent-presets/presets/desktop-agent.patch.yml`.
+- Verify changes offline with `node --check src/bridge.js`, `node scripts/build-agent-preset-patches.mjs --check`, `npm test` (`node scripts/test-audit.mjs`), and `node scripts/privacy-scan.mjs --tracked-only`. Do not run live or side-effecting scripts (`npm run verify:dsh`, `npm run self-test`, `scripts/ntqq-probe/send_test.py`) unless the user explicitly asks.
+- Keep documentation synchronized in the same change (see the mapping table in [README.md](README.md#开发与文档同步规范接手必读)):
+  - Edit the relevant section in place rather than prepending or appending patch paragraphs at the top/bottom of a file; remove superseded statements so a document never contains conflicting rules.
+  - Do not commit daily debugging journals as reference guides.
+  - Update [config.example.json](config.example.json) and [README.md](README.md) when config keys, defaults, or runtime prompt templates change; update [docs/FOLDER_MAP.md](docs/FOLDER_MAP.md) when adding/removing modules or scripts; update [docs/README.md](docs/README.md) when adding/removing docs; update [RULES.md](RULES.md), [docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md), and [docs/guides/SECURITY_BASELINE.md](docs/guides/SECURITY_BASELINE.md) when behavior or security boundaries change.
 
 The current runtime and suggested module boundaries are described in [docs/guides/ARCHITECTURE.md](docs/guides/ARCHITECTURE.md). Treat those boundaries as a gradual direction, not a requirement to move every function at once.

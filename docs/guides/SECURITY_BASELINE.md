@@ -1,92 +1,85 @@
 # 安全基线与威胁模型（qq-bridge）
 
-> 本文把项目里**已经实现的**安全边界、**已知的**残余风险、以及**每次发布必须回归**的
-> 检查项集中到一处。与之配套的承诺性文档是 [../../RULES.md](../../RULES.md)（面向使用者的
-> 权限说明）；本文偏工程实现，供改动代码前后对照。
+> 本文把项目里**已经实现的**安全边界、**已知的**残余风险、以及**每次发布必须回归**的检查项集中到一处。与之配套的承诺性文档是 [../../RULES.md](../../RULES.md)（面向使用者的权限说明）；本文偏工程实现，供改动代码前后对照。
 >
 > 维护规则：任何改动如果改变了下面任一条目，**必须在同一个 PR 里更新本文**。
 >
-> 当前只有一个全局 `desktop-agent`。桥接缓存 QQ 消息，只把私聊、原生 @、验证回复/引用及配置关键词作为元数据提醒。WebUI 可启动、提交任务或持久停止。每个活动回合应以 `agent_rest` 收尾；它结束当前模型回合，但不限制后续工具调用。用户在 DSH 对话中发消息、有效 QQ 提醒或 WebUI 任务可提前结束休息并唤醒一轮，休息期间异常回合的指数恢复重试暂停。未调用休息工具的回合按指数退避恢复，最高间隔 30 分钟；WebUI 停止态不自动恢复自动调度。全局主体可使用本项目当前完整 QQ MCP 工具集及 `dsh-computer-use-win`，其令牌可访问任意合法 QQ 会话 key。桥接 API 发送执行内容检查和审计；GUI 操作不经过这些 API 检查。逐 QQ DSH 映射、令牌与控制入口已移除。
+> 当前运行时只有一个全局 `desktop-agent` 会话。桥接按所选 `qqBackend`（桌面 QQ 独立通道 `native` 或 SnowLuma OneBot `snowluma`）接收与缓存消息，只把私聊、原生 @、已验证回复/引用、当前选中人格卡名称、配置关键词及发给当前账号的 QQ 戳一戳功能事件作为**不含正文的元数据提醒**。WebUI 可启动、提交任务或持久停止。每个活动回合应以 `agent_rest`（或 `qq_agent_rest`）收尾；它结束当前模型回合，但不限制后续工具调用。用户在 DSH 对话中发消息、有效 QQ 提醒或 WebUI 任务可提前结束普通休息并唤醒一轮；未调用休息工具的正常完成回合首次立即发收尾提醒、连续遗漏与异常回合按指数退避（最高间隔 30 分钟）；睡眠（`sleeping`）与 WebUI 停止态（`stopped`）抑制自动提醒唤醒。全局主体可使用完整 `mcp__qq__*` 工具集、可选 `mcp__qq-memory__*` 记忆工具、DSH 内置网页工具及 `dsh-computer-use-win`，其凭证与当前全局会话绑定，可访问账号内任意合法 QQ 会话 key。桥接 API 发送执行内容检查和审计；GUI 操作不经过这些 API 检查。逐 QQ DSH 映射、单会话令牌与旧控制入口已移除。
 
 ---
-
-独立 QQ 通道沿用相同的桥接鉴权、来源检查和出站审计。桥接与 QQ 使用每次启动新建的本机命名管道和随机握手凭证。数据库连接只读，原生 64 位消息 ID 以字符串传递。选择 SnowLuma 时独立组件不会启动。[QQ 接入方案](NTQQ_ATTENTION.md)
-
-主动戳一戳沿用 agent token 与全局会话校验。群聊目标须通过本群成员查询，私聊显式目标须等于当前私聊对象；号码转为 Number 前拒绝超出安全整数范围的输入。成员查询前捕获发送保护，查询后重验 QQ 账号和全局凭证；独立通道在 UID 解析后重验账号与连接，QQ 运行时再核对登录账号、会话和号码格式。原生 `sendNudge` 的失败、缺失回执和不支持均不得返回成功，断线或超时不自动重发。接收戳一戳提醒的开关不限制主动发送。
 
 ## 一、威胁模型（我们要防谁、防什么）
 
 | 威胁主体 | 能力假设 | 我们不防的 |
 | --- | --- | --- |
-| **QQ 群友 / 陌生人** | 能给机器人发任意文本、图片、表情、拍一拍；能尝试提示注入 | 他们能看到的公开信息 |
+| **QQ 群友 / 陌生人** | 能给机器人发任意文本、图片、表情、戳一戳、合并转发；能尝试提示注入 | 他们能看到的公开信息 |
 | **被注入的模型** | 会尝试调用任意工具名、传任意参数、尝试外发本机内容 | —— |
 | **本机其他用户** | 能登录同一台机器，能读文件系统 | 文件访问由操作系统和用户配置的目录权限决定；桥接不自动收紧 ACL |
 | **本机其他进程 / 浏览器页面** | 能访问 `127.0.0.1`，能构造任意 HTTP 请求 | 已能读写本项目 `state/` 的主体 |
-| **DSH 侧 desktop-agent** | 由 WebUI 自主探索/任务动作、用户在 DSH 对话中的直接消息或 QQ 元数据提醒启动；每轮以 `agent_rest` 收尾；直接 DSH 消息和有效 QQ 提醒可提前结束休息，异常恢复重试不会在休息期间触发 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计 |
+| **DSH 侧 desktop-agent** | 由 WebUI 任务、用户在 DSH 对话中的直接消息或 QQ 元数据提醒启动；每轮以 `agent_rest` 收尾 | 对任意 UI 动作的应用级授权；GUI 操作不经桥接 API 审计 |
 
-**不在此模型的范围内**：QQ 账号本身被盗、SnowLuma 网关被攻陷、DSH 本体漏洞、
-操作系统级攻击者。这些情况下本项目无法提供额外保护，README 中已声明。
+**不在此模型的范围内**：QQ 账号本身被盗、SnowLuma 网关被攻陷、DSH 本体漏洞、操作系统级攻击者。这些情况下本项目无法提供额外保护，README 中已声明。
 
 ---
 
 ## 二、已实现的边界（按攻击面）
 
-### 1. 准入（谁能触发 agent）
+### 1. 准入与会话绑定（谁能触发 agent、谁能调工具）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 管理端目标白名单 | `src/bridge.js` `allowed()` | 控制台直接操作 QQ 目标时使用 allow/deny 配置；全局 desktop-agent 的合法 QQ key 不受该列表限制 |
-| 全局会话授权 | `isDesktopAgentToken()` / `agentTokenOk()` | MCP 从 `state/desktop-agent.json` 自动读取并附加桥接内部凭证，模型无需传递；不检查调用方 DSH session，桥接将凭证与全局自主运行时状态比对；QQ key 仍须匹配 `^(group\|private):\d+$` |
-| 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用和 `socialV2.attentionKeywords` 只发元数据提醒。普通群消息可按来源查历史；正文由全局 agent 主动读，无周期模型心跳 |
-| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后休息 1 至 15 分钟（默认 5 分钟）；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。未休息的回合按 1、2、4、8、16 分钟退避，随后最长每 30 分钟恢复尝试；该重试不会在休息期间运行。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
-| 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是"用默认值继续跑"） |
-| QQ 关系对象标记 | `handleIncoming()`、`appendSocialV2Message()` | 消息发送者 ID 取 `event.user_id`，缺失时回退 `event.sender.user_id`；仅当 `ownerQQ` 已配置且发送者 QQ 号相同才标记为 owner。显示名称不参与身份判断；关系称谓由人格卡及双方表达决定。该账号仅被授权通过纯文本私聊 `/睡觉` 和 `/起床` 控制睡眠，不授予其他管理权限；群消息和引用、转发等非纯文本消息不触发命令。身份依赖当前 QQ 后端提供的事件数据。 |
-| QQ 工具会话与凭证 | agent API 集中入口、`mcp-qq.js` | 数字角色可访问账号中的 QQ 会话，不按提醒来源或 owner 身份限制；桥接校验内部凭证和当前 DSH 会话绑定，管理接口仅控制台可用。发送仍执行内容检查和审计。 |
+| 管理端测试发送白名单 | `src/bridge.js` `allowed()` | 控制台直接测试发送时使用 `allow` / `deny` 配置；全局 `desktop-agent` 的合法 QQ key 不受该列表限制 |
+| 全局会话令牌与 Session ID 绑定 | `isDesktopAgentToken()`、`src/mcp-qq.js`、`qq-tool-restrict.mjs` | MCP 从 `state/desktop-agent.json` 自动读取并附加桥接内部 `x-agent-token` 与 `x-agent-session-id`；`qq-tool-restrict.mjs` 在 `tools/pre-execute` 校验 `exec.agent.id === state.sessionId`，桥接对 `/api/desktop-agent/owner-identity`、`/api/socialV2/*`、`/api/send/*`、`/api/images/*` 同步校验令牌与当前 `desktopAgentSessionId` 一致；QQ key 须匹配 `^(group\|private):\d+$` |
+| 唤醒与可见性 | `src/autonomy-policy.js` + `handleIncoming()` | 私聊、原生 @ 机器人、已验证回复/引用、当前选中人格卡名称、`socialV2.attentionKeywords` 和发给当前账号的 QQ 戳一戳功能事件只发元数据提醒。普通群消息可按来源查历史；正文由全局 agent 主动读，无周期模型心跳 |
+| 全局生命周期 | `state/desktop-agent.json` + `agent_rest` + WebUI stop | `active` 回合最后调用 `agent_rest` 后休息 1 至 15 分钟（默认 5 分钟）；用户在 DSH 对话中发消息、WebUI 提交任务或有效 QQ 提醒可提前结束休息。正常完成漏调休息工具时首次立即提醒，连续遗漏与异常回合按 1、2、4、8、16 分钟退避（随后最长每 30 分钟），休息期间不运行异常退避。WebUI Stop 取消当前/排队 DSH 工作并持久关闭自动恢复；只有 WebUI 手动启动/提交任务清除停止态 |
+| 配置失败 | `loadConfig()` | `config.json` 缺失/解析失败 → **fail-fast 退出**（不是“用默认值继续跑”） |
+| QQ 关系对象标记 | `handleIncoming()`、`appendSocialV2Message()` | 消息发送者 ID 取 `event.user_id`，缺失时回退 `event.sender.user_id`；仅当 `ownerQQ` 已配置且对方发送者 QQ 号相同才标记为 owner。显示名称不参与身份判断；关系称谓由人格卡及双方表达决定。该账号仅被授权通过纯文本私聊 `/睡觉` 和 `/起床` 控制睡眠，不授予其他管理权限；群消息和引用、转发等非纯文本消息不触发命令 |
 
-独立通道按账号保存提醒位置，SnowLuma 通道每个来源保留最多 500 条未读。获授权的角色读取请求完成响应后，桥接按本次未读页、单条详情或历史页实际返回的来信逐条确认。历史通过所选后端按群或好友查询，按该来源的有效 QQ 消息 ID 匹配。跳过的未读、读取期间新到且未返回的来信、管理端预览和后台学习均保留原未读状态。媒体回查必须匹配返回的 QQ 消息 ID。SQLite 缓存的序号、未读和来源元数据同事务保存，导入旧 JSON 成功后才移除旧文件。等待消息工具及其 HTTP 路由已移除。
+**未读确认与最近已读定位映射**：独立通道按账号保存提醒位置（`state/native-reminders.sqlite`），SnowLuma 通道每个来源保留最多 500 条未读（`state/qq-unread.sqlite`，序号、未读与来源元数据同事务保存，导入旧 JSON 成功后才移除旧文件）。获授权的角色读取请求完成响应后，桥接按本次未读页、单条详情或历史页实际返回的来信逐条确认；跳过的未读、读取期间新到且未返回的来信、管理端预览和后台学习均保留原未读状态。确认已读后，每个来源在内存最多保留最近 100 条 `seq → messageId` 对应关系（独立通道不缓存正文或附件），后续序号读取仍校验来源与缓存标识并以实际 QQ 消息 ID 回查；切换账号、清空缓存或重启后映射失效，过期引用须改用原读取结果中的稳定 `id:<QQ消息ID>`。
 
-独立通道确认已读后，每个来源仅在内存保留最近 100 条 `seq` 与 `messageId` 对应关系，不缓存正文或附件。后续序号读取仍校验来源与缓存标识，并以实际 QQ 消息 ID 回查原库；切换账号或清空缓存时一并清除，重启不恢复已读映射。引用过期不能猜测为其他来源或 QQ 消息 ID，应改用原读取结果中的稳定 ID。
-
-### 2. 工具面（agent 能做什么）
-
-后台黑话/表情学习明确允许在主角色未读取消息时分析有界的新消息批次。Host 学习 preset 只向模型提供本批图片工具，`learning-tool-guard.mjs` 再校验实际调用。桥接通过控制台鉴权和执行会话 ID 查找内存中的图片批次，批次结束即解绑。隔离 headless 回退使用临时 patch 禁用通用工具和继承的 MCP 连接，仅注册本批图片 MCP。最终 JSON 只作为数据处理，证据须来自本批且黑话须在所引用的原文出现；匹配仅归一化大小写、Unicode NFKC 与空白，证据原文不改写，不以同义改写或模板替代原词。图片编号须来自本批桥接准备的清单。含义和表情分类仍可能被模型误判，管理端可以确认或拒绝。
-
-学习管理端 `/api/learning/*` 与 `/api/slang*` 受现有控制台鉴权、Host/Origin 和请求体限制保护，agent 默认拒绝白名单不扩张。`/api/socialV2/slang-query` 复用内部 token 与全局 session 绑定。新知识读取按目标来源和管理员明确指定的 global 筛选；这不改变全局会话上下文本身共享的残余风险。本地表情只读哈希命名的 `state/learned-stickers/` 文件，校验真实路径和 SHA-256，并在发送排队结束后重新检查来源与状态；没有开放任意文件发送。完整数据和资源上限见 [CHAT_LEARNING.md](CHAT_LEARNING.md)。
+### 2. 工具面与后台任务隔离（agent 能做什么）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 computer-use、完整 `mcp__qq__*` QQ 工具 与 `mcp__qq-memory__*` 记忆工具，以及 DSH 原生 `web_search` / `web_fetch`；是否注册网页工具由 DSH `tool-web` 配置控制。QQ MCP 调用在 `tools/pre-execute` 中核对 `exec.agent.id` 是否等于桥接当前 `desktop-agent` session id，缺少/不匹配时拒绝。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具仍被拒绝。 |
-| 独立记忆整理工具面 | `background-tools.mjs` / `memoryOrganizerPatchText()` / `memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料。Host 整理 preset 仅注册五个记忆工具，桥接对原生整理工具携带的执行会话 ID 校验当前任务绑定。回退到 headless 时用临时 patch 关闭 shell、PowerShell、通用文件、网页、workflow、子代理等 DSH 工具，只留下本次注册的记忆 MCP 工具。执行守卫严格限于 `mcp__qq-memory-organizer__` 命名空间的 `memory_search/save/read/replace/forget`，其他工具即使被继承也拒绝执行。若当前模型 provider 只在 Desktop profile 配置，patch 只复制该 provider 和所选模型；需要 `apiKeyEnv` 时在该子进程启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志。不修改 DSH profile 或默认模型。 |
-| DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 DSH `@deepseek-ai/dsh-tool-web` 并沿用其默认配置，默认启用搜索和抓取。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；`http` 抓取提供方允许访问本机和内网地址。 |
+| 主会话预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 `mcp__wincu__*`、完整 `mcp__qq__*` QQ 工具、`mcp__qq-memory__*` 记忆工具、可选已启用的 `maa_*` 游戏工具，以及 DSH 原生 `web_search` / `web_fetch`。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具一律拒绝 |
+| 后台黑话/表情学习与商城整包分析工具面 | `background-tools.mjs`、`src/learning-tool-guard.mjs`、`src/mcp-learning-images.js` | 允许在主角色未读取消息时分析有界的新消息批次或管理员收录的商城表情包。Host `chat-learning` / `market-analysis` preset 与隔离 headless 回退均只暴露本批图片工具 `learning_images`；桥接通过控制台鉴权和执行会话 ID 查找内存中的图片批次，批次结束即解绑。模型输出仅作为结构化数据校验：黑话证据须来自本批原文（仅归一化大小写、NFKC 与空白，不改写证据原文），图片编号须来自本批清单。不能向 QQ 发消息或控制主会话 |
+| 独立记忆整理工具面 | `background-tools.mjs`、`memoryOrganizerPatchText()`、`src/memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料，只采用主会话已保存的可见证据（`session/page` + `readThroughSeq`）。Host `memory-organizer` preset 与隔离 headless 回退严格限于五个记忆工具（`memory_search/save/read/replace/forget`），桥接校验当前任务绑定的执行会话 ID。headless 回退时只复制当前所选 provider 与模型，使用 `apiKeyEnv` 时启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志，不修改 DSH profile 默认模型 |
+| DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 `@deepseek-ai/dsh-tool-web` 并沿用其默认配置。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；随附的 `http` 抓取提供方允许访问本机和内网地址 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |
-| 压缩宿主依赖 | `plugins/qq-agent-presets/dsh-host-modules.mjs` | 只从当前 DSH 宿主/CLI 运行入口解析共享模块，校验压缩与 LLM 模块身份；缺失、不支持或分裂时拒绝加载。不回退插件私有旧依赖、不探测另一个安装，也不修改 DSH。隔离验收使用临时空 DSH_HOME 与模拟流，无模型或 QQ 调用。 |
-| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌；不要求当前 DSH 回合处于 active。所有 bridge API 发送仍受会话授权、敏感内容检查和工具调用审计 |
-| 动态 ACL | sticker / image media helpers | 贴纸只能发 QQ 收藏库或当前来源可用的本地学习表情；学习表情校验专用目录 realpath 与内容哈希。本机图片按所选后端限制到 SnowLuma home 或已登录 QQ 账号的 nt_data，均以 realpath 复核防止符号链接逃逸 |
-| **只探测、不部署** | `mcp-qq.js` | `qq_status` 查询桥接选定的 QQ 通道和登录状态。SnowLuma EULA §5.4 要求将其并入第三方安装包或 Docker 镜像、通过自动化脚本部署时事先取得书面授权；原生组件属专有组件。本程序不安装、不复制、不打包或程序化启停 SnowLuma；用户自行安装与启动。边界见 `LICENSE` 与根目录 `RULES.md` |
+| 压缩宿主依赖 | `plugins/qq-agent-presets/dsh-host-modules.mjs` | 只从当前 DSH 宿主/CLI 运行入口（含桌面版 `app.asar`）解析共享压缩与 LLM 模块并校验类身份；缺失、不支持或分裂时拒绝加载，不回退私有旧依赖、不修改 DSH 安装包 |
+| 发送强制授权 | 所有 `/api/send/*`、`/api/socialV2/send-*` | MCP 自动携带全局 agent 令牌与全局会话 ID；不要求当前 DSH 回合处于 `active`。所有桥接 API 发送均受会话授权、敏感内容检查和工具调用审计 |
+| 媒体与本地表情动态 ACL | `src/learning-assets.js`、`src/sticker-lib.js`、`src/native-qq.js` | 表情只能发 QQ 收藏库、当前来源可用的本地学习表情或已启用的收录商城包；本地素材只读 `state/learned-stickers/` 哈希命名文件，校验 `realpath` 与 SHA-256，并在发送排队结束后重验来源与启用开关。本机图片按所选后端限制到 SnowLuma home 或已登录 QQ 账号的 `nt_data`，均以 `realpath` 复核防止符号链接逃逸 |
+| **只探测、不部署（L6 不变量）** | `src/mcp-qq.js` | `qq_status` 只读查询桥接选定的 QQ 通道和登录状态。遵守 SnowLuma EULA §5.4：本程序不安装、不复制、不打包或程序化启停 SnowLuma（`mcp-qq.js` 严禁引入 `child_process` 或进程控制原语）。边界见 `LICENSE` 与根目录 `RULES.md` |
 
-独立记忆整理只采用主会话已保存的可见证据。新版整理证据会移除 QQ 正文字段中完整值为 `[notice]` 的通用占位，保留元数据；仅同来源、同消息的已有成功读取可补正文，并记录补全文字的事件序号。不回查 QQ 当前数据、不把占位解释成撤回，真实正文或身份、时间等冲突仍阻断整理。已有分段的旧任务保留原证据版本以保持幂等编号，详见 [记忆整理与恢复](MEMORY_ARCHITECTURE.md#独立整理的读取失败与恢复)。
+**记忆整理证据完整性（版本 3 / 版本 4）**：新版整理证据会移除 QQ 正文字段中完整值为 `[notice]` 的通用占位，仅同来源、同消息在主会话其他成功读取中已有正文时才可补全（记录 `bodySourceSeq`）；不回查当前 QQ 数据库、不把占位解释成撤回，真实正文或账号/时间冲突仍阻断整理。证据版本 4 对外部桌面/浏览器/OCR/控件树辅助工具结果做有界压缩（超 16,000 字节保留脱敏预览并标 `resultTruncated: true`），而 QQ 和记忆读取的截断证据仍会阻断整理。已有分段的旧任务保留原证据版本以保持幂等 `externalId`（详见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md#独立整理的读取失败与恢复)）。
 
-证据版本 4 允许外部桌面和网页等辅助工具的部分结果参与整理，事件以 `resultTruncated: true` 提示缺失。QQ 和记忆读取的截断证据仍会阻断整理，QQ 消息水位与重复消息字段继续逐项校验。
+**表情检索空间与商城包管理**：商城包管理走控制台 `/api/learning/market-packs` 接口；分享链接仅用于解析数字包 ID，桥接根据包 ID 和商城清单中的表情 ID 构造固定腾讯 CDN 地址。表情语义索引使用独立的 A_Memorix `qq-bridge-stickers` 空间（专用密钥保存在本机 `state/a-memorix/secrets/`，仅桥接可用），图片字节与聊天证据不写入表情索引。角色只能在看过图片后提交有界的修改建议，采纳与忽略均限控制台。
 
-转换预览的候选路径取自原生运行时核验过的消息图片元素。元素的 `thumbPath[0]` 限于当前账号 `Pic` 或 `Emoji/emoji-recv` 的年月 `Ori/Thumb` 目录。普通消息的 `picSubType=0` 图片也可用该元素的 `sourcePath` 提供预览。此路径须位于当前账号的 `Pic/YYYY-MM/Ori/<消息摘要>.<扩展名>`，真实路径与词法路径均要核验，且实际交付的字节必须是符合该元素声明宽高的 JPEG。两种转换预览都执行大小、64MP 像素及有界完整解码检查。原图继续强制校验 MD5。账号或连接变更会使正在读取的结果失效。模型只能获得图片与画质信息。
+**可选的 Maa-Agent 游戏工具**：安装记录位于 `state/maa-agent/install.json`。启用后，角色预设提供 Maa-Agent 原生命令和常用游戏工具；桥接将作业路径和参数传给已安装的 Python 模块，使用上游设备锁、关卡核验和任务状态，截图由 DSH 附件服务交给模型（详见 [MAA_AGENT.md](MAA_AGENT.md)）。
 
-### 2.1 桌面应用范围（提示词边界）
+### 2.1 桌面应用范围与跨场合隐私（提示词边界）
 
-`desktop-agent` 的会话提示要求：使用 computer-use 观察或操作电脑时，看到 ChatGPT、DeepSeek Harness、qq-bridge、SnowLuma 或相关开发窗口属于正常现象（这些是维持数字角色自身运行或开发调试的程序），但不得关闭、停止这些程序或改动其中的运行控制、配置与代码，也不得将屏幕上看到的内部凭据、路径或日志外发到聊天中；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化（网页浏览优先走不抢前台的 `browserTab` 后台浏览器通道）。数字角色可按需观察用户的电脑活动。电脑操作插件支持后台操作和由用户通过 Esc 停止前台桌面操作，但普通鼠标移动或按键不会自动停止工具。该界面规则不禁用 QQ MCP 等已有非 GUI 工具，它们仍受现有 QQ 自主运行规则约束。
+- **底层运行/开发窗口保护**：`desktop-agent` 的会话提示要求，使用 computer-use 观察或操作电脑时，看到 ChatGPT、DeepSeek Harness、qq-bridge、SnowLuma 或相关开发窗口属于正常现象，但不得关闭、停止这些程序或改动其中的运行控制、配置与代码，也不得将屏幕上看到的内部凭据、路径或日志外发到聊天中；挡住目标应用时，仅在用户未使用该窗口的前提下允许最小化（网页浏览优先走不抢焦点的 `browserTab` 后台浏览器通道）。电脑操作插件支持后台操作和由用户通过 Esc 停止前台桌面操作，但普通鼠标移动或按键不会自动停止工具。这是模型行为规则，不是 computer-use 服务端的应用级访问控制。
+- **跨 QQ 场合隐私**：固定前缀要求数字角色区分 QQ 聊天场合，不主动带入、也不因第三方请求而复述、概括或确认其他群/私聊的对话、人物、观点、关系、群内梗和个人经历；同一当事人问起自己先前私聊的内容且账号身份可确认时，仅围绕当前问题自然回应。这是模型行为引导；群聊、私聊、知识查询和记忆仍共享全局会话上下文，并无程序级会话隔离或出站语义过滤。
 
-这是模型行为规则，不是 computer-use 服务端的应用级访问控制。当前工具守卫不按窗口标题或应用名拦截操作；用户明确提出涉及这些应用的任务时，仍由会话提示限定到所请求的范围。
+### 2.2 桌面 QQ 独立通道、分级看图与合并转发边界
 
-固定前缀要求数字角色区分 QQ 聊天场合：当前场合的普通交流可正常参与；其他群/私聊的对话、人物、观点、关系、群内梗和个人经历不主动带入，也不因第三方请求而复述、概括或确认。来源特定信息在上下文或记忆中出现时仍受边界约束；同一当事人问起自己先前私聊的内容时可按当前问题所需自然回应。提示词用情形示例支持模型判断，不规定固定回复。这是模型行为引导；群聊、私聊和记忆仍共享全局会话上下文，并无程序级会话隔离或内容过滤。
+- **进程内通信与只读原库（`native` 通道）**：独立模式下，桥接在当前登录用户权限下通过 Frida 将仓库内固定运行代码加载到 QQ 主进程，使用每次启动新建的本机命名管道和随机握手令牌通信；选择 SnowLuma 时独立组件不会启动。常驻读取器由 Windows 文件句柄确认 QQ 主进程打开了对应账号的数据库；首次导入的密钥经原库验证后由当前 Windows 用户 DPAPI 加密保存在 `state/ntqq-reader/keys/`。SQLCipher 通过只读 Win32 VFS 访问 QQ 主库、WAL 和共享内存索引，原生 64 位消息 ID 全程以字符串传递（详见 [NTQQ_ATTENTION.md](NTQQ_ATTENTION.md) 与 [NTQQ_HISTORY.md](NTQQ_HISTORY.md)）。
+- **主动戳一戳（`qq_send_poke`）**：校验全局 agent token 与当前全局会话绑定。群聊目标须通过本群成员查询，私聊显式目标须等于当前私聊对象；号码转为 Number 前拒绝超出安全整数范围的输入。成员查询与 UID 解析前后重验 QQ 账号、全局凭证与连接状态；原生 `sendNudge` 的失败、缺失回执和不支持均不得返回成功，断线或超时不自动重发。接收戳一戳提醒的开关不限制主动发送。
+- **接收预取与转换预览校验**：原生接收预取仅依据当前账号新来信事件中的来源、消息 ID 和 MD5 图片标识检查缓存（跳过历史补查），每条受 `maxCount` 约束，最多 2 项并发、100 项待完成；关闭预取、断线或换账号丢弃未启动任务，进行中的读取重验原账号、连接与读取器未变。转换预览的候选路径取自原生运行时核验过的消息图片元素：`thumbPath[0]` 限于当前账号 `Pic` 或 `Emoji/emoji-recv` 的年月 `Ori/Thumb` 目录；普通消息 `picSubType=0` 的 `sourcePath` 预览须位于当前账号 `Pic/YYYY-MM/Ori/<消息摘要>.<扩展名>`，核验真实路径与词法路径，且实际交付字节须是符合元素声明宽高的 JPEG。两种转换预览都执行大小、64MP 像素及有界完整解码检查；原图继续强制校验文件头与 MD5。
+- **合并转发与转发内媒体（`qq_get_forward_msg`）**：原生句柄包含根消息 ID；QQ 进程内先查验来源中的根消息确为合并转发，再调用 `getMultiMsg`。嵌套节点和转发内媒体只接受当前账号与连接实际返回、并在有界索引中登记过的节点（不保存完整原生元素，不持久化正文或下载鉴权信息，切换账号或断线即失效）。转发图片使用 `downloadRichMedia`，定位固定为已核验的最外层来源、根消息 ID 加内部图片元素 ID；下载完成事件须匹配根消息和元素 ID，仍由读取器验证实际缓存，不使用请求体中的 URL 作为下载回退，也不允许调用方指定本地路径。工具可见的下载错误只保留数字错误码，不回传本机路径或带签名 URL。
+- **单图原图与裁剪（`qq_get_image_detail`）**：通过 `POST /api/socialV2/image-detail` 校验全局会话令牌、会话绑定及目标来源，只接受桥接为已读取 QQ 媒体登记的随机 `imageRef`（绑定登录账号、来源、消息/转发节点与图片位置，最多 2000 项、空闲 24 小时过期、断线即清空；不能用裸 MD5、路径、URL 或跨来源引用探测本机文件，额外参数不能替换引用内身份，读取完成前再次核对账号和引用）。原图解码限制为 32 MiB、6400 万像素、单边 32768 像素；FFmpeg 使用固定参数、单线程、有界分配和总超时，私有临时目录在成功或失败后清理。先按 EXIF 正向处理显式 `0..1` 裁剪区域，保持尺寸重编码到最多 3 MiB；无法满足时报错建议缩小裁剪区域，不隐式降采样。模型可见元数据不包含本机路径。
+- **独立发送测试命令（`scripts/ntqq-probe/send_test.py`）**：仅在人工显式执行且 QQ 核对账号及目标私聊后，才发送固定测试文字或经 MD5 校验的收藏原图；调用前原子创建本地尝试记录，日志位于 Git 忽略的 `state/ntqq-probe/send-tests/`（详见 [NTQQ_SEND.md](NTQQ_SEND.md)）。
 
 ### 3. 出站内容（模型能说什么、能发什么）
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 敏感信息拦截 | 发送 API 中的 `SENSITIVE_RE` 检查 | 消息含本机路径、UNC 或凭据赋值形态时拦截，不发送；控制台测试发送也执行检查 |
+| 敏感信息拦截 | 发送 API 中的 `SENSITIVE_RE` 检查 | 消息含本机路径、UNC 或凭据赋值形态时整条拦截，不发送；控制台测试发送也执行检查 |
 | 会话令牌防外发 | `redactKnownTokensOnly()` + `onebotSend()` | 所有已知 agent token 在发送前脱敏；文本里若仍出现已知令牌则**直接抛错不发** |
-| CQ 注入 | `onebotSend()` | 出站文本一律包成 `{type:'text'}` 段并做 `[CQ:` → `[CQ：` 转义，杜绝 CQ 码注入 |
+| CQ 注入防护 | `onebotSend()` | 出站文本一律包成 `{type:'text'}` 段并做 `[CQ:` → `[CQ：` 转义，杜绝 CQ 码注入 |
 | @ 限制 | `onebotSend()` | `atUserId` 只接受正整数，禁止 `@all` |
-| 分条与收藏 | `socialV2.send` / `sticker.collect` | 限制一次调用的气泡数。消息发送不设每分钟、每小时或单条字数配额。收藏 QQ 表情另有频率限制。 |
+| 分条与收藏配额 | `socialV2.send` / `sticker.collect` | 限制一次调用的气泡数；条间按 `delayPerCharMs` 延迟（最多 1000 ms）。消息发送不设每分钟/每小时/单条字数配额；收藏 QQ 表情另有频率限制 |
 
 ### 4. 控制台（本机最高权限入口）
 
@@ -97,40 +90,27 @@
 | 定长比较 | `crypto.timingSafeEqual` | 比较前先比长度，避免 `!==` 短路带来的时延侧信道 |
 | Host 校验 | 请求最前面 | Host 必须是 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`，否则 403（DNS rebinding 硬化） |
 | CSRF | 非 GET 请求 | 必须 `content-type: application/json`；若带 `Origin`，其 host 必须等于本机 |
-| agent 令牌隔离 | 请求前缀白名单 | 带 `x-agent-token` 的请求默认拒绝，仅放行 `/api/status`、`/api/desktop-agent/rest`、`/api/desktop-agent/memory/*`、`/api/socialV2/*`、`/api/send/*`、`/api/images/*`；其它管理端点一律 403。`active`、`resting`、`recovering` 和 `stopped` 生命周期状态不控制白名单工具是否可调用；每个端点仍执行自身的参数校验和内容检查和工具审计。 |
-| 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免"空 = 管理端"的绕过 |
-| 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步）一律 POST；GET 只读 |
-| WebUI 会话管理 | `/api/console/desktop-agent` | 仅控制台令牌可查看状态、启动或提交任务；同一全局会话也接收 QQ 元数据注意信号。 |
-| WebUI 关系对象设置 | `/api/whitelist` | 仅控制台令牌可设置或清除 `ownerQQ`；首次保存后由本地配置优先，忽略 DSH 的同名设置。更改账号时，已缓存消息的身份标记按当前账号重新计算；QQ 工具访问范围不受影响。测试发送名单独立保存，仍只限制控制台测试发送。 |
-| WebUI 桌面 agent | `/api/console/desktop-agent` | 仅控制台令牌可查看状态/提交任务；GET 不启动回合；WebUI 手动任务可恢复停止/休息状态，用户在 DSH 对话中的直接消息和 QQ 注意信号可提前结束休息但不能解除持久停止态；所有入口复用单一 `desktop-agent` session。QQ MCP 在内部附加持久全局 agent token；computer-use 的 QQ GUI 操作不经过桥接 `/api/send/*` 或 `/api/socialV2/send-*` 守卫。 |
-| WebUI 持久停止 | `/api/console/desktop-agent/stop` | 仅控制台令牌可调用；先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作。DSH 暂不可用时停止态仍保存，恢复连接后不会自动唤醒。 |
-| QQ 持久睡眠 | `handleIncoming()`、`sleepDesktopAgent()` | QQ 命令入口只有配置账号的私聊纯文本命令可进入或结束；进入时保存 `sleeping`、清除待处理提醒并尝试取消 DSH 工作，消息继续缓冲但不生成提醒。桥接重启和 DSH 重连不会自行解除睡眠，管理员另行开启的起床闹钟除外；恢复后不补发睡眠期间的提醒。DSH 外部直接发起的回合在事件到达后请求取消，并非 DSH 层的入口拦截。 |
-| 每日睡眠闹钟 | `/api/console/desktop-agent/sleep-schedule`、`sleep-schedule.js` | 默认关闭、时间为空，仅认证控制台可读写，agent-call 默认拒绝且不扩宽工具白名单。启用需管理员配置两个不同的本地时间；定时动作复用持久睡眠/起床流程，不伪造 owner 命令、不发送 QQ 回执。睡觉与起床都跳过 `stopped`，重复目标状态不发起回合；关闭不唤醒。配置代次和生命周期/会话检查阻止旧起床回调覆盖新设置或停止操作。调度只检查本地时钟，不增加模型心跳。 |
-| WebUI 长期记忆设置 | `/api/memory/settings`、`/api/memory/providers`、`/api/memory/service` | 仅控制台令牌可配置或启停本机服务；状态接口只返回密钥是否已设置，不回显密钥。Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径；Provider 保存后重启 A_Memorix。 |
-| 模型主动休息 | `/api/desktop-agent/rest` | MCP 自动附加当前全局 agent token；调用会保存定时休息状态，并在返回工具结果后取消当前 DSH turn。该状态不限制后续工具调用；休息到期只发起一次恢复回合。 |
-| 漏调用休息工具 | DSH `turn/end` 与会话快照 | 正常完成但未调用工具时，桥接只向原主会话发收尾提醒，不自动进入休息。首次立即提醒，连续遗漏指数退避；持久停止、睡眠及休息时不发此提醒。模板沿用已认证控制台的配置接口，发送沿用现有会话与生命周期校验。 |
-| 记忆工具 | `/api/desktop-agent/memory/*` | 校验全局 agent token，并固定访问 `config.json` 中的 A_Memorix namespace，不受 `agent_rest` 生命周期限制。参数正文与检索词不写入工具参数日志。`memory_replace` 逐条预读目标；多条 QQ 记录的来源 key 须明确且一致。确认新 ID 后才经 Gateway 请求删除旧记录。 |
-| 记忆管理 | `/api/memory/*` | 受控制台令牌保护；用于 WebUI 搜索、查看、保存、替代和删除。A_Memorix namespace API key 留在桥接本地配置，不返回给页面或 DSH。 |
-| 记忆全量浏览 | `POST /api/memory/records/list` | 受控制台令牌与 JSON/Origin 校验保护；带 `x-agent-token` 时因默认拒绝白名单而返回 403。仅读取配置 namespace 的 `paragraphs` 表，校验 storage key 路径与必需列，使用 SQLite `mode=ro` + `query_only` 和参数化查询；不读向量/图存储，不写数据库。 |
-| 记忆开场摘要 | `submitDesktopAgentPrompt()` | 只在新/重建会话首次提示查询 `assistant` 来源；QQ 来源不自动注入。检索失败不阻止提示提交。 |
+| agent 令牌隔离 | 请求前缀白名单 | 带 `x-agent-token` 的请求默认拒绝，仅放行 `/api/status`、`/api/desktop-agent/owner-identity`、`/api/desktop-agent/rest`、`/api/desktop-agent/memory/*`、`/api/socialV2/*`（显式排除 `/api/socialV2/config`、`/api/socialV2/reset`、`/api/socialV2/states` 及 `GET /api/socialV2/feedback`、`GET /api/socialV2/tool-log`）、`/api/send/*`、`/api/images/*`；其它管理端点（含 `/api/learning/*`、`/api/slang*`、`/api/stickers*`、`/api/memory/*`、`/api/console/*`）一律 403。`idle`、`active`、`resting`、`recovering`、`sleeping` 和 `stopped` 生命周期状态不控制白名单工具是否可调用；每个端点仍执行自身的参数校验、会话绑定、内容检查和工具审计 |
+| 空令牌拒绝 | `x-agent-token === ''` | 一律 403，避免“空 = 管理端”的绕过 |
+| 写操作不挂 GET | 全路由审查 | 会触发副作用的接口（如表情强制同步、MCP 探测/重连）一律 POST；GET 只读 |
+| WebUI 会话与停止管理 | `/api/console/desktop-agent`、`/stop` | 仅控制台令牌可查看状态、启动、提交任务或持久停止；停止时先持久化 `stopped` 并清除休息/恢复定时器，再尝试取消当前和排队的 DSH 工作 |
+| WebUI 关系对象设置 | `/api/whitelist` | 仅控制台令牌可设置或清除 `ownerQQ`；首次保存后由本地配置优先，忽略 DSH 同名设置。测试发送名单独立保存，只限制控制台测试发送 |
+| QQ 持久睡眠与每日闹钟 | `handleIncoming()`、`/api/console/desktop-agent/sleep-schedule` | QQ 睡眠命令仅限已配置 `ownerQQ` 的私聊纯文本 `/睡觉` 和 `/起床`；每日睡眠闹钟默认关闭、仅认证控制台可读写，睡觉与起床定时动作均跳过 `stopped`，关闭定时不唤醒 `sleeping`，配置代次和生命周期复核阻止旧回调覆盖新设置 |
+| MCP 连接诊断与重连 | `/api/console/mcp` | 仅认证控制台可用；GET 只订阅状态，POST 仅限操作 `qq` / `qq-memory`，不能传命令、环境变量或其他服务名。同名操作互斥且有总超时，超时视为未确认、不自动重发，只返回白名单状态字段和有界脱敏诊断 |
+| 长期记忆设置与管理 | `/api/memory/*` | 受控制台令牌保护；Provider 密钥只写入 `state/a-memorix/secrets/`，TOML 中仅保存密钥文件路径，状态接口只返回密钥是否已设置、不回显密钥。`POST /api/memory/records/list` 仅供控制台使用 SQLite `mode=ro` + `query_only` 和参数化查询只读分页浏览当前 namespace 的 `paragraphs` 表，校验 storage key 路径与必需列，不写数据库 |
+| 记忆工具与开场摘要 | `/api/desktop-agent/memory/*`、`submitDesktopAgentPrompt()` | 校验全局 agent token，固定访问 `config.json` 中的 A_Memorix namespace；参数正文与检索词不写入工具参数日志。`memory_replace` 逐条预读目标并核对同来源，确认新 ID 后才经 Gateway 删除旧记录。开场摘要只在新/重建会话首次提示查询 `assistant` 来源，QQ 来源不自动注入 |
 | 请求体限制 | `readBody()` | 声明长度或实际累计超过 1 MB → 413；30 秒读取超时 |
 | 安全响应头 | 全部响应 | `X-Frame-Options: DENY`、CSP、`nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` |
 
-### 5. 秘密与落盘
-
-`/api/console/mcp` 及其 `qq` / `qq-memory` 探测、重启路由仅供已认证的本机控制台，沿用 Host、Origin、JSON 与 agent 默认拒绝边界。GET 只订阅状态，不能触发探测或重启；POST 不能传命令、环境变量或其他服务名称。同名操作互斥且有总超时；超时结果视为未确认，不自动重发，旧进程清理失败不冒称恢复成功。只返回白名单状态字段和有界脱敏诊断，不暴露完整配置、启动命令或环境；插件使用宿主注册生命周期撤销，不修改 DSH 安装文件。
-
-工具图片诊断不保存图片字节、成功工具正文或附件路径；只计持久附件引用和识别到的拒绝标记，拒绝理由采用受控文本。记忆工具及无法关联调用名的错误正文省略；结构化错误码和重试信息也经过脱敏，图片 data URI 与长编码串过滤。自由错误文本仍可能引用业务上下文，启发式脱敏不等于内容隔离。会话迁移缓存不能充当历史游标或空队列证据，旧接口回退仅限已确认的未导出错误，鉴权和服务错误不得静默降级。
+### 5. 秘密、诊断脱敏与落盘
 
 | 机制 | 位置 | 行为 |
 | --- | --- | --- |
-| 原子写 | `atomicWriteJson/Text()` | 唯一随机临时名 + rename（Windows EPERM 退避重试），不会写坏配置 |
-| 敏感配置替换 | `atomicWriteConfigJson()` | 随机临时文件写入成功后原子替换 `config.json`；新文件保留 `mode: 0o600`，不再调用 ACL 修改命令或把 ACL 收紧作为配置保存条件 |
+| 原子写 | `atomicWriteJson/Text()`、`atomicWriteConfigJson()` | 唯一随机临时名 + rename（Windows EPERM 退避重试），不会写坏配置；新文件保留 `mode: 0o600`，不调用 ACL 修改命令 |
 | 本地文件权限 | `state/`、`config.json` 及其临时文件 | Windows 新建文件沿用父目录权限，桥接不自动检查、收紧或恢复 ACL，也不请求管理员提权。支持 POSIX 文件模式的平台继续对相应新文件使用 `0600`；现有目录权限由用户和操作系统管理 |
-| 令牌不回显 | 日志/活动/工具日志 | 控制台令牌只打前 6 位；活动日志与工具调用参数过 `redactSensitiveText` / `redactSensitive`（递归处理 JSON 字符串叶子） |
-| 令牌只发回环 | `dsh-client.ensureAuth()` | DSH launch token 换 Cookie 时必须放进 URL，因此**默认拒绝非回环 baseUrl**；远程部署需显式 `dsh.allowRemote: true` |
-| 路径校验（读点） | `plugins/qq-agent-presets/lib/index.js` 的人格卡 provider | DSH 每次组装 system prompt 时验证人格名格式，并用 `realpath` 确认卡片文件仍位于 `roles/` 目录内；`state/current-role.json` 是本地可编辑状态文件，不能作为路径信任边界 |
-| 原型污染 | audit-log redaction | 日志脱敏跳过 `__proto__` / `constructor` / `prototype` 键，并使用无原型对象 |
+| 令牌与敏感参数不回显 | 日志/活动/工具/诊断日志 | 控制台令牌只打前 6 位；活动日志与工具调用参数过 `redactSensitiveText` / `redactSensitive`（递归处理 JSON 字符串叶子，跳过 `__proto__` / `constructor` / `prototype` 并使用无原型对象）。工具图片诊断不保存图片字节、成功正文或附件路径，记忆工具错误正文省略，data URI 与长编码串过滤 |
+| 令牌只发回环 | `dsh-client.ensureAuth()` | DSH launch token 换 Cookie 时必须放进 URL，因此**默认拒绝非回环 baseUrl**；远程部署需显式 `dsh.allowRemote: true`。旧接口回退仅限已确认的未导出错误，鉴权和服务错误不得静默降级 |
+| 路径校验（读点） | `plugins/qq-agent-presets/lib/index.js` 人格卡 provider | DSH 每次组装 system prompt 时验证人格名格式，并用 `realpath` 确认卡片文件仍位于 `roles/` 目录内；`state/current-role.json` 是本地可编辑状态文件，不作为路径信任边界 |
 
 ### 6. 现有文件权限与测试目录
 
@@ -140,9 +120,9 @@
 
 测试夹具、探针和 self-test 继续把临时产物放在系统临时目录，避免混入生产 `state/`，而不是依赖桥接主动收紧目录来隔离。共享机器上的本地文件与备份权限由使用者管理。
 
-### 7. 网络
+### 7. 网络（`src/safe-fetch.js`）
 
-`src/safe-fetch.js`（仅暴露给 agent 的只读联网）：
+`src/safe-fetch.js`（暴露给桥接侧只读联网与受限媒体下载）：
 
 - 只允许 `http` / `https`；拒绝 URL 内嵌凭据；拒绝 `file:` / `gopher:` 等 scheme
 - 解析出的**每一个** DNS 结果都要过私有地址判定（含 IPv4-mapped IPv6、NAT64、6to4、ULA、link-local、zone-id、十进制/八进制/十六进制 IPv4）
@@ -157,13 +137,13 @@
 
 | # | 风险 | 现状与缓解 | 为什么不修 |
 | --- | --- | --- | --- |
-| R1 | **敏感信息审计是启发式的** | 能抓"带赋值关系的凭据"和本机路径；抓不到任意形态的秘密 | 通用秘密检测无法在没有密钥的情况下做对；硬边界在白名单与工具面，审计是兜底 |
-| R2 | **本地配置与 `state/` 里的令牌是明文** | Windows 使用实际父目录权限，不再自动收紧 ACL；支持 POSIX 文件模式的平台继续对相应新文件使用 `0600` | 自动 ACL 策略已按用户要求移除；凭据库/DPAPI 尚未实现，如未来提出该需求，应单独评估部署复杂度和恢复流程 |
+| R1 | **敏感信息审计是启发式的** | 能抓“带赋值关系的凭据”和本机路径；抓不到任意形态的秘密 | 通用秘密检测无法在没有密钥的情况下做对；硬边界在白名单与工具面，审计是兜底 |
+| R2 | **本地配置与 `state/` 里的令牌是明文** | Windows 使用实际父目录权限，不再自动收紧 ACL；支持 POSIX 文件模式的平台继续对相应新文件使用 `0600` | 自动 ACL 策略已按用户要求移除；凭据库/DPAPI 尚未覆盖通用配置，如未来提出该需求应单独评估恢复流程 |
 | R3 | **远程停止不是原子的** | 清空待处理队列后请求取消当前回合，已执行的工具副作用无法回滚 | DSH 协议没有事务语义 |
-| R4 | **离线队列不保证送达** | 每会话最多 50 条，进程退出即丢 | 一致性代价过高；README 已写明 |
-| R5 | **预设不变量检查是子串存在性** | 防误删，不防恶意 | 能改这个文件的人本来就是管理员，真正的硬边界在工具守卫与白名单 |
-| R6 | **`self-test.js` 只证明链路通** | 不做断言 | 它是连通性探针，不是回归套件（离线回归由 `node scripts/test-audit.mjs` 运行） |
-| R7 | **单人维护、无外部安全审计** | 有离线回归 + 本文档 | 目前没有已安排的外部/对抗式复审日期 |
+| R4 | **SnowLuma 内存中待投递的注意信号批次不落盘** | SnowLuma 模式的 `desktopAttentionQueue`（最多 100 个来源）位于内存，桥接进程退出时未投递提醒会丢失（500 条未读消息本身仍保存在 `state/qq-unread.sqlite`；独立模式提醒位置保存在 `state/native-reminders.sqlite`） | 保持 OneBot 模式轻量提醒投递；未读消息队列本身已落盘 |
+| R5 | **预设提示词警告是非阻断的** | 固定前缀模块允许管理员自由编辑或关闭，缺少关键变量时仅提醒 | 能改 preset 的人本来就是本机管理员，真正的硬边界在工具守卫（`qq-tool-restrict.mjs`）与桥接路由白名单 |
+| R6 | **`self-test.js` 只证明链路通** | 不做安全断言 | 它是连通性探针，不是回归套件（离线回归由 `node scripts/test-audit.mjs` 运行） |
+| R7 | **单人维护、无外部安全审计** | 有 52 个脚本的离线回归套件 + 本文档 + 隐私扫描 | 目前没有已安排的外部/对抗式复审日期 |
 | R8 | **现有文件可能保留旧版或手动设置的 ACL**（见 §2.6） | 自动收紧已移除，但更新不重置磁盘权限；写入失败仍按正常文件系统错误报告 | 自动恢复继承会改变用户既有授权，因此不随代码更新执行 |
 
 ---
@@ -171,72 +151,38 @@
 ## 四、发布前必须跑的检查（回归清单）
 
 ```bash
-node scripts/test-audit.mjs # 纯 mock/fixture 离线回归，必须全绿
-npm run verify:dsh          # 有副作用：创建真实会话并调用模型，仅在获准实测时执行
-npm run verify:persona      # 人格配置一致性；需 DSH_INSTALL_MODULES 指向可解析的 DSH node_modules（桌面版 app.asar 暂不支持）
-npm run scan:tool-names     # 对比可扫描的 DSH 模块目录；当前只支持独立 node_modules，不支持桌面版 app.asar
-node --check src/bridge.js  # 语法门禁（大文件改动后必跑）
+node scripts/test-audit.mjs                 # 纯 mock/fixture 离线回归（52 个脚本），必须全绿
+node --check src/bridge.js                  # 语法门禁（大文件改动后必跑）
+node scripts/build-agent-preset-patches.mjs --check # preset 权威源与 bundle patch 一致性检查
+node scripts/privacy-scan.mjs --tracked-only # 发布前隐私与敏感信息扫描
+npm run verify:dsh                          # 有副作用：创建真实会话并调用模型，仅在获准实测时执行
+npm run verify:persona                      # 人格配置 schema 校验；需 DSH_INSTALL_MODULES 指向可解析的 DSH node_modules
+npm run scan:tool-names                     # 对比可扫描的 DSH 模块目录中的工具注册表
 ```
 
 安全专项必须覆盖（缺一不可）：
 
 - [x] 注意信号包括私聊、原生 @、已验证回复、当前人格卡名称、配置关键词及发给当前账号的 QQ 戳一戳功能事件；六类各有开关，新事件只携带元数据，正文按需读取。戳一戳按结构化事件及参与者账号识别，不使用可定制文案，自己发出或发给其他账号的事件不唤醒。
 - [x] 唯一 `desktop-agent` preset 不可用时拒绝创建全局会话（不回退到默认预设）
-- [x] agent token 无法访问任何管理端点；空 agent token 被拒
-- [x] MCP manager 管理接口仅允许控制台显式操作 qq / qq-memory，刷新不探测/重启；错误、超时、换端点和未纳管不自动重试动作。离线测试见 `test-dsh-mcp-management.mjs` / `test-dsh-mcp-routes.mjs`。
+- [x] agent token 无法访问任何管理端点；空 agent token 被拒；QQ 路由同时核对当前 `desktop-agent` session ID 绑定
+- [x] MCP manager 管理接口仅允许控制台显式操作 `qq` / `qq-memory`，刷新不探测/重启；错误、超时、换端点和未纳管不自动重试动作（`test-dsh-mcp-management.mjs` / `test-dsh-mcp-routes.mjs`）
 - [x] 控制台伪造 `Host` 被拒；错令牌（含错长度、大小写、尾空格）被拒
-- [x] 全局 desktop-agent 令牌可读写任意格式有效的 QQ key
+- [x] 全局 `desktop-agent` 令牌可读写任意格式有效的 QQ key
 - [x] 出站文本命中敏感信息时整条拦截；含已知会话令牌时直接抛错
 - [x] SSRF：scheme、URL 凭据、私有 IP、重定向、超时、大小限制（11 项）
 - [x] 桥接 `200 + {ok:false}` 会被 MCP 当作失败上报（不产生静默假成功）
-- [x] bridge API 发送校验全局会话令牌、内容检查和审计，不受 `agent_rest` 生命周期限制
+- [x] bridge API 发送校验全局会话令牌、会话绑定、内容检查和审计，不受 `agent_rest` 生命周期限制
 - [x] WebUI 全量记忆浏览 HTTP 路由：控制台令牌可到达只读适配器，desktop-agent token 默认 403（`test-audit-bridge.mjs`）
 - [x] Python SQLite 记忆读取器：临时 fixture 覆盖分页、来源/时间/关键词筛选、LIKE 转义、storage key 越界拒绝，且读取前后数据库摘要不变（`test-a-memorix-readonly.mjs`）
-- [ ] A_Memorix 实际安装版本与生产 namespace 的 schema/Gateway 联调；fixture 只覆盖当前读取器要求的列和关系表形态
-- [x] 启动和配置保存不调用 ACL 修改或管理员提权；不再提供目录权限告警、重试接口及 ACL 命令入口。`start.bat` 仍通过格式与启动接线检查。
+- [x] 启动和配置保存不调用 ACL 修改或管理员提权；不再提供目录权限告警、重试接口及 ACL 命令入口，`start.bat` 通过纯 ASCII + CRLF 与启动接线检查（`test-audit-setup-guards.mjs`）
 
 ---
 
 ## 五、改动检查单（每个 PR 自问）
 
-1. 这次改动有没有让某个"不确定"变成"放行"？（违反 fail-closed 即阻断）
+1. 这次改动有没有让某个“不确定”变成“放行”？（违反 fail-closed 即阻断）
 2. 有没有新增一个**只有控制台该用**的端点却没进 agent 白名单的默认拒绝？
-3. 有没有新增读写文件的路径参数？它是否做了包含性校验与 realpath？
+3. 有没有新增读写文件的路径参数？它是否做了包含性校验与 `realpath`？
 4. 有没有把外部数据（QQ 内容、文件名、配置值）直接插进 HTML / 日志 / 提示词？
 5. 新增的定时器、Map/Set、监听器，在会话退役与进程退出路径上都清理了吗？
 6. 是否更新了对应的测试与本文档？
-
-## NTQQ 原生历史读取
-
-独立通道将 QQ 登录账号和主进程 PID 交给常驻读取器，由 Windows 文件句柄确认该进程打开了对应账号的数据库。命令行读取器也根据已打开的数据库识别账号。首次导入的密钥经原库验证，由当前 Windows 用户的 DPAPI 加密保存在 `state/ntqq-reader/keys`。SQLCipher 通过只读 Win32 VFS 访问 QQ 主库、WAL 和已有的共享内存索引。角色和 WebUI 的历史查询复用同一个常驻连接。命令行默认仅输出条数和读取状态，显式指定来源时才打印聊天内容。[安装与验收](NTQQ_ATTENTION.md#新机器安装)
-
-## 桌面 QQ 进程内观察和发送测试
-
-合并转发读取继续校验 agent token 和来源策略。原生句柄包含根消息 ID；QQ 进程内先查验来源中的根消息确实是合并转发，再调用 `getMultiMsg`。嵌套节点和转发内媒体只接受当前账号与连接实际返回、并在有界索引中登记过的节点；切换账号或断线后失效。转发图片即使已在本地缓存也先核验来源、节点和图片标识，未命中时只使用 QQ 返回的元素与缓存位置补取。原生转发媒体不使用请求体中的 URL 作为下载回退，不允许调用方指定本地路径。
-
-转发媒体索引仅在 QQ 进程内保存有界的节点/元素 ID、媒体身份与缓存定位，不保存完整原生元素，不持久化正文或下载鉴权信息。图片使用 `downloadRichMedia`，定位固定为已核验的最外层来源和根消息 ID 加内部图片元素 ID，嵌套转发沿用同一根；下载完成事件须匹配根消息和元素 ID，仍由读取器验证实际缓存。商城表情的 CDN 回退只能在本来源的包 ID 与表情 ID 校验成功后，由 NativeQQ 构造固定腾讯地址。工具可见的下载错误只保留数字错误码，不回传 QQ 原始诊断中的路径或带签名地址。
-
-独立模式下，桥接在登录用户权限下通过 Frida 将仓库内的固定运行代码加载到 QQ 主进程，由本机命名管道收发 QQ 事件和工具请求。桥接为每次运行生成管道名称和握手令牌。SnowLuma 模式使用 OneBot。另有按需运行的观察器，可报告账号、收藏标识及来信计数。[诊断工具](NTQQ_SEND.md)
-
-原生 QQ 接收预取仅依据当前账号新来信事件中的来源、消息 ID 和 MD5 图片标识检查缓存，跳过历史补查。每条受媒体数量上限约束，最多 2 项并发、100 项待完成；关闭预取、断线或换账号丢弃未启动任务，进行中的读取也校验原账号、连接和读取器未变。预取只调用 QQ 缓存接口，不抓取事件 URL 或把图片字节加入模型上下文；表情学习仍有独立开关。
-
-角色图片读取仍须通过会话令牌、来源策略和原消息定位校验。补取请求仅传原消息定位和图片 MD5，QQ 重新核对该消息内匹配的元素 ID；工具不能指定任意下载目标路径。文件路径由 QQ 缓存索引解析，原件须通过文件头与 MD5 校验，输出前继续执行当前账号缓存目录、字节数和像素限制。商城表情预览从 QQ 固定缓存目录读取，缺失时沿用受 SSRF 与大小限制保护的 CDN 回退。消息正文历史查询仍只读。
-
-原生媒体读取器省略 `quality` 时保持旧查找行为及 20 MiB 参数上限；显式 `preview`/`original` 的 `maxBytes` 只接受 1 字节至 32 MiB 的正整数。缓存和并发请求按画质及上限区分。预览优先 Thumb，必要时从原件生成；原图只能返回文件头与 MD5 验证过的原件，缩略图不阻止缺原图时请求 QQ 补取，也不得作为原图返回。已有缓存全部超限时明确拒绝，不重复下载同一大文件。
-
-`image-detail` 仍须会话令牌及目标来源校验，只接受桥接为已读取 QQ 媒体登记的随机 `imageRef`。引用绑定登录账号、来源、消息/转发节点与图片位置，最多 2000 项、空闲 24 小时过期、断线即清空；不能用裸 MD5、路径、URL 或另一个来源的引用探测本机文件。参数中的额外媒体字段不能替换引用内的身份。读取完成前再次核对账号和引用，防止切换期间返回旧账号图片。
-
-原图解码限制为 32 MiB、6400 万像素、单边 32768 像素；ffmpeg 使用固定参数、单线程、有界分配和总超时，私有临时目录在成功或失败后清理。先按 EXIF 正向处理显式的 0..1 裁剪区域，保持尺寸重编码到最多 3 MiB；无法满足时报错建议缩小裁剪区域，不隐式降清。模型可见元数据只选画质、尺寸和原图状态字段，不包含本机路径或编码字节。预览仍有独立输出和批次预算；普通群正文不会因图片预取或本次分级看图自动进入角色上下文。
-
-独立的发送测试命令在 QQ 核对账号及目标私聊后，可以发送一条固定测试文字或一张经过 MD5 校验的 QQ 收藏原图。每个动作在调用 QQ 之前原子创建本地尝试记录，收到回执后保存结果。日志含私聊标识与消息 ID，位于 Git 忽略的 `state/ntqq-probe/send-tests/`。
-
-## 可选的 Maa-Agent 游戏工具
-
-安装记录位于 `state/maa-agent/install.json`。启用后，角色预设提供 Maa-Agent 原生命令和常用游戏工具。桥接把作业路径和参数传给已安装的 Python 模块，使用 Maa-Agent 的设备锁、关卡核验和任务状态。作业可从索引选择，也可直接使用下载文件的绝对路径。截图由 DSH 附件服务交给模型。禁用后，已经排队的游戏作业由上游 worker 继续管理。
-
-## 表情检索与复检
-
-商城包管理走控制台的 `/api/learning/market-packs` 接口。分享链接只用于解析数字包 ID，桥接根据包 ID 和商城清单中的表情 ID 构造腾讯 CDN 地址。预览和收录沿用现有受限图片读取。角色检索、查看原图、提交修正及发送时分别检查该来源的使用开关，发送队列在交付 QQ 前再次检查。控制台可管理已关闭来源的素材。
-整包分析复用后台学习进程的图片工具和权限范围，输入是管理员已收录的整包素材和商城释义。每个分页工具回执和返回的表情序号均由桥接核对，后台模型的输出只用于注解和检索。
-
-记忆工具绑定角色经历空间，表情专用密钥保存在本机 A_Memorix 的 secrets 目录，仅桥接可用。图片和聊天证据不会写入表情索引；只索引描述、情绪、用法和标识。检索结果以当前启用状态和来源再次过滤。角色只能在看过图片后提交有界的修改建议，采纳与忽略均限控制台；QQ 账号收藏的修订只写入本地资料。

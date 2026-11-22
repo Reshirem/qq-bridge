@@ -2,7 +2,9 @@
 
 审计快照：本地 `HEAD=5e940ea`，日期 2026-10-29。本文按 Git 历史、当前注册入口、路由和回归检查整理；它用于区分来源与验证边界，不等同于对真实 QQ、DSH 或本机安装的在线验收。
 
-后续维护说明：2026-11-16 已移除自动 ACL 收紧、提权、目录权限告警及 ACL 命令入口；下表的 ACL 模块行保留为该审计快照的来源记录，不表示当前仍有这一模块。当前文件权限行为见[安全基线](SECURITY_BASELINE.md#6-现有文件权限与测试目录)。
+后续维护说明：
+- 2026-11 之后已新增桌面 QQ 独立通道（`src/native-qq.js`、`src/native-reminders.js`，默认 `qqBackend: "native"`），并将原 `src/mcp-snowluma-safe.js` 扩展重命名为双后端共用的 `src/mcp-qq.js`；同时新增后台黑话/表情学习、商城表情包收录、独立记忆整理、分级看图（`qq_get_image_detail`）、每日睡眠闹钟与 DSH 纳管 MCP 等模块。当前完整模块地图见 [../FOLDER_MAP.md](../FOLDER_MAP.md)。
+- 2026-11-16 已移除自动 ACL 收紧、提权、目录权限告警及 ACL 命令入口；下表的 ACL 模块行保留为该审计快照的来源记录，不表示当前仍有这一模块。当前文件权限行为见[安全基线](SECURITY_BASELINE.md#6-现有文件权限与测试目录)。
 
 ## Fork 边界与贡献者
 
@@ -63,13 +65,20 @@
 - DSH profile 模块定位不再把普通 `js-yaml` 当作 DSH 安装的证据；它要求能从 profile `node_modules` 解析到 `@deepseek-ai/dsh-persona`，并有 fixture 检查。但这只适用于模块以独立包形式安装在 profile `node_modules` 的布局，不适用于把 bundle 打进桌面应用 `app.asar` 的布局。
 - `setup-dsh.mjs` 支持任意 profile，但在线核验脚本曾固定读取 `profiles/web`。本次改为跟随 `<profile>` 参数或 `DSH_PROFILE`，同时校验 profile 名称，避免检查错 profile 或接受路径穿越输入。
 
-### 仍是核验缺口，不是已确认的运行故障
+### 2026-10-29 审计时的核验缺口与后续解决状态
 
-1. **当前工具名扫描器不能读取 DSH Desktop 内置 bundle。** 本机 DSH Desktop 版本为 `44.7.0`。`%USERPROFILE%\.dsh\profiles\desktop\package.json` 注册了 `@deepseek-ai/dsh-base` 和 `@deepseek-ai/dsh-web-app` 等 bundle；profile `node_modules` 里有 `dshmarket`、`dsh-computer-use-win` 和 `qq-agent-presets`，但没有独立的 `@deepseek-ai` 包目录。桌面安装的 `resources\app.asar` 中可检索到 `@deepseek-ai/dsh-tool-pwsh`、`@deepseek-ai/dsh-tool-bash`、`@deepseek-ai/dsh-tool-fs`、`@deepseek-ai/dsh-tool-terminal`、`@deepseek-ai/dsh-tool-session-query`、`@deepseek-ai/dsh-tool-subagent`、`@deepseek-ai/dsh-tool-web` 等包名引用。这能确认包名线索，却不能证明每个包在运行时注册了哪些工具名。现有 `dshModulesDir()`、`verify:persona` 和 `scan:tool-names` 只读取独立的 profile `node_modules`，因此这次不能据它们判断 DSH 44.7.0 的真实工具注册表，也不能确认守卫覆盖了该版本全部工具。下一步需要给扫描器增加 `app.asar` 支持，或取得可扫描的解包模块目录；在此之前，守卫与 DSH 工具名的版本对账仍属未完成。
-2. **没有连接真实 QQ / SnowLuma，也没有跑在线 DSH 生命周期核验。** 26/26 离线回归使用模拟接口，不代表网关登录、事件订阅、真实发送和在线生命周期全部已验收。`npm run verify:dsh` 会创建临时 workspace/session 后归档，这次没有运行。
-3. **真实 A_Memorix schema/Gateway 尚未联调。** `scripts/a-memorix-readonly-list.py` 已通过临时 SQLite fixture 的分页、来源/时间/关键词过滤、LIKE 转义、storage key 越界拒绝及数据库摘要不变检查；fixture 使用读取器要求的当前列结构，不证明用户实际安装的 A_Memorix 版本结构兼容。系统 PATH 没有 Python 命令，但仓库内 A_Memorix venv 可用于该 fixture。
-4. **提醒队列缺少端到端时间测试。** 唤醒分类有纯函数测试，消息水位与 MCP schema 有协议测试；“进入休息后等一分钟、只补发一次、退避态不补发”的完整计时器状态流目前没有单独 fixture 测试。
-5. **审计时的 ACL 核验缺口已不适用。** 当时仅有 `icacls`/UAC 结构断言；2026-11-16 已移除这套自动 ACL 策略，当前检查启动与配置保存不再修改 ACL，不对既有磁盘权限作修改或保证。
+1. **桌面版 `app.asar` 模块解析与工具名扫描**
+   - **已解决（压缩与 LLM 共享模块）**：2026-11 新增 `plugins/qq-agent-presets/dsh-host-modules.mjs` 与 `scripts/test-compaction-host-modules.mjs`、`scripts/test-compaction-dsh.mjs`，直接从当前 DSH 宿主/CLI 运行入口（含桌面版 `resources/app.asar`）动态解析 `dsh-compaction-basic` 与 `dsh-llm` 共享类实例，不再依赖 profile 下的独立 `@deepseek-ai` 包目录。
+   - **仍需注意（静态工具名扫描器）**：`scripts/scan-dsh-tool-names.mjs` 仍面向解包后的 `@deepseek-ai` 模块目录（可通过 `DSH_TOOL_PACKAGES` 指定），不会直接解包扫描桌面版 `app.asar`。
+2. **在线 QQ / DSH 实机回归与离线回归套件的边界**
+   - 离线回归 `node scripts/test-audit.mjs` 已从审计时的 26 个脚本扩展至 **52 个脚本**（覆盖双 QQ 后端、合并转发、图片分级/裁剪、戳一戳收发、睡眠命令与每日睡眠闹钟、后台黑话/表情学习、独立记忆整理、MCP manager 纳管、令牌账本等），另有 `scripts/test-compaction-dsh.mjs`、`scripts/test-managed-mcp-dsh.mjs`、`scripts/test-background-presets-dsh.mjs` 使用本机安装的 DSH 在临时空 `DSH_HOME` 中做隔离集成验证。
+   - 连接真实登录 QQ 账号或发起真实模型调用的脚本（如 `npm run verify:dsh`、`scripts/ntqq-probe/send_test.py`）属于有副作用的在线验收，不在默认离线测试中自动运行。
+3. **A_Memorix 原始账本只读适配器版本兼容**
+   - `scripts/a-memorix-readonly-list.py` 已由 `scripts/test-a-memorix-readonly.mjs` 覆盖分页、来源/时间/关键词过滤、LIKE 转义、storage key 越界拒绝及数据库摘要不变检查，并与固定部署的 A_Memorix `v2.0.0a4` 对齐；若未来升级上游 A_Memorix 版本，仍需重新核对 `paragraphs` 表结构。
+4. **提醒队列与未读补提醒计时器测试（已补齐）**
+   - 审计时缺失的“进入休息后每分钟检查一次、每条未读最多补发一次、异常退避态不补发、正常结束漏调 `agent_rest` 首次立即提醒后递增退避”端到端时间状态流，已由 `scripts/test-attention-delivery.mjs` 与 `scripts/test-poke-reminders.mjs` 完整覆盖。
+5. **自动 ACL 策略（已移除）**
+   - 2026-11-16 已彻底移除启动与配置保存时的自动 `icacls` / UAC 提权逻辑，并由 `scripts/test-audit-setup-guards.mjs` 守护。
 
 ### 使用时要知道的设计边界
 
