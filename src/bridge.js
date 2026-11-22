@@ -2424,7 +2424,7 @@ async function main() {
         let memoryWrites = 0;
         let newMemories = 0;
         const toolCalls = new Map();
-        const failedSaves = new Map();
+        const tracker = createOrganizerToolFailureTracker();
         const itemPrefix = `qq-bridge:organizer:${job.jobId}:chunk-${chunkNumber}:item-`;
         let failure = '';
         let settled = false;
@@ -2473,7 +2473,9 @@ async function main() {
               const id = input?.externalId;
               const saveId = isOrganizerWrite(tool) && typeof id === 'string' && id.startsWith(itemPrefix)
                 && /^\d+$/.test(id.slice(itemPrefix.length)) ? id : '';
-              toolCalls.set(callId, { tool, saveId });
+              const readId = tracker.readTargetKey(tool, input);
+              const callOrder = tracker.nextOrder();
+              toolCalls.set(callId, { tool, saveId, readId, callOrder });
             }
             if (isOrganizerWrite(tool) && typeof onMemoryWrite === 'function') onMemoryWrite();
           } else if (eventType === 'tool_result' || eventType === 'toolresult') {
@@ -2492,26 +2494,25 @@ async function main() {
             if (tool.startsWith('memory_') && isError) {
               const detail = redactSensitiveText(memoryOrganizerMessageText(event.error ?? event.result ?? event.output ?? event.content)).trim().slice(0, 500);
               const message = `记忆工具 ${tool} 返回失败${detail ? `：${detail}` : ''}`;
-              if (isOrganizerWrite(tool) && call?.saveId) failedSaves.set(call.saveId, message);
-              else if (isOrganizerWrite(tool)) failedSaves.set(callId || `${tool}-${failedSaves.size}`, message);
-              else failure ||= message;
-            }
-            if (!isError && isOrganizerWrite(tool)) {
-              if (Number.isSafeInteger(chunkNumber) && !call?.saveId) {
-                failure ||= `${tool} 缺少本段有效的 externalId`;
-                return;
-              }
-              const receipt = call && ['completed', 'success', 'succeeded'].includes(status)
-                && memoryOrganizerSaveResult(tool, event.result ?? event.output ?? event.content);
-              if (!receipt) {
-                failure ||= failedSaves.get(call?.saveId) || `${tool} 返回值无法确认 A_Memorix 是否接收写入`;
-              } else {
-                memoryWrites += 1;
-                newMemories += receipt.stored;
-                failedSaves.delete(call.saveId);
-                for (const [failedKey, failedMsg] of failedSaves) {
-                  if (!failedKey.startsWith(itemPrefix)) failedSaves.delete(failedKey);
+              tracker.recordFailure(tool, { callId, saveId: call?.saveId ?? '', readId: call?.readId ?? '', message });
+            } else if (tool.startsWith('memory_') && !isError) {
+              const completedOk = ['completed', 'success', 'succeeded'].includes(status);
+              if (isOrganizerWrite(tool)) {
+                if (Number.isSafeInteger(chunkNumber) && !call?.saveId) {
+                  failure ||= `${tool} 缺少本段有效的 externalId`;
+                  return;
                 }
+                const receipt = call && completedOk
+                  && memoryOrganizerSaveResult(tool, event.result ?? event.output ?? event.content);
+                if (!receipt) {
+                  failure ||= tracker.saveFailure(call?.saveId) || `${tool} 返回值无法确认 A_Memorix 是否接收写入`;
+                } else {
+                  memoryWrites += 1;
+                  newMemories += receipt.stored;
+                  tracker.recordSuccess(tool, { callOrder: call.callOrder, saveId: call.saveId });
+                }
+              } else if (call && completedOk) {
+                tracker.recordSuccess(tool, { callOrder: call.callOrder, readId: call.readId });
               }
             }
           } else if (eventType === 'final') {
@@ -2549,7 +2550,7 @@ async function main() {
           clearTimeout(deadline);
           if (lineBuffer.trim()) parseEvent(lineBuffer);
           void syncOrganizerUsage(sessionId, modelSelection);
-          if (failedSaves.size) failure ||= failedSaves.values().next().value;
+          if (tracker.hasFailures()) failure ||= tracker.firstFailure();
           if ([...toolCalls.values()].some(call => isOrganizerWrite(call.tool))) failure ||= '缺少记忆写入回执';
           if (!sessionId) failure ||= `DSH headless 未创建或恢复整理 Session（退出码 ${code}）`;
           if (code !== 0) failure ||= `DSH headless 退出码 ${code}`;
@@ -2588,6 +2589,55 @@ async function main() {
 
   function isOrganizerWrite(tool) {
     return tool === 'memory_save' || tool === 'memory_replace';
+  }
+
+  function createOrganizerToolFailureTracker() {
+    let order = 0;
+    const failedSearches = new Map();
+    const failedReads = new Map();
+    const failedSaves = new Map();
+    let unrecoverable = '';
+
+    return {
+      nextOrder: () => ++order,
+      readTargetKey: (tool, args) => (tool === 'memory_read'
+        ? String(args?.memoryId ?? args?.externalId ?? '').trim() : ''),
+      recordFailure(tool, { callId = '', saveId = '', readId = '', message }) {
+        const failureOrder = ++order;
+        if (isOrganizerWrite(tool)) {
+          failedSaves.set(saveId || `untagged:${callId || failedSaves.size}`, message);
+        } else if (tool === 'memory_search') {
+          failedSearches.set(failureOrder, message);
+        } else if (tool === 'memory_read') {
+          failedReads.set(readId ? `id:${readId}` : `untagged:${callId || failedReads.size}`, { failureOrder, message });
+        } else {
+          unrecoverable ||= message;
+        }
+      },
+      recordSuccess(tool, { callOrder = 0, saveId = '', readId = '' }) {
+        if (tool === 'memory_search' && callOrder > 0) {
+          for (const failureOrder of [...failedSearches.keys()]) {
+            if (failureOrder < callOrder) failedSearches.delete(failureOrder);
+          }
+        } else if (tool === 'memory_read' && readId && callOrder > 0) {
+          const readKey = `id:${readId}`;
+          const prior = failedReads.get(readKey);
+          if (prior && callOrder > prior.failureOrder) failedReads.delete(readKey);
+        } else if (isOrganizerWrite(tool)) {
+          if (saveId) failedSaves.delete(saveId);
+          for (const key of [...failedSaves.keys()]) {
+            if (key.startsWith('untagged:')) failedSaves.delete(key);
+          }
+        }
+      },
+      saveFailure: (saveId) => (saveId ? failedSaves.get(saveId) || '' : ''),
+      hasFailures: () => Boolean(unrecoverable || failedSearches.size || failedReads.size || failedSaves.size),
+      firstFailure: () => unrecoverable
+        || failedSearches.values().next().value
+        || failedReads.values().next().value?.message
+        || failedSaves.values().next().value
+        || ''
+    };
   }
 
   function memoryOrganizerSaveResult(tool, content) {
@@ -2714,14 +2764,14 @@ async function main() {
     const externalIdPattern = new RegExp(`^qq-bridge:organizer:${escapedJobId}:chunk-(\\d+):item-\\d+$`);
     const confirmedTurns = new Set();
     const saveResultsByChunk = new Map();
+    const turnFailures = new Map();
     let activeTurn = null;
 
     const inspectTurn = (turn) => {
-      if (!turn || turn.reason !== 'completed') return;
+      if (!turn) return;
       let taskChunk = null;
       let finalText = '';
-      let memoryToolFailure = false;
-      const failedSaves = new Set();
+      const tracker = createOrganizerToolFailureTracker();
       const pendingCalls = new Map();
       const unconfirmedSaveChunks = new Set();
       const writesInTurn = new Map();
@@ -2733,7 +2783,10 @@ async function main() {
             const match = content.match(/当前是第\s*(\d+)\s*\/\s*(\d+)\s*段/);
             if (match && Number(match[2]) === chunkCount) taskChunk = Number(match[1]);
           }
-        } else if (event?.type === 'step/start') {
+          continue;
+        }
+        if (turn.reason !== 'completed') continue;
+        if (event?.type === 'step/start') {
           finalText = '';
         } else if (event?.type === 'assistant/message') {
           // Match the headless CLI's final answer. Reasoning and tool calls
@@ -2755,7 +2808,9 @@ async function main() {
             const match = String(args?.externalId ?? '').match(externalIdPattern);
             if (match) { chunk = Number(match[1]); saveId = args.externalId; }
           }
-          if (callId) pendingCalls.set(callId, { name, chunk, saveId });
+          const readId = tracker.readTargetKey(name, args);
+          const callOrder = tracker.nextOrder();
+          if (callId) pendingCalls.set(callId, { name, chunk, saveId, readId, callOrder });
         } else if (event?.type === 'tool/result') {
           const message = data.message ?? {};
           const callId = String(message.toolCallId ?? message.source?.callId ?? data.callId ?? '').trim();
@@ -2765,15 +2820,22 @@ async function main() {
           const failed = message.isError === true || data.error != null
             || (Array.isArray(message.content) && message.content.some((block) => block?.isError === true));
           if (failed) {
-            if (isOrganizerWrite(call.name)) {
-              if (call.saveId && call.chunk === taskChunk) failedSaves.add(call.saveId);
-              else failedSaves.add(`untagged:${callId || failedSaves.size}`);
-            } else {
-              memoryToolFailure = true;
-            }
+            const detailText = memoryOrganizerMessageText(data.error ?? message.content)
+              || (typeof data.error?.message === 'string' ? data.error.message : '');
+            const detail = redactSensitiveText(detailText).trim().slice(0, 300);
+            const errMsg = `记忆工具 ${call.name} 返回失败${detail ? `：${detail}` : ''}`;
+            tracker.recordFailure(call.name, {
+              callId,
+              saveId: call.saveId && call.chunk === taskChunk ? call.saveId : '',
+              readId: call.readId,
+              message: errMsg
+            });
             continue;
           }
-          if (!isOrganizerWrite(call.name)) continue;
+          if (!isOrganizerWrite(call.name)) {
+            tracker.recordSuccess(call.name, { callOrder: call.callOrder, readId: call.readId });
+            continue;
+          }
           const saved = memoryOrganizerSaveResult(call.name, message.content);
           if (!saved) {
             if (Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
@@ -2783,32 +2845,49 @@ async function main() {
             if (taskChunk !== null) unconfirmedSaveChunks.add(taskChunk);
             continue;
           }
-          failedSaves.delete(call.saveId);
-          for (const key of failedSaves) {
-            if (key.startsWith('untagged:')) failedSaves.delete(key);
-          }
+          tracker.recordSuccess(call.name, { callOrder: call.callOrder, saveId: call.saveId });
           if (!saveResultsByChunk.has(call.chunk)) saveResultsByChunk.set(call.chunk, []);
           saveResultsByChunk.get(call.chunk).push(saved);
           if (!writesInTurn.has(call.chunk)) writesInTurn.set(call.chunk, []);
           writesInTurn.get(call.chunk).push(saved);
         }
       }
+      if (turn.reason !== 'completed') {
+        if (taskChunk !== null && taskChunk >= 1 && taskChunk <= chunkCount && !confirmedTurns.has(taskChunk)) {
+          turnFailures.set(taskChunk, `整理回合未正常完成（${turn.reason || '缺少完成状态'}）`);
+        }
+        return;
+      }
       for (const call of pendingCalls.values()) {
         if (isOrganizerWrite(call.name) && Number.isSafeInteger(call.chunk)) unconfirmedSaveChunks.add(call.chunk);
       }
-      if (!finalText.includes('MEMORY_ORGANIZER_DONE') || memoryToolFailure || failedSaves.size) return;
       const noChange = finalText.includes('MEMORY_ORGANIZER_NO_CHANGE');
-      for (const [chunk, writes] of writesInTurn) {
-        if (taskChunk !== chunk || unconfirmedSaveChunks.has(chunk)) continue;
-        const newMemories = writes.reduce((sum, item) => sum + item.stored, 0);
-        if (noChange && newMemories > 0) continue;
-        confirmedTurns.add(chunk);
+      const hasPendingWrite = [...pendingCalls.values()].some((call) => isOrganizerWrite(call.name));
+      if (finalText.includes('MEMORY_ORGANIZER_DONE') && !tracker.hasFailures()) {
+        for (const [chunk, writes] of writesInTurn) {
+          if (taskChunk !== chunk || unconfirmedSaveChunks.has(chunk)) continue;
+          const newMemories = writes.reduce((sum, item) => sum + item.stored, 0);
+          if (noChange && newMemories > 0) continue;
+          confirmedTurns.add(chunk);
+          turnFailures.delete(chunk);
+        }
+        if (taskChunk !== null && taskChunk >= 1 && taskChunk <= chunkCount
+            && noChange && !unconfirmedSaveChunks.has(taskChunk)
+            && !hasPendingWrite && !writesInTurn.has(taskChunk)) {
+          confirmedTurns.add(taskChunk);
+          turnFailures.delete(taskChunk);
+        }
       }
-      if (taskChunk !== null && taskChunk >= 1 && taskChunk <= chunkCount
-          && noChange && !unconfirmedSaveChunks.has(taskChunk)
-          && ![...pendingCalls.values()].some((call) => isOrganizerWrite(call.name))
-          && !writesInTurn.has(taskChunk)) {
-        confirmedTurns.add(taskChunk);
+      if (taskChunk !== null && taskChunk >= 1 && taskChunk <= chunkCount && !confirmedTurns.has(taskChunk)) {
+        const writes = writesInTurn.get(taskChunk) ?? [];
+        const newMemories = writes.reduce((sum, item) => sum + item.stored, 0);
+        const reason = tracker.firstFailure()
+          || (hasPendingWrite ? '缺少记忆写入回执' : '')
+          || (unconfirmedSaveChunks.has(taskChunk) ? '记忆写入缺少有效回执或 externalId' : '')
+          || (!finalText.includes('MEMORY_ORGANIZER_DONE') ? '整理模型未返回完成标记' : '')
+          || (noChange && newMemories > 0 ? '整理模型同时报告无变化和新增记忆' : '')
+          || '没有确认记忆写入，也没有确认本段无需写入';
+        turnFailures.set(taskChunk, reason);
       }
     };
 
@@ -2836,7 +2915,7 @@ async function main() {
         newMemories: writes.reduce((sum, item) => sum + item.stored, 0)
       });
     }
-    return { receipts, needsRotation, sessionTurnCount, lastPreset };
+    return { receipts, failures: turnFailures, needsRotation, sessionTurnCount, lastPreset };
   }
 
   function chunkMemoryOrganizerEvents(events, maxBytes = 45_000) {
@@ -2981,9 +3060,12 @@ async function main() {
           activeHostOrganizerSessionId = null;
           await syncOrganizerUsage(organizerSessionId, activeJob.modelSelection);
         }
-        const { receipts } = await readMemoryOrganizerCompletedChunks([organizerSessionId], activeJob.jobId, chunks.length);
+        const { receipts, failures } = await readMemoryOrganizerCompletedChunks([organizerSessionId], activeJob.jobId, chunks.length);
         const receipt = receipts.get(index + 1);
-        if (!receipt) throw new Error('整理回合缺少可核对的持久完成记录');
+        if (!receipt) {
+          const detail = failures?.get(index + 1);
+          throw new Error(`整理回合缺少可核对的持久完成记录${detail ? `：${detail}` : ''}`);
+        }
         outcome = { sessionId: organizerSessionId, ...receipt };
       } else {
         outcome = await runMemoryOrganizerHeadless(activeJob, task, activeJob.modelSelection, organizerSessionId, onWrite, index + 1);

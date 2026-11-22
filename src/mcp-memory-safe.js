@@ -80,7 +80,7 @@ export function registerMemoryTools(register, organizerMode) {
     'memory_search',
     '按自然语言检索 A_Memorix 长期记忆。交流涉及过去的共同经历、约定或偏好，或对方提到“上次”“还记得吗”等内容时，可以结合当前话题、人物和场景主动检索，必要时用 memory_read 核对原记录与来源；不必每条消息都查。没有命中或来源不清不代表事情不存在，也不据此编造。来源可筛选为 qq（从 QQ 对话中读到并判断值得保留的内容）或 assistant（数字角色自身经历、发现与待办；assistant 是现有数据来源标记）。记忆用于帮助理解，不代表可在当前聊天中直接披露其他场合的内容。',
     {
-      query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；仅按时间检索时可省略'),
+      query: z.string().max(2000).optional().describe('用于检索的自然语言问题或关键词；普通/混合检索（SEARCH_MODE_SEARCH / SEARCH_MODE_HYBRID）必填，仅按时间检索（SEARCH_MODE_TIME）时可省略'),
       limit: z.number().int().min(1).max(20).optional().describe('最多返回条数，默认 8'),
       origin: z.enum(['qq', 'assistant']).optional().describe('按来源筛选；省略时搜索两类来源'),
       mode: z.enum(['SEARCH_MODE_SEARCH', 'SEARCH_MODE_TIME', 'SEARCH_MODE_HYBRID']).optional().describe('检索方式：无时间范围的普通内容检索默认 SEARCH_MODE_SEARCH；SEARCH_MODE_TIME 和 SEARCH_MODE_HYBRID 必须至少提供 timeStart 或 timeEnd，前者按时间检索，后者结合关键词与时间范围'),
@@ -88,7 +88,13 @@ export function registerMemoryTools(register, organizerMode) {
       timeEnd: z.string().optional().describe('可选 ISO 结束时间')
     },
     async (args, sessionId) => {
-      try { return toolResult(await memoryApi('search', args, sessionId)); } catch (error) { return toolError(error); }
+      try {
+        const mode = args.mode || 'SEARCH_MODE_SEARCH';
+        if (mode !== 'SEARCH_MODE_TIME' && !String(args.query ?? '').trim()) {
+          throw new Error('SEARCH_MODE_SEARCH 和 SEARCH_MODE_HYBRID 必须提供非空 query；仅按时间检索请使用 SEARCH_MODE_TIME 并提供 timeStart 或 timeEnd');
+        }
+        return toolResult(await memoryApi('search', args, sessionId));
+      } catch (error) { return toolError(error); }
     }
   );
 

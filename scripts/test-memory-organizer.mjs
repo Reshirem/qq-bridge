@@ -154,13 +154,19 @@ test('only a confirmed missing-memory response becomes null; infrastructure and 
   assert.equal((await gateway.read({ memoryId: 'real-id' })).content, 'fixture content');
 });
 
-test('memory MCP returns an explicit not-found result and preserves actual read failures', async t => {
+test('memory MCP returns an explicit not-found result, validates empty queries locally, and preserves actual read failures', async t => {
   const directory = fixture(t);
-  let result = null, failure = false;
+  let result = null, failure = false, searchCalls = 0;
   const server = http.createServer(async (req, res) => {
-    assert.equal(req.url, '/api/desktop-agent/memory/read');
     assert.equal(req.headers['x-agent-token'], 'a'.repeat(64));
     for await (const chunk of req) { /* drain the synthetic request */ }
+    if (req.url === '/api/desktop-agent/memory/search') {
+      searchCalls += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, result: { summary: 'ok', hits: [] } }));
+      return;
+    }
+    assert.equal(req.url, '/api/desktop-agent/memory/read');
     res.writeHead(failure ? 502 : 200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(failure ? { ok: false, error: 'fixture Gateway HTTP 503' } : { ok: true, result }));
   });
@@ -174,6 +180,16 @@ test('memory MCP returns an explicit not-found result and preserves actual read 
   const client = new Client({ name: 'memory-regression-fixture', version: '1.0.0' });
   try {
     await client.connect(transport);
+    for (const args of [{}, { mode: 'SEARCH_MODE_HYBRID', timeStart: '2026-11-20T00:00:00Z', query: '   ' }]) {
+      const emptySearch = await client.callTool({ name: 'memory_search', arguments: args });
+      assert.equal(emptySearch.isError, true);
+      assert.match(emptySearch.content[0].text, /必须提供非空 query/);
+    }
+    assert.equal(searchCalls, 0, 'empty queries must be rejected locally without hitting the bridge');
+    assert.notEqual((await client.callTool({ name: 'memory_search', arguments: { query: '关键词' } })).isError, true);
+    assert.notEqual((await client.callTool({ name: 'memory_search', arguments: { mode: 'SEARCH_MODE_TIME', timeStart: '2026-11-20T00:00:00Z' } })).isError, true);
+    assert.equal(searchCalls, 2);
+
     const miss = await client.callTool({ name: 'memory_read', arguments: { memoryId: 'see summary' } });
     assert.equal(miss.isError, undefined);
     assert.equal(JSON.parse(miss.content[0].text).found, false);
@@ -854,5 +870,134 @@ test('receipt uses the final visible answer and ignores tentative markers in rea
     const { receipts } = await h.readMemoryOrganizerCompletedChunks('fixture-session', 'fixture', 2);
     assert.deepEqual([...receipts.keys()], [1]);
     assert.deepEqual({ ...receipts.get(1) }, { memoryWrites: 1, newMemories: 1 });
+  } finally { await h.close(); }
+});
+
+test('read-only tool failures recover only on subsequent same-turn retries, never from parallel siblings or forget errors', async () => {
+  const events = [];
+  const h = await bridgeHarness({ globals: { spawn: spawnFixture(events) } });
+  const job = { jobId: 'fixture' };
+  const externalId = 'qq-bridge:organizer:fixture:chunk-1:item-1';
+  const prefix = 'mcp__qq-memory-organizer__';
+  const saveResult = JSON.stringify({ storedIds: ['saved-1'], skippedIds: [] });
+
+  function buildScenario(steps) {
+    const records = [];
+    const push = (type, data) => records.push({ seq: records.length, type, data });
+    events.splice(0, events.length, { type: 'session', sessionId: 'fixture-session' }, { type: 'status', phase: 'turn_start' });
+    push('turn/start', { turn: 1 });
+    push('user/message', { content: '整理任务 fixture，当前是第 1/1 段' });
+    for (const step of steps) {
+      if (step.kind === 'call') {
+        events.push({ type: 'tool_call', callId: step.callId, tool: `${prefix}${step.tool}`, input: step.input });
+        push('tool/call', { callId: step.callId, name: `${prefix}${step.tool}`, arguments: JSON.stringify(step.input) });
+      } else {
+        events.push({
+          type: 'tool_result', callId: step.callId,
+          status: step.error ? 'failed' : 'completed',
+          result: step.result
+        });
+        push('tool/result', {
+          message: { source: { callId: step.callId }, isError: !!step.error, content: [{ type: 'text', text: step.result }] }
+        });
+      }
+    }
+    const reason = { kind: 'completed' };
+    events.push({ type: 'status', phase: 'turn_end', reason }, { type: 'final', text: 'MEMORY_ORGANIZER_DONE', reason });
+    push('assistant/message', { content: 'MEMORY_ORGANIZER_DONE' });
+    push('turn/end', { turn: 1, reason });
+    return records;
+  }
+
+  async function evaluate(steps) {
+    const records = buildScenario(steps);
+    h.api.callUnary = async method => ({ result: { ok: true, value: method === 'session/projections'
+      ? { asOfSeq: records.length - 1, values: {} } : { records } } });
+    let headlessError = null;
+    let headlessOutcome = null;
+    try {
+      headlessOutcome = await h.runMemoryOrganizerHeadless(job, 'fixture', model, 'fixture-session', undefined, 1);
+    } catch (error) {
+      headlessError = error;
+    }
+    const replay = await h.readMemoryOrganizerCompletedChunks(['fixture-session'], job.jobId, 1);
+    return { headlessError, headlessOutcome, replay };
+  }
+
+  try {
+    // 1. Sequential retry after failed memory_search recovers cleanly and saves.
+    const seqRetry = await evaluate([
+      { kind: 'call', callId: 's1', tool: 'memory_search', input: {} },
+      { kind: 'result', callId: 's1', error: true, result: 'HTTP 503：必须提供 query' },
+      { kind: 'call', callId: 's2', tool: 'memory_search', input: { query: '关键词' } },
+      { kind: 'result', callId: 's2', error: false, result: '{"summary":"ok","hits":[]}' },
+      { kind: 'call', callId: 'w1', tool: 'memory_save', input: { externalId } },
+      { kind: 'result', callId: 'w1', error: false, result: saveResult }
+    ]);
+    assert.equal(seqRetry.headlessError, null);
+    assert.equal(seqRetry.headlessOutcome.newMemories, 1);
+    assert.equal(seqRetry.replay.receipts.has(1), true);
+    assert.equal(seqRetry.replay.failures.has(1), false);
+
+    // 2. Parallel sibling memory_search success must NOT clear a failure from the same batch.
+    const parallelSearch = await evaluate([
+      { kind: 'call', callId: 'p1', tool: 'memory_search', input: {} },
+      { kind: 'call', callId: 'p2', tool: 'memory_search', input: { query: '并行查询' } },
+      { kind: 'result', callId: 'p1', error: true, result: '必须提供 query' },
+      { kind: 'result', callId: 'p2', error: false, result: '{"summary":"ok","hits":[]}' },
+      { kind: 'call', callId: 'w1', tool: 'memory_save', input: { externalId } },
+      { kind: 'result', callId: 'w1', error: false, result: saveResult }
+    ]);
+    assert.match(parallelSearch.headlessError?.message ?? '', /memory_search 返回失败/);
+    assert.equal(parallelSearch.replay.receipts.has(1), false);
+    assert.match(parallelSearch.replay.failures.get(1) ?? '', /memory_search 返回失败/);
+
+    // 3. Unretried memory_search failure remains blocked with diagnostic reason.
+    const unretriedSearch = await evaluate([
+      { kind: 'call', callId: 's1', tool: 'memory_search', input: {} },
+      { kind: 'result', callId: 's1', error: true, result: 'gateway down' },
+      { kind: 'call', callId: 'w1', tool: 'memory_save', input: { externalId } },
+      { kind: 'result', callId: 'w1', error: false, result: saveResult }
+    ]);
+    assert.match(unretriedSearch.headlessError?.message ?? '', /memory_search 返回失败/);
+    assert.equal(unretriedSearch.replay.receipts.has(1), false);
+    assert.match(unretriedSearch.replay.failures.get(1) ?? '', /gateway down/);
+
+    // 4. memory_read failure recovers ONLY on a subsequent retry of the exact same memoryId.
+    const readRecovered = await evaluate([
+      { kind: 'call', callId: 'r1', tool: 'memory_read', input: { memoryId: 'mem-1' } },
+      { kind: 'result', callId: 'r1', error: true, result: 'HTTP 503' },
+      { kind: 'call', callId: 'r2', tool: 'memory_read', input: { memoryId: 'mem-1' } },
+      { kind: 'result', callId: 'r2', error: false, result: '{"found":false}' },
+      { kind: 'call', callId: 'w1', tool: 'memory_save', input: { externalId } },
+      { kind: 'result', callId: 'w1', error: false, result: saveResult }
+    ]);
+    assert.equal(readRecovered.headlessError, null);
+    assert.equal(readRecovered.replay.receipts.has(1), true);
+
+    const readWrongId = await evaluate([
+      { kind: 'call', callId: 'r1', tool: 'memory_read', input: { memoryId: 'mem-1' } },
+      { kind: 'result', callId: 'r1', error: true, result: 'HTTP 503' },
+      { kind: 'call', callId: 'r2', tool: 'memory_read', input: { memoryId: 'mem-2' } },
+      { kind: 'result', callId: 'r2', error: false, result: '{"found":false}' },
+      { kind: 'call', callId: 'w1', tool: 'memory_save', input: { externalId } },
+      { kind: 'result', callId: 'w1', error: false, result: saveResult }
+    ]);
+    assert.match(readWrongId.headlessError?.message ?? '', /memory_read 返回失败/);
+    assert.equal(readWrongId.replay.receipts.has(1), false);
+    assert.match(readWrongId.replay.failures.get(1) ?? '', /memory_read 返回失败/);
+
+    // 5. memory_forget failure is never cleared even if search/save later succeed.
+    const forgetFailed = await evaluate([
+      { kind: 'call', callId: 'f1', tool: 'memory_forget', input: { memoryId: 'mem-1' } },
+      { kind: 'result', callId: 'f1', error: true, result: 'delete denied' },
+      { kind: 'call', callId: 's1', tool: 'memory_search', input: { query: '关键词' } },
+      { kind: 'result', callId: 's1', error: false, result: '{"summary":"ok","hits":[]}' },
+      { kind: 'call', callId: 'w1', tool: 'memory_save', input: { externalId } },
+      { kind: 'result', callId: 'w1', error: false, result: saveResult }
+    ]);
+    assert.match(forgetFailed.headlessError?.message ?? '', /memory_forget 返回失败/);
+    assert.equal(forgetFailed.replay.receipts.has(1), false);
+    assert.match(forgetFailed.replay.failures.get(1) ?? '', /memory_forget 返回失败/);
   } finally { await h.close(); }
 });
