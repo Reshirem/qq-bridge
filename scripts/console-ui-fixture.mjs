@@ -124,6 +124,7 @@ export function makeFixtureState() {
     buffers: [
       { key: 'group:123456789', name: '示例群聊', unreadCount: 2, attention: 'queued', lastIncomingAt: Date.now(), lastAiReplyAt: Date.now() - 120000 },
       { key: 'private:100001', name: '示例好友', unreadCount: 0, attention: '', lastIncomingAt: Date.now() - 60000, lastAiReplyAt: 0 },
+      { key: 'group:100003', name: '读书小组', unreadCount: 1, attention: '', lastIncomingAt: Date.now() - 90000, lastAiReplyAt: 0 },
     ],
     toolLog: [
       { time: timestamp, key: 'group:123456789', tool: 'qq_get_unread_messages', type: 'call', args: JSON.stringify({ key: 'group:123456789', limit: 20 }) },

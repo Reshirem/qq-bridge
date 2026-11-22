@@ -518,8 +518,23 @@
 <section id="section-social-v2" data-page="social-v2" hidden class="card span-all">
   <div class="memory-heading"><div><h2 id="qqSourcesTitle">消息来源</h2><p id="qqSourcesHint" class="meta"></p></div><button id="v2StatesList" class="small">刷新来源与状态</button></div>
   <div id="v2Summary" class="learning-summary"></div>
-  <p id="v2ActivityStatus" class="meta" role="status">正在读取…</p>
+  <div id="qqSourceTools" hidden>
+    <div class="qq-source-toolbar">
+      <div id="qqSourceFilters" role="group" aria-label="筛选消息来源">
+        <button type="button" data-filter="all" aria-pressed="true">全部来源</button>
+        <button type="button" data-filter="unread" aria-pressed="false">有未读</button>
+        <button type="button" data-filter="attention" aria-pressed="false">待处理提醒</button>
+      </div>
+      <label class="sr-only" for="qqSourceSearch">搜索来源名称、群号或 QQ 号</label>
+      <input id="qqSourceSearch" type="search" placeholder="搜索名称、群号或 QQ 号" autocomplete="off">
+    </div>
+    <div class="qq-source-feedback">
+      <span id="qqSourceCount" class="meta" role="status"></span>
+      <button id="qqSourceClear" type="button" hidden>清除筛选</button>
+    </div>
+  </div>
   <div id="v2AllStatesOutput" class="tool-log-table"></div>
+  <p id="v2ActivityStatus" class="meta" role="status">正在读取…</p>
   <details class="settings-group"><summary id="v2ResetTitle">缓存管理</summary>
     <p id="v2ResetHint" class="meta"></p>
     <button id="v2ResetBtn" disabled class="small danger">清空缓存</button><span id="v2ResetMsg" class="meta" role="status"></span>

@@ -534,9 +534,26 @@ form[id^="qq"] .knowledge-form { margin-bottom: 12px; }
 #v2Summary { display:grid; grid-template-columns:repeat(auto-fit, minmax(116px, 1fr)); }
 #v2Summary span { background:var(--canvas); font-size:12px; color:var(--muted); }
 #v2Summary b { display:block; margin-top:6px; color:var(--text); font-size:20px; }
+.qq-source-toolbar,.qq-source-feedback { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px }
+.qq-source-toolbar { justify-content:space-between }
+#qqSourceFilters { display:inline-flex; padding:3px; border-radius:8px; background:var(--canvas) }
+#qqSourceFilters button { padding:7px 10px; border-color:transparent; background:transparent; color:var(--muted) }
+#qqSourceFilters button[aria-pressed=true] { background:var(--selection); border-color:var(--teal); color:var(--green); font-weight:600 }
+#qqSourceSearch { width: min(100%, 245px) }
+.qq-source-feedback { min-height:32px; margin-top:6px }
+#qqSourceClear { padding:4px; border:0; color:var(--green); text-decoration:underline; font-size:12px }
+#v2AllStatesOutput { margin-top:0 }
 #v2AllStatesOutput table { width:100%; min-width:0; table-layout:auto; }
-#v2AllStatesOutput small { display:block; overflow-wrap:anywhere; }
+#v2AllStatesOutput strong,#v2AllStatesOutput small { overflow-wrap:anywhere }
+#v2AllStatesOutput small { display:block; color:var(--muted) }
+.qq-unread-count { display:inline-block; min-width:2em; padding:0 5px; border-radius:5px; text-align:center; color:var(--green); background:var(--selection) }
+#v2AllStatesOutput tr:focus { outline:2px solid var(--green); outline-offset:-2px; background:var(--selection) }
 @media (max-width:640px) {
+  #v2Summary { grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 14px; margin:12px 0; padding:4px 10px; background:var(--canvas); border-radius:7px }
+  #v2Summary span { display:flex; align-items:baseline; justify-content:space-between; gap:6px; padding:5px 0; border:0; background:transparent }
+  #v2Summary span:first-child { grid-column:1 / -1; border-bottom:1px solid var(--line); border-radius:0 }
+  #v2Summary b { margin:0; font-size:14px }
+  #qqSourceSearch { width:100% }
   #v2AllStatesOutput table, #v2AllStatesOutput tbody { display:block; }
   #v2AllStatesOutput thead { display:none; }
   #v2AllStatesOutput tr { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); padding:10px; border-bottom:1px solid var(--line); }

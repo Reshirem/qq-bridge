@@ -1533,6 +1533,12 @@ for (const [id, fields] of Object.entries(qqSettingsForms)) {
 }
 
 let qqDashboardRequest = 0;
+let qqSourceData;
+let qqSourceFilter = 'all';
+let qqSourceMarkup = '';
+const qqSourceSearch = document.getElementById('qqSourceSearch');
+const qqSourceFilters = document.getElementById('qqSourceFilters');
+const qqSourceClear = document.getElementById('qqSourceClear');
 let handledOverviewTarget = false;
 function takeOverviewTarget(page, key) {
   const url = new URL(location.href);
@@ -1540,6 +1546,77 @@ function takeOverviewTarget(page, key) {
   handledOverviewTarget = true;
   return url.searchParams.get(key);
 }
+
+function renderQQSources(targetKey = '') {
+  if (!qqSourceData) return;
+  const { conversations, backend } = qqSourceData;
+  const query = qqSourceSearch.value.trim().toLowerCase();
+  let rows = conversations.filter(row => {
+    if (qqSourceFilter === 'unread' && !row.unreadCount) return false;
+    if (qqSourceFilter === 'attention' && !row.attention) return false;
+    return row.key.toLowerCase().includes(query) || (row.name || '').toLowerCase().includes(query);
+  });
+  // An overview link may point outside the filters left by the previous visit.
+  if (targetKey && conversations.some(row => row.key === targetKey) && !rows.some(row => row.key === targetKey)) {
+    qqSourceSearch.value = '';
+    qqSourceFilter = 'all';
+    rows = conversations;
+  }
+  qqSourceFilters.querySelectorAll('button').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.filter === qqSourceFilter));
+  });
+  qqSourceClear.hidden = !qqSourceSearch.value && qqSourceFilter === 'all';
+  const count = document.getElementById('qqSourceCount');
+  const countText = !qqSourceClear.hidden
+    ? '显示 ' + rows.length + ' / ' + conversations.length + ' 个来源' : '共 ' + conversations.length + ' 个来源';
+  if (count.textContent !== countText) count.textContent = countText;
+  const when = value => value ? esc(new Date(value).toLocaleString()) : '—';
+  const headings = ['来源', '未读', '提醒', '最近来信', '最近回复'];
+  const cells = rows.map(row => {
+    const kind = row.key.startsWith('group:') ? '群聊' : '私聊';
+    const attention = { queued: '等待提交', unread: '等待阅读' }[row.attention] || '—';
+    const values = [
+      '<strong>' + esc(row.name || kind) + '</strong><small>' + esc(row.key) + '</small>',
+      row.unreadCount ? '<b class="qq-unread-count">' + esc(row.unreadCount) + '</b>' : '0',
+      attention, when(row.lastIncomingAt), when(row.lastAiReplyAt),
+    ];
+    return '<tr tabindex="-1" data-source="' + esc(row.key) + '">' + values.map((value, i) => '<td data-label="' + headings[i] + '">' + value + '</td>').join('') + '</tr>';
+  });
+  let markup;
+  if (cells.length) {
+    markup = '<table><thead><tr>' + headings.map(label => '<th scope="col">' + label + '</th>').join('') + '</tr></thead><tbody>' + cells.join('') + '</tbody></table>';
+  } else {
+    const empty = conversations.length ? '没有符合筛选条件的来源。'
+      : backend === 'native' ? '暂无提醒来源。收到符合提醒规则的来信后，会在这里显示。' : '暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。';
+    markup = '<p class="empty-state">' + empty + '</p>';
+  }
+  const output = document.getElementById('v2AllStatesOutput');
+  const previousFocus = document.activeElement.closest('#v2AllStatesOutput tr')?.dataset.source;
+  const changed = markup !== qqSourceMarkup;
+  if (changed) {
+    output.innerHTML = markup;
+    qqSourceMarkup = markup;
+  }
+  const focusKey = targetKey || (changed && previousFocus);
+  if (focusKey) {
+    const row = output.querySelector('[data-source="' + CSS.escape(focusKey) + '"]');
+    if (row) row.focus({ preventScroll: !targetKey });
+    else if (previousFocus) qqSourceSearch.focus({ preventScroll: true });
+  }
+}
+qqSourceSearch.addEventListener('input', () => renderQQSources());
+qqSourceFilters.addEventListener('click', event => {
+  const button = event.target.closest('button[data-filter]');
+  if (!button) return;
+  qqSourceFilter = button.dataset.filter;
+  renderQQSources();
+});
+qqSourceClear.addEventListener('click', () => {
+  qqSourceSearch.value = '';
+  qqSourceFilter = 'all';
+  renderQQSources();
+  qqSourceSearch.focus();
+});
 
 async function refreshQQDashboard(names = false) {
   const namesButton = document.getElementById('v2StatesList');
@@ -1565,25 +1642,9 @@ async function refreshQQDashboard(names = false) {
     const metrics = [['QQ 提醒', mode], ['缓冲来源', rows.length], ['有未读的来源', rows.filter(row => row.unreadCount > 0).length], [data.backend === 'native' ? '未读提醒' : '未读消息', unread], ['待处理提醒来源', rows.filter(row => row.attention).length]];
     document.getElementById('v2Summary').innerHTML = metrics.map(([label, value]) => '<span>' + label + ' <b>' + esc(value) + '</b></span>').join('');
     status.textContent = (data.nameError || '') + (asleep ? '睡眠期间暂停提醒。' : '') + '更新于 ' + new Date().toLocaleTimeString();
-    const when = value => value ? esc(new Date(value).toLocaleString()) : '—';
-    const headings = ['来源', '未读', '提醒', '最近来信', '最近回复'];
-    const cells = rows.map(row => {
-      const kind = row.key.startsWith('group:') ? '群聊' : '私聊';
-      const attention = { queued: '等待提交', unread: '等待阅读' }[row.attention] || '—';
-      const values = [
-        '<strong>' + esc(row.name || kind) + '</strong><small>' + esc(row.key) + '</small>',
-        esc(row.unreadCount), attention, when(row.lastIncomingAt), when(row.lastAiReplyAt),
-      ];
-      return '<tr>' + values.map((value, i) => '<td data-label="' + headings[i] + '">' + value + '</td>').join('') + '</tr>';
-    });
-    document.getElementById('v2AllStatesOutput').innerHTML = cells.length
-      ? '<table><thead><tr>' + headings.map(label => '<th>' + label + '</th>').join('') + '</tr></thead><tbody>' + cells.join('') + '</tbody></table>'
-      : '<p class="meta">' + (native ? '暂无提醒来源。收到符合提醒规则的来信后，会在这里显示。' : '暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。') + '</p>';
-    const source = takeOverviewTarget('social-v2', 'source');
-    if (source) {
-      const tr = document.querySelectorAll('#v2AllStatesOutput tbody tr')[rows.findIndex(row => row.key === source)];
-      if (tr) { tr.tabIndex = -1; tr.focus(); }
-    }
+    qqSourceData = { conversations: rows, backend: data.backend };
+    document.getElementById('qqSourceTools').hidden = false;
+    renderQQSources(takeOverviewTarget('social-v2', 'source'));
   } catch (error) { if (request === qqDashboardRequest) status.textContent = '读取缓冲状态失败：' + error.message; }
   finally { if (names) namesButton.disabled = false; }
 }
