@@ -8,7 +8,7 @@
 | --- | --- |
 | `src/` | 桥接运行时、DSH/桌面 QQ 独立通道/OneBot 客户端、MCP 服务与独立辅助模块 |
 | `dsh/agent-presets/` | 唯一全局 `desktop-agent` preset 及固定前缀模块的权威源 |
-| `plugins/` | `qq-agent-presets` bundle：主会话与后台分组 preset patch、工具守卫、上下文压缩钩子、DSH 纳管 MCP、`ownerQQ` 设置及可选 Maa-Agent 接入 |
+| `plugins/` | `qq-agent-presets` bundle：主会话与后台分组 preset patch、旧记忆回顾专用入口 `memory-curator.mjs`、后台模型选择命令 `background-model.mjs`、工具守卫、上下文压缩钩子、DSH 纳管 MCP、`ownerQQ` 设置及可选 Maa-Agent 接入 |
 | `public/` | 桥接本地控制台页面（运行总览、主会话、QQ 消息、长期记忆、学习与素材、令牌与花费、系统运维） |
 | `roles/` | 可由管理员管理的人格卡；格式见 `roles/README.md` |
 | `scripts/` | 离线回归脚本、DSH 安装/核验脚本、桌面 QQ 原生读取器与 Frida 探针、A_Memorix 部署脚本和辅助工具 |

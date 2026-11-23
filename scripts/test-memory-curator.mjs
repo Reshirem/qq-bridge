@@ -99,7 +99,7 @@ test('reader rejects repeated cursors and the curator preset has no tool capabil
   await assert.rejects(readCuratorInventory(async()=>({hits:[],nextCursor:'same'})), /游标重复/);
   const presets = yaml.load(fs.readFileSync(new URL('../plugins/qq-agent-presets/presets/background.patch.yml',import.meta.url),'utf8'));
   const curator = presets[0].insert.find(p=>p.config.id==='memory-curator');
-  assert.equal(curator.config.plugins[0].config.kind,'curator');
+  assert.equal(curator.config.plugins[0].name,'qq-agent-presets/memory-curator.mjs');
   const patch = yaml.load(learningPatch({mode:'curator',model:{provider:'test',model:'test'}}));
   assert.ok(patch.some(row=>row.insert?.some(p=>p.name.endsWith('/curator-tool-guard.mjs'))));
   const tools = { restrict(opts){assert.deepEqual(opts.allow,[])}, guard(check){assert.ok(check({name:'memory_save'}))} };

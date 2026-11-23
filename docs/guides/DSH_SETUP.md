@@ -92,7 +92,7 @@ DSH 使用自定义根目录时，在同一 PowerShell 窗口先设置 `$env:DSH
 
 脚本会：
 
-1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，连同后台任务预设（`presets/background.patch.yml` 中的 `memory-organizer`、`chat-learning`、`market-analysis`）和用于 QQ 关系对象身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
+1. 从 `dsh/agent-presets/` 的权威源生成唯一 `desktop-agent` 的 bundle patch，连同后台任务预设（`presets/background.patch.yml` 中的 `memory-organizer`、`chat-learning`、`market-analysis`、`memory-curator`）和用于 QQ 关系对象身份标记的 `qq-agent-presets.ownerQQ` 设置层一并注册进同一个 `qq-agent-presets` bundle。
 2. 将 `mcp-qq` 和 `mcp-qq-memory` 两个条目写入目标 profile 的 `cordis.patch.yml`，通过 `qq-agent-presets/managed-mcp.mjs` 注册到宿主 MCP manager；显式 `--legacy-mcp` 时仍用旧 `dsh-mcp-client`。仅替换桥接自己的注册项，不覆盖其他服务或 manager 配置，并清理旧的 `mcp-snowluma`、`mcp-snowluma-host` 和 `mcp-web-search-safe` 注册。网页搜索使用 DSH 自带工具。记忆 MCP 始终由桥接托管；只有配置并启用 A_Memorix 后才能实际读写。
 3. 从目标 profile 清理不再使用的 bundle，并注册合并后的 `qq-agent-presets`。
 4. 在 `plugins/qq-agent-presets` 源码目录安装 bundle 自身依赖，并检查自定义压缩模块语法；随后尝试执行 `dsh plugin --profile <profile> install` 安装 profile bundle。若 DSH CLI 不可用，会提示手动执行 profile 安装命令。
@@ -169,6 +169,7 @@ node scripts/test-audit-setup-guards.mjs
 - **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 已注册 `qq-agent-presets`，然后重启 DSH。
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否包含 `mcp-qq`、`mcp-qq-memory` 两个条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
 - **preset 未出现**：检查 `qq-agent-presets` bundle 是否注册并安装，再运行 `node scripts/build-agent-preset-patches.mjs --check`；修改源文件后需重新生成 patch 并重启 DSH。
+- **更新后后台会话报「未知的后台 preset」**。更新前已启动的 DSH Desktop 可能仍缓存旧插件。待当前角色回合结束后完全退出并重新打开 DSH Desktop，桥接重连后会在下一批任务重新尝试 Host。预建失败的批次会走隔离的 headless。可运行 `node scripts/test-background-presets-dsh.mjs`，用临时 profile 和模拟模型验证四个后台 preset。
 - **401 / Cookie 鉴权失败**：确认 `DSH_HOME` 指向当前 DSH 根目录且本机凭据可读。`dsh.authToken` 通常应留空；详见根目录 README 的配置说明。
 - **DSH Desktop 重启后桥接连不上**。默认启用端口自动发现，桥接会重新查找桌面版 API。如果配置了固定地址、禁用了自动发现或发现多个 API，核对 `dsh.baseUrl` 和 `dsh.autoDetectPort` 后重启桥接。
 - **SnowLuma 收不到 QQ 事件**：桥接只探测 OneBot 网关，不启动或控制 SnowLuma。检查 SnowLuma 自己的日志、QQ 登录状态以及 OneBot HTTP/WebSocket 配置。

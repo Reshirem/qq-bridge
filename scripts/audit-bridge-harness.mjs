@@ -203,7 +203,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   return {
     closeUnreadStore: () => { dshMcp.close(); tokenLedger.close(); closeQQUnreadStore(); }, sendStickerV2, startConsoleServer, refreshBridgeSettings, api, bot,
     syncStickerLibrary, getStickerImageData, visibleStickers,
-    learningWorker, runVisualLearning, runMemoryOrganizerQueue, runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, readMemoryOrganizerModel, memoryOrganizerPatchText,
+    learningWorker, runVisualLearning, analyzeCuratorGroup, refreshPresetList, runMemoryOrganizerQueue, runMemoryOrganizerHeadless, readMemoryOrganizerCompletedChunks, readMemoryOrganizerModel, memoryOrganizerPatchText,
     chunkMemoryOrganizerEvents,
     ensureDesktopAgentSession, recreateDesktopAgentSession, getSocialV2State, checkDsh,
     isDshReady() { return dshReady; },

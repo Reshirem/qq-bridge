@@ -1,4 +1,5 @@
-import { CURATOR_PROMPT } from '../../src/memory-curator.js';
+import { registerBackgroundModel } from './background-model.mjs';
+import { apply as curatorPreset } from './memory-curator.mjs';
 import { z } from 'zod';
 import { bridgeBaseUrl, readConsoleToken, registerMemoryTools } from '../../src/mcp-memory-safe.js';
 import { MEMORY_ORGANIZER_SYSTEM_PROMPT } from '../../src/memory-organizer.js';
@@ -8,7 +9,7 @@ import { apply as memoryGuard } from '../../src/memory-organizer-tool-guard.mjs'
 import { apply as learningGuard } from '../../src/learning-tool-guard.mjs';
 
 export const inject = ['tools', 'systemPrompt', 'commands', 'llm'];
-const prompts = { curator: CURATOR_PROMPT, memory: MEMORY_ORGANIZER_SYSTEM_PROMPT, chat: LEARNING_SYSTEM_PROMPT, market: MARKET_ANALYSIS_PROMPT };
+const prompts = { memory: MEMORY_ORGANIZER_SYSTEM_PROMPT, chat: LEARNING_SYSTEM_PROMPT, market: MARKET_ANALYSIS_PROMPT };
 
 async function imagesForExecution(sessionId, page, signal) {
   if (!sessionId) throw new Error('缺少学习会话身份');
@@ -21,6 +22,8 @@ async function imagesForExecution(sessionId, page, signal) {
 }
 
 export function apply(ctx, { kind }) {
+  // Support Host profiles that still reference the previous curator entry.
+  if (kind === 'curator') return curatorPreset(ctx);
   if (!Object.hasOwn(prompts, kind)) throw new Error('未知的后台 preset');
   const imageTool = 'mcp__qq-learning-images__learning_images';
   const allowed = [];
@@ -28,21 +31,7 @@ export function apply(ctx, { kind }) {
   // its whitelist includes these inherited definitions and excludes Host tools.
   ctx.on('agent/created', ({ agent }) => { agent.ctx.tools.restrict({ allow: allowed }); });
   ctx.systemPrompt.variable('qq_background_prompt', () => prompts[kind]);
-  // The Host's session/selectModel also saves the global default. A preset
-  // command selects only this agent's route and never submits a model turn.
-  ctx.commands.register({
-    name: 'qq-background-model', description: '设置当前后台任务的模型', recordInput: false,
-    async handler({ agent, rawInput }) {
-      const selection = z.object({ provider: z.string().min(1), model: z.string().min(1), reasoningEffort: z.string().optional() }).parse(JSON.parse(rawInput));
-      await ctx.llm.resolveCallConfig(selection);
-      agent.model.select(selection);
-      return { kind: 'success' };
-    },
-  });
-  if (kind === 'curator') {
-    ctx.tools.guard(() => '旧记忆回顾只分析本批原文，不执行工具');
-    return;
-  }
+  registerBackgroundModel(ctx);
   if (kind === 'memory') {
     memoryGuard(ctx);
     registerMemoryTools((name, description, fields, invoke) => {

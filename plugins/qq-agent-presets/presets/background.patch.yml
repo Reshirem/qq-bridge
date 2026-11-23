@@ -49,9 +49,8 @@
         order: 23
         description: 回顾同来源的已存记忆，核实重复、变化与经验
         plugins:
-          - id: background-tools
-            name: qq-agent-presets/background-tools.mjs
-            config: { kind: curator }
+          - id: curator-tools
+            name: qq-agent-presets/memory-curator.mjs
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config: { prefix: "{{qq_background_prompt}}", includeRuntimeContext: false }

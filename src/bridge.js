@@ -1319,7 +1319,7 @@ async function main() {
       if (!value?.sessionId) throw new Error('未取得后台 Session ID');
       return value.sessionId;
     } catch (error) {
-      log('后台分组会话预建失败，将使用隔离的 headless：' + redactSensitiveText(String(error.message)).slice(0, 500));
+      log(`后台分组会话预建失败（${agentPreset}），将使用隔离的 headless：` + redactSensitiveText(String(error.message)).slice(0, 500));
       return '';
     }
   }

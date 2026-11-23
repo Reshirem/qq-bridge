@@ -81,6 +81,8 @@ try {
   assert.ok(url, 'fixture Host did not start: ' + output.replace(/token=[\w-]+/g, 'token=<redacted>').slice(-4000));
   const api = new NodeApiClient(new URL(url).origin, 15000, { token: new URL(url).searchParams.get('token') });
   h.api.workspace = api.workspace;
+  h.api.agentPresets = api.agentPresets;
+  await h.refreshPresetList();
   h.api.sessions = api.sessions;
   h.api.callUnary = (method, args, ...rest) => method === 'session/page' && args.address.sessionId === 'source'
     ? { result: { ok: true, value: { records: [{ seq: 0, type: 'user/message', data: { content: 'fixture source', source: { kind: 'user' } } }], hasMore: false } } }
@@ -133,7 +135,19 @@ try {
   const ws = await api.readWorkspaceState({ timeoutMs: 8000 });
   assert.ok(ws.items.find(w => w.title === '长期记忆整理').sessionIds.includes(job.organizerSessionId));
   assert.ok(ws.archivedSessionIds.includes(job.organizerSessionId));
-  console.log('PASS installed DSH ran all three scoped presets in two workspaces, delivered fixture images and archived the completed organizer');
+  seenTools.length = 0;
+  finalText = '{"action":"keep","members":[],"content":"","reason":"fixture"}';
+  const result = await h.analyzeCuratorGroup({ key: 'assistant/self',
+    rows: ['first', 'second'].map(content => ({ content, metadata: {} })) });
+  assert.equal(result.text, finalText);
+  assert.deepEqual(seenTools, [[]]);
+  const afterCurator = await api.readWorkspaceState({ timeoutMs: 8000 });
+  assert.ok(afterCurator.items.some(w => w.title === '旧记忆回顾'));
+  const archived = afterCurator.archivedSessionIds.filter(id => !ws.archivedSessionIds.includes(id));
+  assert.equal(archived.length, 1);
+  const projection = unwrap(await api.callUnary('session/projections', { sessionId: archived[0] }), 'session/projections');
+  assert.equal(projection.values.agentPreset, 'memory-curator');
+  console.log('PASS installed DSH ran all four background presets, delivered fixture images and archived the organizer and tool-free curator');
 } catch (error) {
   console.error(output.split('\n').filter(l => !l.includes('tools.restrict()')).join('\n').replace(/token=[\w-]+/g, 'token=<redacted>').slice(-2500));
   throw error;
