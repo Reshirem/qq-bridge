@@ -98,6 +98,13 @@ export async function runBackgroundTurn({ api, sessionId, preset, model, task, t
   }
 }
 
+export function backgroundAnswerText(data) {
+  const content = data?.message?.content ?? data?.content;
+  if (typeof content === 'string') return content;
+  return Array.isArray(content)
+    ? content.filter(block => block?.type === 'text').map(block => block.text).join('') : '';
+}
+
 export function collectLearningTurn(mode, imageCount) {
   const calls = new Set(), pages = new Set();
   let text = '', sawImage = false;
@@ -105,7 +112,7 @@ export function collectLearningTurn(mode, imageCount) {
     event({ type, data }) {
       const msg = data?.message;
       if (type === 'step/start') text = '';
-      if (type === 'assistant/message') text = (msg?.content ?? []).filter(b => b.type === 'text').map(b => b.text).join('');
+      if (type === 'assistant/message') text = backgroundAnswerText(data);
       if (type === 'tool/call') {
         if (data.name !== 'mcp__qq-learning-images__learning_images') throw new Error('后台学习调用了非本批图片工具');
         calls.add(data.callId);

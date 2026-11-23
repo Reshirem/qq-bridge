@@ -81,7 +81,9 @@ function invalidDecision(message) {
 }
 
 export function curatorDecision(text, group) {
-  const d = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1'));
+  let d;
+  try { d = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1')); }
+  catch { throw invalidDecision('回顾模型的最终答复不是有效 JSON'); }
   if (!d || !['keep','merge','timeline','insight'].includes(d.action) || typeof d.reason !== 'string' || !d.reason.trim()
       || d.reason.length > 2000 || !Array.isArray(d.members) || typeof d.content !== 'string') throw invalidDecision('回顾决定格式无效');
   if (d.action === 'keep') {
@@ -130,7 +132,7 @@ export async function curatorSourcesMatch(rows, gateway) {
 }
 
 export function createCurator({ state, persist, list, gateway, analyze, available = () => true }) {
-  let busy = false, remaining = 0, inventory = 0, error = '';
+  let busy = false, remaining = 0, retryGroups = 0, inventory = 0, error = '';
   const journal = state.entries;
   const knownContent = new Set();
   const contentKey = text => text.normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -195,7 +197,7 @@ export function createCurator({ state, persist, list, gateway, analyze, availabl
   return {
     status() {
       const entries = Object.values(journal);
-      return { busy, paused:!!state.paused, remaining, inventory, error, reviewed:entries.length,
+      return { busy, paused:!!state.paused, remaining, retryGroups, inventory, error, reviewed:entries.length,
         recent:entries.slice(-25).reverse().map(({id,action,status,reason,content,rows,at}) =>
           ({id,action,status,reason,content,at,sources:rows?.map(r=>r.memoryId) || []})) };
     },
@@ -209,7 +211,7 @@ export function createCurator({ state, persist, list, gateway, analyze, availabl
     },
     async run() {
       if (busy || state.paused || !available()) return;
-      busy = true; error = '';
+      busy = true; error = ''; retryGroups = 0; remaining = 0;
       try {
         const records = await readCuratorInventory(list);
         inventory = records.length;
@@ -226,16 +228,16 @@ export function createCurator({ state, persist, list, gateway, analyze, availabl
         for (const group of groups) {
           if (state.paused || !available()) break;
           if (!await curatorSourcesMatch(group.rows, gateway)) { remaining--; continue; }
+          const {text} = await analyze(group);
           let decision;
           try {
-            const {text} = await analyze(group);
             decision = curatorDecision(text, group);
           } catch (e) {
-            error = String(e.message).slice(0, 500);
-            // Bad model JSON for one pair should not block other pairs. A host
-            // outage is retried on the next scan instead of hammering its API.
-            if (e instanceof SyntaxError || e.code === 'INVALID_DECISION') continue;
-            throw e;
+            if (e.code !== 'INVALID_DECISION') throw e;
+            error = e.message;
+            retryGroups++;
+            remaining--;
+            continue;
           }
           const entry = { ...decision, id:group.id, versions:group.rows.map(version), rows:decision.action === 'keep' ? group.rows.map(({memoryId}) => ({memoryId})) : group.rows, at:Date.now(),
             observedAt:group.rows.map(r => r.observedAt || r.createdAt).filter(Boolean).sort().at(-1) || new Date().toISOString(),

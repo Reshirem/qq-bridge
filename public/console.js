@@ -2524,7 +2524,7 @@ function renderCurator(view) {
   if (!view || view.unavailable) { status.textContent = view?.error || '回顾服务尚不可用'; recent.replaceChildren(); return; }
   const phase = view.paused ? (view.busy ? '当前组结束后暂停' : '已暂停') : view.busy ? '回顾中' : '等待下次检查';
   status.textContent = [phase, '已扫描 ' + view.inventory + ' 条', '已审阅 ' + view.reviewed + ' 组',
-    '本轮待处理 ' + view.remaining + ' 组', view.error].filter(Boolean).join(' · ');
+    '本轮待处理 ' + view.remaining + ' 组', view.retryGroups ? '下轮重试 ' + view.retryGroups + ' 组' : '', view.error].filter(Boolean).join(' · ');
   recent.replaceChildren();
   if (!view.recent?.length) recent.textContent = '尚无回顾决定。';
   for (const entry of view.recent || []) {

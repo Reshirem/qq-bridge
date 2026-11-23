@@ -66,6 +66,38 @@ test('pause survives recreation, completed groups are not repeated and undo only
   assert.deepEqual([...f.records.keys()], ['a','b']);
   assert.equal(restarted.status().recent[0].status,'undone');
 });
+test('Host decisions use only final text even when reasoning contains a competing decision', async t => {
+  const f = fixture('keep');
+  const answer = (await f.deps.analyze()).text;
+  const h = await bridgeHarness({globals:{async runBackgroundTurn({ onEvent }) {
+    onEvent({ type:'step/start' });
+    onEvent({ type:'assistant/message', data:{ message:{ content:[
+      {type:'reasoning',text:'Comparing {"action":"merge"}'},
+      {type:'text',text:answer.slice(0,5)}, {type:'text',text:answer.slice(5)},
+    ]} } });
+  }}});
+  t.after(() => h.close());
+  h.api.agentPresets.list = async () => ({result:{ok:true,value:{presets:[{id:'memory-curator'}]}}});
+  await h.refreshPresetList();
+  const worker = createCurator({...f.deps, analyze:h.analyzeCuratorGroup});
+  await worker.run();
+  assert.equal(worker.status().recent[0]?.action,'keep');
+  assert.equal(worker.status().error,'');
+});
+test('invalid answers finish the current attempt and remain eligible on the next scan', async () => {
+  const f = fixture('keep');
+  let invalid = true;
+  const worker = createCurator({...f.deps, analyze:() => invalid ? {text:'private invalid output'} : f.deps.analyze()});
+  await worker.run();
+  assert.equal(worker.status().remaining,0);
+  assert.equal(worker.status().retryGroups,1);
+  assert.equal(worker.status().reviewed,0);
+  assert.doesNotMatch(worker.status().error,/private/);
+  invalid = false;
+  await worker.run();
+  assert.equal(worker.status().retryGroups,0);
+  assert.equal(worker.status().reviewed,1);
+});
 test('lost write receipt recovers through external ID without repeating the model call or creating another output', async () => {
   const f = fixture('timeline');
   const save = f.gateway.save;

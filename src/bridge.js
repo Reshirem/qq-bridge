@@ -53,7 +53,7 @@ import { createAMemorixGateway, STICKER_NAMESPACE, validMemoryId } from './a-mem
 import { createChatLearningStore, createChatLearningWorker, normalizeLearningConfig, stickerWording } from './chat-learning.js';
 import { createLearningSessionCleanup } from './learning-sessions.js';
 import { createLearningAssets } from './learning-assets.js';
-import { runBackgroundTurn, collectLearningTurn, learningSessionTitle } from './background-sessions.js';
+import { runBackgroundTurn, backgroundAnswerText, collectLearningTurn, learningSessionTitle } from './background-sessions.js';
 import { memoryOrganizerDesktopProvider, memoryOrganizerCliLaunch } from './dsh-headless.js';
 import { createCurator, curatorTask } from './memory-curator.js';
 import { runLearningHeadless } from './learning-runner.js';
@@ -1949,7 +1949,7 @@ async function main() {
         onEvent(event) {
           if (event.type === 'tool/call') throw Error('回顾会话申请了工具调用');
           if (event.type === 'step/start') text = '';
-          if (event.type === 'assistant/message') text = memoryOrganizerMessageText(event.data?.message?.content);
+          if (event.type === 'assistant/message') text = backgroundAnswerText(event.data);
           tokenLedger.ingestEvent({sessionId,feature:'curator',...model,event});
         } });
       return {text};
