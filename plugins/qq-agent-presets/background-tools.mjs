@@ -1,3 +1,4 @@
+import { CURATOR_PROMPT } from '../../src/memory-curator.js';
 import { z } from 'zod';
 import { bridgeBaseUrl, readConsoleToken, registerMemoryTools } from '../../src/mcp-memory-safe.js';
 import { MEMORY_ORGANIZER_SYSTEM_PROMPT } from '../../src/memory-organizer.js';
@@ -7,7 +8,7 @@ import { apply as memoryGuard } from '../../src/memory-organizer-tool-guard.mjs'
 import { apply as learningGuard } from '../../src/learning-tool-guard.mjs';
 
 export const inject = ['tools', 'systemPrompt', 'commands', 'llm'];
-const prompts = { memory: MEMORY_ORGANIZER_SYSTEM_PROMPT, chat: LEARNING_SYSTEM_PROMPT, market: MARKET_ANALYSIS_PROMPT };
+const prompts = { curator: CURATOR_PROMPT, memory: MEMORY_ORGANIZER_SYSTEM_PROMPT, chat: LEARNING_SYSTEM_PROMPT, market: MARKET_ANALYSIS_PROMPT };
 
 async function imagesForExecution(sessionId, page, signal) {
   if (!sessionId) throw new Error('缺少学习会话身份');
@@ -38,6 +39,10 @@ export function apply(ctx, { kind }) {
       return { kind: 'success' };
     },
   });
+  if (kind === 'curator') {
+    ctx.tools.guard(() => '旧记忆回顾只分析本批原文，不执行工具');
+    return;
+  }
   if (kind === 'memory') {
     memoryGuard(ctx);
     registerMemoryTools((name, description, fields, invoke) => {

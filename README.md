@@ -30,7 +30,7 @@ QQ 消息 ──► 桌面 QQ 独立通道（默认）或 SnowLuma ──元数�
 - **提示词维护**：全局数字角色固定使用技术 preset `desktop-agent`；WebUI 按用途拆分编辑固定前缀，支持逐个添加、命名、启用或删除自定义模块。模块源配置在 `dsh/agent-presets/desktop-agent/prompt-modules.json`，生成的完整前缀写入 `agent.cordis.yml` 并同步 `plugins/qq-agent-presets/` bundle patch。每个内置模块都可单独编辑或关闭（缺少人格卡变量或收尾工具提示时仅给出非阻断提醒）；固定前缀中的模块开关只控制提示词文本，实际工具能力仍由各自设置控制。保存固定前缀后需重启 DSH，并重建全局会话才能获得新版前缀。当前人格卡由 `qq-agent-presets` 在每次提示词组装时动态加入 DSH persona 固定前缀，普通历史压缩不会移除它；切换、编辑或清除后在下一次模型请求时更新。首次部署这项前缀变量时，仍需重启 DSH 并重建全局会话。
 - **QQ 历史与未读**。双方历史通过所选通道按需获取。独立模式的未读仅含待阅读的提醒，正文按消息 ID 从 QQ 获取。SnowLuma 模式为每个来源保留最多 500 条未读，角色从最早未读分页查看，本页返回的来信自动扣除。查看历史或单条详情时也按本次返回的来信逐条确认。SnowLuma 未读使用 `state/qq-unread.sqlite` 增量保存，升级时迁移旧 JSON 的未读、序号和来源状态，事务提交后移除旧文件。发送气泡数由模型决定，条间延迟为下一条的 Unicode 字符数乘 `socialV2.send.delayPerCharMs`，默认 20 ms/字，最多 1000 ms。0 表示连续发送，第一条直接发出。等待消息工具已移除。
 - **本地控制台**位于 `http://127.0.0.1:3100`。首页汇总主会话、QQ 消息、记忆整理、后台学习的状态及待处理事项。主会话管理任务、记录、人格和模型。在「QQ 消息 → 消息来源」可按名称、群号或 QQ 号搜索，并筛选有未读或有待处理提醒的来源。顶部统计始终汇总全部来源。“长期记忆”提供记录检索和整理任务，“学习与素材”管理黑话、表情包和角色的修正建议。“令牌与花费”按功能展示用量，“系统运维”收纳日志、诊断和访问设置。
-  - **令牌与花费看板**按主会话、记忆整理和后台学习汇总模型用量，支持查看逐轮明细和消耗走势。通过 models.dev 更新价格，已入账费用随调用保存。旧账本金额保留原币种。详见[令牌与花费](docs/guides/TOKEN_USAGE_CONSOLE.md)。
+  - **令牌与花费看板**按主会话、记忆整理、旧记忆回顾和后台学习汇总模型用量，支持查看逐轮明细和消耗走势。通过 models.dev 更新价格，已入账费用随调用保存。旧账本金额保留原币种。详见[令牌与花费](docs/guides/TOKEN_USAGE_CONSOLE.md)。
   - **人格（角色扮演）管理**：列表点选即可载入查看/编辑提示词，支持新建、保存修改、改名（自动重命名文件）、另存为副本、删除；当前卡完整加入 DSH persona 固定前缀，列表和编辑区显示字符数与 token 粗估，超过建议的 6000 字符时只提醒、不截断。切换、编辑、清除、改名或删除后，会在下一次模型请求组装提示词时更新。
   - **全局数字角色提示词**：WebUI 按模块编辑 `desktop-agent` 固定前缀，可独立调整自主探索、有限休息、长期记忆等指引，也可逐个追加自定义模块，并预览组合后的完整前缀；保存会备份模块文件和 preset 并重新生成 DSH bundle patch。运行时提示模板仍可编辑 QQ 来源提醒、休息/恢复和长期记忆摘要；其中人格卡模板用于格式化 persona 固定前缀中的动态人格卡，保存后下一次模型请求生效。首次部署或修改固定前缀后仍需重启 DSH 并重建全局会话；普通切卡和编辑人格卡不需要重建。固定前缀中的人格卡会增加每次模型请求的上下文 token。
   - **DSH 模型与思考强度**：控制台从 DSH 模型目录读取可用模型和对应思考档位；目录不可用或模型未列出时可手动填写 Provider / Model ID。保存后下一条消息生效，并会同步改变 DSH 全局默认
@@ -94,6 +94,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `consolePort` / `consoleToken` | 本地控制台固定端口（默认 `3100`）和访问令牌；端口占用时桥接会报错退出，不会随机换端口。令牌留空时自动生成并保存到 `state/console-token`；登录页验证后使用仅当前浏览器会话有效的 HttpOnly Cookie |
 | `memory.enabled` / `baseUrl` / `namespace` / `apiKey` | 可选 A_Memorix 长期记忆。默认关闭；部署本机 HTTP/JSON Gateway 并创建 namespace 后，可在 WebUI 配置连接地址、namespace、密钥和使用上限；API key 只保存在不入库的 `config.json`。 |
 | `memory.timeoutMs` / `bootstrapLimit` / `bootstrapMaxChars` | A_Memorix 请求超时与新会话首次注入摘要的条数/字符上限；默认 `45000` ms、`6` 条、`2500` 字符。配置与维护说明见 [长期记忆方案](docs/guides/MEMORY_ARCHITECTURE.md) |
+| `memoryCurator.enabled` | 默认 `true`。长期记忆启用且连接本机部署的 Gateway 后，独立后台 preset 自动回顾已存原文。控制台「长期记忆 → 整理任务 → 旧记忆回顾」显示依据、用量、暂停与撤销，无每日组数或 token 配额。详见[旧记忆回顾](docs/guides/MEMORY_ARCHITECTURE.md#旧记忆回顾)。 |
 | `memoryOrganizer` | 休息后每日独立长期记忆整理配置（`enabled` 默认 `true`、`timeZone` 默认 `Asia/Shanghai`、`cliPath` 可选 headless CLI 覆盖） |
 | `chatLearning` | 后台黑话与表情学习开关、来源范围及批次预算；默认启用，详见 [CHAT_LEARNING.md](docs/guides/CHAT_LEARNING.md) |
 | `deny.*` | 控制台直接测试发送的目标拒绝名单；全局数字角色会话通过所选通道读写 QQ |

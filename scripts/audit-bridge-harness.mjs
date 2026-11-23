@@ -29,6 +29,7 @@ import * as learningApi from '../src/learning-api.js';
 import * as backgroundSessions from '../src/background-sessions.js';
 import * as learningRunner from '../src/learning-runner.js';
 import * as learningSessions from '../src/learning-sessions.js';
+import * as memoryCurator from '../src/memory-curator.js';
 import * as memoryOrganizer from '../src/memory-organizer.js';
 import { createModelCatalog } from '../src/model-catalog.js';
 import * as modelPrices from '../src/model-prices.js';
@@ -238,7 +239,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
 }`;
   const timers = new Set();
   const context = vm.createContext({
-    fs, os, path, http, crypto, yaml, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
+    fs, os, path, http, crypto, yaml, fileURLToPath, URL, Buffer, AbortSignal, AbortController, console: { log() {}, error() {} },
     fetch: fakeFetch,
     // 锁文件探测用（bridge.js 顶层的 consolePortInUse）；
     // 固定桩掉：测试不应该真去 netstat 宿主机。
@@ -277,7 +278,8 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       close() {},
     }),
     openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
-    ...backgroundSessions, ...learningRunner, MARKET_PAGE_SIZE, ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...sleepSchedule, ...dshDiagnostics,
+    ...backgroundSessions, ...learningRunner, MARKET_PAGE_SIZE, ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...memoryCurator,
+    memoryOrganizerDesktopProvider: () => null, memoryOrganizerCliLaunch: () => ({command:'fixture-dsh',args:[],env:{},shell:false}), ...sleepSchedule, ...dshDiagnostics,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...presetPrompt, ...desktopAgentPromptTemplates,
     // 桥接的出图出口会调归一化（体积/动图抽帧）：VM 里必须能拿到这几个函数。
     normalizeImageForModel: mediaNormalize.normalizeImageForModel,

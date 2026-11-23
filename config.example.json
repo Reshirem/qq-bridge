@@ -58,6 +58,7 @@
     "bootstrapLimit": 6,
     "bootstrapMaxChars": 2500
   },
+  "memoryCurator": { "enabled": true },
   "memoryOrganizer": {
     "enabled": true,
     "timeZone": "Asia/Shanghai",

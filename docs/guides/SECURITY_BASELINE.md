@@ -43,6 +43,7 @@
 | --- | --- | --- |
 | 主会话预设工具守卫 | `plugins/qq-agent-presets/qq-tool-restrict.mjs`（唯一权威实现） | 唯一 `desktop-agent` 开放 `mcp__wincu__*`、完整 `mcp__qq__*` QQ 工具、`mcp__qq-memory__*` 记忆工具、可选已启用的 `maa_*` 游戏工具，以及 DSH 原生 `web_search` / `web_fetch`。`ask_user_question` / `todo_write` 不由 preset 挂载且不在工具白名单中；shell、通用文件、子代理和 Harness 管理工具一律拒绝 |
 | 后台黑话/表情学习与商城整包分析工具面 | `background-tools.mjs`、`src/learning-tool-guard.mjs`、`src/mcp-learning-images.js` | 允许在主角色未读取消息时分析有界的新消息批次或管理员收录的商城表情包。Host `chat-learning` / `market-analysis` preset 与隔离 headless 回退均只暴露本批图片工具 `learning_images`；桥接通过控制台鉴权和执行会话 ID 查找内存中的图片批次，批次结束即解绑。模型输出仅作为结构化数据校验：黑话证据须来自本批原文（仅归一化大小写、NFKC 与空白，不改写证据原文），图片编号须来自本批清单。不能向 QQ 发消息或控制主会话 |
+| 旧记忆回顾 | `memory-curator.js`、`background-tools.mjs`、`curator-tool-guard.mjs` | 模型只接收同来源候选原文，Host 和 headless 均禁止执行工具。桥接核对原文版本，经 Gateway 保存可撤销的派生记录；回顾控制仅限鉴权控制台。 |
 | 独立记忆整理工具面 | `background-tools.mjs`、`memoryOrganizerPatchText()`、`src/memory-organizer-tool-guard.mjs` | 整理输入视为不可信资料，只采用主会话已保存的可见证据（`session/page` + `readThroughSeq`）。Host `memory-organizer` preset 与隔离 headless 回退严格限于五个记忆工具（`memory_search/save/read/replace/forget`），桥接校验当前任务绑定的执行会话 ID。headless 回退时只复制当前所选 provider 与模型，使用 `apiKeyEnv` 时启用 DSH 本地凭据解析器，密钥值不写入 patch 或日志，不修改 DSH profile 默认模型 |
 | DSH 网页工具配置 | `dsh/agent-presets/desktop-agent/agent.cordis.yml` 的 `tool-web` 行 | `desktop-agent` 加载 `@deepseek-ai/dsh-tool-web` 并沿用其默认配置。工具通过 DSH 选择的提供方访问网络，不经过桥接 `safeFetch`；随附的 `http` 抓取提供方允许访问本机和内网地址 |
 | 预设 fail-closed | `ensureDesktopAgentSession()` | `desktop-agent` 不可用时拒绝创建全局会话，不回退到 DSH 默认 preset |

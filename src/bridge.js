@@ -54,6 +54,8 @@ import { createChatLearningStore, createChatLearningWorker, normalizeLearningCon
 import { createLearningSessionCleanup } from './learning-sessions.js';
 import { createLearningAssets } from './learning-assets.js';
 import { runBackgroundTurn, collectLearningTurn, learningSessionTitle } from './background-sessions.js';
+import { memoryOrganizerDesktopProvider, memoryOrganizerCliLaunch } from './dsh-headless.js';
+import { createCurator, curatorTask } from './memory-curator.js';
 import { runLearningHeadless } from './learning-runner.js';
 import { createStickerMemory } from './sticker-memory.js';
 import { createMarketPacks, localMarketPackIds } from './market-packs.js';
@@ -840,6 +842,7 @@ function loadConfig() {
       bootstrapMaxChars: Math.max(500, Math.min(5000, Number(file.memory?.bootstrapMaxChars) || 2500))
     },
     chatLearning: normalizeLearningConfig(file.chatLearning),
+    memoryCurator: { enabled: file.memoryCurator?.enabled !== false },
     memoryOrganizer: {
       enabled: file.memoryOrganizer?.enabled !== false,
       timeZone: String(file.memoryOrganizer?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC'),
@@ -1350,7 +1353,7 @@ async function main() {
           return { ...collector.result(), sessionId, usage };
         } catch (error) { error.usage = usage; throw error; }
       }
-      const cli = memoryOrganizerCliLaunch();
+      const cli = memoryOrganizerCliLaunch(cfg.memoryOrganizer.cliPath);
       const capabilities = await getMemoryOrganizerCliCapabilities(cli);
       return await runLearningHeadless({
         cli, approvalPolicy: capabilities.approvalPolicy, root: ROOT, stateDir: STATE_DIR,
@@ -1899,6 +1902,62 @@ async function main() {
   let desktopAttentionFlushTimer = null;
   let desktopAttentionFlushPromise = null;
   let memoryOrganizerWorkerPromise = null;
+  const curatorShutdown = new AbortController();
+  let curatorBinding;
+  let curatorTaskInFlight;
+  function currentCurator() {
+    const gateway = memoryGateway;
+    const { baseUrl, namespace, configured } = gateway.status();
+    if (!cfg.memoryCurator.enabled || !configured) return null;
+    if (curatorBinding?.gateway === gateway) return curatorBinding.worker;
+    if (curatorBinding?.worker.status().busy) return null;
+    const storeKey = crypto.createHash('sha256').update(baseUrl + '/' + namespace).digest('hex');
+    const file = path.join(STATE_DIR, 'memory-curator', storeKey + '.json');
+    const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { version:1, entries:{} };
+    const worker = createCurator({ state, gateway, persist:next => atomicWriteJson(file,next),
+      list:cursor => listAMemorixParagraphs({ stateDir:A_MEMORIX_STATE_DIR, namespace, cursor, limit:100 }),
+      available:() => gateway === memoryGateway && !curatorShutdown.signal.aborted && !memoryOrganizerWorkerPromise && dshReady,
+      analyze:analyzeCuratorGroup });
+    curatorBinding = { gateway, worker };
+    return worker;
+  }
+  function curatorStatus() {
+    try { return currentCurator()?.status() || { unavailable:true, error:'需要已启用的旧记忆回顾和本机 A_Memorix 服务' }; }
+    catch (e) { return { unavailable:true, error:redactSensitiveText(e.message) }; }
+  }
+  function scheduleCurator() {
+    if (curatorTaskInFlight) return;
+    curatorTaskInFlight = Promise.resolve().then(() => currentCurator()?.run())
+      .catch(e => log('旧记忆回顾：' + redactSensitiveText(e.message).slice(0,500)))
+      .finally(() => { curatorTaskInFlight = null; });
+  }
+  async function analyzeCuratorGroup(group) {
+    const preset = 'memory-curator', task = curatorTask(group), signal = curatorShutdown.signal;
+    const model = { provider:cfg.dsh.provider, model:cfg.dsh.model, reasoningEffort:cfg.dsh.reasoningEffort };
+    const sessionId = dshPresetIds.includes(preset)
+      ? await createBackgroundSession('memory-curator-workspace', '旧记忆回顾', preset) : '';
+    if (!sessionId) {
+      const cli = memoryOrganizerCliLaunch(cfg.memoryOrganizer.cliPath);
+      const capabilities = await getMemoryOrganizerCliCapabilities(cli);
+      return runLearningHeadless({ cli, approvalPolicy:capabilities.approvalPolicy, root:ROOT, stateDir:STATE_DIR,
+        model, provider:memoryOrganizerDesktopProvider(model), task, images:[], mode:'curator', signal,
+        onUsage:(sid,ev) => tokenLedger.ingestSample({sessionId:sid, feature:'curator', ...model, turn:ev.turn, step:ev.step, seq:-1, usage:ev.usage}) });
+    }
+    let text = '';
+    try {
+      await runBackgroundTurn({ api, sessionId, preset, model, task, signal, timeoutMs:300000, readRange:readMemoryOrganizerRange,
+        onEvent(event) {
+          if (event.type === 'tool/call') throw Error('回顾会话申请了工具调用');
+          if (event.type === 'step/start') text = '';
+          if (event.type === 'assistant/message') text = memoryOrganizerMessageText(event.data?.message?.content);
+          tokenLedger.ingestEvent({sessionId,feature:'curator',...model,event});
+        } });
+      return {text};
+    } finally {
+      try { unwrap(await withTimeout(api.workspace.archiveSession({sessionId}), DSH_CONTROL_TIMEOUT_MS, 'archiveSession'), 'archiveSession'); }
+      catch (e) { log('旧记忆回顾会话归档失败：' + redactSensitiveText(e.message)); }
+    }
+  }
   let memoryOrganizerCleanupRunning = false;
   let activeHostOrganizerSessionId = null;
   let memoryOrganizerTimer = null;
@@ -2164,53 +2223,6 @@ async function main() {
     }
   }
 
-  function memoryOrganizerDesktopProvider(modelSelection) {
-    const provider = String(modelSelection.provider ?? '').trim();
-    const model = String(modelSelection.model ?? '').trim();
-    if (!provider || !model) return null;
-    const dshHome = String(process.env.DSH_HOME ?? '').trim() || path.join(os.homedir(), '.dsh');
-    const profilePath = path.join(dshHome, 'profiles', 'desktop', 'cordis.patch.yml');
-    if (!fs.existsSync(profilePath)) return null;
-
-    const lines = fs.readFileSync(profilePath, 'utf8').split(/\r?\n/);
-    const start = lines.findIndex((line) => /^-\s*id:\s*['"]?llm-pi-ai['"]?\s*$/.test(line));
-    if (start < 0) return null;
-    const end = lines.findIndex((line, index) => index > start && /^-\s*(?:id|insert):/.test(line));
-    let entry;
-    try {
-      const parsed = yaml.load(lines.slice(start, end < 0 ? undefined : end).join('\n'));
-      entry = Array.isArray(parsed) ? parsed[0] : null;
-    } catch (error) {
-      throw new Error(`读取 DSH Desktop provider 配置失败：${error?.message ?? error}`);
-    }
-
-    const configured = entry?.config?.providers?.[provider];
-    if (!configured) return null;
-    const allowedFields = [
-      'apiKeyEnv', 'displayName', 'api', 'baseURL', 'models', 'modelOverrides', 'compat',
-      'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'reasoning', 'thinkingFormat'
-    ];
-    const unsupportedFields = Object.keys(configured).filter((key) => !allowedFields.includes(key));
-    if (unsupportedFields.length > 0) {
-      throw new Error(`DSH Desktop provider ${provider} 含整理器未支持的配置字段：${unsupportedFields.join(', ')}`);
-    }
-
-    const providerConfig = Object.fromEntries(
-      Object.entries(configured).filter(([key]) => key !== 'models')
-    );
-    if (Array.isArray(configured.models)) {
-      const selectedModel = configured.models.find((item) => String(item?.id ?? '') === model);
-      if (!selectedModel) throw new Error(`DSH Desktop provider ${provider} 未配置模型 ${model}`);
-      providerConfig.models = [selectedModel];
-    }
-    return {
-      id: 'llm-pi-ai',
-      name: String(entry.name || '@deepseek-ai/dsh-llm-pi-ai'),
-      disabled: false,
-      config: { providers: { [provider]: providerConfig } }
-    };
-  }
-
   function memoryOrganizerPatchText(modelSelection) {
     const memoryServer = path.join(ROOT, 'src', 'mcp-memory-safe.js');
     const roleName = readRoleState()?.role;
@@ -2297,40 +2309,6 @@ async function main() {
     ].join('\n\n');
   }
 
-  function memoryOrganizerCliLaunch() {
-    const configured = String(cfg.memoryOrganizer?.cliPath || process.env.DSH_CLI_PATH || '').trim();
-    let cliPath = configured;
-    if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-      const desktopCli = path.join(
-        process.env.LOCALAPPDATA,
-        'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd'
-      );
-      if (!cliPath && fs.existsSync(desktopCli)) cliPath = desktopCli;
-    }
-    cliPath ||= 'dsh';
-
-    // DSH Desktop ships dsh.cmd as a wrapper around Electron's Node mode. Launch
-    // that target directly so paths with spaces never pass through cmd.exe parsing.
-    if (process.platform === 'win32' && path.basename(cliPath).toLowerCase() === 'dsh.cmd') {
-      const binDir = path.dirname(cliPath);
-      const installRoot = path.resolve(binDir, '..', '..', '..', '..');
-      const executable = path.join(installRoot, 'DeepSeek Harness.exe');
-      const appAsar = path.join(installRoot, 'resources', 'app.asar');
-      if (fs.existsSync(executable) && fs.existsSync(appAsar)) {
-        return {
-          command: executable,
-          args: [
-            '--expose-internals',
-            path.join(appAsar, 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js')
-          ],
-          env: { ELECTRON_RUN_AS_NODE: '1' },
-          shell: false
-        };
-      }
-    }
-    return { command: cliPath, args: [], env: {}, shell: process.platform === 'win32' };
-  }
-
   const memoryOrganizerCliCapabilities = new Map();
 
   function getMemoryOrganizerCliCapabilities(cli) {
@@ -2388,7 +2366,7 @@ async function main() {
   }
 
   async function runMemoryOrganizerHeadless(job, task, modelSelection, requestedSessionId, onMemoryWrite, chunkNumber) {
-    const cli = memoryOrganizerCliLaunch();
+    const cli = memoryOrganizerCliLaunch(cfg.memoryOrganizer.cliPath);
     if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('memoryOrganizer.cliPath 含不支持的命令字符');
     const cliCapabilities = await getMemoryOrganizerCliCapabilities(cli);
     const patchPath = path.join(STATE_DIR, `memory-organizer-${process.pid}-${crypto.randomBytes(6).toString('hex')}.patch.yml`);
@@ -3263,6 +3241,7 @@ async function main() {
         }
         if (!dshReady) {
           dshReady = true;
+          scheduleCurator();
           log('DSH 已就绪（autonomous 自主会话运行时）');
           log('全局数字角色运行时已就绪；QQ 消息按需读取，不创建逐会话 DSH 映射');
           if (desktopAttentionQueue.size > 0) scheduleDesktopAttentionFlush(1000);
@@ -3869,6 +3848,17 @@ async function main() {
           }
           return;
         }
+        if (req.method === 'POST' && url.pathname === '/api/memory/curator') {
+          if (req.headers['x-agent-token'] || req.headers['x-agent-call'] !== undefined) { sendJson({ok:false,error:'仅控制台可用'},403); return; }
+          const body = await readBody();
+          const worker = currentCurator();
+          if (!worker) { sendJson({ok:false,error:'旧记忆回顾尚不可用'},503); return; }
+          if (body.action === 'pause') worker.pause(true);
+          else if (body.action === 'resume') { worker.pause(false); scheduleCurator(); }
+          else if (body.action === 'undo') await worker.undo(body.id);
+          else { sendJson({ok:false,error:'未知回顾操作'},400); return; }
+          sendJson({ok:true,curator:worker.status()}); return;
+        }
         if (url.pathname === '/api/memory/organizer') {
           if (req.headers['x-agent-token'] || req.headers['x-agent-call'] !== undefined) {
             sendJson({ ok: false, error: '记忆整理队列仅控制台可用' }, 403);
@@ -3884,6 +3874,7 @@ async function main() {
             let sessionError = '';
             const initialSnapshot = memoryOrganizer.snapshot();
             const organizerSessionIds = new Set([
+              ...tokenLedger.recordedSessionIds('curator'),
               ...Object.values(initialSnapshot.sessionsByDay),
               ...initialSnapshot.jobs.flatMap((job) => [
                 job.organizerSessionId,
@@ -3898,7 +3889,7 @@ async function main() {
               listedItems = Array.isArray(listed?.items) ? listed.items : [];
               sessions = listedItems.map((item) => {
                 const sessionId = String(item?.sessionId ?? '').trim();
-                if (!sessionId || organizerSessionIds.has(sessionId)) return null;
+                if (!sessionId || organizerSessionIds.has(sessionId) || item?.projections?.values?.agentPreset === 'memory-curator') return null;
                 const rawAsOfSeq = item?.projections?.asOfSeq;
                 const numericAsOfSeq = rawAsOfSeq === null || rawAsOfSeq === undefined || rawAsOfSeq === '' ? NaN : Number(rawAsOfSeq);
                 const asOfSeq = Number.isSafeInteger(numericAsOfSeq) ? numericAsOfSeq : null;
@@ -3931,6 +3922,7 @@ async function main() {
                 enabled: cfg.memoryOrganizer?.enabled !== false,
                 memoryConfigured: memoryGateway.status().configured,
                 dshReady,
+                curator: curatorStatus(),
                 cleanupBusy: memoryOrganizerCleanupRunning || Boolean(memoryOrganizerWorkerPromise),
                 timeZone: cfg.memoryOrganizer?.timeZone || 'UTC',
                 day: memoryOrganizerDay(),
@@ -4024,6 +4016,7 @@ async function main() {
             const listed = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
             const organizerSnapshot = memoryOrganizer.snapshot();
             const organizerSessionIds = new Set([
+              ...tokenLedger.recordedSessionIds('curator'),
               ...Object.values(organizerSnapshot.sessionsByDay),
               ...organizerSnapshot.jobs.map((job) => job.organizerSessionId).filter(Boolean)
             ]);
@@ -4033,6 +4026,7 @@ async function main() {
             }
             const session = (Array.isArray(listed?.items) ? listed.items : [])
               .find((item) => String(item?.sessionId ?? '') === sessionId);
+            if (session?.projections?.values?.agentPreset === 'memory-curator') { sendJson({ok:false,error:'旧记忆回顾会话不能作为整理来源'},400); return; }
             if (!session) { sendJson({ ok: false, error: 'DSH 中找不到所选会话' }, 404); return; }
             const asOfSeq = Number(session?.projections?.asOfSeq);
             if (!Number.isSafeInteger(asOfSeq) || asOfSeq < -1) {
@@ -4134,6 +4128,7 @@ async function main() {
           atomicWriteConfigJson(configFile, file);
           cfg.memory = nextMemory;
           memoryGateway = createAMemorixGateway(cfg.memory);
+          scheduleCurator();
           appendActivity(`控制台${nextMemory.enabled ? '启用' : '停用'}长期记忆配置`);
           if (memoryGateway.status().configured && cfg.memoryOrganizer?.enabled !== false) {
             void reconcileMemoryOrganizerRestJobs().then(() => scheduleMemoryOrganizerRun(0));
@@ -9952,6 +9947,8 @@ async function main() {
   if (!native) startSnowlumaWatch();
   startConsoleServer();
 
+  const curatorTimer = setInterval(scheduleCurator, 300_000);
+  curatorTimer.unref?.();
   void marketPacks?.resume();
   const learningTimer = setInterval(() => {
     stickerMemory.sync().catch(error => log('表情索引同步失败：' + error.message));
@@ -9965,6 +9962,8 @@ async function main() {
   }, 30000);
   learningTimer.unref?.();
   shutdownChatLearning = async () => {
+    clearInterval(curatorTimer);
+    curatorShutdown.abort();
     clearInterval(learningTimer);
     learningWorker?.cancel();
     await Promise.race([Promise.all([learningWorker?.settle(), marketPacks?.shutdown()]), new Promise(resolve => setTimeout(resolve, 5000))]);

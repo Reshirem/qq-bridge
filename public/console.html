@@ -29,7 +29,7 @@
       <a href="#overview" data-view="overview">运行总览</a>
       <a href="#sessions" data-view="sessions">主会话</a>
       <a href="#social-v2" data-view="social-v2">QQ 消息</a>
-      <a href="#memory" data-view="memory">长期记忆</a>
+      <a href="#memory-organizer" data-view="memory-organizer">长期记忆</a>
       <a href="#learning" data-view="learning">学习与素材</a>
       <a href="#usage" data-view="usage">令牌与花费</a>
       <a href="#operations" data-view="operations">系统运维</a>
@@ -56,10 +56,10 @@
       <a href="#social-v2" data-view="social-v2">消息来源</a>
       <a href="#qq-settings" data-view="qq-settings">提醒与发送</a>
     </nav>
-    <nav class="section-tabs" data-group="memory" aria-label="长期记忆" hidden>
-      <a href="#memory" data-view="memory">检索与记录</a>
+    <nav class="section-tabs" data-group="memory-organizer" aria-label="长期记忆" hidden>
       <a href="#memory-organizer" data-view="memory-organizer">整理任务</a>
       <a href="#memory-settings" data-view="memory-settings">服务设置</a>
+      <a href="#memory" data-view="memory">检索与记录</a>
     </nav>
     <nav class="section-tabs" data-group="learning" aria-label="学习与素材" hidden>
       <a href="#learning" data-view="learning">学习队列</a>
@@ -347,6 +347,13 @@
         <strong>整理实际读过的交流与经历</strong>
         <p>主会话成功休息后每天最多自动排队整理一次，日期按记忆整理设置中的时区计算。当天后续休息累积到下一次整理范围。QQ 内容依据主会话实际收到的 QQ 工具结果和 qq-bridge 返回的连续已读水位；失败或不完整的区间不会推进游标。手动选择历史 DSH 会话时，整理到启动时可读取的日志末尾。</p>
       </div>
+      <section id="curatorPanel" aria-labelledby="curatorTitle">
+        <h3 id="curatorTitle">旧记忆回顾</h3>
+        <p class="meta" id="curatorStatus" role="status">正在读取回顾进度…</p>
+        <div class="row"><button type="button" id="curatorPause" class="small" disabled>暂停回顾</button>
+          <a href="#usage">查看令牌与花费</a><span id="curatorActionStatus" class="meta" role="status"></span></div>
+        <details class="settings-group"><summary>最近回顾与撤销</summary><div class="settings-content" id="curatorRecent"></div></details>
+      </section>
       <h3>整理历史会话</h3>
       <div class="row memory-organizer-start">
         <label for="memoryOrganizerSession">DSH 来源会话（整理会话已排除）</label>

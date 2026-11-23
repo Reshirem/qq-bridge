@@ -4,16 +4,18 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { CURATOR_PROMPT } from './memory-curator.js';
 import { LEARNING_SYSTEM_PROMPT } from './chat-learning.js';
 import { MARKET_ANALYSIS_PROMPT, MARKET_PAGE_SIZE } from './market-analysis.js';
 
 export function learningPatch({ model, provider, imageServer, imageManifest, mode = 'chat', nodePath = process.execPath }) {
   const operations = [
     { id: 'agent-default-model', config: model },
-    { id: 'system-prompt', config: { personaPrefix: mode === 'market' ? MARKET_ANALYSIS_PROMPT : LEARNING_SYSTEM_PROMPT } },
+    { id: 'system-prompt', config: { personaPrefix: mode === 'curator' ? CURATOR_PROMPT : mode === 'market' ? MARKET_ANALYSIS_PROMPT : LEARNING_SYSTEM_PROMPT } },
     { id: 'session-title-llm', disabled: true },
-    { insert: [{ id: 'qq-learning-tool-guard', name: fileURLToPath(new URL('./learning-tool-guard.mjs', import.meta.url)).replaceAll('\\', '/') }] },
+    { insert: [{ id: 'qq-learning-tool-guard', name: fileURLToPath(new URL(mode === 'curator' ? './curator-tool-guard.mjs' : './learning-tool-guard.mjs', import.meta.url)).replaceAll('\\', '/') }] },
   ];
+  if (mode === 'curator' && imageManifest) throw Error('旧记忆回顾不接受图片工具');
   if (imageManifest) operations.push({ insert: [{ id: 'qq-learning-images', name: '@deepseek-ai/dsh-mcp-client', config: {
     serverName: 'qq-learning-images', transport: 'stdio', command: nodePath, args: [imageServer, imageManifest], toolCallTimeoutMs: 30000,
   } }] });
@@ -45,7 +47,8 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
   if (cli.shell && /[\r\n\0"&|<>^%]/.test(cli.command)) throw new Error('DSH CLI 路径含不支持的命令字符');
   if (cli.shell && requestedSessionId && !/^[a-zA-Z0-9_.-]+$/.test(requestedSessionId)) throw new Error('DSH 学习会话编号含不支持的命令字符');
   signal?.throwIfAborted();
-  const prefix = path.join(stateDir, `chat-learning-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
+  const runnerName = mode === 'curator' ? 'memory-curator' : 'chat-learning';
+  const prefix = path.join(stateDir, `${runnerName}-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
   const patch = `${prefix}.yml`, manifest = `${prefix}.json`;
   fs.mkdirSync(stateDir, { recursive: true });
   try {
@@ -88,7 +91,7 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
           if (type === 'error') stop('DSH 学习进程报告错误，请检查 DSH 配置');
           if (type === 'tool_call') {
             const name = String(event.tool ?? event.toolName ?? event.name ?? '');
-            if (!/(?:^|__)learning_images$/.test(name)) stop('学习进程尝试调用未授权工具');
+            if (mode === 'curator' || !/(?:^|__)learning_images$/.test(name)) stop('学习进程尝试调用未授权工具');
             else imageCalls.add(String(event.callId ?? event.toolCallId ?? event.id ?? ''));
           }
           if (type === 'tool_result' && imageCalls.has(String(event.callId ?? event.toolCallId ?? event.id ?? '')) && event.status === 'completed' && !event.error && !event.isError) {
@@ -125,6 +128,7 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
           // newer projections also carry it on final. Explicit null is not completion.
           const reason = final && Object.hasOwn(final, 'reason') ? final.reason : terminalReason;
           if (code !== 0 || !sessionId || !final || reason?.kind !== 'completed') throw new Error(`DSH 学习未正常完成（退出码 ${code}）`);
+          if (mode === 'curator') { resolve({ text:final.text, sessionId, usage }); return; }
           const result = parseLearningResult(final.text, mode);
           if (mode === 'market' && seenPages.size !== pages) throw new Error(`模型仅读取了 ${seenPages.size}/${pages} 页表情图`);
           if (result.stickers.length && !imageRead) throw new Error('模型未成功看图，拒绝保存表情描述');

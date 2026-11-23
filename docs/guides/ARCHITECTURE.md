@@ -96,12 +96,13 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 ### 2. 长期记忆、后台黑话/表情学习与商城表情
 
 - **A_Memorix 长期记忆（`src/a-memorix-gateway.js` 与 `src/a-memorix-readonly.js`）**：可选记忆的写入、相关度检索、单条读取、合并替换（`memory_replace`）和删除由 Gateway 统一接入；DSH 五个记忆工具、首次会话自身经历摘要和 WebUI 常规记忆操作访问同一 namespace。已认证的本机 WebUI 还可通过只读 SQLite 适配器分页浏览该 namespace 的 `paragraphs` 活动原始段落（agent-call 白名单不开放此路由）。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
+- **存量记忆回顾**：`memory-curator` 独立处理同来源已存原文，使用拒绝全部工具的 Host preset 或隔离 headless。桥接核验来源和版本并管理可撤销的派生记录。[回顾流程](MEMORY_ARCHITECTURE.md#旧记忆回顾)
 - **DSH Host 后台分组会话（`src/background-sessions.js`）**：后台任务沿用主角色的 Host Workspace 和 Session 创建接口。`memory-organizer` 归入「长期记忆整理」分组，`chat-learning` 和 `market-analysis` 共用「后台黑话与表情学习」分组。桥接只在首次创建时命名分组，提交任务前登记并命名会话，按请求 ID 读取本回合持久事件，模型选择只作用于当前后台会话；任务完成后按登记 ID 自动归档空闲后台会话（控制台也可手动清理）。`qq-agent-presets` 为后台 Session 注册专属工具和执行守卫：学习仅能读取绑定到当前会话的批次图片，记忆整理仅能调用五个记忆工具。Host 无法预建会话时，桥接回退到隔离的 headless 流程和临时 patch。
 - **黑话、表情语义索引与商城表情包（`src/chat-learning.js`、`src/sticker-memory.js`、`src/market-packs.js`）**：按 QQ 来源分批保存学习队列、证据与知识，`src/learning-assets.js` 按内容哈希保存本地表情（详见 [CHAT_LEARNING.md](CHAT_LEARNING.md)）。`sticker-memory.js` 将表情目录投影到独立的 A_Memorix `qq-bridge-stickers` 空间，QQ 工具按当前会话和普通表情（`regularEnabled`）、商城表情（`marketEnabled`）各自开关将检索命中映射回可发送的稳定 ID；角色复检建议经 WebUI 采纳后生效。`market-packs.js` 支持按包 ID/分享链接读取腾讯商城目录、预览、整包收录与移除；收录时将整包视觉分析任务提交到独立 `market-analysis` 会话，商城原释义与分析注解共同编入表情索引。
 
 ### 3. 令牌账本、可选游戏工具与文件权限
 
-- **分功能令牌与花费账本（`src/token-ledger.js` 与 `src/model-catalog.js`）**：将主会话、记忆整理和后台学习的用量存入 `state/token-usage.sqlite`，缓存 `models.dev` 目录按服务商和模型匹配美元单价并冻结已入账金额；旧 JSONL 账本在单事务内一次性迁移。详见 [TOKEN_USAGE_CONSOLE.md](TOKEN_USAGE_CONSOLE.md)。
+- **分功能令牌与花费账本（`src/token-ledger.js` 与 `src/model-catalog.js`）**：将主会话、记忆整理、旧记忆回顾和后台学习的用量存入 `state/token-usage.sqlite`，缓存 `models.dev` 目录按服务商和模型匹配美元单价并冻结已入账金额；旧 JSONL 账本在单事务内一次性迁移。详见 [TOKEN_USAGE_CONSOLE.md](TOKEN_USAGE_CONSOLE.md)。
 - **可选明日方舟模块（`plugins/qq-agent-presets/maa-agent.mjs`）**：在存在本地安装记录（`state/maa-agent/install.json`）时注册 `maa_*` 游戏工具和原生 CLI 入口，按需调用独立虚拟环境的 Python 模块；作业执行、设备锁和战果记录由上游维护。详见 [MAA_AGENT.md](MAA_AGENT.md)。
 - **文件权限策略**：启动和配置保存不自动修改文件 ACL、不请求管理员提权；Windows 新建或原子替换的文件沿用父目录权限，支持 POSIX 文件模式的平台继续对相应新文件使用 `0600`。更新不重置既有磁盘权限或恢复继承，临时测试产物仍与生产 `state/` 分开。
 

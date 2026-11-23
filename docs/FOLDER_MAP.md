@@ -32,6 +32,7 @@
 | `mcp-qq.js` | `mcp__qq__*` QQ 消息、合并转发、分级看图、表情、戳一戳、当前通道状态及主动休息工具 |
 | `mcp-web-search-safe.js` / `web-search.js` / `safe-fetch.js` | 桥接侧安全搜索、网页抓取和 SSRF/DNS rebinding 网络目标校验 |
 | `mcp-memory-safe.js` / `a-memorix-gateway.js` / `a-memorix-readonly.js` | A_Memorix Gateway 客户端、受全局 agent token 保护的 DSH 五个记忆工具，以及 WebUI 全量原始段落的本机 SQLite 只读适配器 |
+| `memory-curator.js` / `curator-tool-guard.mjs` / `dsh-headless.js` | 存量记忆分组、版本核验、可恢复写入与撤销，无工具回顾守卫，以及后台任务共享的 CLI 和模型选择 |
 | `memory-organizer.js` / `memory-organizer-tool-guard.mjs` | 休息后每日独立长期记忆整理队列、DSH 持久事件证据提取（含桌面工具结果压缩）与整理专用工具守卫 |
 | `media-normalize.js` / `media-detail.js` / `ffmpeg-resolve.js` / `forward.js` | 预览缩图与 GIF 抽帧拼图、`qq_get_image_detail` 单图原图读取/重编码/EXIF 正向裁剪、通用 FFmpeg 路径解析与合并转发处理 |
 | `sticker-lib.js` / `sticker-memory.js` | QQ 账号收藏表情读取/发送辅助，以及表情目录到独立 A_Memorix `qq-bridge-stickers` 空间的语义索引投影 |
@@ -58,6 +59,7 @@
 | `maa-agent.mjs` / `maa-agent-navigation.patch` | 可选明日方舟 Maa-Agent 模块的安装、诊断与禁用工具 | 按需启用，状态保存在 `state/maa-agent/install.json` |
 | `verify-*.mjs` / `scan-dsh-tool-names.mjs` | 配置、persona schema 与 DSH 工具名对账脚本 | `verify-dsh-current.mjs` 会创建真实会话并调用模型，仅在获准在线实测时执行 |
 | `probe-*.mjs` / `check-onebot-status.mjs` | 查询 DSH 或 SnowLuma 的实际协议与连接健康 | 按需执行；读取配置或连入运行服务前检查脚本行为 |
+| `evaluate-memory-curator.mjs` / `test-memory-curator.mjs` | 本机存量只读模型评估与离线回归 | 前者调用配置的模型，后者仅用 fixture |
 | `console-ui-fixture.mjs` | 控制台离线预览桩服务（`npm run preview:console`） | 纯内存 mock，不读真实 `config.json` 或 `state/` |
 | `privacy-scan.mjs` | 发布前隐私与敏感信息扫描（`npm run privacy-scan`） | 提交或发布前必跑 |
 | `patch-*.mjs` | 构建或应用依赖补丁 | `patch-snowluma-sdk.mjs` 是 `postinstall` 依赖，不要随意删除 |

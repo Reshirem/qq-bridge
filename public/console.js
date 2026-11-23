@@ -2332,7 +2332,7 @@ function scheduleMemoryOrganizerRefresh() {
   memoryOrganizerPollTimer = null;
   if (document.hidden || currentConsolePage !== 'memory-organizer' || !memoryOrganizerData) return;
   const running = (memoryOrganizerData.jobs || []).some(job => ['queued', 'reading', 'organizing', 'writing'].includes(job.status));
-  if (running) memoryOrganizerPollTimer = setTimeout(() => refreshMemoryOrganizer({ silent: true }), 5000);
+  if (running || memoryOrganizerData.curator?.busy) memoryOrganizerPollTimer = setTimeout(() => refreshMemoryOrganizer({ silent: true }), 5000);
 }
 function renderMemoryOrganizerSessions() {
   const select = document.getElementById('memoryOrganizerSession');
@@ -2513,6 +2513,61 @@ function renderMemoryOrganizerJobs() {
     if (job.jobId === selectedJob) summary.focus();
   }
 }
+const curatorLabels = { keep:'保留原样', merge:'合并重复', timeline:'整理变化', insight:'提炼经验' };
+let curatorActionBusy = false;
+function renderCurator(view) {
+  const pause = document.getElementById('curatorPause');
+  const status = document.getElementById('curatorStatus');
+  const recent = document.getElementById('curatorRecent');
+  pause.disabled = !view || view.unavailable || curatorActionBusy;
+  pause.textContent = view?.paused ? '继续回顾' : '暂停回顾';
+  if (!view || view.unavailable) { status.textContent = view?.error || '回顾服务尚不可用'; recent.replaceChildren(); return; }
+  const phase = view.paused ? (view.busy ? '当前组结束后暂停' : '已暂停') : view.busy ? '回顾中' : '等待下次检查';
+  status.textContent = [phase, '已扫描 ' + view.inventory + ' 条', '已审阅 ' + view.reviewed + ' 组',
+    '本轮待处理 ' + view.remaining + ' 组', view.error].filter(Boolean).join(' · ');
+  recent.replaceChildren();
+  if (!view.recent?.length) recent.textContent = '尚无回顾决定。';
+  for (const entry of view.recent || []) {
+    const card = document.createElement('article');
+    const title = document.createElement('strong');
+    title.textContent = (curatorLabels[entry.action] || '处理中') + ' · ' + new Date(entry.at).toLocaleString();
+    const reason = document.createElement('p');
+    reason.textContent = entry.reason || '';
+    const evidence = document.createElement('small');
+    evidence.textContent = '依据 ' + entry.sources.join('、');
+    card.append(title, reason);
+    if (entry.content) { const body = document.createElement('p'); body.textContent = entry.content; card.append(body); }
+    card.append(evidence);
+    if (entry.status === 'applied') {
+      const undo = document.createElement('button');
+      undo.type = 'button'; undo.className = 'small'; undo.textContent = '撤销此次整理';
+      undo.disabled = view.busy || curatorActionBusy;
+      undo.addEventListener('click', () => changeCurator('undo', entry.id));
+      card.append(undo);
+    } else if (entry.status !== 'keep') {
+      const note = document.createElement('small');
+      note.textContent = ({undone:'已撤销', stale:'原文已变化，已跳过', pending:'待写入', undoing:'撤销中', conflict:'写入回执有冲突，已跳过'})[entry.status] || '';
+      card.append(note);
+    }
+    recent.append(card);
+  }
+}
+async function changeCurator(action, id) {
+  if (curatorActionBusy) return;
+  if (action === 'undo' && !confirm('撤销这次回顾生成的记录？原始记忆将保留。')) return;
+  curatorActionBusy = true;
+  const status = document.getElementById('curatorActionStatus');
+  try {
+    renderCurator(memoryOrganizerData?.curator);
+    const response = await api('/api/memory/curator', 'POST', {action,id});
+    if (!response.ok) throw Error(response.error || '操作失败');
+    memoryOrganizerData.curator = response.curator;
+    status.textContent = '已更新';
+    scheduleMemoryOrganizerRefresh();
+  } catch (error) { status.textContent = error.message; }
+  finally { curatorActionBusy = false; renderCurator(memoryOrganizerData?.curator); }
+}
+document.getElementById('curatorPause').addEventListener('click', () => changeCurator(memoryOrganizerData?.curator?.paused ? 'resume' : 'pause'));
 async function refreshMemoryOrganizer({ silent = false } = {}) {
   if (memoryOrganizerLoading) return;
   memoryOrganizerLoading = true;
@@ -2523,6 +2578,7 @@ async function refreshMemoryOrganizer({ silent = false } = {}) {
     if (!response.ok) throw new Error(response.error || '读取整理状态失败');
     memoryOrganizerData = response.organizer || {};
     const organizer = memoryOrganizerData;
+    renderCurator(organizer.curator);
     const active = organizer.jobs?.filter(job => ['queued', 'reading', 'organizing', 'writing'].includes(job.status)).length || 0;
     const cleanupIds = new Set([
       ...Object.values(organizer.sessionsByDay || {}),
@@ -3454,7 +3510,7 @@ document.getElementById('usageChartControls').addEventListener('click', (ev) => 
 // ── 令牌与花费 ───────────────────────────────────────────────────────────
 let usageSelectedKey = '';
 function usageFeature(key) {
-  return ({ main:'主会话', memory:'记忆整理', learning:'后台学习', other:'其他历史' })[key] ?? '其他历史';
+  return ({ main:'主会话', memory:'记忆整理', curator:'旧记忆回顾', learning:'后台学习', other:'其他历史' })[key] ?? '其他历史';
 }
 
 function usageNum(n) {

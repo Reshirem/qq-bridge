@@ -97,6 +97,7 @@ export function makeFixtureState() {
     memoryProviders: { embedding: { model: 'demo-embedding', dimension: 1024 }, llm: { model: 'demo-model' } },
     memoryRecords: [{ memoryId: 'demo-first', content: '离线记忆：记得周末整理书架。', metadata: { origin: 'assistant' }, observedAt: timestamp }],
     memorySequence: 0,
+    curator: {paused:false,busy:false,remaining:0,inventory:3,reviewed:1,recent:[{id:'demo-review',action:'timeline',status:'applied',at:Date.now(),content:'先练习素描，再开始上色。',reason:'两段经历时间明确。',sources:['demo-a','demo-b']}]},
     organizerSource: { sessionId: 'mock-desktop-agent-session', title: '演示主会话', current: true, updatedAt: timestamp,
       lastScheduledSeq: 18, lastProcessedSeq: -1, asOfSeq: 25 },
     organizerJobs: [{ jobId: 'demo-retry', kind: 'rest', sourceSessionId: 'mock-desktop-agent-session',
@@ -218,7 +219,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
           case '/api/memory/settings': return json({ ok: true, settings: state.memorySettings });
           case '/api/memory/providers': return json({ ok: true, providers: state.memoryProviders });
           case '/api/memory/organizer': return json({ ok: true, organizer: { enabled: true, memoryConfigured: true, dshReady: true,
-            sessions: [state.organizerSource], sessionsByDay: {}, jobs: state.organizerJobs, timeZone: 'Asia/Shanghai' } });
+            curator:state.curator, sessions: [state.organizerSource], sessionsByDay: {}, jobs: state.organizerJobs, timeZone: 'Asia/Shanghai' } });
           case '/api/learning/market-packs/image':
           case '/api/learning/sticker-reviews/image':
           case '/api/learning/stickers/image': {
@@ -482,6 +483,10 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               observedAt: body.observedAt || new Date().toISOString() });
             return json({ ok: true, result: { memoryId } });
           }
+          case '/api/memory/curator':
+            if (body.action === 'undo') state.curator.recent.find(e => e.id === body.id).status = 'undone';
+            else state.curator.paused = body.action === 'pause';
+            return json({ok:true,curator:state.curator});
           case '/api/memory/organizer': {
             if (body.action === 'cleanup') return json({ ok: true, archived: [], skipped: [] });
             if (body.action === 'start') {

@@ -53,7 +53,7 @@ export function usageOfEvent(event) {
 
 const cols = ['cacheMiss', 'cacheHit', 'cacheWrite', 'output'];
 const counts = (b) => cols.map((k) => b[k]);
-const featureKeys = new Set(['main', 'memory', 'learning', 'other']);
+const featureKeys = new Set(['main', 'memory', 'curator', 'learning', 'other']);
 
 export function createTokenLedger({
   file,

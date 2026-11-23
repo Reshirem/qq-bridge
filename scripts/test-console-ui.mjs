@@ -194,6 +194,14 @@ try {
   await page.locator('#tasks .task').filter({ hasText: '记忆整理失败' }).click();
   await page.locator('.memory-organizer-job[open] button', { hasText: '重试' }).waitFor();
   assert.match(await page.locator('.memory-organizer-job[open]').innerText(), /模型请求超时/);
+  await page.locator('#curatorPause').click();
+  await page.locator('#curatorPause').filter({hasText:'继续回顾'}).waitFor();
+  assert.equal(fixture.state.curator.paused, true);
+  await page.locator('#curatorRecent').locator('..').locator('summary').click();
+  await page.getByRole('button', {name:'撤销此次整理'}).click();
+  await page.locator('#curatorRecent').getByText('已撤销').waitFor();
+  await page.locator('#curatorPause').click();
+  await page.locator('#curatorPause').filter({hasText:'暂停回顾'}).waitFor();
   await page.goBack();
   await page.locator('#qq-list .qq-row').first().click();
   await page.waitForFunction(() => document.activeElement?.matches('#v2AllStatesOutput tbody tr'));
@@ -587,7 +595,18 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `learning UI has no horizontal overflow at ${width}`);
   }
-  await openPage('memory');
+  const memoryNav = page.locator('#mainNav').getByRole('link', { name: '长期记忆' });
+  const memoryTabs = page.getByRole('navigation', { name: '长期记忆' });
+  await memoryNav.click();
+  assert.equal(new URL(page.url()).hash, '#memory-organizer');
+  assert.deepEqual(await memoryTabs.getByRole('link').allTextContents(), ['整理任务', '服务设置', '检索与记录']);
+  await memoryTabs.getByRole('link', { name:'检索与记录' }).click();
+  assert.equal(new URL(page.url()).hash, '#memory');
+  assert.equal(await memoryNav.getAttribute('aria-current'), 'location');
+  await page.goBack();
+  await memoryTabs.locator('[aria-current=page]').filter({ hasText:'整理任务' }).waitFor();
+  await page.goForward();
+  await memoryTabs.locator('[aria-current=page]').filter({ hasText:'检索与记录' }).waitFor();
   await page.locator('#memoryQuery').fill('书架');
   await page.locator('#memorySearch').click();
   await page.locator('#memoryResults summary').first().click();
