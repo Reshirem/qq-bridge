@@ -18,12 +18,13 @@ const executable = process.env.DSH_DESKTOP_EXECUTABLE || path.join(process.env.L
 const cli = process.env.DSH_CLI_ENTRY || path.join(path.dirname(executable), 'resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js');
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 let requestedTool, finalText;
-const seenTools = [], sawImages = [];
+const seenTools = [], sawImages = [], seenSystemPrompts = [];
 const modelServer = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const request = JSON.parse(Buffer.concat(chunks));
   seenTools.push(request.tools?.map(t => t.function.name).sort() ?? []);
+  seenSystemPrompts.push((request.messages || []).filter(m => m.role === 'system' || m.role === 'developer').map(m => `[${m.role}] ` + (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n'));
   sawImages.push(JSON.stringify(request.messages).includes('image_url'));
   const tool = requestedTool;
   requestedTool = null;
@@ -95,8 +96,17 @@ try {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token', ...headers },
     body: JSON.stringify(body),
   });
+  const assertCleanSystemPrompt = (expectedText) => {
+    assert.ok(seenSystemPrompts.length > 0);
+    for (const prompt of seenSystemPrompts) {
+      assert.ok(prompt.includes(expectedText), `system prompt missing expected text: ${expectedText}; got: ${prompt.slice(0, 600)}`);
+      for (const leaked of ['MCP resource servers', '### MCP server: wincu', 'DeepSeek Harness Web GUI']) {
+        assert.ok(!prompt.includes(leaked), `background preset leaked global Host section: ${leaked}`);
+      }
+    }
+  };
   for (const mode of ['chat', 'market']) {
-    seenTools.length = sawImages.length = 0;
+    seenTools.length = sawImages.length = seenSystemPrompts.length = 0;
     requestedTool = { name: imageTool, args: mode === 'market' ? { page: 1 } : {} };
     finalText = '{"slang":[],"stickers":[{"id":1}]}';
     const result = await h.runVisualLearning(JSON.stringify({ key: 'group:123', pack: '样例' }), [
@@ -106,6 +116,7 @@ try {
     assert.equal((await bridgePost('/api/learning/session-images', { sessionId: result.sessionId, page: 1 })).status, 404);
     assert.ok(sawImages.includes(true), 'the fixture model received the image');
     assert.deepEqual(seenTools, [[imageTool], [imageTool]]);
+    assertCleanSystemPrompt(mode === 'chat' ? 'QQ 黑话与表情包资料学习器' : 'QQ 商城表情包的视觉注解员');
     const ws = await api.readWorkspaceState({ timeoutMs: 8000 });
     const group = ws.items.find(w => w.title === (mode === 'chat' ? '后台黑话与表情学习' : '自定义学习分组'));
     assert.ok(group?.sessionIds.includes(result.sessionId));
@@ -117,12 +128,13 @@ try {
       assert.equal(session.title, '商城表情分析 · 样例');
     }
   }
-  seenTools.length = 0;
+  seenTools.length = seenSystemPrompts.length = 0;
   requestedTool = { name: 'mcp__qq-memory-organizer__memory_save', args: {
     content: 'fixture memory', externalId: 'qq-bridge:organizer:fixture:chunk-1:item-1',
   } };
   finalText = 'MEMORY_ORGANIZER_DONE';
   await h.runMemoryOrganizerQueue();
+  assertCleanSystemPrompt('qq-bridge 的独立长期记忆整理器');
   const job = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/memory-organizer.json'))).jobs[0];
   assert.equal(job.status, 'completed', job.error);
   assert.equal(job.result.newMemories, 1);
@@ -135,12 +147,13 @@ try {
   const ws = await api.readWorkspaceState({ timeoutMs: 8000 });
   assert.ok(ws.items.find(w => w.title === '长期记忆整理').sessionIds.includes(job.organizerSessionId));
   assert.ok(ws.archivedSessionIds.includes(job.organizerSessionId));
-  seenTools.length = 0;
+  seenTools.length = seenSystemPrompts.length = 0;
   finalText = '{"action":"keep","members":[],"content":"","reason":"fixture"}';
   const result = await h.analyzeCuratorGroup({ key: 'assistant/self',
     rows: ['first', 'second'].map(content => ({ content, metadata: {} })) });
   assert.equal(result.text, finalText);
   assert.deepEqual(seenTools, [[]]);
+  assertCleanSystemPrompt('旧记忆回顾员');
   const afterCurator = await api.readWorkspaceState({ timeoutMs: 8000 });
   assert.ok(afterCurator.items.some(w => w.title === '旧记忆回顾'));
   const archived = afterCurator.archivedSessionIds.filter(id => !ws.archivedSessionIds.includes(id));

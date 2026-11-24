@@ -130,6 +130,11 @@ test('a source edit during inference invalidates the decision and a modified out
 test('reader rejects repeated cursors and the curator preset has no tool capability on either runner', async () => {
   await assert.rejects(readCuratorInventory(async()=>({hits:[],nextCursor:'same'})), /游标重复/);
   const presets = yaml.load(fs.readFileSync(new URL('../plugins/qq-agent-presets/presets/background.patch.yml',import.meta.url),'utf8'));
+  for (const row of presets[0].insert) {
+    const persona = row.config.plugins.find(p => p.id === 'persona');
+    assert.equal(persona?.config?.complete, true, `${row.config.id} persona must set complete: true`);
+    assert.equal(persona?.config?.includeRuntimeContext, false, `${row.config.id} persona must suppress runtime context`);
+  }
   const curator = presets[0].insert.find(p=>p.config.id==='memory-curator');
   assert.equal(curator.config.plugins[0].name,'qq-agent-presets/memory-curator.mjs');
   const patch = yaml.load(learningPatch({mode:'curator',model:{provider:'test',model:'test'}}));

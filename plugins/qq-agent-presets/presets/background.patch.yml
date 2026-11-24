@@ -12,7 +12,7 @@
             config: { kind: memory }
           - id: persona
             name: '@deepseek-ai/dsh-persona'
-            config: { prefix: "{{qq_background_prompt}}\n\n当前人格卡仅供身份和关系判断：\n{{qq_bridge_active_role_card}}", includeRuntimeContext: false }
+            config: { prefix: "{{qq_background_prompt}}\n\n当前人格卡仅供身份和关系判断：\n{{qq_bridge_active_role_card}}", complete: true, includeRuntimeContext: false }
     - id: preset-chat-learning
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -26,7 +26,7 @@
             config: { kind: chat }
           - id: persona
             name: '@deepseek-ai/dsh-persona'
-            config: { prefix: "{{qq_background_prompt}}", includeRuntimeContext: false }
+            config: { prefix: "{{qq_background_prompt}}", complete: true, includeRuntimeContext: false }
     - id: preset-market-analysis
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -40,7 +40,7 @@
             config: { kind: market }
           - id: persona
             name: '@deepseek-ai/dsh-persona'
-            config: { prefix: "{{qq_background_prompt}}", includeRuntimeContext: false }
+            config: { prefix: "{{qq_background_prompt}}", complete: true, includeRuntimeContext: false }
     - id: preset-memory-curator
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -53,4 +53,4 @@
             name: qq-agent-presets/memory-curator.mjs
           - id: persona
             name: '@deepseek-ai/dsh-persona'
-            config: { prefix: "{{qq_background_prompt}}", includeRuntimeContext: false }
+            config: { prefix: "{{qq_background_prompt}}", complete: true, includeRuntimeContext: false }
