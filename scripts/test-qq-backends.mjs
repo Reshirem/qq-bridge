@@ -205,6 +205,9 @@ test('unread conversation list and turn-scoped handled watermark preserve isNew 
     const partial = await read();
     assert.equal(partial.count, 1);
     assert.equal(partial.unreadBeforeRead, 500);
+    assert.equal(partial.hasOlderUnread, true);
+    assert.equal(partial.olderUnreadCount, 499);
+    assert.equal(partial.nextMessageId, 'id:2501');
     await send(456, 2503);
     assert.equal(await readBadge(), 500);
     const loadStored = () => {
@@ -695,3 +698,54 @@ for (const backend of ['native', 'snowluma']) {
     assert.equal(allList.totalRecorded, 2);
   });
 }
+
+test('snowluma: latest-page conversation-history settles prior unread queue entries at rest while keeping post-read arrivals', async () => {
+  const h = await bridgeHarness({
+    config: { qqBackend: 'snowluma' },
+    globals: { setTimeout: () => ({ unref() {} }), clearTimeout() {} },
+  });
+  h.setDesktopAgentLifecycle('active');
+  h.setDesktopAgentTurnActive(true);
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
+  try {
+    const session = await h.ensureDesktopAgentSession();
+    const state = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/desktop-agent.json'), 'utf8'));
+    const headers = {
+      'x-console-token': 'fixture-console-token',
+      'x-agent-call': '1',
+      'x-agent-session-id': session,
+      'x-agent-token': state.agentToken,
+    };
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const baseSec = Math.floor(Date.now() / 1000) + 10;
+    const msg = (id, text, timeSec) => ({
+      self_id: '42', user_id: 123, message_id: String(id), time: timeSec,
+      sender: { user_id: 123, nickname: '私聊好友' },
+      message: [{ type: 'text', data: { text } }],
+    });
+    await h.handleIncomingForTest('private', 123, msg(9101, '第一条未读', baseSec + 1));
+    await h.handleIncomingForTest('private', 123, msg(9102, '第二条未读', baseSec + 2));
+    h.bot.request = async (action) => {
+      if (action === 'get_friend_msg_history') {
+        return { status: 'ok', retcode: 0, data: { messages: [msg(9102, '第二条未读', baseSec + 2)] } };
+      }
+      return { status: 'ok', retcode: 0, data: [] };
+    };
+    const read = await (await fetch(`${base}/api/socialV2/conversation-history?key=private:123&count=1`, { headers })).json();
+    assert.equal(read.hasOlderUnread, true);
+    assert.equal(read.olderUnreadCount, 1);
+    assert.equal(read.nextMessageId, 'id:9102');
+    assert.equal(h.getSocialV2State('private:123').unread.length, 1);
+
+    // Arrive after the history read started: must stay unread across rest
+    await h.handleIncomingForTest('private', 123, msg(9103, '读取后新来消息', baseSec + 3));
+    h.enterDesktopAgentRest();
+    const after = h.getSocialV2State('private:123');
+    assert.equal(after.unreadMessageCount, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(after.unread.map(m => m.messageId))), ['9103']);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await h.close();
+  }
+});

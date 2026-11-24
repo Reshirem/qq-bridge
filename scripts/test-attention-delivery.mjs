@@ -13,9 +13,10 @@ function fakeTimers() {
     },
     clearTimeout(timer) { timers.delete(timer); },
     has(ms, tolerance = 0) { return [...timers].some((timer) => Math.abs(timer.ms - ms) <= tolerance); },
+    list() { return [...timers].map((timer) => timer.ms); },
     run(ms, tolerance = 0) {
       const timer = [...timers].find((item) => Math.abs(item.ms - ms) <= tolerance);
-      assert.ok(timer, `no timer scheduled for ${ms} ms`);
+      assert.ok(timer, `no timer scheduled for ${ms} ms (scheduled: ${[...timers].map((t) => t.ms).join(', ')})`);
       timers.delete(timer);
       return timer.fn();
     },
@@ -531,5 +532,213 @@ test('rest-expired wake includes compact unread summary when conversations are p
     h.queueDesktopAttentionSignal(signal('group:456', 1));
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.at(-1).content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:55');
+  } finally { await h.close(); }
+});
+
+test('active turn enforces 30s steer cooldown and coalesces bursts; turn end preempts immediately', async () => {
+  const { h, clock, sessionId, setRunning } = await fixture();
+  try {
+    h.queueDesktopAttentionSignal(signal('group:456', 1));
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.equal(h.calls.prompts[0].mode, 'steer');
+
+    // Subsequent incoming signals during the active turn hit the 30s steer cooldown instead of 5s
+    h.queueDesktopAttentionSignal(signal('group:789', 2));
+    assert.equal(clock.has(30_000, 1000), true);
+    assert.equal(clock.has(5_000), false);
+    h.queueDesktopAttentionSignal(signal('group:999', 3));
+    assert.equal(h.calls.prompts.length, 1);
+
+    // Turn completion preempts the 30s timer immediately with 0ms and delivers as queue
+    setRunning(false);
+    await deliverFrame(h, turnEnd(sessionId));
+    assert.equal(clock.has(0), true);
+    assert.equal(clock.has(30_000, 1000), false);
+    clock.run(0);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 2);
+    assert.equal(h.calls.prompts[1].mode, 'queue');
+    assert.match(h.calls.prompts[1].content[0].text, /group:789/);
+    assert.match(h.calls.prompts[1].content[0].text, /group:999/);
+  } finally { await h.close(); }
+});
+
+test('fresh QQ signal waking from resting coalesces over 5s and wakes idle session via queue', async () => {
+  const { h, clock, setRunning } = await fixture();
+  try {
+    h.enterDesktopAgentRest();
+    h.setDesktopAgentTurnActive(false);
+    setRunning(false);
+
+    h.queueDesktopAttentionSignal(signal('group:456', 1));
+    assert.equal(h.attentionSnapshot().lifecycle, 'active');
+    assert.equal(clock.has(5_000), true);
+    h.queueDesktopAttentionSignal(signal('group:789', 2));
+    assert.equal(h.calls.prompts.length, 0);
+
+    clock.run(5_000);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.equal(h.calls.prompts[0].mode, 'queue');
+    assert.match(h.calls.prompts[0].content[0].text, /group:456/);
+    assert.match(h.calls.prompts[0].content[0].text, /group:789/);
+  } finally { await h.close(); }
+});
+
+test('agent_rest returns restSkipped when attention is queued or an active steer has not reached assistant output', async () => {
+  const { h, clock, sessionId } = await fixture();
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
+  try {
+    const token = JSON.parse(fs.readFileSync(h.temp + '/state/desktop-agent.json', 'utf8')).agentToken;
+    const postRest = async () => {
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/api/desktop-agent/rest`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-console-token': 'fixture-console-token',
+          'x-agent-call': '1',
+          'x-agent-session-id': sessionId,
+          'x-agent-token': token,
+        },
+        body: '{}',
+      });
+      return { status: res.status, ...(await res.json()) };
+    };
+
+    // Case 1: queued signal keeps turn active and flushes immediately
+    h.queueDesktopAttentionSignal(signal('group:456', 1));
+    const skippedQueued = await postRest();
+    assert.equal(skippedQueued.status, 200);
+    assert.equal(skippedQueued.restSkipped, true);
+    assert.equal(skippedQueued.lifecycle, 'active');
+    assert.equal(skippedQueued.turnCancellationScheduled, false);
+    assert.equal(clock.has(0), true);
+
+    clock.run(0);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.equal(h.calls.prompts[0].mode, 'steer');
+
+    // Case 2: steer submitted/delivered before assistant/message still skips rest
+    const skippedUnseen = await postRest();
+    assert.equal(skippedUnseen.restSkipped, true);
+    assert.equal(skippedUnseen.lifecycle, 'active');
+
+    await deliverFrame(h, {
+      type: 'session/event', sessionId,
+      event: { type: 'user/message', data: { source: { rpcId: h.calls.prompts[0].requestId } } },
+    });
+    const skippedDelivered = await postRest();
+    assert.equal(skippedDelivered.restSkipped, true);
+
+    // Once assistant/message is emitted, pending delivered steer is cleared and agent_rest succeeds
+    await deliverFrame(h, { type: 'session/event', sessionId, event: { type: 'assistant/message', data: {} } });
+    const acceptedRest = await postRest();
+    assert.equal(acceptedRest.status, 200);
+    assert.equal(Boolean(acceptedRest.restSkipped), false);
+    assert.equal(acceptedRest.lifecycle, 'resting');
+    assert.equal(acceptedRest.turnCancellationScheduled, true);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await h.close();
+  }
+});
+
+test('aborted turn during rest requeues unseen pending steer and wakes DSH', async () => {
+  const { h, clock, sessionId, setRunning } = await fixture();
+  try {
+    h.queueDesktopAttentionSignal(signal('group:456', 1));
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts[0].mode, 'steer');
+
+    h.enterDesktopAgentRest();
+    clock.run(80);
+    assert.equal(h.attentionSnapshot().lifecycle, 'resting');
+
+    setRunning(false);
+    await deliverFrame(h, turnEnd(sessionId, 'aborted'));
+    assert.equal(h.attentionSnapshot().lifecycle, 'active');
+    assert.equal(h.attentionSnapshot().queue.length, 1);
+    assert.equal(clock.has(0), true);
+
+    clock.run(0);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 2);
+    assert.equal(h.calls.prompts[1].mode, 'queue');
+    assert.match(h.calls.prompts[1].content[0].text, /group:456/);
+  } finally { await h.close(); }
+});
+
+test('startup watchdog removes stranded queue item and resubmits when DSH stays running=false', async () => {
+  const { h, clock, sessionId, setRunning } = await fixture();
+  try {
+    h.setDesktopAgentTurnActive(false);
+    setRunning(false);
+    let queueSnapshot = [];
+    h.api.readSessionState = async () => ({ cursor: 1, active: false, running: false, queue: queueSnapshot, pendingInput: [] });
+
+    h.queueDesktopAttentionSignal(signal('group:456', 1));
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.equal(h.calls.prompts[0].mode, 'queue');
+    const reqId = h.calls.prompts[0].requestId;
+    assert.equal(typeof reqId, 'string');
+    queueSnapshot = [{ id: 'msg-stranded-1', source: { rpcId: reqId } }];
+
+    assert.equal(clock.has(3_000), true);
+    await clock.run(3_000);
+    assert.ok(h.calls.cancelled.some(
+      (c) => c.method === 'session/updateQueue' && c.params?.itemId === 'msg-stranded-1' && c.params?.action?.kind === 'remove'
+    ));
+    assert.equal(h.attentionSnapshot().turnActive, false);
+    assert.equal(h.attentionSnapshot().queue.length, 1);
+    assert.equal(clock.has(0), true);
+
+    queueSnapshot = [];
+    clock.run(0);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 2);
+    assert.equal(h.calls.prompts[1].mode, 'queue');
+
+    // Two failed startup checks retry once more, then the 3rd timeout falls back to recovery backoff
+    await clock.run(3_000);
+    clock.run(0);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 3);
+    await clock.run(3_000);
+    assert.equal(h.attentionSnapshot().lifecycle, 'recovering');
+  } finally { await h.close(); }
+});
+
+test('flush awaits in-flight agent_rest session/cancel before submitting next prompt', async () => {
+  const { h, clock, sessionId, setRunning } = await fixture();
+  try {
+    const cancelDeferred = deferred();
+    h.api.callUnary = async (method, params) => {
+      h.calls.cancelled.push({ method, params });
+      if (method === 'session/cancel') return cancelDeferred.promise;
+      return { result: { ok: true, value: {} } };
+    };
+
+    h.enterDesktopAgentRest();
+    clock.run(80);
+    h.queueDesktopAttentionSignal(signal('group:456', 1));
+    setRunning(false);
+    await deliverFrame(h, turnEnd(sessionId, 'completed'));
+    assert.equal(h.attentionSnapshot().lifecycle, 'active');
+    assert.equal(clock.has(0), true);
+
+    clock.run(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(h.calls.prompts.length, 0, 'prompt submission must wait for in-flight session/cancel');
+
+    cancelDeferred.resolve({ result: { ok: true, value: {} } });
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.equal(h.calls.prompts[0].mode, 'queue');
+    assert.match(h.calls.prompts[0].content[0].text, /group:456/);
   } finally { await h.close(); }
 });

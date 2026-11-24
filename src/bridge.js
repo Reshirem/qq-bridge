@@ -2007,13 +2007,24 @@ async function main() {
   const friendRequests = new Map(); // flag -> inbound QQ friend request state
   let desktopAttentionGeneration = 0; // Invalidates batches when the QQ message buffer is cleared.
   const DESKTOP_ATTENTION_BATCH_MS = 5000;
+  const DESKTOP_ATTENTION_ACTIVE_COOLDOWN_MS = 30_000;
   const DESKTOP_ATTENTION_MAX_SOURCES = 50;
   const DESKTOP_ATTENTION_REMINDER_CHECK_MS = 60_000;
+  const DESKTOP_AGENT_START_VERIFY_MS = 3_000;
+  const NATIVE_REMINDER_TTL_MS = 6 * 60 * 60 * 1000;
+  let desktopAttentionFlushDueAt = 0;
+  let desktopAgentLastAttentionDeliveredAt = 0;
   let desktopAttentionReminderTimer = null;
   let desktopAgentRestTimer = null;
+  let desktopAgentRestCancelTimer = null;
+  let desktopAgentRestCancelPromise = null;
   let desktopAgentRecoveryTimer = null;
   let desktopAgentSleepCancellation = null;
   let desktopAgentSleepRetryTimer = null;
+  let desktopAgentPendingSteers = [];
+  let desktopAgentTurnActivitySeq = 0;
+  let desktopAgentStartVerifyTimer = null;
+  let desktopAgentStartVerifyAttempt = 0;
   function setRuntimeOwnerQQ(ownerQQ) {
     cfg.ownerQQ = ownerQQ;
   }
@@ -3506,7 +3517,8 @@ async function main() {
             try {
               acknowledgeQQMessages(key, st, displayed, true);
               if (visit && visit.cycle === conversationReadCycle && visit.order > (st.pendingVisit?.order ?? 0)) {
-                st.pendingVisit = visit;
+                const prevUnreadSeq = st.pendingVisit?.cycle === conversationReadCycle ? (st.pendingVisit.unreadSeq || 0) : 0;
+                st.pendingVisit = { ...visit, unreadSeq: Math.max(prevUnreadSeq, visit.unreadSeq || 0) };
               }
             } catch (error) { log('保存 QQ 已读记录失败：', error?.message ?? error); }
           });
@@ -5325,7 +5337,7 @@ async function main() {
           const action = kind === 'group' ? 'get_group_msg_history' : 'get_friend_msg_history';
           const st = getSocialV2State(key);
           const unreadBeforeRead = st.unreadMessageCount;
-          const visit = req.headers['x-agent-token'] && !messageId ? snapshotConversationVisit(st) : null;
+          const visit = req.headers['x-agent-token'] && !messageId ? snapshotConversationVisit(st, { clearUnread: true }) : null;
           const rawCount = Number(url.searchParams.get('count'));
           const defaultCount = !messageId && unreadBeforeRead > 0 ? Math.min(QQ_UNREAD_LIMIT, Math.max(20, unreadBeforeRead + 10)) : 20;
           const count = Math.min(QQ_UNREAD_LIMIT, Math.max(1, rawCount || defaultCount));
@@ -5373,6 +5385,18 @@ async function main() {
               lastAiReply: st.lastAiReplyAt > 0 ? compactModelMessage({ time: st.lastAiReplyAt }, { now }) : null,
               now
             };
+            const olderUnreadMeta = (msgs) => {
+              if (anchor || !msgs.length || unreadBeforeRead <= 0) return {};
+              const returnedNewCount = msgs.filter((m) => m.isNew).length;
+              const olderUnreadCount = Math.max(0, unreadBeforeRead - returnedNewCount);
+              if (olderUnreadCount <= 0 || msgs.at(-1)?.isNew !== true) return {};
+              const lastId = qqMessageId(msgs.at(-1)?.messageId);
+              return {
+                hasOlderUnread: true,
+                olderUnreadCount,
+                ...(lastId ? { nextMessageId: `id:${lastId}` } : {})
+              };
+            };
             const historyTruncationMeta = (msgs) => {
               const lastId = qqMessageId(msgs.at(-1)?.messageId);
               const nextId = lastId ? `id:${lastId}` : null;
@@ -5391,6 +5415,7 @@ async function main() {
               count: msgs.length,
               messages: msgs,
               slang,
+              ...olderUnreadMeta(msgs),
               ...(truncated ? historyTruncationMeta(msgs) : {}),
               bufferId: st.bufferId,
               unreadCount: st.unread.length,
@@ -5413,6 +5438,7 @@ async function main() {
               count: messages.length,
               messages,
               slang,
+              ...olderUnreadMeta(messages),
               ...(truncated ? historyTruncationMeta(messages) : {})
             }, st.unread.filter(m => ids.has(qqMessageId(m.messageId))), messages.length ? visit : null);
           } catch (error) {
@@ -5451,6 +5477,23 @@ async function main() {
               return;
             }
             durationMs = Math.min(Math.max(Math.round(durationMs), DESKTOP_AGENT_REST_MIN_MS), DESKTOP_AGENT_REST_MAX_MS);
+          }
+          const hasQueuedAttention = desktopAttentionQueue.size > 0;
+          const hasUnseenSteer = desktopAgentPendingSteers.some((entry) => ['submitting', 'queued', 'delivered'].includes(entry.stage));
+          if (hasQueuedAttention || hasUnseenSteer) {
+            desktopAgentLifecycle = 'active';
+            if (hasQueuedAttention) scheduleDesktopAttentionFlush(0);
+            log('agent_rest：刚收到未处理的 QQ 提醒，取消本次休息并保持当前回合继续处理');
+            sendJson({
+              ok: true,
+              lifecycle: 'active',
+              restSkipped: true,
+              durationMs: 0,
+              restUntil: null,
+              turnCancellationScheduled: false,
+              note: '刚收到新的 QQ 提醒，本次休息已自动取消，请先处理刚到达的提醒后再调用 agent_rest。',
+            });
+            return;
           }
           enterDesktopAgentRest(durationMs);
           sendJson({
@@ -5959,6 +6002,15 @@ async function main() {
             desktopAttentionQueue.delete(`friendRequest:${target.userId}`);
             const pendingAttention = desktopAttentionQueue.get(key);
             if (pendingAttention?.reason === 'friendRequest') desktopAttentionQueue.delete(key);
+            const handledFriendRequestKey = `friendRequest:${target.userId}`;
+            desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) =>
+              entry.batch.some(([batchKey, batchItem]) => {
+                if (batchKey === handledFriendRequestKey || (batchKey === key && batchItem?.reason === 'friendRequest')) return false;
+                return Number.isSafeInteger(batchItem?.seq) && batchItem.seq > 0
+                  ? desktopAttentionUnresolved.has(batchKey) || desktopAttentionQueue.has(batchKey)
+                  : desktopAttentionQueue.has(batchKey);
+              })
+            );
             if (desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
               desktopAgentPendingWakeReason = '';
               saveDesktopAgentState();
@@ -7746,6 +7798,10 @@ async function main() {
       desktopAgentTurnActive = false;
       desktopAgentRetry = null;
       desktopAgentManualPromptPending = 0;
+      desktopAgentPendingSteers = [];
+      desktopAgentStartVerifyAttempt = 0;
+      clearDesktopAgentRestCancelTimer();
+      clearDesktopAgentStartVerifyTimer();
       finishConversationVisits(false);
       KNOWN_AGENT_TOKENS.delete(desktopAgentToken);
       desktopAgentToken = crypto.randomBytes(32).toString('hex');
@@ -7811,7 +7867,7 @@ async function main() {
     }
   }
 
-  async function submitDesktopAgentPrompt(sessionId, text, { mode = 'queue' } = {}) {
+  async function submitDesktopAgentPrompt(sessionId, text, { mode = 'queue', requestId } = {}) {
     if (!desktopAgentTurnActive) finishConversationVisits(false);
     // Serialize the first prompt so overlapping WebUI/QQ submissions cannot both
     // append the memory bootstrap to the same persistent DSH session.
@@ -7823,6 +7879,7 @@ async function main() {
       return api.sessions.prompt({
         sessionId,
         mode,
+        ...(requestId ? { requestId } : {}),
         content: [{ type: 'text', text: desktopAgentPromptText(text) }]
       });
     }
@@ -7832,6 +7889,7 @@ async function main() {
       const accepted = await api.sessions.prompt({
         sessionId,
         mode,
+        ...(requestId ? { requestId } : {}),
         content: [{ type: 'text', text: desktopAgentPromptText(text, { memoryContext }) }]
       });
       if (accepted?.result?.ok) {
@@ -7853,6 +7911,16 @@ async function main() {
     desktopAgentRestTimer = null;
   }
 
+  function clearDesktopAgentRestCancelTimer() {
+    if (desktopAgentRestCancelTimer) clearTimeout(desktopAgentRestCancelTimer);
+    desktopAgentRestCancelTimer = null;
+  }
+
+  function clearDesktopAgentStartVerifyTimer() {
+    if (desktopAgentStartVerifyTimer) clearTimeout(desktopAgentStartVerifyTimer);
+    desktopAgentStartVerifyTimer = null;
+  }
+
   function clearDesktopAgentRecoveryTimer() {
     if (desktopAgentRecoveryTimer) clearTimeout(desktopAgentRecoveryTimer);
     desktopAgentRecoveryTimer = null;
@@ -7866,6 +7934,7 @@ async function main() {
     clearDesktopAttentionReminderTimer();
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
+    desktopAttentionFlushDueAt = 0;
     if (desktopAgentPendingWakeReason === 'qq-attention') {
       desktopAgentPendingWakeReason = '';
       saveDesktopAgentState();
@@ -7994,18 +8063,23 @@ async function main() {
     finishConversationVisits(false);
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
+    clearDesktopAgentRestCancelTimer();
+    clearDesktopAgentStartVerifyTimer();
     clearDesktopAgentRecoveryTimer();
     clearDesktopAttentionReminderTimer();
     if (desktopAgentSleepRetryTimer) clearTimeout(desktopAgentSleepRetryTimer);
     desktopAgentSleepRetryTimer = null;
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
+    desktopAttentionFlushDueAt = 0;
     desktopAgentLifecycle = 'stopped';
     desktopAgentRestUntil = 0;
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
     desktopAgentPendingWakeReason = '';
     desktopAgentManualPromptPending = 0;
+    desktopAgentPendingSteers = [];
+    desktopAgentStartVerifyAttempt = 0;
     saveDesktopAgentState();
     log('WebUI：全局数字角色已进入持久停止态；不会自动唤醒');
     appendActivity('全局数字角色已由 WebUI 停止');
@@ -8108,10 +8182,13 @@ async function main() {
     desktopAgentLifecycleEpoch += 1;
     desktopAttentionGeneration += 1;
     clearDesktopAgentRestTimer();
+    clearDesktopAgentRestCancelTimer();
+    clearDesktopAgentStartVerifyTimer();
     clearDesktopAgentRecoveryTimer();
     clearDesktopAttentionReminderTimer();
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
+    desktopAttentionFlushDueAt = 0;
     desktopAttentionQueue.clear();
     desktopAttentionUnresolved.clear();
     desktopAgentLifecycle = 'sleeping';
@@ -8120,6 +8197,8 @@ async function main() {
     desktopAgentRecoveryAttempt = 0;
     desktopAgentPendingWakeReason = '';
     desktopAgentManualPromptPending = 0;
+    desktopAgentPendingSteers = [];
+    desktopAgentStartVerifyAttempt = 0;
     saveDesktopAgentState();
     appendActivity(`${scheduled ? '每日睡觉闹钟已让' : 'ownerQQ 已让'}数字角色进入睡眠；QQ 提醒已暂停`);
     await cancelSleepingSession();
@@ -8147,6 +8226,8 @@ async function main() {
     desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
+    clearDesktopAgentRestCancelTimer();
+    clearDesktopAgentStartVerifyTimer();
     clearDesktopAgentRecoveryTimer();
     clearDesktopAttentionReminderTimer();
     desktopAgentLifecycle = 'active';
@@ -8159,22 +8240,31 @@ async function main() {
   }
 
   function scheduleDesktopAgentRestCancellation(sessionId, epoch, delayMs = 80, attempt = 0) {
-    const timer = setTimeout(async () => {
+    clearDesktopAgentRestCancelTimer();
+    const timer = setTimeout(() => {
+      desktopAgentRestCancelTimer = null;
       if (epoch !== desktopAgentLifecycleEpoch || desktopAgentLifecycle !== 'resting' || sessionId !== desktopAgentSessionId) return;
       if (!desktopAgentTurnActive || !dshReady) return;
-      try {
-        const result = await withTimeout(api.callUnary('session/cancel', { sessionId }), DSH_CONTROL_TIMEOUT_MS, 'session/cancel');
-        if (!result?.result?.ok && result?.result?.error?.code !== 'session/not-found') {
-          throw new Error(result?.result?.error?.message ?? 'DSH 未确认 turn 取消');
+      const pending = (async () => {
+        try {
+          const result = await withTimeout(api.callUnary('session/cancel', { sessionId }), DSH_CONTROL_TIMEOUT_MS, 'session/cancel');
+          if (!result?.result?.ok && result?.result?.error?.code !== 'session/not-found') {
+            throw new Error(result?.result?.error?.message ?? 'DSH 未确认 turn 取消');
+          }
+          log(`agent_rest：已请求 DSH 结束当前 turn（${sessionId}）`);
+        } catch (error) {
+          if (epoch !== desktopAgentLifecycleEpoch || desktopAgentLifecycle !== 'resting' || sessionId !== desktopAgentSessionId) return;
+          const nextDelay = Math.min(250 * (2 ** Math.min(attempt, 10)), 30_000);
+          log(`agent_rest：第 ${attempt + 1} 次取消当前 DSH turn 失败，${nextDelay}ms 后继续重试：${error?.message ?? error}`);
+          scheduleDesktopAgentRestCancellation(sessionId, epoch, nextDelay, attempt + 1);
         }
-        log(`agent_rest：已请求 DSH 结束当前 turn（${sessionId}）`);
-      } catch (error) {
-        const nextDelay = Math.min(250 * (2 ** Math.min(attempt, 10)), 30_000);
-        log(`agent_rest：第 ${attempt + 1} 次取消当前 DSH turn 失败，${nextDelay}ms 后继续重试：${error?.message ?? error}`);
-        scheduleDesktopAgentRestCancellation(sessionId, epoch, nextDelay, attempt + 1);
-      }
+      })().finally(() => {
+        if (desktopAgentRestCancelPromise === pending) desktopAgentRestCancelPromise = null;
+      });
+      desktopAgentRestCancelPromise = pending;
     }, Math.max(0, delayMs));
     timer.unref?.();
+    desktopAgentRestCancelTimer = timer;
   }
 
   function enterDesktopAgentRest(durationMs = DESKTOP_AGENT_REST_DEFAULT_MS) {
@@ -8182,13 +8272,17 @@ async function main() {
     desktopAgentRestReminderSent = false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
+    clearDesktopAgentRestCancelTimer();
+    clearDesktopAgentStartVerifyTimer();
     clearDesktopAgentRecoveryTimer();
     if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
     desktopAttentionFlushTimer = null;
+    desktopAttentionFlushDueAt = 0;
     desktopAgentLifecycle = 'resting';
     desktopAgentRestUntil = Date.now() + durationMs;
     desktopAgentRecoveryAt = 0;
     desktopAgentRecoveryAttempt = 0;
+    desktopAgentStartVerifyAttempt = 0;
     desktopAgentPendingWakeReason = desktopAttentionQueue.size > 0 ? 'qq-attention' : '';
     saveDesktopAgentState();
     armDesktopAgentRestTimer();
@@ -8218,13 +8312,15 @@ async function main() {
     desktopAgentRestTimer.unref?.();
   }
 
-  function resumeDesktopAgentRestForAttention() {
+  function resumeDesktopAgentRestForAttention({ delayMs = 0 } = {}) {
     if (desktopAgentLifecycle !== 'resting' || desktopAgentPendingWakeReason !== 'qq-attention') return false;
     // agent_rest cancels the ending DSH turn asynchronously. Keep the rest state
     // until that turn is over, then launch the queued QQ attention prompt.
     if (desktopAgentTurnActive) return false;
     desktopAgentLifecycleEpoch += 1;
     clearDesktopAgentRestTimer();
+    clearDesktopAgentRestCancelTimer();
+    clearDesktopAgentStartVerifyTimer();
     clearDesktopAgentRecoveryTimer();
     clearDesktopAttentionReminderTimer();
     desktopAgentLifecycle = 'active';
@@ -8234,7 +8330,7 @@ async function main() {
     saveDesktopAgentState();
     log('有效 QQ 提醒提前结束全局数字角色休息');
     appendActivity('有效 QQ 提醒提前结束全局数字角色休息');
-    scheduleDesktopAttentionFlush(0);
+    scheduleDesktopAttentionFlush(delayMs);
     return true;
   }
 
@@ -8246,6 +8342,8 @@ async function main() {
     }
     desktopAgentRestUntil = 0;
     desktopAgentPendingWakeReason = 'rest-expired';
+    clearDesktopAgentRestCancelTimer();
+    clearDesktopAgentStartVerifyTimer();
     clearDesktopAttentionReminderTimer();
     if (!dshReady) {
       desktopAgentLifecycle = 'recovering';
@@ -8318,7 +8416,8 @@ async function main() {
   }
 
   function deliverAttentionToRunningTurn() {
-    if (desktopAgentLifecycle === 'recovering') {
+    const wasRecovering = desktopAgentLifecycle === 'recovering';
+    if (wasRecovering) {
       clearDesktopAgentRecoveryTimer();
       desktopAgentLifecycle = 'active';
       desktopAgentRecoveryAt = 0;
@@ -8326,7 +8425,7 @@ async function main() {
       saveDesktopAgentState();
     }
     if (desktopAgentLifecycle === 'active' && desktopAttentionQueue.size > 0) {
-      scheduleDesktopAttentionFlush(0);
+      scheduleDesktopAttentionFlush(wasRecovering ? 0 : undefined);
     }
   }
 
@@ -8445,16 +8544,33 @@ async function main() {
     }
   }
 
-  function scheduleDesktopAttentionFlush(delayMs = DESKTOP_ATTENTION_BATCH_MS) {
-    if (desktopAttentionFlushTimer || desktopAgentLifecycle !== 'active') return;
+  function scheduleDesktopAttentionFlush(delayMs) {
+    if (desktopAgentLifecycle !== 'active') return;
     // A running turn can receive QQ signals as steering, but timer/recovery
     // wake prompts alone must wait until there is no active turn.
     if (desktopAgentTurnActive && desktopAttentionQueue.size === 0) return;
     if (desktopAttentionQueue.size === 0 && !desktopAgentPendingWakeReason) return;
+    let delay;
+    if (delayMs === undefined) {
+      const cooldownLeft = desktopAgentTurnActive && desktopAttentionQueue.size > 0 && desktopAgentLastAttentionDeliveredAt > 0
+        ? Math.max(0, desktopAgentLastAttentionDeliveredAt + DESKTOP_ATTENTION_ACTIVE_COOLDOWN_MS - Date.now())
+        : 0;
+      delay = Math.max(DESKTOP_ATTENTION_BATCH_MS, cooldownLeft);
+    } else {
+      delay = Math.max(0, Number(delayMs) || 0);
+    }
+    const dueAt = Date.now() + delay;
+    if (desktopAttentionFlushTimer) {
+      if (delayMs === undefined || dueAt >= desktopAttentionFlushDueAt) return;
+      clearTimeout(desktopAttentionFlushTimer);
+      desktopAttentionFlushTimer = null;
+    }
+    desktopAttentionFlushDueAt = dueAt;
     desktopAttentionFlushTimer = setTimeout(() => {
       desktopAttentionFlushTimer = null;
+      desktopAttentionFlushDueAt = 0;
       void flushDesktopAttentionSignals();
-    }, Math.max(0, Number(delayMs) || 0));
+    }, delay);
     desktopAttentionFlushTimer.unref?.();
   }
 
@@ -8522,7 +8638,7 @@ async function main() {
     } else if (desktopAgentLifecycle === 'resting') {
       desktopAgentPendingWakeReason = 'qq-attention';
       saveDesktopAgentState();
-      resumeDesktopAgentRestForAttention();
+      resumeDesktopAgentRestForAttention({ delayMs: DESKTOP_ATTENTION_BATCH_MS });
     }
     scheduleDesktopAttentionFlush();
   }
@@ -8540,17 +8656,41 @@ async function main() {
       desktopAttentionUnresolved.delete(key);
       acknowledged = true;
     }
-    if (acknowledged && desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
-      desktopAgentPendingWakeReason = '';
-      saveDesktopAgentState();
+    if (acknowledged) {
+      desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) =>
+        entry.batch.some(([batchKey, batchItem]) => (
+          Number.isSafeInteger(batchItem.seq) && batchItem.seq > 0
+            ? desktopAttentionUnresolved.has(batchKey) || desktopAttentionQueue.has(batchKey)
+            : desktopAttentionQueue.has(batchKey)
+        ))
+      );
+      if (desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
+        desktopAgentPendingWakeReason = '';
+        saveDesktopAgentState();
+      }
     }
     return acknowledged;
   }
 
   function recordDesktopAttentionBatchAccepted(batch) {
+    if (batch.length > 0) desktopAgentLastAttentionDeliveredAt = Date.now();
     for (const [key, item] of batch) {
       if (!reminderEnabled(item.reason, cfg.socialV2.reminders)) continue;
-      if (native && Number.isSafeInteger(item.seq)) unreadStore?.delivered(key,item.seq,item.reminder === true);
+      if (native && Number.isSafeInteger(item.seq)) {
+        const convKeyTarget = canonicalV2Key(item.key ?? key);
+        if (convKeyTarget) {
+          unreadStore?.delivered(convKeyTarget, item.seq, item.reminder === true);
+          const st = socialV2.conversations.get(convKeyTarget);
+          if (st) {
+            const nextStage = item.reminder === true ? 2 : 1;
+            for (const row of st.unread) {
+              if (Number.isSafeInteger(row.seq) && row.seq <= item.seq) {
+                row.stage = Math.max(Number(row.stage) || 0, nextStage);
+              }
+            }
+          }
+        }
+      }
       const unresolved = desktopAttentionUnresolved.get(key);
       if (!unresolved || !Number.isSafeInteger(item.seq) || item.seq <= 0) continue;
       if (item.reminder === true) {
@@ -8594,8 +8734,67 @@ async function main() {
     }
   }
 
+  function armDesktopAgentStartVerify({ sessionId, epoch, activitySeq, requestId, batch, wakeReason }) {
+    clearDesktopAgentStartVerifyTimer();
+    const timer = setTimeout(async () => {
+      desktopAgentStartVerifyTimer = null;
+      const stillCurrent = () =>
+        epoch === desktopAgentLifecycleEpoch
+        && desktopAgentLifecycle === 'active'
+        && desktopAgentSessionId === sessionId
+        && dshReady
+        && desktopAgentTurnActivitySeq === activitySeq;
+      if (!stillCurrent()) return;
+      try {
+        const live = await withTimeout(api.readSessionState(sessionId), DSH_CONTROL_TIMEOUT_MS, 'session.state');
+        if (!stillCurrent()) return;
+        if (live?.running === true) {
+          desktopAgentStartVerifyAttempt = 0;
+          return;
+        }
+        desktopAgentTurnActive = false;
+        desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) => entry.requestId !== requestId);
+        if (desktopAgentStartVerifyAttempt >= 2) {
+          if (batch.length) requeueDesktopAttentionBatch(batch);
+          if (wakeReason && !desktopAgentPendingWakeReason) desktopAgentPendingWakeReason = wakeReason;
+          log(`DSH 接收提醒后连续 ${desktopAgentStartVerifyAttempt + 1} 次未启动 turn，转入恢复退避（${sessionId}）`);
+          scheduleDesktopAgentRecovery('DSH did not start turn after prompt');
+          return;
+        }
+        desktopAgentStartVerifyAttempt += 1;
+        if (requestId && Array.isArray(live?.queue) && live.queue.length > 0) {
+          for (const item of live.queue) {
+            const itemId = typeof item?.id === 'string' && item.id ? item.id : '';
+            const itemRpcId = item?.source?.rpcId ?? item?.requestId ?? null;
+            if (!itemId || itemRpcId !== requestId) continue;
+            try {
+              await withTimeout(
+                api.callUnary('session/updateQueue', { sessionId, itemId, action: { kind: 'remove' } }),
+                DSH_CONTROL_TIMEOUT_MS,
+                'session/updateQueue'
+              );
+            } catch {}
+          }
+          if (!stillCurrent()) return;
+        }
+        if (batch.length) requeueDesktopAttentionBatch(batch);
+        if (wakeReason && !desktopAgentPendingWakeReason) desktopAgentPendingWakeReason = wakeReason;
+        else if (batch.length && !desktopAgentPendingWakeReason) desktopAgentPendingWakeReason = 'qq-attention';
+        saveDesktopAgentState();
+        log(`DSH 接收提醒后未启动 turn（running=false），准备第 ${desktopAgentStartVerifyAttempt} 次补发（${sessionId}）`);
+        scheduleDesktopAttentionFlush(0);
+      } catch (error) {
+        if (!stillCurrent()) return;
+        log(`DSH 启动状态校验失败（${sessionId}）：${error?.message ?? error}`);
+      }
+    }, DESKTOP_AGENT_START_VERIFY_MS);
+    timer.unref?.();
+    desktopAgentStartVerifyTimer = timer;
+  }
+
   async function flushDesktopAttentionSignals() {
     if (desktopAttentionFlushPromise) return desktopAttentionFlushPromise;
+    desktopAttentionFlushDueAt = 0;
     if (!dshReady || desktopAgentResetting || desktopAgentLifecycle !== 'active') return;
     let batch = [...desktopAttentionQueue.entries()]
       .sort((a, b) => a[1].lastAt - b[1].lastAt)
@@ -8608,9 +8807,11 @@ async function main() {
     const qqBatchExpired = () => (batch.length > 0 || wakeReason === 'qq-attention')
       && attentionGeneration !== desktopAttentionGeneration;
     for (const [key] of batch) desktopAttentionQueue.delete(key);
+    let steerEntry = null;
     const promise = (async () => {
       try {
         const sessionId = await ensureDesktopAgentSession();
+        if (desktopAgentRestCancelPromise) await desktopAgentRestCancelPromise.catch(() => {});
         if (qqBatchExpired()) return;
         const hadBatch = batch.length > 0;
         batch = batch.filter(([, item]) => reminderEnabled(item.reason, cfg.socialV2.reminders));
@@ -8674,17 +8875,29 @@ async function main() {
           wakeInstruction,
           attentionText,
         ].filter(Boolean).join('\n');
-        // DSH steer is admitted at the next step of an active turn and starts a
-        // turn when idle, so QQ signals survive a race with turn startup.
+        // DSH steer is admitted at the next step of an active turn; queue starts a
+        // fresh turn when idle or just-stopped.
+        const submitMode = (batch.length && turnWasActive) ? 'steer' : 'queue';
+        const requestId = crypto.randomUUID();
+        const activitySeqBeforeSubmit = desktopAgentTurnActivitySeq;
+        if (submitMode === 'steer' && batch.length) {
+          steerEntry = { batch, stage: 'submitting', requestId, submittedAt: Date.now() };
+          desktopAgentPendingSteers.push(steerEntry);
+        }
         submittedTurnBoundary = desktopAgentLastTurnBoundary;
-        const accepted = await submitDesktopAgentPrompt(sessionId, prompt, { mode: batch.length ? 'steer' : 'queue' });
+        const accepted = await submitDesktopAgentPrompt(sessionId, prompt, { mode: submitMode, requestId });
         if (!accepted?.result?.ok) {
           const error = accepted?.result?.error;
           throw new Error(`${error?.code ?? 'prompt_rejected'}: ${error?.message ?? 'DSH 未接受提醒'}`);
         }
-        if (qqBatchExpired()) return;
+        if (steerEntry && steerEntry.stage === 'submitting') steerEntry.stage = 'queued';
+        if (qqBatchExpired()) {
+          if (steerEntry) desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) => entry !== steerEntry);
+          return;
+        }
         recordDesktopAttentionBatchAccepted(batch);
         if (desktopAgentLifecycle !== 'active' || epoch !== desktopAgentLifecycleEpoch) {
+          if (steerEntry) desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) => entry !== steerEntry);
           if (desktopAgentLifecycle === 'stopped' && dshReady) {
             try { await api.stopSessionWork(sessionId, { timeoutMs: DSH_CONTROL_TIMEOUT_MS }); } catch {}
           }
@@ -8700,10 +8913,14 @@ async function main() {
         if (wakeReason && (!turnWasActive || wakeReason === 'qq-attention')
           && desktopAgentPendingWakeReason === wakeReason) desktopAgentPendingWakeReason = '';
         saveDesktopAgentState();
+        if (desktopAgentLastTurnBoundary === submittedTurnBoundary && desktopAgentTurnActivitySeq === activitySeqBeforeSubmit) {
+          armDesktopAgentStartVerify({ sessionId, epoch, activitySeq: activitySeqBeforeSubmit, requestId, batch, wakeReason });
+        }
         if (wakeReason === 'missing-rest') log(`全局数字角色会话已接收 agent_rest 收尾提醒（${sessionId}）`);
         else log(`全局数字角色会话已接收注意提醒（${batch.length} 个 QQ 来源，未包含消息正文，${sessionId}）`);
         if (batch.length) appendActivity(`QQ 注意信号已提交给全局数字角色（${batch.length} 个来源，仅元数据）`);
       } catch (error) {
+        if (steerEntry) desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) => entry !== steerEntry);
         if (qqBatchExpired()) return;
         const activeOnFailure = desktopAgentLifecycle === 'active';
         requeueDesktopAttentionBatch(batch);
@@ -8804,6 +9021,7 @@ async function main() {
       return;
     }
     pruneDisabledQQReminders();
+    retireExhaustedNativeReminders();
     for (const [key, st] of socialV2.conversations) {
       const [kind,id] = key.split(':');
       for (const ref of st.unread) {
@@ -8957,14 +9175,17 @@ async function main() {
   }
 
   // The badge counts arrivals. The separate queue tracks exactly which rows were delivered.
-  function snapshotConversationVisit(st) {
+  function snapshotConversationVisit(st, { clearUnread = false } = {}) {
     return {
       cycle: conversationReadCycle, order: ++st.visitOrder, version: st.incomingVersion,
       time: st.lastIncomingAt, messageId: st.lastCountedMessageId,
+      unreadSeq: clearUnread ? (st.lastUnreadSeq || 0) : 0,
     };
   }
 
   function commitConversationVisit(key, st) {
+    key = canonicalV2Key(key);
+    if (native && socialV2.conversations.get(key) !== st) return;
     const visit = st.pendingVisit;
     const next = {
       ...st, unreadMessageCount: Math.min(QQ_UNREAD_LIMIT, st.incomingVersion - visit.version),
@@ -8972,8 +9193,35 @@ async function main() {
       handledThroughMessageId: visit.messageId ?? st.handledThroughMessageId,
       pendingVisit: null,
     };
-    unreadStore?.save?.(canonicalV2Key(key), qqSourceMetadata(key, next), st.unread);
-    Object.assign(st, next);
+    const retired = visit.unreadSeq > 0
+      ? st.unread.filter((m) => Number.isSafeInteger(m.seq) && m.seq <= visit.unreadSeq)
+      : [];
+    if (retired.length > 0) {
+      const retiredSet = new Set(retired);
+      const remainingUnread = st.unread.filter((m) => !retiredSet.has(m));
+      const sequences = new Set(retired.map((m) => m.seq));
+      unreadStore?.acknowledge?.(key, qqSourceMetadata(key, { ...next, unread: remainingUnread }), sequences);
+      Object.assign(st, next, { unread: remainingUnread });
+      acknowledgeDesktopAttentionThrough(key, readThroughSeqV2(st), sequences);
+    } else {
+      unreadStore?.save?.(key, qqSourceMetadata(key, next), st.unread);
+      Object.assign(st, next);
+    }
+  }
+
+  function retireExhaustedNativeReminders(now = Date.now()) {
+    if (!native || !unreadStore) return;
+    for (const [key, st] of socialV2.conversations) {
+      if (!st.unread.length) continue;
+      const queuedSeq = desktopAttentionQueue.get(key)?.seq;
+      const retired = st.unread.filter((row) => {
+        if (Number.isSafeInteger(queuedSeq) && row.seq === queuedSeq) return false;
+        const stage = Number(row.stage) || 0;
+        if (stage >= 2) return true;
+        return stage >= 1 && Number(row.time) > 0 && now - Number(row.time) >= NATIVE_REMINDER_TTL_MS;
+      });
+      if (retired.length) acknowledgeQQMessages(key, st, new Set(retired), false);
+    }
   }
 
   function finishConversationVisits(completed) {
@@ -8986,6 +9234,7 @@ async function main() {
       }
       st.pendingVisit = null;
     }
+    if (completed) retireExhaustedNativeReminders();
   }
 
   function countConversationArrival(st, messageId) {
@@ -9883,6 +10132,10 @@ async function main() {
               desktopAgentRetry = llmRetryFromSnapshot(frame.snapshot?.records, redactSensitiveText);
               const boundary = frame.snapshot?.records?.findLast(({ event }) =>
                 event?.type === 'turn/start' || event?.type === 'turn/end');
+              if (boundary) {
+                desktopAgentTurnActivitySeq += 1;
+                clearDesktopAgentStartVerifyTimer();
+              }
               const lastStart = desktopAgentLastTurnBoundary;
               if (lastStart?.type === 'turn/start' && boundary?.event.type === 'turn/end'
                 && boundary.event.data?.turn === lastStart.data?.turn) {
@@ -9894,6 +10147,19 @@ async function main() {
               if (desktopAgentLifecycle === 'resting') {
                 if (boundary?.event.type === 'turn/end') {
                   desktopAgentTurnActive = false;
+                  const abortedSteers = boundary.event.data?.reason?.kind === 'aborted' && desktopAgentPendingSteers.length
+                    ? desktopAgentPendingSteers.splice(0)
+                    : [];
+                  desktopAgentPendingSteers = [];
+                  if (abortedSteers.length) {
+                    const toRequeue = [];
+                    for (const entry of abortedSteers) {
+                      for (const [k, item] of entry.batch) {
+                        if (!Number.isSafeInteger(item.seq) || desktopAttentionUnresolved.has(k)) toRequeue.push([k, item]);
+                      }
+                    }
+                    if (toRequeue.length) requeueDesktopAttentionBatch(toRequeue);
+                  }
                   resumeDesktopAgentRestForAttention();
                 }
               } else if (desktopAgentLifecycle === 'recovering' || (desktopAgentLifecycle === 'active' && desktopAgentTurnActive)) {
@@ -9914,6 +10180,23 @@ async function main() {
             const event = frame.event;
             recordSessionUsage(frame.sessionId, event);
             desktopAgentRetry = nextLlmRetryState(desktopAgentRetry, event, { redact: redactSensitiveText });
+            if (['turn/start', 'step/start', 'assistant/attempt', 'assistant/message', 'tool/call', 'tool/result', 'turn/end'].includes(event?.type)) {
+              desktopAgentTurnActivitySeq += 1;
+              clearDesktopAgentStartVerifyTimer();
+            }
+            if (['turn/start', 'assistant/message', 'tool/call'].includes(event?.type)) {
+              desktopAgentStartVerifyAttempt = 0;
+            }
+            if (event?.type === 'user/message') {
+              const rpcId = event.data?.source?.rpcId ?? event.data?.message?.source?.rpcId ?? null;
+              for (const entry of desktopAgentPendingSteers) {
+                if ((entry.stage === 'submitting' || entry.stage === 'queued') && (!rpcId || entry.requestId === rpcId)) {
+                  entry.stage = 'delivered';
+                }
+              }
+            } else if (event?.type === 'assistant/message') {
+              desktopAgentPendingSteers = desktopAgentPendingSteers.filter((entry) => entry.stage !== 'delivered');
+            }
             if (event?.type === 'turn/start') {
               finishConversationVisits(false);
               desktopAgentLastTurnBoundary = event;
@@ -10004,6 +10287,21 @@ async function main() {
               desktopAgentLastTurnBoundary = event;
               desktopAgentTurnActive = false;
               toolCallNames.delete(frame.sessionId);
+              const abortedSteers = ['resting', 'active'].includes(desktopAgentLifecycle)
+                && event.data?.reason?.kind === 'aborted'
+                && desktopAgentPendingSteers.length
+                ? desktopAgentPendingSteers.splice(0)
+                : [];
+              desktopAgentPendingSteers = [];
+              if (abortedSteers.length) {
+                const toRequeue = [];
+                for (const entry of abortedSteers) {
+                  for (const [k, item] of entry.batch) {
+                    if (!Number.isSafeInteger(item.seq) || desktopAttentionUnresolved.has(k)) toRequeue.push([k, item]);
+                  }
+                }
+                if (toRequeue.length) requeueDesktopAttentionBatch(toRequeue);
+              }
               if (desktopAgentLifecycle === 'resting' && desktopAgentPendingWakeReason === 'qq-attention') {
                 resumeDesktopAgentRestForAttention();
               } else if (!desktopAttentionFlushPromise) finishDesktopAgentTurn(event);

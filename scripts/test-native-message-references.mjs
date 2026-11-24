@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 
@@ -116,23 +117,56 @@ test('native unread acknowledgement keeps sequence images and details backed by 
   assert.deepEqual(f.h.calls.sent,[]);
 });
 
-test('a partial private history read clears the conversation badge at rest and preserves unseen reminders', async t => {
+test('a partial private history read reports older unread hints and clears prior unread records at rest while preserving post-read arrivals', async t => {
   const f = await fixture(t), key = 'private:123';
   await f.incoming('1001');
   await f.incoming('1002');
   const read = await f.call('/api/socialV2/conversation-history', {query: {key, count: 1}});
   assert.equal(read.unreadBeforeRead, 2);
   assert.equal(read.messages[0].messageId, '1002');
+  assert.equal(read.hasOlderUnread, true);
+  assert.equal(read.olderUnreadCount, 1);
+  assert.equal(read.nextMessageId, 'id:1002');
   const state = () => f.call('/api/socialV2/state', {query: {key}});
   assert.equal((await state()).conversationUnreadCount, 2);
+  assert.equal((await state()).unreadCount, 1);
+  await f.incoming('1003');
   f.h.enterDesktopAgentRest();
   const after = await state();
-  assert.equal(after.conversationUnreadCount, 0);
+  assert.equal(after.conversationUnreadCount, 1);
   assert.equal(after.unreadCount, 1);
   f.h.bot.account = '43'; f.h.bot.emit('open');
   f.h.bot.account = '42'; f.h.bot.emit('open');
-  assert.equal((await state()).conversationUnreadCount, 0);
-  assert.equal((await f.unread(key)).messages[0].messageId, '1001');
+  assert.equal((await state()).conversationUnreadCount, 1);
+  assert.deepEqual((await f.unread(key)).messages.map(item => item.messageId), ['1003']);
+});
+
+test('exhausted stage-2 and aged stage-1 native reminders retire at rest and on startup', async t => {
+  const f = await fixture(t), key = 'private:123';
+  f.h.setReady(true);
+  const fresh = await f.incoming('2001');
+  await f.h.flushAttentionNow();
+  const aged = await f.incoming('2002');
+  const recent = await f.incoming('2003');
+  await f.h.flushAttentionNow();
+  const st = f.h.getSocialV2State(key);
+  st.unread.find(row => row.seq === fresh.seq).stage = 2;
+  const dbPath = path.join(f.h.temp, 'state/ntqq-reminders-42.sqlite');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare('UPDATE reminders SET stage=2 WHERE source=? AND seq=?').run(key, fresh.seq);
+    db.prepare('UPDATE reminders SET stage=1, time=? WHERE source=? AND seq=?')
+      .run(Date.now() - 7 * 60 * 60 * 1000, key, aged.seq);
+  } finally { db.close(); }
+
+  // enterDesktopAgentRest retires stage=2 directly via finishConversationVisits(true)
+  f.h.enterDesktopAgentRest();
+  assert.equal(st.unread.some(row => row.seq === fresh.seq), false);
+  // Simulate bridge restart / rebind: aged stage=1 (>6h) also retires while fresh stage=1 stays
+  f.h.bot.account = '43'; f.h.bot.emit('open');
+  f.h.bot.account = '42'; f.h.bot.emit('open');
+  const reloaded = f.h.getSocialV2State(key);
+  assert.deepEqual(reloaded.unread.map(row => row.seq), [recent.seq]);
 });
 
 test('native read references retain only source locators, never history bodies or attachments', async t => {
