@@ -2003,6 +2003,8 @@ async function main() {
   let memoryOrganizerTimezoneWarningLogged = false;
   const desktopAttentionQueue = new Map(); // conversation key -> aggregated metadata-only signal
   const desktopAttentionUnresolved = new Map(); // key -> last unread signal that may receive one rest-time reminder
+  const FRIEND_REQUEST_MAX_ITEMS = 200;
+  const friendRequests = new Map(); // flag -> inbound QQ friend request state
   let desktopAttentionGeneration = 0; // Invalidates batches when the QQ message buffer is cleared.
   const DESKTOP_ATTENTION_BATCH_MS = 5000;
   const DESKTOP_ATTENTION_MAX_SOURCES = 50;
@@ -5235,6 +5237,7 @@ async function main() {
           }
           seenForwardIds.clear();
           feedbackTimes.clear();
+          friendRequests.clear();
           clearQueuedQQAttention();
           log('控制台：已清空 QQ 消息缓冲、读取水位和待处理 QQ 提醒；全局数字角色会话与运行状态保持不变');
           sendJson({ ok: true });
@@ -5800,6 +5803,181 @@ async function main() {
           } catch (error) {
             log(`[autonomous] 工具戳一戳失败 ${key}:`, error?.message ?? error);
             sendJson({ ok: false, error: `戳一戳失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
+          }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/socialV2/friend-requests') {
+          const statusFilter = String(url.searchParams.get('status') || 'pending').trim();
+          if (!['pending', 'all'].includes(statusFilter)) {
+            sendJson({ ok: false, error: 'status 必须是 pending 或 all' }, 400);
+            return;
+          }
+          const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+          await refreshFriendRequestsFromBackend();
+          const now = Date.now();
+          const allItems = [...friendRequests.values()]
+            .sort((a, b) => (b.time - a.time) || (b.updatedAt - a.updatedAt));
+          const totalPending = allItems.filter((item) => item.status === 'pending').length;
+          const filtered = statusFilter === 'pending'
+            ? allItems.filter((item) => item.status === 'pending')
+            : allItems;
+          const requests = filtered.slice(0, limit).map((item) => formatFriendRequestView(item, now));
+          sendJson({
+            ok: true,
+            status: statusFilter,
+            count: requests.length,
+            totalPending,
+            totalRecorded: allItems.length,
+            requests,
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/friend-request/handle') {
+          const body = await readBody();
+          const token = String(req.headers['x-agent-token'] ?? '').trim();
+          if (!token || !isDesktopAgentToken(token)) {
+            sendJson({ ok: false, error: '处理 QQ 好友申请必须携带有效的全局 agent token' }, 403);
+            return;
+          }
+          if (typeof body.approve !== 'boolean') {
+            sendJson({ ok: false, error: 'approve 必须是布尔值（true 同意 / false 拒绝）' }, 400);
+            return;
+          }
+          const approve = body.approve;
+          const rawFlag = body.flag == null ? '' : String(body.flag).trim();
+          const rawUserId = body.userId == null ? '' : String(body.userId).trim();
+          if (!rawFlag && !rawUserId) {
+            sendJson({ ok: false, error: 'flag 和 userId 至少需要提供一个' }, 400);
+            return;
+          }
+          if (rawUserId && !/^[1-9]\d{0,18}$/.test(rawUserId)) {
+            sendJson({ ok: false, error: 'userId 必须是正整数 QQ 号' }, 400);
+            return;
+          }
+          const remark = body.remark == null ? '' : String(body.remark).trim();
+          const reason = body.reason == null ? '' : String(body.reason).trim();
+          if (/[\u0000-\u001f\u007f]/.test(remark) || /[\u0000-\u001f\u007f]/.test(reason)) {
+            sendJson({ ok: false, error: 'remark 或 reason 不能包含换行或控制字符' }, 400);
+            return;
+          }
+          if (remark.length > 64) {
+            sendJson({ ok: false, error: 'remark 长度不能超过 64 个字符' }, 400);
+            return;
+          }
+          if (reason.length > 100) {
+            sendJson({ ok: false, error: 'reason 长度不能超过 100 个字符' }, 400);
+            return;
+          }
+          if (!approve && remark) {
+            sendJson({ ok: false, error: '拒绝好友申请时不能设置备注 remark' }, 400);
+            return;
+          }
+          if ((remark && (SENSITIVE_RE.test(remark) || redactKnownTokensOnly(remark) !== remark))
+            || (reason && (SENSITIVE_RE.test(reason) || redactKnownTokensOnly(reason) !== reason))) {
+            sendJson({ ok: false, error: '备注或拒绝理由含敏感信息，已阻止提交' }, 403);
+            return;
+          }
+          const findTarget = () => {
+            if (rawFlag) {
+              const byFlag = friendRequests.get(rawFlag);
+              if (!byFlag || (rawUserId && byFlag.userId !== rawUserId)) return null;
+              return byFlag;
+            }
+            return [...friendRequests.values()]
+              .filter((item) => item.userId === rawUserId && item.status === 'pending')
+              .sort((a, b) => (b.time - a.time) || (b.updatedAt - a.updatedAt))[0] ?? null;
+          };
+          let target = findTarget();
+          if (!target) {
+            await refreshFriendRequestsFromBackend();
+            target = findTarget();
+          }
+          if (!target) {
+            sendJson({ ok: false, error: '未找到对应的 QQ 好友申请，请先调用 qq_list_friend_requests 查看最新申请列表' }, 404);
+            return;
+          }
+          if (target.status !== 'pending') {
+            sendJson({ ok: false, error: `该好友申请已处理（当前状态：${target.status}），请勿重复提交` }, 409);
+            return;
+          }
+          const key = convKey('private', target.userId);
+          if (!canonicalV2Key(key) || !v2SessionAllowed(key, token)) {
+            sendJson({ ok: false, error: '目标 QQ 号格式无效或未通过策略校验' }, 403);
+            return;
+          }
+          const targetUidNum = Number(target.userId);
+          if (!Number.isSafeInteger(targetUidNum) || !sessionAllowed('private', targetUidNum, token)) {
+            sendJson({ ok: false, error: 'QQ 号超出安全整数范围或未通过会话策略' }, 403);
+            return;
+          }
+          const sendGuard = captureSendGuard(key);
+          let remarkApplied = false;
+          let remarkWarning = '';
+          try {
+            sendGuard();
+            if (native) {
+              await bot.raw('set_friend_add_request', {
+                flag: target.flag,
+                user_id: target.userId,
+                approve,
+                ...(approve && remark ? { remark } : {}),
+                ...(!approve && reason ? { reason } : {}),
+              });
+              remarkApplied = Boolean(approve && remark);
+            } else {
+              const callSnowLuma = async (action, params) => {
+                if (typeof bot.request === 'function') {
+                  const res = await bot.request(action, params);
+                  if (res && typeof res === 'object' && 'retcode' in res) {
+                    if (res.status !== 'ok' || res.retcode !== 0) {
+                      throw new Error(res.wording || res.message || `OneBot ${action} 失败: ${res.retcode}`);
+                    }
+                    return res.data;
+                  }
+                  return res;
+                }
+                return bot.raw(action, params);
+              };
+              await callSnowLuma(
+                target.isDoubt ? 'set_doubt_friends_add_request' : 'set_friend_add_request',
+                { flag: target.flag, approve },
+              );
+              if (approve && remark) {
+                try {
+                  sendGuard();
+                  await callSnowLuma('set_friend_remark', { user_id: targetUidNum, remark });
+                  remarkApplied = true;
+                } catch (remarkError) {
+                  remarkWarning = `好友已同意，但备注设置未确认（${remarkError?.message ?? remarkError}）`;
+                  log(`[autonomous] 设置好友备注失败 ${key}:`, remarkError?.message ?? remarkError);
+                }
+              }
+            }
+            target.status = approve ? 'approved' : 'rejected';
+            target.remark = approve && remark ? remark : '';
+            target.updatedAt = Date.now();
+            desktopAttentionQueue.delete(`friendRequest:${target.userId}`);
+            const pendingAttention = desktopAttentionQueue.get(key);
+            if (pendingAttention?.reason === 'friendRequest') desktopAttentionQueue.delete(key);
+            if (desktopAttentionQueue.size === 0 && desktopAgentPendingWakeReason === 'qq-attention') {
+              desktopAgentPendingWakeReason = '';
+              saveDesktopAgentState();
+            }
+            log(`[autonomous] ${approve ? '同意' : '拒绝'} QQ 好友申请 ${key}`);
+            appendActivity(`${key} [autonomous] ${approve ? '同意' : '拒绝'} QQ 好友申请（flag=${target.flag.slice(0, 48)}）`);
+            sendJson({
+              ok: true,
+              key,
+              userId: target.userId,
+              flag: target.flag,
+              approve,
+              status: target.status,
+              ...(approve && remark ? { remark, remarkApplied } : {}),
+              ...(remarkWarning ? { warning: remarkWarning } : {}),
+            });
+          } catch (error) {
+            log(`[autonomous] 处理 QQ 好友申请失败 ${key}:`, error?.message ?? error);
+            sendJson({ ok: false, error: `处理好友申请失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
           }
           return;
         }
@@ -8315,7 +8493,8 @@ async function main() {
     if (!reminderEnabled(reason, cfg.socialV2.reminders)) return;
     const now = Date.now();
     trackUnresolvedDesktopAttention({ key, kind, id, reason, sender, senderId, messageId, seq, now });
-    const existing = desktopAttentionQueue.get(key);
+    const queueKey = reason === 'friendRequest' ? `friendRequest:${id}` : key;
+    const existing = desktopAttentionQueue.get(queueKey);
     if (existing) {
       existing.count += 1;
       const hasIncomingSeq = Number.isSafeInteger(seq) && seq > 0;
@@ -8331,7 +8510,7 @@ async function main() {
         if (oldestKey) desktopAttentionQueue.delete(oldestKey);
         log(`[autonomy] 全局 QQ 提醒队列达到上限 ${DESKTOP_ATTENTION_MAX_SOURCES}，丢弃最早来源`);
       }
-      desktopAttentionQueue.set(key, {
+      desktopAttentionQueue.set(queueKey, {
         key, kind, id, reason, sender, senderId, messageId,
         seq: Number.isSafeInteger(seq) && seq > 0 ? seq : null,
         count: 1, firstAt: now, lastAt: now, reminder: false
@@ -8462,7 +8641,11 @@ async function main() {
             senderId,
             messageId,
             count,
-          }) + (String(item.reason).endsWith('poke') ? '，事件：QQ 戳一戳（功能事件）' : '');
+          }) + (String(item.reason).endsWith('poke')
+            ? '，事件：QQ 戳一戳（功能事件）'
+            : (String(item.reason).endsWith('friendRequest')
+              ? '，事件：QQ 好友申请（调用 qq_list_friend_requests 查看）'
+              : ''));
         });
         const unreadEntries = [];
         for (const [key, st] of socialV2.conversations) {
@@ -8613,6 +8796,7 @@ async function main() {
     unreadStore = openNativeReminders(path.join(STATE_DIR, 'ntqq-reminders-' + account + '.sqlite'));
     reminderAccount = account;
     socialV2.conversations.clear();
+    friendRequests.clear();
     socialV2.bufferId = crypto.randomUUID();
     loadSocialV2State();
     if (['sleeping','stopped'].includes(desktopAgentLifecycle) || !cfg.socialV2.enabled) {
@@ -9559,6 +9743,124 @@ async function main() {
     appendActivity(`${key} QQ 戳一戳事件已缓冲${shouldRemind ? '；已排队提醒角色' : ''}`);
   }
 
+  function normalizeFriendRequestTime(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return Date.now();
+    return num > 1e12 ? Math.floor(num) : Math.floor(num * 1000);
+  }
+
+  function upsertFriendRequest(raw, { isDoubt = false } = {}) {
+    if (!raw || typeof raw !== 'object') return null;
+    const flag = String(raw.flag ?? raw.seq ?? raw.id ?? '').trim();
+    const userId = String(raw.user_id ?? raw.userId ?? raw.uin ?? '').trim();
+    if (!flag || flag.length > 256 || !/^[1-9]\d{0,18}$/.test(userId)) return null;
+    if (selfUserId && userId === String(selfUserId)) return null;
+    const time = normalizeFriendRequestTime(raw.time ?? raw.reqTime);
+    const nickname = truncateText(String(raw.nickname ?? raw.nick ?? raw.friendNick ?? '').replace(/[\r\n]/g, ' ').trim(), 100);
+    const comment = truncateText(String(raw.comment ?? raw.msg ?? raw.reason ?? raw.extWords ?? '').trim(), 300);
+    const groupRaw = String(raw.group_id ?? raw.sourceGroupId ?? raw.groupCode ?? '').trim();
+    const sourceGroupId = /^[1-9]\d{0,18}$/.test(groupRaw) ? groupRaw : '';
+    const doubt = Boolean(raw.is_doubt ?? raw.isDoubt ?? isDoubt);
+    const existing = friendRequests.get(flag);
+    if (existing) {
+      if (existing.status === 'pending') {
+        existing.nickname = nickname || existing.nickname;
+        existing.comment = comment || existing.comment;
+        existing.sourceGroupId = sourceGroupId || existing.sourceGroupId;
+        existing.isDoubt = existing.isDoubt || doubt;
+        existing.time = time || existing.time;
+        existing.updatedAt = Date.now();
+      }
+      return existing;
+    }
+    for (const [oldFlag, item] of friendRequests) {
+      if (item.userId === userId && item.status === 'pending' && oldFlag !== flag && time >= item.time) {
+        friendRequests.delete(oldFlag);
+      }
+    }
+    const entry = {
+      flag,
+      userId,
+      nickname,
+      comment,
+      sourceGroupId,
+      isDoubt: doubt,
+      time,
+      status: 'pending',
+      remark: '',
+      updatedAt: Date.now(),
+    };
+    friendRequests.set(flag, entry);
+    while (friendRequests.size > FRIEND_REQUEST_MAX_ITEMS) {
+      const oldest = friendRequests.keys().next().value;
+      if (oldest) friendRequests.delete(oldest);
+      else break;
+    }
+    return entry;
+  }
+
+  async function refreshFriendRequestsFromBackend() {
+    if (native) {
+      if (!bot.health?.connected || typeof bot.raw !== 'function') return;
+      try {
+        const rows = await bot.raw('get_friend_requests', {});
+        if (Array.isArray(rows)) {
+          for (const row of rows) upsertFriendRequest(row, { isDoubt: Boolean(row?.is_doubt) });
+        }
+      } catch (error) {
+        log(`拉取桌面 QQ 好友申请列表失败：${error?.message ?? error}`);
+      }
+      return;
+    }
+    if (typeof bot.request !== 'function') return;
+    try {
+      const res = await bot.request('get_doubt_friends_add_request', { count: 50 });
+      if (res?.status === 'ok' && res.retcode === 0 && Array.isArray(res.data)) {
+        for (const row of res.data) upsertFriendRequest(row, { isDoubt: true });
+      }
+    } catch {}
+  }
+
+  function formatFriendRequestView(entry, now = Date.now()) {
+    const timeMeta = compactModelMessage({ time: entry.time }, { now });
+    const isOwner = cfg.ownerQQ != null && String(entry.userId) === String(cfg.ownerQQ);
+    return {
+      flag: entry.flag,
+      userId: entry.userId,
+      ...(entry.nickname ? { nickname: entry.nickname } : {}),
+      comment: entry.comment || '',
+      ...(entry.sourceGroupId ? { sourceGroupId: entry.sourceGroupId } : {}),
+      ...(entry.isDoubt ? { isDoubt: true } : {}),
+      status: entry.status,
+      ...(entry.remark ? { remark: entry.remark } : {}),
+      ...(isOwner ? { isOwner: true } : {}),
+      time: entry.time,
+      ...(timeMeta.at ? { at: timeMeta.at, ago: timeMeta.ago } : {}),
+    };
+  }
+
+  async function handleFriendRequestEvent(event) {
+    if (event?.post_type !== 'request' || event?.request_type !== 'friend') return;
+    const selfId = event.self_id != null ? String(event.self_id) : '';
+    if (native && (!bot.health?.connected || (reminderAccount && selfId && selfId !== reminderAccount))) return;
+    const existed = event?.flag != null && friendRequests.has(String(event.flag).trim());
+    const entry = upsertFriendRequest(event, { isDoubt: Boolean(event?.is_doubt) });
+    if (!entry || existed || entry.status !== 'pending') return;
+    const key = convKey('private', entry.userId);
+    if (!canonicalV2Key(key)) return;
+    queueDesktopAttentionSignal({
+      key,
+      kind: 'private',
+      id: entry.userId,
+      reason: 'friendRequest',
+      sender: entry.userId,
+      senderId: entry.userId,
+      messageId: null,
+      seq: null,
+    });
+    appendActivity(`${key} 收到 QQ 好友申请（flag=${entry.flag.slice(0, 48)}）`);
+  }
+
   async function pumpMux() {
     let retryMs = 3000;
     let failureStreak = 0;
@@ -9757,6 +10059,11 @@ async function main() {
   bot.onNotice('notify', async (event) => {
     try { await handlePokeNotice(event); } catch (error) { log('处理 QQ 戳一戳事件出错:', error?.message ?? error); }
   });
+  if (typeof bot.onRequest === 'function') {
+    bot.onRequest('friend', async (event) => {
+      try { await handleFriendRequestEvent(event); } catch (error) { log('处理 QQ 好友申请事件出错:', error?.message ?? error); }
+    });
+  }
 
   if (native) {
     let coverageTimer, catchupRetry;
@@ -9781,7 +10088,7 @@ async function main() {
       selfUserId = bot.account;
       log('已连接 QQ 独立通道');
     });
-    bot.on('close', () => { imageReferences.clear(); clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; stickerEntries = []; log('QQ 独立通道已断开，等待重连'); });
+    bot.on('close', () => { imageReferences.clear(); friendRequests.clear(); clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; stickerEntries = []; log('QQ 独立通道已断开，等待重连'); });
     process.once('exit', () => bot.close());
   } else {
     registerSnowLumaEvents();

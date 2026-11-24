@@ -39,6 +39,7 @@ export function isPokeToSelf(event) {
 export function reminderEnabled(reason, reminders = {}) {
   if (String(reason ?? '').startsWith('未处理提醒（再次提醒）：') && reminders.unreadFollowup === false) return false;
   const base = wakeReasonBase(String(reason ?? '').replace(/^未处理提醒（再次提醒）：/, ''));
+  if (base === 'friendRequest') return reminders.friendRequest !== false && reminders.private !== false;
   return reminders[base] !== false;
 }
 

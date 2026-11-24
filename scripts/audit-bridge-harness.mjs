@@ -144,8 +144,19 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     onPrivateMessage(fn) { this.on('private', fn); }
     onGroupMessage(fn) { this.on('group', fn); }
     onNotice(kind, fn) { this.on('notice/' + kind, fn); }
+    onRequest(kind, fn) { this.on('request/' + kind, fn); }
     onEvent(fn) { this.on('event', fn); }
     onBotStatus(fn) { this.on('bot_status', fn); }
+    async raw(action, params = {}) {
+      const response = await this.request(action, params);
+      if (response && typeof response === 'object' && 'retcode' in response) {
+        if (response.status !== 'ok' || response.retcode !== 0) {
+          throw new Error(response.wording || response.message || `OneBot ${action} 失败: ${response.retcode}`);
+        }
+        return response.data;
+      }
+      return response;
+    }
     async getLoginInfo() { return { user_id: 42, nickname: 'fixture' }; }
     async connect() {}
     close() {}
@@ -212,6 +223,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     checkDesktopAgentSleepSchedule, desktopAgentSleepScheduleInfo, stopDesktopAgentLifecycle,
     handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
     handlePokeNotice,
+    handleFriendRequestEvent,
     flushAttentionNow() {
       if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
       desktopAttentionFlushTimer = null;

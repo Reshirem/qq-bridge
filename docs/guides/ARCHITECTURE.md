@@ -43,7 +43,7 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 
 ### 2. 六类注意信号与未读补提醒
 
-- **六类首次提醒**：私聊（`private`）、真正发给机器人的原生 @（`atMention`）、已验证的回复/引用（`reply`）、群消息中提到当前选中的人格卡名称（`roleCardName`）、配置的 `socialV2.attentionKeywords` 命中（`keyword`），以及他人对当前账号的 QQ 戳一戳功能事件（`poke`），会向全局会话发送**不含消息正文**的元数据提醒。
+- **六类首次提醒与好友申请事件**：私聊（`private`）、真正发给机器人的原生 @（`atMention`）、已验证的回复/引用（`reply`）、群消息中提到当前选中的人格卡名称（`roleCardName`）、配置的 `socialV2.attentionKeywords` 命中（`keyword`），以及他人对当前账号的 QQ 戳一戳功能事件（`poke`），会向全局会话发送**不含消息正文**的元数据提醒；入站 QQ 好友申请（`friendRequest`，受 `socialV2.enabled` 与 `reminders.private` 约束）同样仅推送申请者 QQ 号等元数据，绝不把验证留言或昵称带入唤醒提示词，而是在内存 queue key `friendRequest:<userId>` 上聚合以避免覆盖同一 QQ 号的私聊消息未读提醒。
 - **独立开关与即时生效**：WebUI「QQ 消息 → 提醒与发送」中，提醒总开关（`socialV2.enabled`）、六类首次提醒（`socialV2.reminders.*`，默认全开）和未读补提醒（`socialV2.reminders.unreadFollowup`，默认开启）各用独立按钮，点击仅保存该项并立即生效；关键词列表另行保存。消息可匹配多个条件，只要还有已开启条件就能提醒。关闭分项时清理该类待发和未读补提醒，同一来源其他类型的提醒仍保留；原生模式同步确认已关闭类型的提醒位置，重连不会恢复这些位置。会话活动时提醒通过 DSH 的 `steer` 送到当前回合下一步，休息时提前唤醒。
 - **未读补提醒**：桥接运行期间，角色读到触发提醒的消息时确认该条提醒；若它仍未被 `readThroughSeq` 覆盖，会话进入休息后由单一全局计时器每分钟检查一次，最多补发一次（指数退避恢复期间不补发）。关闭 `unreadFollowup` 会清除补提醒定时器与排队补提醒，保留未读定位和新事件的首次提醒。
 - **收尾检查与重复唤醒消除**：如果活动回合刚通过 QQ 回复某个来源，数字角色会在休息前用最近一次 `readThroughSeq` 检查该来源是否有新未读；桥接会清掉角色已读消息对应的排队提醒，避免同一消息重复唤醒。
@@ -55,10 +55,11 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 - **`id:` 与 `seq:` 前缀**：消息提醒与 QQ 工具使用 `id:` 和 `seq:`（无 QQ 消息 ID 时为 `seq:本地序号@缓存标识`）区分 QQ 消息 ID 与本地序号；有歧义的纯数字会返回明确提示。清空 QQ 缓存时同步丢弃待处理提醒，并更换缓存标识使之前的本地序号提醒失效，避免序号重新指向新消息。
 - **出站分条节奏**：发送数量由模型决定，桥接无多条开关和数量上限。第一条直接发送，后续每条消息前等待 `min(1000, 下一条Unicode字符数 × delayPerCharMs)` 毫秒（默认 20 ms/字，设为 0 可连续发送）。
 
-### 4. 戳一戳接收与主动发送
+### 4. 戳一戳与好友申请处理
 
 - **结构化接收识别**：戳一戳识别使用结构化类型与参与者账号（SnowLuma 的 `notify/poke`，原生 QQ 的 JSON 灰条业务 `1061`），不使用可定制的动作文字或后缀；主会话提示与按需历史明确标为「QQ 戳一戳事件」。原生断线补查保留系统发送者的灰条记录，再按原消息 ID 向 QQ 查询结构化事件。自己发出或目标为其他人的事件不提醒角色；群聊和私聊共用 `poke` 开关，不依赖私聊消息开关。
 - **主动发送（`qq_send_poke`）**：沿用 `qq_send_poke` → `/api/socialV2/send-poke`。独立通道把 `group_poke` / `send_poke` 映射为 QQ 消息服务 `sendNudge(peer, targetUin, aioUin)`（群聊 peer 使用群号，私聊先解析 NT UID，两个 UIN 参数以十进制字符串传递）。发送前核验群成员或私聊目标一致性，成员查询及 UID 解析期间账号/凭证/连接切换会取消发送。仅 QQ 返回 `result: 0` 才确认原生调用成功，失败或超时不重发。主动发送与接收提醒开关独立。
+- **好友申请查看与同意/拒绝（`qq_list_friend_requests` / `qq_handle_friend_request`）**：通过 `GET /api/socialV2/friend-requests` 与 `POST /api/socialV2/friend-request/handle` 暴露给全局会话。SnowLuma 模式监听 OneBot `request/friend` 事件、尝试 `get_doubt_friends_add_request` 补充列表，处理时按是否疑问申请调用 `set_friend_add_request` / `set_doubt_friends_add_request`，并在同意且提供 `remark` 时调用 `set_friend_remark`。独立模式在桌面 QQ 进程内注册 `BuddyService.addKernelBuddyListener`（监听 `onBuddyReqChange` 与 `onDoubtBuddyReqChange`，连接关闭时 `removeKernelBuddyListener`），支持 `get_friend_requests`（调用 `getBuddyReq` / `getDoubtBuddyReq` 拉取）及 `set_friend_add_request`（普通申请调用 `approvalFriendRequest`，疑问申请同意/拒绝分别调用 `approvalDoubtBuddyReq` / `delDoubtBuddyReq`，同意后按需调用 `setBuddyRemark` 并更新 `privateChatTypes` 缓存为正式好友）。
 
 ---
 
@@ -97,7 +98,7 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 
 - **A_Memorix 长期记忆（`src/a-memorix-gateway.js` 与 `src/a-memorix-readonly.js`）**：可选记忆的写入、相关度检索、单条读取、合并替换（`memory_replace`）和删除由 Gateway 统一接入；DSH 五个记忆工具、首次会话自身经历摘要和 WebUI 常规记忆操作访问同一 namespace。已认证的本机 WebUI 还可通过只读 SQLite 适配器分页浏览该 namespace 的 `paragraphs` 活动原始段落（agent-call 白名单不开放此路由）。设计和部署前提见 [MEMORY_ARCHITECTURE.md](MEMORY_ARCHITECTURE.md)。
 - **存量记忆回顾**：`memory-curator` 独立处理同来源已存原文，使用拒绝全部工具的 Host preset 或隔离 headless。桥接核验来源和版本并管理可撤销的派生记录。[回顾流程](MEMORY_ARCHITECTURE.md#旧记忆回顾)
-- **DSH Host 后台分组会话（`src/background-sessions.js`）**：后台任务沿用主角色的 Host Workspace 和 Session 创建接口。`memory-organizer` 归入「长期记忆整理」分组，`chat-learning` 和 `market-analysis` 共用「后台黑话与表情学习」分组。桥接只在首次创建时命名分组，提交任务前登记并命名会话，按请求 ID 读取本回合持久事件，模型选择只作用于当前后台会话；任务完成后按登记 ID 自动归档空闲后台会话（控制台也可手动清理）。`qq-agent-presets` 为后台 Session 注册专属工具和执行守卫：学习仅能读取绑定到当前会话的批次图片，记忆整理仅能调用五个记忆工具。Host 无法预建会话时，桥接回退到隔离的 headless 流程和临时 patch。
+- **DSH Host 后台分组会话（`src/background-sessions.js`）**：后台任务沿用主角色的 Host Workspace 和 Session 创建接口。`memory-organizer` 归入「长期记忆整理」分组，`chat-learning` 和 `market-analysis` 共用「后台黑话与表情学习」分组。桥接只在首次创建时命名分组，提交任务前登记并命名会话，按请求 ID 读取本回合持久事件，模型选择只作用于当前后台会话；任务完成后按登记 ID 自动归档空闲后台会话（控制台也可手动清理）。`qq-agent-presets` 为四个后台 preset 的 `persona` 设置 `complete: true` 与 `includeRuntimeContext: false`（剥离无关的宿主桌面操作、MCP 资源列表和 Web GUI 提示片段），并注册专属工具与执行守卫：学习仅能读取绑定到当前会话的批次图片，记忆整理仅能调用五个记忆工具。Host 无法预建会话时，桥接回退到隔离的 headless 流程和临时 patch。
 - **黑话、表情语义索引与商城表情包（`src/chat-learning.js`、`src/sticker-memory.js`、`src/market-packs.js`）**：按 QQ 来源分批保存学习队列、证据与知识，`src/learning-assets.js` 按内容哈希保存本地表情（详见 [CHAT_LEARNING.md](CHAT_LEARNING.md)）。`sticker-memory.js` 将表情目录投影到独立的 A_Memorix `qq-bridge-stickers` 空间，QQ 工具按当前会话和普通表情（`regularEnabled`）、商城表情（`marketEnabled`）各自开关将检索命中映射回可发送的稳定 ID；角色复检建议经 WebUI 采纳后生效。`market-packs.js` 支持按包 ID/分享链接读取腾讯商城目录、预览、整包收录与移除；收录时将整包视觉分析任务提交到独立 `market-analysis` 会话，商城原释义与分析注解共同编入表情索引。
 
 ### 3. 令牌账本、可选游戏工具与文件权限

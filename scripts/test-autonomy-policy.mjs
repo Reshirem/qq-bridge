@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { classifyIncomingWake, isBootstrapWakeReason, shouldAttachWakeSnapshot, wakeReasonBase, isPokeToSelf } from '../src/autonomy-policy.js';
+import { classifyIncomingWake, isBootstrapWakeReason, shouldAttachWakeSnapshot, wakeReasonBase, isPokeToSelf, reminderEnabled } from '../src/autonomy-policy.js';
 import { qqChannelConfig } from '../src/qq-channel-config.js';
 
 const selfId = '999';
@@ -70,5 +70,8 @@ assert.equal(isPokeToSelf(poke), true);
 for (const change of [{sub_type:'other'}, {target_id:'124'}, {sender_id:selfId}, {target_id:''}, {notice_type:'message'}]) {
   assert.equal(isPokeToSelf({...poke,...change}), false);
 }
+assert.equal(reminderEnabled('friendRequest', defaults), true);
+assert.equal(reminderEnabled('friendRequest', { ...defaults, private: false }), false);
+assert.equal(reminderEnabled('friendRequest', { ...defaults, friendRequest: false }), false);
 
 console.log('Autonomous wake policy checks passed.');

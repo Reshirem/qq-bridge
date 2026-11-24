@@ -310,3 +310,52 @@ test('image detail reports missing originals, bridge failures and malformed mult
   const result = await callTool('qq_get_image_detail', { key: 'group:123', imageRef: previewImage.imageRef });
   assert.equal(imageMetadata(result)[0].representation, 'reencoded', 'original request must preserve the actual returned representation');
 });
+
+test('friend request tools register by default, honor config toggle, validate input and forward to bridge', async () => {
+  const requests = [];
+  const callTool = loadQQTools(async (url, init = {}) => {
+    const parsedUrl = new URL(url);
+    requests.push({
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(init.body) : null,
+      headers: init.headers,
+    });
+    if (parsedUrl.pathname === '/api/socialV2/friend-requests') {
+      return Response.json({ ok: true, count: 1, totalPending: 1, requests: [{ flag: 'f1', userId: '20001' }] });
+    }
+    return Response.json({ ok: true, status: 'approved', flag: 'f1', userId: '20001', approve: true });
+  });
+  assert.equal(callTool.has('qq_list_friend_requests'), true);
+  assert.equal(callTool.has('qq_handle_friend_request'), true);
+
+  const listResult = await callTool('qq_list_friend_requests', { status: 'all', limit: 10 });
+  assert.equal(listResult.isError, undefined);
+  assert.equal(requests[0].path, '/api/socialV2/friend-requests?status=all&limit=10');
+
+  const handleResult = await callTool('qq_handle_friend_request', {
+    flag: 'f1', userId: 20001, approve: true, remark: '备注名',
+  });
+  assert.equal(handleResult.isError, undefined);
+  assert.equal(requests[1].method, 'POST');
+  assert.equal(requests[1].path, '/api/socialV2/friend-request/handle');
+  assert.deepEqual(requests[1].body, { approve: true, flag: 'f1', userId: '20001', remark: '备注名' });
+  assert.equal(requests[1].headers['x-agent-token'], 'a'.repeat(64));
+
+  const missingTarget = await callTool('qq_handle_friend_request', { approve: true });
+  assert.equal(missingTarget.isError, true);
+  assert.match(missingTarget.content[0].text, /flag 和 userId 至少/);
+
+  const rejectWithRemark = await callTool('qq_handle_friend_request', { flag: 'f1', approve: false, remark: '不应存在' });
+  assert.equal(rejectWithRemark.isError, true);
+  assert.match(rejectWithRemark.content[0].text, /拒绝好友申请时不能设置备注/);
+
+  await assert.rejects(callTool('qq_handle_friend_request', { flag: 'f1', approve: true, remark: 'x'.repeat(65) }));
+  assert.equal(requests.length, 2);
+
+  const disabled = loadQQTools(async () => assert.fail('disabled tool must not call bridge'), {
+    socialV2: { tools: { friendRequests: false } },
+  });
+  assert.equal(disabled.has('qq_list_friend_requests'), false);
+  assert.equal(disabled.has('qq_handle_friend_request'), false);
+});

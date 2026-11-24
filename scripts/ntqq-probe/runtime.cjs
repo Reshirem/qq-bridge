@@ -40,10 +40,128 @@ module.exports = function startChannel(receiver, endpoint) {
     }
   };
   let listenerId;
+  let buddyListenerId;
+  const buddySvc = typeof receiver.getBuddyService === 'function' ? receiver.getBuddyService() : null;
+  const buddyReqsByUid = new Map();
+  const emittedBuddyReqFlags = new Set();
+  const buddyReqWaiters = new Set();
+  let pullingBuddyReqs = 0;
+  let buddyReqSyncChain = Promise.resolve();
   const number = value => /^[1-9]\d*$/.test(String(value)) ? String(value) : '';
   function checked(response) {
     if (response?.result !== 0) throw Error(response?.errMsg || 'QQ 调用失败 ' + String(response?.result));
     return response;
+  }
+  function rememberBuddyReq(uid, entry) {
+    buddyReqsByUid.delete(uid);
+    buddyReqsByUid.set(uid, entry);
+    while (buddyReqsByUid.size > 200) {
+      buddyReqsByUid.delete(buddyReqsByUid.keys().next().value);
+    }
+  }
+  function rememberEmittedBuddyReq(flag) {
+    emittedBuddyReqFlags.add(flag);
+    while (emittedBuddyReqFlags.size > 500) {
+      emittedBuddyReqFlags.delete(emittedBuddyReqFlags.values().next().value);
+    }
+  }
+  async function resolveBuddyProfiles(uids) {
+    const out = new Map();
+    const list = [...new Set(uids.filter(uid => typeof uid === 'string' && uid))];
+    if (!list.length) return out;
+    try {
+      const converted = await receiver.getUixConvertService?.().getUin(list);
+      if (converted?.uinInfo instanceof Map) {
+        for (const uid of list) {
+          const uin = number(converted.uinInfo.get(uid));
+          if (uin) out.set(uid, { uin, nick: '' });
+        }
+      }
+    } catch {}
+    const unresolved = list.filter(uid => !out.get(uid)?.uin);
+    if (unresolved.length && typeof receiver.getProfileService === 'function') {
+      try {
+        const profiles = await receiver.getProfileService().getCoreAndBaseInfo?.('nodeStore', unresolved);
+        if (profiles instanceof Map) {
+          for (const [uid, info] of profiles.entries()) {
+            const uin = number(info?.uin) || out.get(uid)?.uin || '';
+            const nick = String(info?.nick || info?.remark || out.get(uid)?.nick || '');
+            if (uin || nick) out.set(uid, { uin, nick });
+          }
+        }
+      } catch {}
+    }
+    return out;
+  }
+  async function ingestBuddyReqs(rows, { isDoubt = false, emitEvents = false } = {}) {
+    const valid = [];
+    for (const r of Array.isArray(rows) ? rows : []) {
+      const uid = isDoubt ? r?.uid : r?.friendUid;
+      if (typeof uid !== 'string' || !uid) continue;
+      if (!isDoubt && (r.isDecide || r.isInitiator || r.isAgreed)) {
+        buddyReqsByUid.delete(uid);
+        continue;
+      }
+      valid.push({ row: r, uid });
+    }
+    if (!valid.length) return;
+    const profiles = await resolveBuddyProfiles(valid.map(item => item.uid));
+    if (socket.destroyed || String(globalThis.authData?.uin) !== account) return;
+    for (const { row: r, uid } of valid) {
+      const prof = profiles.get(uid) || { uin: '', nick: '' };
+      const uin = number(r.friendUin ?? r.uin) || prof.uin || '';
+      const rawReqTime = r.reqTime ?? '0';
+      const reqTimeStr = String(rawReqTime).trim() || '0';
+      const rawNum = Number(reqTimeStr);
+      const timeSec = Number.isFinite(rawNum) && rawNum > 1e12
+        ? Math.floor(rawNum / 1000)
+        : (Number.isFinite(rawNum) && rawNum > 0 ? Math.floor(rawNum) : Math.floor(Date.now() / 1000));
+      const flag = `${isDoubt ? 'native-doubt' : 'native'}:${uid}:${reqTimeStr}`;
+      const nickname = String((isDoubt ? r.nick : r.friendNick) || prof.nick || '');
+      const comment = String((isDoubt ? (r.msg || r.reason) : r.extWords) || '');
+      const groupCode = number(r.groupCode) || '';
+      const entry = {
+        flag,
+        friendUid: uid,
+        rawReqTime,
+        user_id: uin,
+        nickname,
+        comment,
+        group_id: groupCode || null,
+        is_doubt: Boolean(isDoubt || r.isDoubt),
+        time: timeSec,
+      };
+      rememberBuddyReq(uid, entry);
+      if (emitEvents && uin && !emittedBuddyReqFlags.has(flag)) {
+        rememberEmittedBuddyReq(flag);
+        send({
+          event: {
+            self_id: account,
+            post_type: 'request',
+            request_type: 'friend',
+            user_id: uin,
+            nickname,
+            comment,
+            flag,
+            time: timeSec,
+            ...(groupCode ? { group_id: groupCode } : {}),
+            ...(entry.is_doubt ? { is_doubt: true } : {}),
+          }
+        });
+      }
+    }
+  }
+  function queueBuddyReqUpdate(rows, isDoubt) {
+    const emitEvents = pullingBuddyReqs === 0;
+    const kind = isDoubt ? 'doubt' : 'buddy';
+    buddyReqSyncChain = buddyReqSyncChain
+      .then(() => ingestBuddyReqs(rows, { isDoubt, emitEvents }))
+      .catch(() => {})
+      .finally(() => {
+        for (const waiter of [...buddyReqWaiters]) {
+          waiter(kind);
+        }
+      });
   }
   async function message(row, context = null) {
     const group = row.chatType === 2;
@@ -137,6 +255,16 @@ module.exports = function startChannel(receiver, endpoint) {
       if (String(globalThis.authData?.uin) !== account) return socket.destroy();
       if (!info?.msgId || !info.msgElementId) return;
       mediaDownloads.get(mediaKey(info.msgId, info.msgElementId))?.finish(info);
+    },
+  }, { get: (obj, prop) => prop in obj ? obj[prop] : typeof prop === 'string' && prop.startsWith('on') ? () => {} : undefined });
+  const buddyListener = new Proxy({
+    onBuddyReqChange(data) {
+      if (String(globalThis.authData?.uin) !== account) return socket.destroy();
+      queueBuddyReqUpdate(data?.buddyReqs, false);
+    },
+    onDoubtBuddyReqChange(data) {
+      if (String(globalThis.authData?.uin) !== account) return socket.destroy();
+      queueBuddyReqUpdate(data?.doubtList, true);
     },
   }, { get: (obj, prop) => prop in obj ? obj[prop] : typeof prop === 'string' && prop.startsWith('on') ? () => {} : undefined });
   async function findSharedGroupForUid(uid) {
@@ -614,11 +742,134 @@ module.exports = function startChannel(receiver, endpoint) {
       }
       throw Error('QQ 收藏原件尚未下载');
     }
+    if (action === 'get_friend_requests') {
+      if (!buddySvc || typeof buddySvc.getBuddyReq !== 'function') throw Error('当前 QQ 未提供好友申请查询接口');
+      pullingBuddyReqs += 1;
+      let timer;
+      let graceTimer;
+      let waiter;
+      try {
+        let gotBuddy = false;
+        let gotDoubt = typeof buddySvc.getDoubtBuddyReq !== 'function';
+        const waitForChange = new Promise((resolve) => {
+          const finish = () => {
+            if (waiter) buddyReqWaiters.delete(waiter);
+            clearTimeout(graceTimer);
+            resolve();
+          };
+          waiter = (kind) => {
+            if (kind === 'buddy') gotBuddy = true;
+            if (kind === 'doubt') gotDoubt = true;
+            if (gotBuddy && gotDoubt) finish();
+            else if (!graceTimer) graceTimer = setTimeout(finish, 250);
+          };
+          buddyReqWaiters.add(waiter);
+          timer = setTimeout(finish, 1000);
+        });
+        checked(await buddySvc.getBuddyReq());
+        if (typeof buddySvc.getDoubtBuddyReq === 'function') {
+          await buddySvc.getDoubtBuddyReq('', 50, '').catch(() => {});
+        }
+        await waitForChange;
+        await buddyReqSyncChain;
+        sameAccount();
+        return [...buddyReqsByUid.values()].filter(item => item.user_id && item.flag).map(item => ({
+          flag: item.flag,
+          user_id: item.user_id,
+          nickname: item.nickname,
+          comment: item.comment,
+          ...(item.group_id ? { group_id: item.group_id } : {}),
+          ...(item.is_doubt ? { is_doubt: true } : {}),
+          time: item.time,
+        }));
+      } finally {
+        if (waiter) buddyReqWaiters.delete(waiter);
+        clearTimeout(graceTimer);
+        clearTimeout(timer);
+        pullingBuddyReqs = Math.max(0, pullingBuddyReqs - 1);
+      }
+    }
+    if (action === 'set_friend_add_request') {
+      if (!buddySvc) throw Error('当前 QQ 未提供好友申请处理接口');
+      const approve = Boolean(p.approve);
+      const rawFlag = String(p.flag ?? '').trim();
+      const targetUserId = number(p.user_id);
+      let entry = null;
+      const flagMatch = /^native(-doubt)?:([^:]+):(.+)$/.exec(rawFlag);
+      if (flagMatch) {
+        const uidFromFlag = flagMatch[2];
+        const cached = buddyReqsByUid.get(uidFromFlag);
+        entry = cached && cached.flag === rawFlag ? cached : {
+          flag: rawFlag,
+          friendUid: uidFromFlag,
+          rawReqTime: flagMatch[3],
+          user_id: cached?.user_id || targetUserId || '',
+          group_id: cached?.group_id || null,
+          is_doubt: flagMatch[1] === '-doubt',
+        };
+      } else if (targetUserId) {
+        entry = [...buddyReqsByUid.values()].find(item => item.user_id === targetUserId) || null;
+        if (!entry) {
+          await perform('get_friend_requests', {});
+          entry = [...buddyReqsByUid.values()].find(item => item.user_id === targetUserId) || null;
+        }
+      }
+      if (!entry?.friendUid) throw Error('QQ 找不到对应的待处理好友申请');
+      sameAccount();
+      const remark = approve && p.remark ? String(p.remark).trim() : '';
+      if (entry.is_doubt) {
+        if (approve) {
+          if (typeof buddySvc.approvalDoubtBuddyReq !== 'function') throw Error('当前 QQ 不支持同意疑问好友申请');
+          checked(await buddySvc.approvalDoubtBuddyReq(entry.friendUid, entry.group_id ? String(entry.group_id) : undefined, remark || undefined));
+        } else if (typeof buddySvc.delDoubtBuddyReq === 'function') {
+          checked(await buddySvc.delDoubtBuddyReq(entry.friendUid));
+        } else {
+          throw Error('当前 QQ 不支持拒绝疑问好友申请');
+        }
+      } else {
+        if (typeof buddySvc.approvalFriendRequest !== 'function') throw Error('当前 QQ 不支持处理好友申请');
+        checked(await buddySvc.approvalFriendRequest({
+          friendUid: entry.friendUid,
+          accept: approve,
+          refuseMsg: approve ? '' : String(p.reason ?? ''),
+          reqTime: String(entry.rawReqTime ?? '0'),
+        }));
+      }
+      sameAccount();
+      if (approve) {
+        privateChatTypes.set(entry.friendUid, 1);
+        if (remark && typeof buddySvc.setBuddyRemark === 'function') {
+          await buddySvc.setBuddyRemark({ uid: entry.friendUid, remark }).then(res => { if (res?.result != null) checked(res); });
+        }
+      }
+      buddyReqsByUid.delete(entry.friendUid);
+      return {
+        flag: entry.flag,
+        user_id: entry.user_id || targetUserId || '',
+        approve,
+        ...(remark ? { remark } : {}),
+      };
+    }
+    if (action === 'set_friend_remark') {
+      if (!buddySvc || typeof buddySvc.setBuddyRemark !== 'function') throw Error('当前 QQ 不支持设置好友备注');
+      const uin = number(p.user_id);
+      if (!uin) throw Error('QQ 号无效');
+      const uid = await perform('resolveUid', { uin });
+      if (!uid) throw Error('QQ 无法解析此账号的 NT UID');
+      sameAccount();
+      checked(await buddySvc.setBuddyRemark({ uid, remark: String(p.remark ?? '') }));
+      return { user_id: uin, remark: String(p.remark ?? '') };
+    }
     throw Error('QQ 独立通道尚不支持 ' + action);
   }
   socket.once('connect', () => {
     try {
       listenerId = svc.addKernelMsgListener(listener);
+      try {
+        if (typeof buddySvc?.addKernelBuddyListener === 'function') {
+          buddyListenerId = buddySvc.addKernelBuddyListener(buddyListener);
+        }
+      } catch {}
       send({ hello: endpoint.token, account, uid: self.uid, pid: process.pid });
     } catch { socket.destroy(); }
   });
@@ -633,6 +884,9 @@ module.exports = function startChannel(receiver, endpoint) {
   socket.once('close', () => {
     clearInterval(identityTimer);
     if (listenerId != null) svc.removeKernelMsgListener(String(listenerId));
+    if (buddyListenerId != null && typeof buddySvc?.removeKernelBuddyListener === 'function') {
+      try { buddySvc.removeKernelBuddyListener(String(buddyListenerId)); } catch {}
+    }
     for (const receipt of slides.values()) receipt.reject(Error('QQ 通道已断开，投递结果未知'));
     for (const download of mediaDownloads.values()) download.finish({error:'QQ 通道已断开，图片下载结果未知'});
     mediaDownloads.clear();

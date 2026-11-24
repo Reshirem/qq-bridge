@@ -70,6 +70,7 @@ export class NativeQQ extends EventEmitter {
   onPrivateMessage(fn) { this.on('private', fn); }
   onGroupMessage(fn) { this.on('group', fn); }
   onNotice(type, fn) { this.on('notice:' + type, fn); }
+  onRequest(type, fn) { this.on('request:' + type, fn); }
   async connect() {
     this.server = createServer(socket => this.accept(socket));
     await new Promise((resolve, reject) => {
@@ -139,7 +140,13 @@ export class NativeQQ extends EventEmitter {
         this.emit('open');
       } else if (packet.event) {
         const event = packet.event;
-        if (String(event.self_id) !== this.account || !['private','group'].includes(event.message_type)) return;
+        if (String(event.self_id) !== this.account) return;
+        if (event.post_type === 'request' && typeof event.request_type === 'string' && event.request_type) {
+          this.health.lastPacketAt = Date.now();
+          this.emit('request:' + event.request_type, event);
+          return;
+        }
+        if (!['private','group'].includes(event.message_type)) return;
         this.health.lastPacketAt = Date.now();
         if (event.post_type === 'notice') this.emit('notice:' + event.notice_type, event);
         else this.emit(event.message_type, event);
