@@ -6110,10 +6110,10 @@ async function main() {
             const found = reference.message;
             let info;
             if (found) {
-              info = await resolveReplyInfo(kind, id, found.messageId);
+              info = await resolveReplyInfo(kind, id, found.messageId, { includeReplyTo: true });
               if (info) info.seq = found.seq;
             } else if (reference.kind === 'id') {
-              const remote = await resolveReplyInfo(kind, id, reference.value);
+              const remote = await resolveReplyInfo(kind, id, reference.value, { includeReplyTo: true });
               info = remote ? { ...remote, messageId: reference.value } : null;
             } else {
               info = null;
@@ -6473,7 +6473,11 @@ async function main() {
             return;
           }
           if (!media.length) {
-            sendJson({ ok: true, messageId, media: [], images: [], note: '该消息没有可读取的图片/表情元数据' });
+            const quotedMediaId = message?.replyTo?.hasMedia && message?.replyTo?.messageId ? message.replyTo.messageId : '';
+            const note = quotedMediaId
+              ? `该消息没有可读取的图片/表情元数据；但该消息引用了 ${quotedMediaId}（含图片/表情），如需查看被引用的图片，请改用 messageId="${quotedMediaId}" 调用 qq_get_message_images`
+              : '该消息没有可读取的图片/表情元数据';
+            sendJson({ ok: true, messageId, media: [], images: [], note });
             return;
           }
           try {
@@ -7204,9 +7208,28 @@ async function main() {
     const params = { [kind === 'group' ? 'group_id' : 'user_id']: id, count, reverse_order: reverseOrder };
     if (anchor) params.message_id = anchor;
     const data = await bot.raw(action, params);
-    const entries = Array.isArray(data) ? data : data?.messages;
-    if (!Array.isArray(entries)) throw new Error('QQ 历史响应缺少消息列表');
-    return Promise.all(entries.slice(0, count).map(async (entry) => {
+    const rawEntries = Array.isArray(data) ? data : data?.messages;
+    if (!Array.isArray(rawEntries)) throw new Error('QQ 历史响应缺少消息列表');
+    const entries = rawEntries.slice(0, count);
+    const pageRowsById = new Map();
+    for (const entry of entries) {
+      const mid = qqMessageId(entry?.message_id ?? entry?.messageId);
+      const entryGroup = entry?.group_id ?? entry?.groupId;
+      if (mid && (entryGroup == null || (kind === 'group' && String(entryGroup) === String(id)))) {
+        pageRowsById.set(mid, entry);
+      }
+    }
+    const pendingReplyRows = new Map();
+    const lookupRow = (targetId) => {
+      const cleanId = qqMessageId(targetId);
+      if (!cleanId) return Promise.resolve(null);
+      if (pageRowsById.has(cleanId)) return Promise.resolve(pageRowsById.get(cleanId));
+      if (!pendingReplyRows.has(cleanId)) {
+        pendingReplyRows.set(cleanId, fetchSingleQQRow(kind, id, cleanId).catch(() => null));
+      }
+      return pendingReplyRows.get(cleanId);
+    };
+    return Promise.all(entries.map(async (entry) => {
       const group = entry?.group_id ?? entry?.groupId;
       if (group != null && (kind !== 'group' || String(group) !== String(id))) {
         throw new Error('QQ 历史消息来源不匹配');
@@ -7216,7 +7239,15 @@ async function main() {
       const userId = senderObj.user_id ?? senderObj.userId ?? entry?.user_id ?? entry?.userId ?? null;
       const sender = senderObj.card || senderObj.nickname || entry?.sender_name || (userId != null ? String(userId) : '未知');
       const resolveAtName = null;
-      const resolveReply = (replyId) => resolveReplyInfo(kind, id, replyId);
+      const replyTo = await resolveReplyObjectFromSegments(segments, kind, id, lookupRow);
+      const resolveReply = async (replyId) => {
+        const cleanId = qqMessageId(replyId);
+        if (cleanId && replyTo?.messageId === `id:${cleanId}` && (replyTo.sender || replyTo.text)) {
+          return replyTo;
+        }
+        const row = await lookupRow(replyId);
+        return row ? buildReplyToFromRow(row, cleanId) : null;
+      };
       const text = await segmentsToText(segments, { resolveAtName, resolveReply, includeReply: false });
       const plain = await segmentsToText(segments, { resolveAtName, resolveReply, includeReply: true });
       const media = extractMediaFromSegments(segments);
@@ -7228,6 +7259,26 @@ async function main() {
       const time = Number.isFinite(rawTime) && rawTime > 0 ? (rawTime > 1e12 ? rawTime : rawTime * 1000) : 0;
       const self = selfUserId != null && userId != null && String(userId) === String(selfUserId);
       const owner = cfg.ownerQQ != null && userId != null && String(userId) === String(cfg.ownerQQ);
+      let quoteTargetIsSelf = false;
+      if (Array.isArray(segments) && selfUserId != null) {
+        const selfStr = String(selfUserId);
+        for (const seg of segments) {
+          if (seg?.type !== 'reply') continue;
+          if (typeof seg.data?.nativeSelf === 'boolean') {
+            if (seg.data.nativeSelf) { quoteTargetIsSelf = true; break; }
+            continue;
+          }
+          const targetId = qqMessageId(seg.data?.id);
+          if (!targetId) continue;
+          if (replyTo?.messageId === `id:${targetId}`) {
+            if (replyTo.userId != null && String(replyTo.userId) === selfStr) { quoteTargetIsSelf = true; break; }
+            continue;
+          }
+          const row = await lookupRow(targetId);
+          const uid = row?.sender?.user_id ?? row?.sender?.userId ?? row?.user_id ?? row?.userId;
+          if (uid != null && String(uid) === selfStr) { quoteTargetIsSelf = true; break; }
+        }
+      }
       return {
         kind,
         ...(entry?.poke ? {kind: 'poke', poke: entry.poke} : {}),
@@ -7237,7 +7288,8 @@ async function main() {
         text: truncateText(String(text ?? ''), 200),
         plain: truncateText(String(plain ?? text ?? ''), 200),
         tail: truncateTextTail(String(plain ?? text ?? ''), 200),
-        quoteTargetIsSelf: await isQuoteTargetSelf(segments, kind, id, selfUserId),
+        ...(replyTo ? { replyTo } : {}),
+        quoteTargetIsSelf,
         isOwner: owner,
         ownerLabel: owner ? `配置关系对象（ownerQQ ${cfg.ownerQQ ?? ''}）` : '',
         isSelf: self,
@@ -8898,22 +8950,87 @@ async function main() {
     return ids.has(uid) ? null : `QQ ${uid} 不是群 ${gid} 的成员，已拒绝戳一戳`;
   }
 
-  async function resolveReplyInfo(kind, convId, messageId) {
-    if (!/^-?[1-9]\d*$/.test(String(messageId))) return null;
+  async function fetchSingleQQRow(kind, convId, messageId) {
+    const cleanId = qqMessageId(messageId);
+    if (!cleanId) return null;
     const group = kind === 'group';
     const response = await bot.raw(group ? 'get_group_msg_history' : 'get_friend_msg_history',
-      { [group ? 'group_id' : 'user_id']: convId, message_id: String(messageId), count: 1, reverse_order: true });
+      { [group ? 'group_id' : 'user_id']: convId, message_id: cleanId, count: 1, reverse_order: true });
     const messages = Array.isArray(response?.messages) ? response.messages : [];
-    const row = messages.find(entry => String(entry?.message_id) === String(messageId));
+    const row = messages.find(entry => String(entry?.message_id ?? entry?.messageId ?? '') === cleanId);
+    if (!row) return null;
+    const rowGroup = row?.group_id ?? row?.groupId;
+    if (rowGroup != null && (!group || String(rowGroup) !== String(convId))) return null;
+    return row;
+  }
+
+  function isValidReplySourceRow(source, kind, convId, targetId) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return false;
+    if (qqMessageId(source.message_id ?? source.messageId) !== targetId) return false;
+    const srcGroup = source.group_id ?? source.groupId;
+    if (srcGroup != null && (kind !== 'group' || String(srcGroup) !== String(convId))) return false;
+    return true;
+  }
+
+  async function buildReplyToFromRow(row, expectedId = null) {
+    const rawId = qqMessageId(row?.message_id ?? row?.messageId);
+    if (!rawId || (expectedId != null && rawId !== String(expectedId))) return null;
+    const segments = Array.isArray(row?.message) || typeof row?.message === 'string' ? row.message : [];
+    const senderObj = row?.sender && typeof row?.sender === 'object' ? row.sender : {};
+    const userId = senderObj.user_id ?? senderObj.userId ?? row?.user_id ?? row?.userId ?? null;
+    const sender = senderObj.card || senderObj.nickname || row?.sender_name || (userId != null ? String(userId) : '未知');
+    const text = truncateText(await segmentsToText(segments, { includeReply: false }), 200);
+    const media = extractMediaFromSegments(segments);
+    const forwardIds = extractForwardIds(segments);
+    const rawTime = Number(row?.time);
+    const time = Number.isFinite(rawTime) && rawTime > 0 ? (rawTime > 1e12 ? rawTime : rawTime * 1000) : 0;
+    return {
+      messageId: `id:${rawId}`,
+      sender: String(sender),
+      ...(userId != null ? { userId: String(userId) } : {}),
+      text,
+      ...(time > 0 ? { time } : {}),
+      hasMedia: media.length > 0,
+      forwardIds,
+      hasForward: forwardIds.length > 0,
+    };
+  }
+
+  async function resolveReplyObjectFromSegments(segments, kind, convId, lookupRow) {
+    if (!Array.isArray(segments)) return null;
+    const seg = segments.find(item => item?.type === 'reply' && qqMessageId(item?.data?.id));
+    if (!seg) return null;
+    const targetId = qqMessageId(seg.data.id);
+    if (isValidReplySourceRow(seg.data?.source, kind, convId, targetId)) {
+      const built = await buildReplyToFromRow(seg.data.source, targetId);
+      if (built) return built;
+    }
+    const row = typeof lookupRow === 'function' ? await lookupRow(targetId) : null;
+    if (row) {
+      const built = await buildReplyToFromRow(row, targetId);
+      if (built) return built;
+    }
+    return { messageId: `id:${targetId}` };
+  }
+
+  async function resolveReplyInfo(kind, convId, messageId, { includeReplyTo = false } = {}) {
+    const row = await fetchSingleQQRow(kind, convId, messageId);
     if (!row) return null;
     const forwardIds = extractForwardIds(row.message);
+    const senderObj = row?.sender && typeof row?.sender === 'object' ? row.sender : {};
+    const rawUserId = senderObj.user_id ?? senderObj.userId ?? row?.user_id ?? row?.userId;
+    const sender = senderObj.card || senderObj.nickname || row?.sender_name || String(rawUserId);
+    const replyTo = includeReplyTo
+      ? await resolveReplyObjectFromSegments(row.message, kind, convId, (rid) => fetchSingleQQRow(kind, convId, rid))
+      : null;
     return {
-      sender: row.sender?.nickname || String(row.user_id),
-      userId: String(row.user_id),
+      sender: String(sender),
+      userId: String(rawUserId),
       text: await segmentsToText(row.message, { includeReply: false }),
       messageId: String(messageId),
       forwardIds,
       hasForward: forwardIds.length > 0,
+      ...(replyTo ? { replyTo: compactModelMessage(replyTo, { now: Date.now() }) } : {}),
     };
   }
 

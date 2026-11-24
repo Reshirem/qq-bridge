@@ -119,6 +119,36 @@ test('only messages/newMessages arrays are compacted; envelope fields and input 
   assert.deepEqual(compactModelData({ messages: ['a', 'b'] }), { messages: ['a', 'b'] });
 });
 
+test('replyTo compacts nested timestamps with shared now and omits empty replyTo', () => {
+  const now = 1789680000000 + 46 * 60 * 1000;
+  const msg = {
+    messageId: '200',
+    text: '怎么评价',
+    time: now - 60 * 1000,
+    replyTo: {
+      messageId: 'id:100',
+      sender: '群友',
+      userId: '1414290810',
+      text: '[图片]',
+      time: 1789680000000,
+      hasMedia: true,
+      forwardIds: [],
+      hasForward: false
+    }
+  };
+  const compact = compactModelData({ messages: [msg] }, { now });
+  assert.deepEqual(compact.messages[0].replyTo, {
+    messageId: 'id:100',
+    sender: '群友',
+    userId: '1414290810',
+    text: '[图片]',
+    hasMedia: true,
+    at: compact.messages[0].replyTo.at,
+    ago: '46m'
+  });
+  assert.equal('replyTo' in compactModelMessage({ messageId: '201', text: '无引用', replyTo: {} }, { now }), false);
+});
+
 test('synthetic payload size comparison (characters, not measured token usage)', () => {
   const sample = { ok: true, key: 'group:123', readThroughSeq: 40, messages: Array.from({ length: 40 }, (_, i) => ({
     ...shortMessage, seq: i + 1, messageId: String(1000 + i),

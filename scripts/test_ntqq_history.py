@@ -93,11 +93,46 @@ class NativeHistoryTest(unittest.TestCase):
             db.execute("INSERT INTO group_msg_table VALUES (203,12,0,102,?,575,0)", (body((8, None)),))
             rows = read_service(db, "history", {"kind": "group", "peer": "575", "count": 10, "older": True}, "42", b"u_self")
             self.assertEqual([r["message_id"] for r in rows], ["203", "202", "201"])
-            self.assertEqual(rows[1]["message"][0], {"type": "reply", "data": {"id": "201", "nativeSelf": True}})
+            self.assertEqual(rows[1]["message"][0], {
+                "type": "reply",
+                "data": {
+                    "id": "201",
+                    "nativeSelf": True,
+                    "source": {
+                        "message_id": "201",
+                        "user_id": "42",
+                        "time": 100,
+                        "sender": {"user_id": "42"},
+                        "message": [{"type": "text", "data": {"text": "self reply"}}],
+                        "group_id": "575",
+                    },
+                },
+            })
             single = read_service(db, "history", {"kind": "group", "peer": "575", "count": 1, "anchor": "201", "older": True}, "42", b"u_self")
             self.assertEqual([r["message_id"] for r in single], ["201"])
             replay = read_service(db, "catchup", {"kind": "group", "start": 99, "end": 105}, "42", b"u_self")
             self.assertEqual([r["message_id"] for r in replay["events"]], ["202", "203"])
+            self.assertEqual(replay["events"][0]["message"][0], {"type": "reply", "data": {"id": "201", "nativeSelf": True}})
+
+            # Chained quote stays single-hop, while missing/ambiguous targets omit source.
+            chained = nt.MsgBody()
+            chained.segments.add(kind=7, quote_seq=11, quote_uid=b"u_other")
+            chained.segments.add(kind=1, text="second hop".encode())
+            missing = nt.MsgBody()
+            missing.segments.add(kind=7, quote_seq=999, quote_uid=b"u_other")
+            missing.segments.add(kind=1, text="orphan quote".encode())
+            db.execute("INSERT INTO group_msg_table VALUES (204,13,88,103,?,575,575)", (chained.SerializeToString(),))
+            db.execute("INSERT INTO group_msg_table VALUES (205,14,77,104,?,575,575)", (missing.SerializeToString(),))
+            chain_rows = read_service(db, "history", {"kind": "group", "peer": "575", "count": 2, "older": True}, "42", b"u_self")
+            self.assertEqual([r["message_id"] for r in chain_rows], ["205", "204"])
+            self.assertEqual(chain_rows[0]["message"][0], {"type": "reply", "data": {"id": None, "nativeSelf": False}})
+            src = chain_rows[1]["message"][0]["data"]["source"]
+            self.assertEqual(src["message_id"], "202")
+            self.assertNotIn("source", src["message"][0]["data"])
+            # Ambiguous seq (two rows share seq 11) returns id=None without guessing a source.
+            db.execute("INSERT INTO group_msg_table VALUES (206,11,55,105,?,575,575)", (body((1, "dup seq")),))
+            dup_rows = read_service(db, "history", {"kind": "group", "peer": "575", "count": 1, "anchor": "204", "older": True}, "42", b"u_self")
+            self.assertEqual(dup_rows[0]["message"][0], {"type": "reply", "data": {"id": None, "nativeSelf": False}})
 
     def test_media_segments_and_local_cache_roles(self):
         png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")

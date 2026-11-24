@@ -17,10 +17,12 @@ def peer_column(table):
             "(SELECT p.[40030] FROM c2c_msg_table p WHERE p.[40027]>0 AND p.[40027]=c2c_msg_table.[40027] AND p.[40030]>0 LIMIT 1),0)")
 
 
-def format_row(db, table, peer, row, account, self_uid):
+def format_row(db, table, peer, row, account, self_uid, resolve_reply=True, reply_cache=None):
     mid, sender, timestamp, blob, bucket = row
     decoded = decode_segments(blob)
     parts = [] if decoded[0]["type"] in ("empty", "undecodable") else MsgBody.FromString(blob).segments
+    if reply_cache is None:
+        reply_cache = {}
     segments = []
     for part, item in zip(parts, decoded):
         kind = item["type"]
@@ -33,15 +35,27 @@ def format_row(db, table, peer, row, account, self_uid):
                 data = {"text": item.get("text", "")}
         elif kind == "reply":
             seq = part.quote_seq or part.private_quote_seq
-            original = []
+            matched = None
             if seq:
-                original = db.execute(f"SELECT [40001] FROM {table} WHERE [40027]=? AND [40003]=? AND [40030] IN (?,0) LIMIT 2",
-                                      (bucket, seq, peer)).fetchall()
-                if not original:
-                    original = db.execute(f"SELECT [40001] FROM {table} WHERE {peer_column(table)}=? AND [40003]=? LIMIT 2",
-                                          (peer, seq)).fetchall()
-            data = {"id": str(original[0][0]) if len(original) == 1 else None,
+                cache_key = (bucket, peer, seq)
+                if cache_key in reply_cache:
+                    matched = reply_cache[cache_key]
+                else:
+                    original = db.execute(
+                        f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} "
+                        "WHERE [40027]=? AND [40003]=? AND [40030] IN (?,0) LIMIT 2",
+                        (bucket, seq, peer)).fetchall()
+                    if not original:
+                        original = db.execute(
+                            f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} "
+                            f"WHERE {peer_column(table)}=? AND [40003]=? LIMIT 2",
+                            (peer, seq)).fetchall()
+                    matched = original[0] if len(original) == 1 else None
+                    reply_cache[cache_key] = matched
+            data = {"id": str(matched[0]) if matched else None,
                     "nativeSelf": bool(self_uid and part.quote_uid == self_uid)}
+            if matched and resolve_reply:
+                data["source"] = format_row(db, table, peer, matched, account, self_uid, resolve_reply=False)
         elif kind in ("image", "sticker"):
             kind, data = "image", {"file": item.get("md5"), "sub_type": item.get("subType")}
         elif kind == "face":
@@ -80,7 +94,7 @@ def read(db, action, params, account, self_uid):
             notice = any(part.get("type") == "notice" for part in decode_segments(blob))
             if (not sender or sender < 0 or str(sender) == account or (not group and peer != sender)) and not notice:
                 continue
-            item = format_row(db, table, peer, (mid,sender,stamp,blob,bucket), account, self_uid)
+            item = format_row(db, table, peer, (mid,sender,stamp,blob,bucket), account, self_uid, resolve_reply=False)
             item.update(self_id=account, message_type=params["kind"], peer_id=str(peer), replay=True)
             events.append(item)
         return {"events": events, "next": [rows[-1][2],str(rows[-1][0])] if len(rows)==100 else None}
@@ -117,7 +131,7 @@ def read(db, action, params, account, self_uid):
     if count == 1 and params.get("anchor"):
         row = db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND {peer_expr}=?",
                          (int(params["anchor"]),peer)).fetchone()
-        return [format_row(db, table, peer, row, account, self_uid)] if row else []
+        return [format_row(db, table, peer, row, account, self_uid, reply_cache={})] if row else []
     # Sort small metadata rows first. Read/decrypt bodies only on explicit QQ lookups.
     bind = [peer]
     clause = ""
@@ -135,7 +149,8 @@ def read(db, action, params, account, self_uid):
         [*bind, count])]
     rows = [db.execute(f"SELECT [40001],[40033],[40050],[40800],[40027] FROM {table} WHERE [40001]=? AND {peer_expr}=?",
                        (mid,peer)).fetchone() for mid in ids]
-    return [format_row(db, table, peer, row, account, self_uid) for row in rows if row]
+    reply_cache = {}
+    return [format_row(db, table, peer, row, account, self_uid, reply_cache=reply_cache) for row in rows if row]
 
 
 def main():

@@ -5,7 +5,7 @@ const DEFAULT_FALSE_FIELDS = new Set([
 ]);
 const OPTIONAL_FIELDS = new Set([
   'seq', 'messageId', 'sender', 'userId', 'text', 'plain', 'tail', 'kind',
-  'ownerLabel', 'media', 'forwardIds', 'nestedForwardIds'
+  'ownerLabel', 'media', 'forwardIds', 'nestedForwardIds', 'replyTo'
 ]);
 
 // ── 时间视图：裸 epoch 换成「本地时间 + 距现在多久」 ──────────────────────────
@@ -111,6 +111,10 @@ export function compactModelMessage(message, opts = {}) {
   if (Array.isArray(result.media)) {
     const canResolveByMessage = Number.isSafeInteger(message.seq) && message.seq > 0;
     result.media = compactMedia(result.media, canResolveByMessage);
+  }
+  if (isRecord(result.replyTo)) {
+    result.replyTo = compactModelMessage(result.replyTo, opts);
+    if (Object.keys(result.replyTo).length === 0) delete result.replyTo;
   }
   return result;
 }

@@ -201,7 +201,7 @@ module.exports = function startChannel(receiver, endpoint) {
         type = 'at'; data = { qq: t.atType === 1 ? 'all' : t.atNtUid === self.uid ? account : number(t.atUid) || t.atNtUid,
           name: String(t.content || '').replace(/^@/, '') };
       } else if (t) { type = 'text'; data = { text: t.content }; }
-      else if (q) { type = 'reply'; data = { id: number(q.sourceMsgIdInRecords) || q.replayMsgId, nativeSelf: q.senderUidStr === self.uid }; }
+      else if (q) { type = 'reply'; data = { id: number(q.sourceMsgIdInRecords) || number(q.replayMsgId), nativeSelf: q.senderUidStr === self.uid }; }
       else if (pic) { type = 'image'; data = { file: pic.md5HexStr, sub_type: pic.picSubType, summary: pic.summary }; }
       else if (element.faceElement) { type = 'face'; data = { id: element.faceElement.faceIndex }; }
       else if (element.marketFaceElement) { const f = element.marketFaceElement; type = 'mface'; data = { emoji_id: f.emojiId, emoji_package_id: f.emojiPackageId, summary: f.faceName }; }

@@ -220,3 +220,130 @@ test('clearing native reminders invalidates old sequence generations even after 
   assert.equal(f.historyCalls.length,readsBefore);
   assert.equal((await f.images(key,fresh.ref)).images.length,1);
 });
+
+test('pre-resolved reply source exposes structured replyTo across history, detail and image hints with zero extra lookups', async t => {
+  const h = await bridgeHarness({config:{qqBackend:'native', socialV2:{media:{prefetchOnReceive:false}}}});
+  let server;
+  t.after(async () => {
+    if (server) await new Promise(resolve => server.close(resolve));
+    await h.close();
+  });
+  h.bot.account = '42';
+  h.bot.health = {connected:true};
+  h.bot.emit('open');
+  await settle();
+  const session = await h.ensureDesktopAgentSession();
+  h.setDesktopAgentLifecycle('active');
+  h.setDesktopAgentTurnActive(true);
+  const token = JSON.parse(fs.readFileSync(path.join(h.temp,'state/desktop-agent.json'),'utf8')).agentToken;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const targetA = '7711608528983746316';
+  const targetB = '7711608528983746399';
+  const msgWithPreResolved = '7711619941044092679';
+  const msgWithMissingSourceA = '7711619941044092680';
+  const msgWithMissingSourceB = '7711619941044092681';
+  const msgWithEmptyTarget = '7711619941044092682';
+  const sourceRowA = {
+    message_id: targetA, group_id: '906759656', user_id: '1414290810', time: nowSec - 2700,
+    sender: {user_id: '1414290810', nickname: '化验单群友'},
+    message: [{type: 'image', data: {file: digest, sub_type: 0}}]
+  };
+  const sourceRowB = {
+    message_id: targetB, group_id: '906759656', user_id: '2222222222', time: nowSec - 1200,
+    sender: {user_id: '2222222222', nickname: '转发群友'},
+    message: [
+      {type: 'reply', data: {id: targetA, nativeSelf: false}},
+      {type: 'text', data: {text: '看下这个转发'}},
+      {type: 'forward', data: {id: `native:${targetB}`}}
+    ]
+  };
+  const historyRows = [
+    {
+      message_id: msgWithPreResolved, group_id: '906759656', user_id: '2875726738', time: nowSec - 60,
+      sender: {user_id: '2875726738', nickname: '提问者'},
+      message: [
+        {type: 'reply', data: {id: targetA, nativeSelf: false, source: sourceRowA}},
+        {type: 'at', data: {qq: '42'}},
+        {type: 'text', data: {text: ' 如何评价'}}
+      ]
+    },
+    {
+      message_id: msgWithMissingSourceA, group_id: '906759656', user_id: '2875726738', time: nowSec - 50,
+      sender: {user_id: '2875726738', nickname: '追问者A'},
+      message: [{type: 'reply', data: {id: targetB, nativeSelf: false}}, {type: 'text', data: {text: '同问B'}}]
+    },
+    {
+      message_id: msgWithMissingSourceB, group_id: '906759656', user_id: '3333333333', time: nowSec - 40,
+      sender: {user_id: '3333333333', nickname: '追问者B'},
+      message: [{type: 'reply', data: {id: targetB, nativeSelf: false}}, {type: 'text', data: {text: '也问B'}}]
+    },
+    {
+      message_id: msgWithEmptyTarget, group_id: '906759656', user_id: '4444444444', time: nowSec - 30,
+      sender: {user_id: '4444444444', nickname: '普通发言'},
+      message: [{type: 'text', data: {text: '纯文本无图无引用'}}]
+    }
+  ];
+  const byId = new Map([...historyRows, sourceRowA, sourceRowB].map(r => [r.message_id, r]));
+  const rawCalls = [];
+  h.bot.raw = async (action, params) => {
+    rawCalls.push({action, messageId: params.message_id ? String(params.message_id) : null});
+    if (params.message_id) {
+      const found = byId.get(String(params.message_id));
+      return {messages: found ? [structuredClone(found)] : []};
+    }
+    return {messages: structuredClone(historyRows)};
+  };
+
+  server = h.startConsoleServer();
+  if (!server.listening) await once(server,'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (route, query) => {
+    const url = new URL(route, base);
+    url.search = new URLSearchParams(query).toString();
+    const res = await fetch(url, {
+      headers: {'content-type':'application/json', 'x-console-token':'fixture-console-token',
+        'x-agent-call':'1', 'x-agent-session-id':session, 'x-agent-token':token}
+    });
+    return {status: res.status, ...await res.json()};
+  };
+
+  // Page read: sourceRowA came pre-resolved (0 extra calls), targetB was deduplicated once across 2 rows.
+  const page = await call('/api/socialV2/conversation-history', {key:'group:906759656', count:'4'});
+  assert.equal(page.status, 200);
+  assert.deepEqual(rawCalls, [
+    {action:'get_group_msg_history', messageId: null},
+    {action:'get_group_msg_history', messageId: targetB}
+  ]);
+  const msgA = page.messages.find(m => m.messageId === msgWithPreResolved);
+  assert.equal(msgA.text, '@42 如何评价');
+  assert.equal(msgA.plain, '[引用 化验单群友：[图片]]@42 如何评价');
+  assert.equal(msgA.replyTo.messageId, `id:${targetA}`);
+  assert.equal(msgA.replyTo.sender, '化验单群友');
+  assert.equal(msgA.replyTo.hasMedia, true);
+  const msgB = page.messages.find(m => m.messageId === msgWithMissingSourceA);
+  assert.equal(msgB.replyTo.messageId, `id:${targetB}`);
+  assert.equal(msgB.replyTo.text, '看下这个转发[转发消息 id=native:7711608528983746399]');
+  assert.deepEqual(msgB.replyTo.forwardIds, [`native:${targetB}`]);
+  assert.equal(msgB.replyTo.hasForward, true);
+  assert.equal('replyTo' in msgB.replyTo, false, 'replyTo stays strictly single-hop');
+  assert.equal('replyTo' in page.messages.find(m => m.messageId === msgWithEmptyTarget), false);
+
+  // Detail route preserves bare info.messageId & text while surfacing replyTo.
+  rawCalls.length = 0;
+  const detail = await call('/api/socialV2/message-detail', {key:'group:906759656', messageId:`id:${msgWithPreResolved}`});
+  assert.equal(detail.status, 200);
+  assert.equal(detail.info.messageId, msgWithPreResolved);
+  assert.equal(detail.info.text, '@42 如何评价');
+  assert.equal(detail.info.replyTo.messageId, `id:${targetA}`);
+  assert.equal(detail.info.replyTo.hasMedia, true);
+  assert.equal(rawCalls.length, 1, 'detail uses pre-resolved source without second lookup');
+
+  // Calling qq_get_message_images with outer message ID hints at quoted image ID without silently swapping.
+  const imgWrong = await call('/api/images/message', {key:'group:906759656', messageId:`id:${msgWithPreResolved}`});
+  assert.equal(imgWrong.status, 200);
+  assert.deepEqual(imgWrong.images, []);
+  assert.match(imgWrong.note, new RegExp(`id:${targetA}.*qq_get_message_images`));
+  const imgPlain = await call('/api/images/message', {key:'group:906759656', messageId:`id:${msgWithEmptyTarget}`});
+  assert.equal(imgPlain.note, '该消息没有可读取的图片/表情元数据');
+});

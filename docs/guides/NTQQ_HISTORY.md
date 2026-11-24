@@ -24,7 +24,7 @@ QQDecrypt 的解密工具会导出剥除文件头的中间库和明文 SQLite �
 1. 按 Windows 报告的 QQ 进程和文件句柄识别账号，再用账号与原库 `key_meta` 定位已验证的 DPAPI 密钥。若密钥尚未导入，可用 `--import-key` 输入密钥并验证。
 2. 读取器加载 `state/ntqq-reader/ntqq_vfs.dll`，通过 SQLCipher 直接打开 QQ 原文件。该 SQLite 文件系统适配器只对主库读取偏移加 1024 字节，并相应调整可见长度。主库和 WAL 的文件句柄都只读；共享内存索引使用 Windows SQLite 的 `readonly_shm=1`。WAL 页位置和操作系统锁使用原生 Win32 VFS。每次查询持有一个读事务，能看到事务开始时已经提交的消息。源库不产生副本，源文件的写入、删除及创建均不属于该 VFS 的读路径。[SQLite WAL 并发读取](https://sqlite.org/wal.html)
 3. 平时按需解密并核验访问的页。需要检查整库时传 `--check`，显式运行 `quick_check`。QQ 的 WAL 或共享内存索引不可用时，本次读取报错。VFS 一次编译即可复用；构建脚本下载并核验 SQLite 接口头文件，运行时使用 sqlcipher3 自带的 SQLCipher 引擎。[上游解密参数](https://github.com/QQBackup/nt_msg_db_util/blob/master/1.decrypt.py)
-4. 群聊使用 `group_msg_table`，私聊使用 `c2c_msg_table`，两者都按 `40030` 匹配目标。通过 `40800` 正文内的有序 Protobuf 段提取文本和媒体引用。未识别或损坏的正文显式标记；当前输出不解析 @ 对象或引用目标。[上游消息结构](https://github.com/QQBackup/nt_msg_db_util/blob/master/db_docs/c2c_msg_table/40800.md)
+4. 群聊使用 `group_msg_table`，私聊使用 `c2c_msg_table`，两者都按 `40030` 匹配目标。通过 `40800` 正文内的有序 Protobuf 段提取文本和媒体引用。未识别或损坏的正文显式标记；独立命令行 `ntqq_history.py` 输出不展开 @ 对象或引用原消息，常驻读取器 `ntqq_reader_service.py` 会在同一只读事务内按唯一序号缓存并单跳附带被引用原消息（`reply.data.source`，`catchup` 保持轻量不展开）。[上游消息结构](https://github.com/QQBackup/nt_msg_db_util/blob/master/db_docs/c2c_msg_table/40800.md)
 
 ## 合并转发
 
