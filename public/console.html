@@ -548,13 +548,6 @@
   </details>
 </section>
 <section data-page="qq-settings" hidden class="card">
-  <h2>QQ 接入方案</h2>
-  <form id="qqBackendForm"><fieldset disabled>
-    <label for="qqBackend">消息通道</label>
-    <select id="qqBackend"><option value="native">独立方案（桌面 QQ）</option><option value="snowluma">SnowLuma</option></select>
-    <p class="meta">独立方案按需读取 QQ 原始消息，只保留提醒位置。切换通道需要重启桥接。</p>
-    <button class="primary">应用并重启桥接</button> <span class="meta" role="status"></span>
-  </fieldset></form>
   <h2>提醒规则</h2>
   <p class="meta">每种提醒单独控制，点击按钮即保存。普通休息可被提醒打断；睡眠和停止期间不会触发。</p>
   <div id="qqReminderControls">
@@ -613,7 +606,7 @@
   <form id="qqConversationForm"><fieldset disabled>
     <label>每个字的条间延迟（ms）<input name="delayPerCharMs" type="number" min="0" max="1000" step="1" required></label>
     <p class="meta">模型决定发几条。第一条直接发送，后续每条按该条字数计时，最多等 1000 ms。设为 0 可连续发送。</p>
-    <p class="meta">独立方案只缓存触发提醒的消息位置。SnowLuma 为每个群或私聊保留最近 500 条未读。角色阅读后，按实际返回的来信确认已读。</p>
+    <p class="meta">仅缓存触发提醒的消息位置，按需从桌面 QQ 读取聊天历史与附件；角色阅读后按实际返回的来信确认已读。</p>
     <button class="primary">保存对话设置</button> <span class="meta" role="status"></span>
   </fieldset></form>
 </section>
@@ -698,13 +691,12 @@
 </section>
       <div id="overviewSummary" class="overview-summary span-all" data-page="maintenance" hidden>
         <div class="metric"><span>DSH 连接</span><strong id="metricDsh">连接中</strong><small id="metricDshHint">等待服务响应</small></div>
-        <div class="metric"><span>QQ 消息通道</span><strong id="metricSnowluma">读取中</strong><small id="metricSnowlumaHint">等待网关健康上报</small></div>
+        <div class="metric"><span>QQ 消息通道</span><strong id="metricQQHealth">读取中</strong><small id="metricQQHealthHint">等待 QQ 独立通道上报</small></div>
         <div class="metric"><span>数字角色会话</span><strong id="metricDesktopAgent">检查中</strong><small id="metricDesktopAgentHint">正在读取会话状态</small></div>
         <div class="metric"><span>QQ 提醒</span><strong id="metricMode">统一会话</strong><small id="metricRole">私聊、@、回复、角色名、关键词、戳一戳</small></div>
-        <div class="span-all" id="snowlumaWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
-        <b>⚠️ QQ 网关健康提醒</b>
-        <div class="meta" style="margin:4px 0" id="snowlumaWarnHint"></div>
-        <div class="meta" id="snowlumaWarnDiag">最近一个上游事件包：<b id="snowlumaWarnPkt">unknown</b>；SnowLuma 自评接收链路：<b id="snowlumaWarnGood">unknown</b>。</div>
+        <div class="span-all" id="qqHealthWarn" style="display:none;margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
+        <b>⚠️ QQ 独立通道连接异常</b>
+        <div class="meta" style="margin:4px 0" id="qqHealthWarnHint"></div>
         </div>
       </div>
 <section id="section-dsh-mcp" data-page="maintenance" hidden class="card span-all">

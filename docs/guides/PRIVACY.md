@@ -71,7 +71,7 @@ node scripts/privacy-scan.mjs --json         # 机读输出（给 CI 用）
 | --- | --- |
 | 还没 push | `git reset --soft` 回退提交、清掉敏感内容、重新提交 |
 | 已 push，但**没有被 fork / 没人拉过** | `git filter-repo --replace-text` 清历史，再 `git push --force`。要提前通知协作者 |
-| 已 push 且可能被 fork / 已公开一段时间 | **当作已泄露**：① 立刻**轮换**所有涉及的凭据（控制台令牌、SnowLuma token、DSH launch token 都是本地生成，轮换成本低）；② 再清理历史；③ 如需迁移到新仓库，从确认过的干净内容重新发布，不复制敏感历史 |
+| 已 push 且可能被 fork / 已公开一段时间 | **当作已泄露**：① 立刻**轮换**所有涉及的凭据（控制台令牌、DSH launch token 都是本地生成，轮换成本低）；② 再清理历史；③ 如需迁移到新仓库，从确认过的干净内容重新发布，不复制敏感历史 |
 
 ## 五、CI 里怎么用
 

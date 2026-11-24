@@ -1,6 +1,6 @@
 // 合并转发消息能力自检脚本：
 // 1. sanitizeForwardId 清洗规则
-// 2. extractForwardIds 从 OneBot 消息段提取 forward id
+// 2. extractForwardIds 从 QQ 消息段提取 forward id
 // 3. formatForwardResponse / nodeText 格式化合并转发内容（含截断）
 // 只验证转发消息解析与格式化辅助函数；桥接读取授权由全局 desktop-agent 令牌统一处理。
 // 运行：node scripts/test-forward.mjs

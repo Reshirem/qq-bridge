@@ -1,5 +1,5 @@
 // 模拟 DSH 的 dsh-mcp-client：以 stdio 拉起桥接的 MCP server，握手并列出工具，
-// 验证桥接安装的两个 MCP server 在新版 DSH 环境下仍能被正常接入（不需要 SnowLuma 在线）。
+// 验证桥接安装的两个 MCP server 在新版 DSH 环境下仍能被正常接入（不需要桌面 QQ 在线）。
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -32,7 +32,7 @@ for (const { serverName, script, expected } of SERVERS) {
     if (!names.includes(expected)) throw new Error('缺少工具 ' + expected);
     if (serverName === 'qq' && process.env.QQ_BRIDGE_TEST_LIVE === '1') {
       const result = await client.callTool({ name: 'qq_status', arguments: {} });
-      if (result.isError || !['native', 'snowluma'].includes(JSON.parse(result.content[0].text).backend)) throw new Error('QQ 通道状态查询失败');
+      if (result.isError || JSON.parse(result.content[0].text).backend !== 'native') throw new Error('QQ 通道状态查询失败');
     }
     const bad = names.filter((n) => !/^[A-Za-z0-9_-]{1,64}$/.test(n));
     if (bad.length) { console.log(`   ⚠️ 不符合 DSH 工具名契约: ${bad.join(', ')}`); failures += 1; }

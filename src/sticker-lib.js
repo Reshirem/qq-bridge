@@ -1,17 +1,14 @@
-// QQ 收藏表情存储与列表格式化。
+// QQ 收藏表情字段归一化与列表格式化。
 //
 // 职责：
-// - state/stickers.json 的读写与字段归一化
-// - 把 SnowLuma `fetch_custom_face_detail` 返回的 QQ 收藏表情合并进本地库
-// - 支持按 emoji_id / md5 / url 查找、按 QQ 备注搜索
+// - 把 QQ 收藏表情详情字段归一化为统一条目
+// - 把 `fetch_custom_face_detail` 返回的 QQ 收藏表情合并进运行时列表
+// - 支持按 emoji_id / md5 / url 查找、按备注搜索
 //
 // 设计原则：
-// - QQ 账号的收藏表情是权威来源；本地文件只缓存 QQ 返回的描述字段。
+// - QQ 账号的收藏表情是权威来源；本地只缓存当前运行时的描述字段。
 // - 所有文本只做展示/提示，不执行任何本地操作。
 
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
 import { truncateText } from './md-to-plain.js';
 
 export function nowIso() {
@@ -54,51 +51,7 @@ export function normalizeStickerEntry(raw) {
   };
 }
 
-/**
- * 读取本地表情库。
- *
- * 关键区别：**「文件不存在」和「文件读不动/读坏了」必须分开处理。**
- * 旧实现把两者都吞成 `[]`，而调用方拿到空库后会照常合并、再写回同一个文件 ——
- * 一次截断、一次 AV 占用、一次磁盘写满，就能把缓存内容清空且毫无提示。
- *
- * @param file - 库文件路径。
- * @returns 表情条目数组；文件不存在时为空数组（首次使用的正常情况）。
- * @throws 读取或解析失败时抛出，交由调用方降级为「只读不写」。
- */
-export function loadStickerStore(file) {
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') return []; // 还没有库文件 = 首次使用
-    throw new Error(`表情库读取失败（${error?.message ?? error}）`);
-  }
-  try {
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed)) throw new Error('顶层不是数组');
-    return parsed.map(normalizeStickerEntry).filter(Boolean);
-  } catch (error) {
-    throw new Error(`表情库内容损坏（${error?.message ?? error}），已拒绝按空库继续以免覆盖已有收藏`);
-  }
-}
-
-export function saveStickerStore(file, entries) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-  // 失败时必须自己清掉临时文件：写盘中途报错（磁盘满、杀软占用）
-  // 会在 state/ 里永久留下 stickers.json.<pid>.<hex>.tmp —— 名字带随机串，没人会再去清理它，
-  // 而且下次排查"表情库为什么不对"时这些残留文件会让人以为写入成功了。
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(entries, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tmp, file);
-  } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw error;
-  }
-}
-
-// 把 SnowLuma 返回的 QQ 收藏表情详情合并进本地库。
+// 把桌面 QQ 返回的收藏表情详情合并进运行时列表。
 // 只更新 QQ 侧字段（id/resId/url/md5/desc）。
 export function mergeStickerLibrary(existing, fetched, { complete = true } = {}) {
   const out = existing.map(normalizeStickerEntry).filter(Boolean);

@@ -35,7 +35,7 @@ function enqueue(store, key = 'group:123', messageId = '1', text = '今天又开
 
 test('chat worker titles and records its grouped session before prompting and archives idle sessions after commit', async t => {
   const { store } = fixture(t);
-  enqueue(store);
+  store.enqueue('group:123', { messageId: '1', plain: '今天又开始摸鱼了', media: [], userId: '456', nativeAccount: '42' }, config);
   store.rememberSessions(['legacy']);
   const ok = value => ({ result: { ok: true, value } });
   let title, groupTitle;
@@ -43,6 +43,9 @@ test('chat worker titles and records its grouped session before prompting and ar
   const h = await bridgeHarness({
     config: { chatLearning: { enabled: true, slang: true, stickers: false } },
     files: { 'state/chat-learning.json': store.snapshot() },
+    onebot: { request(action) {
+      if (action === 'get_group_msg_history') return { status: 'ok', retcode: 0, data: { messages: [{ message_id: '1', group_id: 123, sender: { user_id: '456', nickname: 'u' }, message: [{ type: 'text', data: { text: '今天又开始摸鱼了' } }] }] } };
+    } },
     globals: { async runBackgroundTurn({ sessionId, preset, onEvent }) {
       assert.equal(sessionId, 'fixture-1');
       assert.equal(preset, 'chat-learning');
@@ -392,11 +395,11 @@ test('native market sends need no chat sample or local image and only fall back 
       if (action !== 'send_private_msg') return;
       const [segment] = params.message;
       segments.push(segment.type);
-      if (segment.type === 'image') return {data: {message_id: '2'}};
+      if (segment.type === 'image') return {status: 'ok', retcode: 0, data: {message_id: '2'}};
       assert.equal(segment.data.emoji_id, faceId);
       assert.equal(segment.data.emoji_package_id, packId);
       if (response instanceof Error) throw response;
-      return {data: response};
+      return {status: 'ok', retcode: 0, data: response};
     }},
   });
   t.after(() => h.close());
@@ -609,10 +612,13 @@ test('shrinking image budget leaves remaining media queued and text-only input d
 test('incoming ordinary chat enters only the background queue, with no main-agent model call', async () => {
   const h = await bridgeHarness({ config: { chatLearning: { enabled: true } } });
   try {
-    await h.handleIncomingForTest('group', 456, { self_id: 999, user_id: 111, message_id: 88, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text: '今天又开始摸鱼了' } }] });
+    await h.handleIncomingForTest('group', 456, { self_id: '42', user_id: 111, message_id: 88, sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text: '今天又开始摸鱼了' } }] });
     const state = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/chat-learning.json'), 'utf8'));
     assert.equal(state.queue[0].key, 'group:456');
-    assert.equal(state.queue[0].text, '今天又开始摸鱼了');
+    assert.equal(state.queue[0].messageId, '88');
+    assert.equal(state.queue[0].nativeAccount, '42');
+    assert.equal(state.queue[0].text, '');
+    assert.equal(state.queue[0].imageCount, 0);
     assert.equal(h.calls.prompts.length, 0); assert.equal(h.calls.sent.length, 0);
   } finally { await h.close(); }
 });
@@ -621,7 +627,7 @@ test('incoming market and custom stickers are queued, while ordinary photos are 
   const h = await bridgeHarness({ config: { chatLearning: { enabled: true, slang: false } } });
   try {
     const incoming = (id, segment) => h.handleIncomingForTest('group', 456, {
-      self_id: 999, user_id: 111, message_id: id, sender: { nickname: 'fixture' }, message: [segment],
+      self_id: '42', user_id: 111, message_id: id, sender: { nickname: 'fixture' }, message: [segment],
     });
     await incoming(1, { type: 'image', data: { url: 'https://example.invalid/photo.png', sub_type: 0 } });
     await incoming(2, { type: 'image', data: { url: 'https://example.invalid/market.gif', sub_type: 0, emoji_id: 'market-sticker' } });
@@ -629,8 +635,7 @@ test('incoming market and custom stickers are queued, while ordinary photos are 
     await incoming(4, { type: 'mface', data: { url: 'https://example.invalid/mface.gif', emoji_id: 'mface-sticker' } });
     const state = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/chat-learning.json'), 'utf8'));
     assert.deepEqual(state.queue.map(message => message.messageId), ['2', '3', '4']);
-    assert.equal(state.queue[0].media[0].emojiId, 'market-sticker');
-    assert.equal(state.queue[0].media[0].subType, '0');
+    assert.ok(state.queue.every(message => message.nativeAccount === '42' && message.imageCount === 1 && message.text === '' && message.media.length === 0));
     assert.equal(h.calls.prompts.length, 0); assert.equal(h.calls.sent.length, 0);
   } finally { await h.close(); }
 });
@@ -781,9 +786,7 @@ test('headless parser rejects incomplete runs and unseen images, preserves UTF-8
 
 test('HTTP management isolation, source query and safe local sticker send use the actual bridge', async () => {
   let sentBody;
-  const h = await bridgeHarness({ config: { chatLearning: { enabled: false } }, globals: {
-    fetch: async (_url, init) => { sentBody = JSON.parse(init.body); return { ok: true, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) }; },
-  } });
+  const h = await bridgeHarness({ config: { chatLearning: { enabled: false } } });
   let server;
   try {
     server = h.startConsoleServer();
@@ -816,8 +819,13 @@ test('HTTP management isolation, source query and safe local sticker send use th
     store.complete(batch, { slang: [], stickers: [{ id: asset.id, isSticker: true, description: '测试表情', tags: ['开心'] }] }, [{ ...asset, evidence: { key: batch.key } }], config);
     const faceId = 'a'.repeat(32), marketId = 'market:123:' + faceId;
     store.addMarketPack({ id: '123', name: '商城示例' }, [{ faceId, hash: asset.hash, name: '开心', desc: '开心', tags: [] }]);
-    const hh = await bridgeHarness({ files: { 'state/chat-learning.json': store.snapshot() }, globals: {
-      fetch: async (_url, init) => { sentBody = JSON.parse(init.body); return { ok: true, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 2 } }) }; },
+    const hh = await bridgeHarness({ files: { 'state/chat-learning.json': store.snapshot() }, onebot: {
+      request(action, params) {
+        if (action === 'send_group_msg') {
+          sentBody = JSON.parse(JSON.stringify(params));
+          return { status: 'ok', retcode: 0, data: { message_id: 2 } };
+        }
+      },
     } });
     try {
       createLearningAssets(path.join(hh.temp, 'state/learned-stickers')).put(png);
@@ -874,7 +882,8 @@ test('HTTP management isolation, source query and safe local sticker send use th
       assert.equal(sent.messageId, 2);
       assert.equal(sentBody.message[0].data.file, 'base64://' + png.toString('base64'));
       assert.equal((await hh.sendStickerV2('group:999', marketId)).entry.source, 'market');
-      assert.equal(sentBody.message[0].type, 'image');
+      assert.equal(sentBody.message[0].type, 'mface');
+      assert.equal(sentBody.message[0].data.emoji_id, faceId);
       await assert.rejects(hh.sendStickerV2('group:999', asset.id), /不属于当前来源/);
     } finally { await hh.close(); }
   } finally {
@@ -928,10 +937,12 @@ test('worker sends short m1..mN message aliases and resolves them back to canoni
 test('learning runner retries once in-session on invalid JSON without dropping images or repeating non-JSON errors', async t => {
   const { store, assets } = fixture(t);
   const sticker = assets.put(png);
-  enqueue(store, 'group:123', '1', '今天又开始摸鱼了', [{ kind: 'sticker', file: 'fixture.png' }]);
+  store.enqueue('group:123', { messageId: '1', plain: '今天又开始摸鱼了', media: [{ kind: 'sticker', file: 'fixture.png' }], userId: '456', nativeAccount: '42' }, config);
+  const historyReply = { status: 'ok', retcode: 0, data: { messages: [{ message_id: '1', group_id: 123, sender: { user_id: '456', nickname: 'u' }, message: [{ type: 'text', data: { text: '今天又开始摸鱼了' } }, { type: 'image', data: { file: 'fixture.png', sub_type: 1 } }] }] } };
   const h = await bridgeHarness({
     config: { chatLearning: { enabled: true, slang: true, stickers: true, minMessages: 1 } },
     files: { 'state/chat-learning.json': store.snapshot() },
+    onebot: { request(action) { if (action === 'get_group_msg_history') return historyReply; } },
     globals: {
       async runBackgroundTurn({ sessionId, task, onEvent }) {
         turns.push({ sessionId, task });
@@ -973,6 +984,9 @@ test('learning runner retries once in-session on invalid JSON without dropping i
   const brokenTurns = [];
   const h2 = await bridgeHarness({
     config: { chatLearning: { enabled: true, slang: true, stickers: false, minMessages: 1 } },
+    onebot: { request(action) {
+      if (action === 'get_group_msg_history') return { status: 'ok', retcode: 0, data: { messages: [{ message_id: '77', group_id: 456, sender: { user_id: '111', nickname: 'a' }, message: [{ type: 'text', data: { text: '摸鱼了' } }] }] } };
+    } },
     globals: {
       async runBackgroundTurn({ onEvent }) {
         brokenTurns.push(1);
@@ -983,7 +997,7 @@ test('learning runner retries once in-session on invalid JSON without dropping i
   t.after(() => h2.close());
   h2.api.sessions.rename = async () => ({ result: { ok: true, value: {} } });
   h2.setReady(true);
-  await h2.handleIncomingForTest('group', 456, { self_id: 999, user_id: 111, message_id: 77, sender: { nickname: 'a' }, message: [{ type: 'text', data: { text: '摸鱼了' } }] });
+  await h2.handleIncomingForTest('group', 456, { self_id: '42', user_id: 111, message_id: 77, sender: { nickname: 'a' }, message: [{ type: 'text', data: { text: '摸鱼了' } }] });
   assert.equal(await h2.learningWorker.tick(true), null);
   assert.equal(brokenTurns.length, 2);
   const failedState = JSON.parse(fs.readFileSync(path.join(h2.temp, 'state/chat-learning.json'), 'utf8'));

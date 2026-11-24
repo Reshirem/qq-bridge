@@ -1,6 +1,6 @@
 # 控制台离线预览与浏览器检查
 
-离线预览只读取控制台 HTML，并用内存数据模拟 API。它不会加载桥接入口、读取 `config.json` 或真实 `state/`，也不会连接 DSH、SnowLuma 或 QQ。按钮提交只改变丢弃式演示数据。
+离线预览只读取控制台 HTML，并用内存数据模拟 API。它不会加载桥接入口、读取 `config.json` 或真实 `state/`，也不会连接 DSH 或 QQ。按钮提交只改变丢弃式演示数据。
 
 ## 启动预览
 
@@ -42,4 +42,4 @@ npm run test:console-ui
 
 新增控制台 API 时，需在 `scripts/console-ui-fixture.mjs` 里补充对应的内存 mock。
 
-离线检查验证的是前端页面和控制台交互，不替代真实 DSH、SnowLuma 或 QQ 集成验证。
+离线检查验证的是前端页面和控制台交互，不替代真实 DSH 或 QQ 集成验证。

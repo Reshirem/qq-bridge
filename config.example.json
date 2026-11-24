@@ -1,5 +1,4 @@
 {
-  "qqBackend": "native",
   "dsh": {
     "baseUrl": "http://127.0.0.1:3080",
     "autoDetectPort": true,
@@ -27,15 +26,6 @@
       "missingRest": "【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无事可做，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白或道别）；若仍有未完事项则处理完后再调用。",
       "memoryBootstrap": "【长期记忆摘要｜来源为自身经历；用于延续经历与未完成事项，仍需按当前上下文判断】\n{entries}"
     }
-  },
-  "snowluma": {
-    "wsUrl": "ws://127.0.0.1:3001",
-    "httpUrl": "http://127.0.0.1:3000",
-    "accessToken": "",
-    "followDiscoveredEndpoint": true,
-    "silenceWarnMs": 600000,
-    "launcherPath": "",
-    "homeDir": ""
   },
   "ownerQQ": null,
   "allow": {

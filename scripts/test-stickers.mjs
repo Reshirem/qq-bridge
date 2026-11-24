@@ -1,7 +1,6 @@
 // 表情包体系自检：
 // 1) sticker-lib 纯函数（合并/查找/格式化）
 // 2) 示例配置（MCP 工具注册由 stdio 契约回归验证）
-// 3) 可选 live 模式：QQ_BRIDGE_TEST_LIVE=1 时调用 SnowLuma 拉取收藏表情并验证 safeFetchBuffer 可抓图
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,37 +74,6 @@ console.log('## 配置文件');
   ok(cfg.socialV2.sticker.syncEnabled === true, '示例允许独立同步收藏');
   ok(cfg.socialV2.sticker.collect.enabled === true, '示例允许角色收藏');
   ok(!('sendCaptionMaxChars' in cfg.socialV2.sticker), '示例已移除旧配文设置');
-}
-
-if (process.env.QQ_BRIDGE_TEST_LIVE === '1') {
-  console.log('## live：SnowLuma 收藏表情链路');
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8').trimStart());
-    const base = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
-    const headers = { 'content-type': 'application/json', ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) };
-    const res = await fetch(`${base}/fetch_custom_face_detail`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ count: 5 }),
-      signal: AbortSignal.timeout(15000)
-    });
-    const body = await res.json();
-    ok(res.ok && body.status === 'ok' && body.retcode === 0, 'fetch_custom_face_detail 调用成功');
-    const items = body.data;
-    ok(Array.isArray(items), '网关返回收藏表情列表');
-    if (Array.isArray(items) && !items.length) console.log('  跳过图片下载：当前账号没有收藏表情。');
-    if (Array.isArray(items) && items.length) {
-      const { safeFetchBuffer } = await import('../src/safe-fetch.js');
-      try {
-        const img = await safeFetchBuffer(items[0].url, 4 * 1024 * 1024);
-        ok(img.buffer.length > 0, `可抓取表情图片字节（${img.buffer.length} bytes）`);
-      } catch (e) {
-        ok(false, `safeFetchBuffer 抓取表情失败: ${e.message}`);
-      }
-    }
-  } catch (e) {
-    ok(false, `live 链路异常: ${e.message}`);
-  }
 }
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);

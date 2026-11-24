@@ -531,8 +531,8 @@ await test('NativeQQ 商城表情优先读预览缓存，未命中时允许 CDN 
   } finally { bot.close(); }
 });
 
-// ── 表情包下载：CDN 优先、emoji_id 兜底、普通图片仍走 get_image ──────────────
-await test('fetchOneBotImage 表情优先 CDN，普通图片优先 get_image', async () => {
+// ── 表情包下载：原生缓存优先、未命中时 CDN / emoji_id 兜底、普通图片走 get_image ──
+await test('fetchOneBotImage 缓存优先且未命中时支持表情 CDN 兜底，普通图片优先 get_image', async () => {
   const fetched = [];
   const h = await bridgeHarness({
     globals: {
@@ -540,7 +540,7 @@ await test('fetchOneBotImage 表情优先 CDN，普通图片优先 get_image', a
     }
   });
   try {
-    // ① 表情（有 url）：不调用 get_image，直接抓 CDN
+    // ① 表情（有 url、无 file）：跳过 get_image，直接抓 CDN
     const sticker = await h.fetchOneBotImage({
       kind: 'sticker',
       url: 'https://gxh.vip.qq.com/club/item/parcel/item/f9/f96bf2d2d93c3530d5eb148f55206fb1/raw300.gif'
@@ -548,8 +548,11 @@ await test('fetchOneBotImage 表情优先 CDN，普通图片优先 get_image', a
     assert.ok(sticker?.buffer?.length, '表情必须取到字节');
     assert.equal(sticker.mimeType, 'image/gif');
     assert.equal(fetched.at(-1), 'https://gxh.vip.qq.com/club/item/parcel/item/f9/f96bf2d2d93c3530d5eb148f55206fb1/raw300.gif');
-    assert.equal(h.calls.images.length, 0, '表情有 URL 时不应先问网关 get_image（市场表情必然 not found）');
+    assert.equal(h.calls.images.length, 0, '表情无本地 file 时可直接走 URL/CDN');
 
+    const getImage = h.bot.getImage.bind(h.bot);
+    // 模拟市场/表情本机缓存未命中，验证按 emoji_id / 文件名回退 CDN
+    h.bot.getImage = async () => null;
     // ② 表情（没有 url，只有 emoji_id）：按 emoji_id 推 CDN 地址兜底
     const byId = await h.fetchOneBotImage({
       kind: 'image',
@@ -577,11 +580,10 @@ await test('fetchOneBotImage 表情优先 CDN，普通图片优先 get_image', a
       '必须能从文件名还原 emoji_id'
     );
 
-    // ③ 普通图片（有 file）：get_image 优先，不走 CDN
+    // ③ 普通图片（有 file）：get_image 优先，带上 maxBytes，不走 CDN
     const before = fetched.length;
-    const getImage = h.bot.getImage.bind(h.bot);
     h.bot.getImage = params => {
-      assert.deepEqual({...params}, {file:'abc.jpg'}, 'SnowLuma keeps its original get_image parameters');
+      assert.deepEqual({...params}, {file:'abc.jpg', maxBytes: 8 * 1024 * 1024}, 'native get_image passes configured maxBytes');
       return getImage(params);
     };
     const image = await h.fetchOneBotImage({ kind: 'image', file: 'abc.jpg' });

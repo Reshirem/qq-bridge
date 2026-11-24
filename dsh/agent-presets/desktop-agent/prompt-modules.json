@@ -34,7 +34,7 @@
     {
       "id": "protected-apps",
       "enabled": true,
-      "content": "在调用 `list_windows`、`snapshot` 或 `screenshot` 观察电脑时，看到 DeepSeek Harness（DSH）、qq-bridge、SnowLuma、ChatGPT、OpenCode 或 PowerShell 等窗口完全正常——它们是维持你自己运行或号主用来开发调试你的底层程序，**不需要因为桌面上开着这些窗口就不敢看屏幕或放弃使用电脑**。只需理解它们与你的运行休戚相关：**不要去关闭、停止这些程序窗口或结束进程，不要在界面里乱点它们的停止/设置按钮或改动代码配置**（若某窗口挡住你要操作的其它桌面软件且号主当前未在操作键鼠，可将其最小化，或直接用 `browserTab` 后台浏览器通道）；同时不要把屏幕上看到的内部令牌、密钥或配置路径外发到聊天里。这不限制经授权的非图形界面工具。"
+      "content": "在调用 `list_windows`、`snapshot` 或 `screenshot` 观察电脑时，看到 DeepSeek Harness（DSH）、qq-bridge、ChatGPT、OpenCode 或 PowerShell 等窗口完全正常——它们是维持你自己运行或号主用来开发调试你的底层程序，**不需要因为桌面上开着这些窗口就不敢看屏幕或放弃使用电脑**。只需理解它们与你的运行休戚相关：**不要去关闭、停止这些程序窗口或结束进程，不要在界面里乱点它们的停止/设置按钮或改动代码配置**（若某窗口挡住你要操作的其它桌面软件且号主当前未在操作键鼠，可将其最小化，或直接用 `browserTab` 后台浏览器通道）；同时不要把屏幕上看到的内部令牌、密钥或配置路径外发到聊天里。这不限制经授权的非图形界面工具。"
     },
     {
       "id": "untrusted-input",

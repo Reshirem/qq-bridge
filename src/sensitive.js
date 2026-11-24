@@ -6,7 +6,7 @@
 // 两道内容闸门是**有意互补**的，不是重复实现：
 //   ① 这里（启发式）：抓"长得像路径 / 像凭据赋值"的文本，任何一条出站文本都能过；
 //   ② KNOWN_AGENT_TOKENS 精确名单（bridge.js）：抓**已知的**会话令牌原文，
-//      覆盖 onebotSend / redactKnownTokensOnly 这类刻意不跑 SENSITIVE_RE 的发送路径。
+//      覆盖 sendQQMessage / redactKnownTokensOnly 这类刻意不跑 SENSITIVE_RE 的发送路径。
 // 为什么第二条不可省：32 位十六进制的裸会话令牌**不匹配**下面的正则（它既不是路径，
 // 也没有 token= 这种赋值形态），只有精确名单能拦住它。
 // 反过来，**不要**为了让这条正则"顺带"覆盖裸 32-hex 而往里加 [0-9a-f]{32}：

@@ -3,7 +3,7 @@
 审计快照：本地 `HEAD=5e940ea`，日期 2026-10-29。本文按 Git 历史、当前注册入口、路由和回归检查整理；它用于区分来源与验证边界，不等同于对真实 QQ、DSH 或本机安装的在线验收。
 
 后续维护说明：
-- 2026-11 之后已新增桌面 QQ 独立通道（`src/native-qq.js`、`src/native-reminders.js`，默认 `qqBackend: "native"`），并将原 `src/mcp-snowluma-safe.js` 扩展重命名为双后端共用的 `src/mcp-qq.js`；同时新增后台黑话/表情学习、商城表情包收录、独立记忆整理、分级看图（`qq_get_image_detail`）、每日睡眠闹钟与 DSH 纳管 MCP 等模块。当前完整模块地图见 [../FOLDER_MAP.md](../FOLDER_MAP.md)。
+- 2026-11 已构建桌面 QQ 本地通道（`src/native-qq.js`、`src/native-reminders.js`），将原 `src/mcp-snowluma-safe.js` 重构为 `src/mcp-qq.js`，随后**全面移除了 SnowLuma / OneBot 支持**（`src/snowluma-conn.js`、`src/qq-unread-store.js` 与 `@snowluma/*` 依赖已删除，下表历史审计行仅保留作为早先 fork 来源记录）；同时新增后台黑话/表情学习、商城表情包收录、独立记忆整理、分级看图（`qq_get_image_detail`）、每日睡眠闹钟与 DSH 纳管 MCP 等模块。当前完整模块地图见 [../FOLDER_MAP.md](../FOLDER_MAP.md)。
 - 2026-11-16 已移除自动 ACL 收紧、提权、目录权限告警及 ACL 命令入口；下表的 ACL 模块行保留为该审计快照的来源记录，不表示当前仍有这一模块。当前文件权限行为见[安全基线](SECURITY_BASELINE.md#6-现有文件权限与测试目录)。
 
 ## Fork 边界与贡献者
@@ -71,7 +71,7 @@
    - **已解决（压缩与 LLM 共享模块）**：2026-11 新增 `plugins/qq-agent-presets/dsh-host-modules.mjs` 与 `scripts/test-compaction-host-modules.mjs`、`scripts/test-compaction-dsh.mjs`，直接从当前 DSH 宿主/CLI 运行入口（含桌面版 `resources/app.asar`）动态解析 `dsh-compaction-basic` 与 `dsh-llm` 共享类实例，不再依赖 profile 下的独立 `@deepseek-ai` 包目录。
    - **仍需注意（静态工具名扫描器）**：`scripts/scan-dsh-tool-names.mjs` 仍面向解包后的 `@deepseek-ai` 模块目录（可通过 `DSH_TOOL_PACKAGES` 指定），不会直接解包扫描桌面版 `app.asar`。
 2. **在线 QQ / DSH 实机回归与离线回归套件的边界**
-   - 离线回归 `node scripts/test-audit.mjs` 已从审计时的 26 个脚本扩展至 **52 个脚本**（覆盖双 QQ 后端、合并转发、图片分级/裁剪、戳一戳收发、睡眠命令与每日睡眠闹钟、后台黑话/表情学习、独立记忆整理、MCP manager 纳管、令牌账本等），另有 `scripts/test-compaction-dsh.mjs`、`scripts/test-managed-mcp-dsh.mjs`、`scripts/test-background-presets-dsh.mjs` 使用本机安装的 DSH 在临时空 `DSH_HOME` 中做隔离集成验证。
+   - 离线回归 `node scripts/test-audit.mjs` 已从审计时的 26 个脚本扩展至 **50 个脚本**（覆盖桌面 QQ 本地通道、合并转发、图片分级/裁剪、戳一戳收发、睡眠命令与每日睡眠闹钟、后台黑话/表情学习、独立记忆整理、MCP manager 纳管、令牌账本等），另有 `scripts/test-compaction-dsh.mjs`、`scripts/test-managed-mcp-dsh.mjs`、`scripts/test-background-presets-dsh.mjs` 使用本机安装的 DSH 在临时空 `DSH_HOME` 中做隔离集成验证。
    - 连接真实登录 QQ 账号或发起真实模型调用的脚本（如 `npm run verify:dsh`、`scripts/ntqq-probe/send_test.py`）属于有副作用的在线验收，不在默认离线测试中自动运行。
 3. **A_Memorix 原始账本只读适配器版本兼容**
    - `scripts/a-memorix-readonly-list.py` 已由 `scripts/test-a-memorix-readonly.mjs` 覆盖分页、来源/时间/关键词过滤、LIKE 转义、storage key 越界拒绝及数据库摘要不变检查，并与固定部署的 A_Memorix `v2.0.0a4` 对齐；若未来升级上游 A_Memorix 版本，仍需重新核对 `paragraphs` 表结构。

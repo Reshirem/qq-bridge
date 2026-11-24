@@ -158,7 +158,7 @@ export function createChatLearningStore(file, {
       const prefix = message.nativeAccount ? 'ntqq:' + message.nativeAccount + ':' : '';
       const id = prefix + `${key}:${message.messageId ? `id:${message.messageId}` : `seq:${message.bufferId}:${message.seq}`}`;
       if (state.seen.includes(id) || state.queue.some(m => m.id === id)) return false;
-      // SnowLuma market stickers can be image segments with subType=0;
+      // Market stickers can arrive as image segments with subType=0;
       // their emojiId is the explicit sticker marker used by the media fetcher.
       const media = config.stickers ? (message.media ?? []).filter(m => m.kind === 'sticker' || Boolean(m.emojiId) || String(m.subType) === '1').slice(0, config.maxImages) : [];
       const text = clean(message.plain ?? message.text, 1500);

@@ -1,8 +1,8 @@
 // 安全版 QQ MCP server（stdio）。由 DSH 的 MCP 客户端 spawn。
 //
-// QQ 工具使用桥接选择的消息通道：全局桌面 agent 可使用本 MCP 已提供的完整读写工具集。
+// QQ 工具使用桌面 QQ 独立消息通道：全局桌面 agent 可使用本 MCP 已提供的完整读写工具集。
 // MCP 自动从 state/desktop-agent.json 读取桥接令牌；发送会记录工具审计。
-// 本 MCP 暴露的范围由这里注册的工具定义决定；没有宣称覆盖 SnowLuma/OneBot 的全部管理 API。
+// 本 MCP 暴露的范围由这里注册的工具定义决定，只包含经桥接审计并开放给全局数字角色的 QQ 工具。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,10 +48,7 @@ function unquoteJsonString(value) {
   return value;
 }
 
-// 说明：本文件曾经有一对 escapeCqText() / messageSegments()，用于在 MCP 侧构造消息段。
-// 它们从来没有被任何工具调用（发送一律走桥接的 /api/send/*，由桥接统一构造文本段并做
-// CQ 转义，见 bridge.js 的 onebotSend），属于"看起来在防护、实际是死代码"的假安全。
-// 这里直接删除，避免以后有人以为 MCP 侧还有一道 CQ 转义而放松桥接那一层。
+// 说明：本文件只保留 QQ 工具定义并统一转发给桥接 HTTP API，不在 MCP 侧拼接消息段或转义。
 
 // 桥接控制台与全局 desktop-agent 的内部 API：QQ 来源状态在桥接内存态中读写。
 function agentApiBase() {
@@ -181,7 +178,7 @@ const server = new McpServer({ name: 'qq', version: '0.2.1-r1' });
 // 全局 desktop-agent 使用完整 QQ 工具集，MCP 从桥接持久状态自动获取当前凭证。
 server.tool(
   'qq_status',
-  '查询当前 QQ 通道（native 或 snowluma）、登录账号及在线状态。',
+  '查询当前桌面 QQ 独立通道、登录账号及在线状态。',
   {},
   async () => {
     try {
@@ -321,7 +318,7 @@ server.tool(
 // ── 全局 desktop-agent 使用的 QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
-  '独立模式只列待阅读的提醒，普通聊天通过 qq_get_conversation_history 读取。SnowLuma 模式从最早未读消息开始查看。返回的消息自动计为已读。本工具的 unreadCount 是此队列剩余条数。读取非空页后，休息或回合正常结束时会清掉该会话读取前的未读计数。hasMore=true 时用 nextAfterSeq 翻页；单页体积过大时会自动按字节上限截断并标记 partial=true，可用返回的 nextAfterSeq 继续翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
+  '列出待阅读的 QQ 提醒，普通聊天与完整上下文请用 qq_get_conversation_history 读取。返回的消息自动计为已读；本工具的 unreadCount 是提醒队列剩余条数。读取非空页后，休息或回合正常结束时会清掉该会话读取前的未读计数。hasMore=true 时用 nextAfterSeq 翻页；单页体积过大时会自动按字节上限截断并标记 partial=true，可用返回的 nextAfterSeq 继续翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),

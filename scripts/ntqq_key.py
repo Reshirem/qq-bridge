@@ -10,7 +10,7 @@ import win32crypt
 
 
 def key_header(source):
-    # SnowLuma 2.0.3 reads the 128 hex characters at bytes 47..174.
+    # NTQQ stores the 128 hex key_meta characters at bytes 47..174.
     with source.open("rb", buffering=0) as stream:
         header = stream.read(175)
     if (not header.startswith(b"SQLite header 3\0")
@@ -50,12 +50,12 @@ def store_key(folder, identity, password):
 
 
 def request_key(action, folder, header):
-    # SnowLuma reads db_path in its entirety; only this fixed prefix is needed.
+    # Only the fixed SQLite header prefix is needed to verify/request the key.
     folder.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=folder) as temp:
         path = Path(temp) / "ntqq-header.bin"
         path.write_bytes(header)
         password = action("request_decrypt_key", {"db_path": str(path)}).get("db_key")
     if not isinstance(password, str) or not password or "\0" in password:
-        raise ValueError("SnowLuma 没有返回可用的数据库密钥")
+        raise ValueError("未获取到可用的数据库密钥")
     return password

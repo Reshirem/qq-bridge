@@ -174,16 +174,22 @@ test('cached messages and active members use the current owner, including after 
   try {
     const st = f.h.getSocialV2State('group:456');
     const sample = [
-      { seq: 1, userId: '123', sender: 'old', isOwner: true, ownerLabel: 'old label', isSelf: false },
-      { seq: 2, userId: '999', sender: 'new', isOwner: false, ownerLabel: '', isSelf: false },
-      { seq: 3, userId: null, sender: 'unknown', isOwner: true, ownerLabel: 'stale', isSelf: false },
-      { seq: 4, sender: 'self', isOwner: true, ownerLabel: '我', isSelf: true },
+      { seq: 1, messageId: '1', userId: '123', sender: 'old', isOwner: true, ownerLabel: 'old label', isSelf: false },
+      { seq: 2, messageId: '2', userId: '999', sender: 'new', isOwner: false, ownerLabel: '', isSelf: false },
+      { seq: 3, messageId: '3', userId: null, sender: 'unknown', isOwner: true, ownerLabel: 'stale', isSelf: false },
+      { seq: 4, messageId: '4', sender: 'self', isOwner: true, ownerLabel: '我', isSelf: true },
     ];
     st.unread = sample.slice(0, 3);
     const owners = async (route) => (await f.call(route)).body.messages.map((message) => [message.isOwner, message.ownerLabel]);
-    f.h.bot.request = async () => ({ status: 'ok', retcode: 0, data: { messages: sample.slice(0,3).map((m,i) => ({
-      message_id: i+1, group_id: 456, sender: { user_id: m.userId, nickname: m.sender }, message: [],
-    })) } });
+    f.h.bot.request = async (_action, params = {}) => {
+      const messages = sample.slice(0, 3).map((m) => ({
+        message_id: m.messageId, group_id: 456, sender: { user_id: m.userId, nickname: m.sender }, message: [],
+      }));
+      return {
+        status: 'ok', retcode: 0,
+        data: { messages: params.message_id ? messages.filter((m) => String(m.message_id) === String(params.message_id)) : messages },
+      };
+    };
     assert.equal((await f.call('/api/whitelist', { ownerQQ: '999' })).status, 200);
     assert.deepEqual(await owners('/api/socialV2/unread?key=group:456'), [
       [false, ''], [true, '配置关系对象（ownerQQ 999）'], [false, ''],

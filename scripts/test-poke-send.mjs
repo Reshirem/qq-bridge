@@ -143,9 +143,9 @@ test('real QQ runtime rejects invalid contacts and account changes without calli
   assert.equal(calls.length, 0);
 });
 
-async function routeFixture(t, backend = 'native') {
-  const h = await bridgeHarness({config:{qqBackend:backend, socialV2:{reminders:{poke:false}}}});
-  if (backend === 'native') { h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open'); }
+async function routeFixture(t) {
+  const h = await bridgeHarness({config:{socialV2:{reminders:{poke:false}}}});
+  h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open');
   h.setReady(true);
   const session = await h.ensureDesktopAgentSession();
   const token = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/desktop-agent.json'), 'utf8')).agentToken;
@@ -165,19 +165,17 @@ async function routeFixture(t, backend = 'native') {
   }};
 }
 
-for (const backend of ['native', 'snowluma']) {
-  test(`${backend}: route sends group/private pokes even with incoming poke reminders disabled`, async t => {
-    const {post, calls} = await routeFixture(t, backend);
-    for (const body of [{key:'group:456', targetUserId:'123'}, {key:'private:123'}, {key:'private:123', targetUserId:'123'}]) {
-      const result = await post(body);
-      assert.equal(result.status, 200); assert.equal(result.ok, true); assert.equal(result.targetUserId, '123');
-    }
-    assert.deepEqual(calls, [
-      {action:'group_poke', params:{group_id:456, user_id:123}},
-      {action:'send_poke', params:{user_id:123}}, {action:'send_poke', params:{user_id:123}},
-    ]);
-  });
-}
+test('native: route sends group/private pokes even with incoming poke reminders disabled', async t => {
+  const {post, calls} = await routeFixture(t);
+  for (const body of [{key:'group:456', targetUserId:'123'}, {key:'private:123'}, {key:'private:123', targetUserId:'123'}]) {
+    const result = await post(body);
+    assert.equal(result.status, 200); assert.equal(result.ok, true); assert.equal(result.targetUserId, '123');
+  }
+  assert.deepEqual(calls, [
+    {action:'group_poke', params:{group_id:456, user_id:123}},
+    {action:'send_poke', params:{user_id:123}}, {action:'send_poke', params:{user_id:123}},
+  ]);
+});
 
 test('route rejects invalid targets, nonmembers and missing/wrong credentials before sending', async t => {
   const {post, calls, h} = await routeFixture(t);

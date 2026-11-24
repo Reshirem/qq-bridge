@@ -10,62 +10,43 @@ async function api(path, method, body) {
   return res.json();
 }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-// 上游静默时长的人话渲染：只用于 SnowLuma 健康提示（秒 / 分钟 / 小时）。
-function fmtAgoMs(ms) {
-  if (ms === null || ms === undefined || ms === '') return '未知';
-  const n = Number(ms);
-  if (!Number.isFinite(n) || n < 0) return '未知';
-  if (n < 1000) return '刚刚';
-  if (n < 60_000) return Math.round(n / 1000) + ' 秒';
-  if (n < 3_600_000) return Math.round(n / 60_000) + ' 分钟';
-  if (n < 86_400_000) return Math.round(n / 3_600_000) + ' 小时';
-  return Math.round(n / 86_400_000) + ' 天';
-}
-// SnowLuma 上游健康：控制台是唯一的可视化出口（桥接侧只有日志）。
-function renderSnowlumaHealth(sl) {
-  const el = document.getElementById('snowlumaWarn');
-  const strong = document.getElementById('metricSnowluma');
-  const hint = document.getElementById('metricSnowlumaHint');
+// QQ 独立通道健康：控制台是唯一的可视化出口（桥接侧只有日志）。
+function renderQQHealth(health) {
+  const el = document.getElementById('qqHealthWarn');
+  const strong = document.getElementById('metricQQHealth');
+  const hint = document.getElementById('metricQQHealthHint');
   if (!el || !strong || !hint) return;
-  if (!sl || typeof sl !== 'object') {
+  if (!health || typeof health !== 'object') {
     el.style.display = 'none';
     strong.textContent = '未知';
     strong.className = '';
-    hint.textContent = '桥接未上报上游健康状态';
+    hint.textContent = '等待 QQ 独立通道上报';
     return;
   }
-  if (sl.mode === 'native') {
-    el.style.display = 'none';
-    strong.textContent = sl.connected ? '独立通道已连接' : '独立通道未连接';
-    strong.className = sl.connected ? 'ok' : 'err';
-    hint.textContent = sl.connected ? (sl.readerReady ? '原库只读连接已就绪' : sl.readerError || '等待读取消息库') : sl.hint;
-    return;
-  }
-  const connected = sl.connected === true;
-  const degraded = connected && sl.degraded === true;
-  const ago = sl.lastPacketAgoMs;
-  const receiving = Number.isFinite(ago);
-  const goodText = sl.good === true ? 'good=true' : sl.good === false ? 'good=false' : 'good 未知';
-  if (degraded) {
-    strong.textContent = sl.good === false ? '接收异常' : '心跳中断';
+  if (health.degraded) {
+    strong.textContent = '连接异常';
     strong.className = 'err';
-    hint.textContent = sl.good === false ? '网关报告 QQ 接收异常' : '最近没有收到网关心跳或事件';
-  } else if (!connected) {
+    hint.textContent = health.hint || '桌面 QQ 通道异常';
+    document.getElementById('qqHealthWarnHint').textContent = health.hint || hint.textContent;
+    el.style.display = '';
+    return;
+  }
+  el.style.display = 'none';
+  if (!health.connected) {
     strong.textContent = '未连接';
     strong.className = 'err';
-    hint.textContent = '连不上 QQ 网关，请先启动 SnowLuma';
-  } else {
-    strong.textContent = '正常 · 接收中';
-    strong.className = 'ok';
-    hint.textContent = (receiving ? '最近一份上游事件包在 ' + fmtAgoMs(ago) + '前 · ' : '')
-      + (sl.good === false ? 'good=false' : sl.good === true ? 'good=true' : 'good 未上报');
+    hint.textContent = health.hint || '等待桌面 QQ 连接';
+    return;
   }
-  if (!degraded) { el.style.display = 'none'; return; }
-  document.getElementById('snowlumaWarnHint').textContent = sl.hint || hint.textContent;
-  document.getElementById('snowlumaWarnPkt').textContent = (receiving ? fmtAgoMs(ago) + '前' : '从未收到')
-    + (sl.lastPacketKind ? '（' + sl.lastPacketKind + '）' : '');
-  document.getElementById('snowlumaWarnGood').textContent = goodText;
-  el.style.display = '';
+  if (health.accountOnline === false) {
+    strong.textContent = '账号离线';
+    strong.className = 'warn';
+    hint.textContent = health.hint || 'QQ 账号离线';
+    return;
+  }
+  strong.textContent = '已连接';
+  strong.className = 'ok';
+  hint.textContent = health.reader === 'ready' ? '桌面 QQ 独立通道正常' : '已连接，等待历史读取器就绪';
 }
 
 async function refresh() {
@@ -1462,29 +1443,7 @@ function showQQSettings(form, config) {
   }
   if (form.id === 'qqStickerForm') document.getElementById('stickerFavoritesSync').disabled = !config.sticker.syncEnabled;
 }
-const backendForm = document.getElementById('qqBackendForm');
-async function loadQQBackend() {
-  const result = await consoleApiResult('/api/qq-backend');
-  backendForm.querySelector('fieldset').disabled = false;
-  document.getElementById('qqBackend').value = result.selected;
-  backendForm.querySelector('[role=status]').textContent = '当前使用' + (result.active === 'native' ? '独立方案' : ' SnowLuma');
-}
-backendForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  const fieldset = backendForm.querySelector('fieldset');
-  const status = backendForm.querySelector('[role=status]');
-  fieldset.disabled = true;
-  try {
-    const result = await consoleApiResult('/api/qq-backend', 'POST', {backend:document.getElementById('qqBackend').value});
-    if (result.requiresRestart) {
-      const restart = await consoleApiResult('/api/restart', 'POST', {});
-      status.textContent = restart.message;
-    } else status.textContent = '所选方案已在运行';
-  } catch (error) { status.textContent = error.message; }
-  finally { fieldset.disabled = false; }
-});
 async function loadQQSettings(page) {
-  if (page === 'qq-settings') await loadQQBackend();
   const forms = [...document.querySelectorAll('[data-page="' + page + '"] form')].filter(form => qqSettingsForms[form.id]);
   if (!forms.length) return;
   const buttons = page === 'qq-settings' ? qqReminderButtons.map(button => [button, button.dataset.revision || '0']) : [];
@@ -1549,7 +1508,7 @@ function takeOverviewTarget(page, key) {
 
 function renderQQSources(targetKey = '') {
   if (!qqSourceData) return;
-  const { conversations, backend } = qqSourceData;
+  const { conversations } = qqSourceData;
   const query = qqSourceSearch.value.trim().toLowerCase();
   let rows = conversations.filter(row => {
     if (qqSourceFilter === 'unread' && !row.unreadCount) return false;
@@ -1587,7 +1546,7 @@ function renderQQSources(targetKey = '') {
     markup = '<table><thead><tr>' + headings.map(label => '<th scope="col">' + label + '</th>').join('') + '</tr></thead><tbody>' + cells.join('') + '</tbody></table>';
   } else {
     const empty = conversations.length ? '没有符合筛选条件的来源。'
-      : backend === 'native' ? '暂无提醒来源。收到符合提醒规则的来信后，会在这里显示。' : '暂无缓冲消息。收到 QQ 消息后，来源会显示在这里。';
+      : '暂无提醒来源。收到符合提醒规则的来信后，会在这里显示。';
     markup = '<p class="empty-state">' + empty + '</p>';
   }
   const output = document.getElementById('v2AllStatesOutput');
@@ -1628,21 +1587,20 @@ async function refreshQQDashboard(names = false) {
     if (request !== qqDashboardRequest) return;
     const rows = data.conversations.sort((a, b) => b.lastIncomingAt - a.lastIncomingAt);
     const unread = rows.reduce((total, row) => total + row.unreadCount, 0);
-    const native = data.backend === 'native';
-    document.getElementById('qqSourcesTitle').textContent = native ? 'QQ 提醒来源' : '消息缓冲';
-    document.getElementById('qqSourcesHint').textContent = native ? '未读数只统计触发提醒、仍等角色阅读的来信。' : '查看群聊和私聊的未读缓存与最近回复。';
-    document.getElementById('v2ResetTitle').textContent = native ? '维护提醒缓存' : '维护消息缓存';
+    document.getElementById('qqSourcesTitle').textContent = 'QQ 提醒来源';
+    document.getElementById('qqSourcesHint').textContent = '未读数只统计触发提醒、仍等角色阅读的来信。';
+    document.getElementById('v2ResetTitle').textContent = '维护提醒缓存';
     const reset = document.getElementById('v2ResetBtn');
-    reset.textContent = native ? '清空 QQ 提醒缓存' : '清空 QQ 消息缓存';
-    reset.dataset.prompt = native ? '清空当前账号所有未读提醒及其投递进度？' : '清空所有来源的消息缓存、读取水位和待处理提醒？';
-    document.getElementById('v2ResetHint').textContent = native ? '清除当前账号的提醒位置、读取水位和待处理提醒。' : '清空所有来源的消息缓存、读取水位和待处理提醒。';
+    reset.textContent = '清空 QQ 提醒缓存';
+    reset.dataset.prompt = '清空当前账号所有未读提醒及其投递进度？';
+    document.getElementById('v2ResetHint').textContent = '清除当前账号的提醒位置、读取水位和待处理提醒。';
     reset.disabled = false;
     const asleep = data.lifecycle === 'sleeping';
     const mode = asleep ? '角色睡眠中' : data.lifecycle === 'stopped' ? '角色已停止' : data.enabled ? '已开启' : '已关闭';
-    const metrics = [['QQ 提醒', mode], ['缓冲来源', rows.length], ['有未读的来源', rows.filter(row => row.unreadCount > 0).length], [data.backend === 'native' ? '未读提醒' : '未读消息', unread], ['待处理提醒来源', rows.filter(row => row.attention).length]];
+    const metrics = [['QQ 提醒', mode], ['缓冲来源', rows.length], ['有未读的来源', rows.filter(row => row.unreadCount > 0).length], ['未读提醒', unread], ['待处理提醒来源', rows.filter(row => row.attention).length]];
     document.getElementById('v2Summary').innerHTML = metrics.map(([label, value]) => '<span>' + label + ' <b>' + esc(value) + '</b></span>').join('');
     status.textContent = (data.nameError || '') + (asleep ? '睡眠期间暂停提醒。' : '') + '更新于 ' + new Date().toLocaleTimeString();
-    qqSourceData = { conversations: rows, backend: data.backend };
+    qqSourceData = { conversations: rows };
     document.getElementById('qqSourceTools').hidden = false;
     renderQQSources(takeOverviewTarget('social-v2', 'source'));
   } catch (error) { if (request === qqDashboardRequest) status.textContent = '读取缓冲状态失败：' + error.message; }
@@ -3257,7 +3215,7 @@ function updateOverview(status) {
   document.getElementById('metricDsh').textContent = status.dshReady ? '已连接' : '未连接';
   document.getElementById('metricDsh').className = status.dshReady ? 'ok' : 'err';
   document.getElementById('metricDshHint').textContent = status.dshReady ? '桥接状态已同步' : '请检查 DSH 是否运行';
-  renderSnowlumaHealth(status.qqHealth ?? status.snowluma);
+  renderQQHealth(status.qqHealth);
   document.getElementById('metricMode').textContent = status.qqRemindersEnabled === false ? '已关闭' : '按需提醒';
   document.getElementById('metricRole').textContent = '私聊、@、回复/引用、关键词';
   document.getElementById('roleText').textContent = status.role || '无';
@@ -3270,11 +3228,11 @@ function setConnectionError(error) {
   document.getElementById('metricDsh').textContent = '连接中断';
   document.getElementById('metricDsh').className = 'err';
   document.getElementById('metricDshHint').textContent = '当前状态可能已过期';
-  // 上游健康也一起过期：桥接都联系不上时，别让上一次的 SnowLuma 结论继续挂着。
-  document.getElementById('metricSnowluma').textContent = '未知';
-  document.getElementById('metricSnowluma').className = '';
-  document.getElementById('metricSnowlumaHint').textContent = '当前状态可能已过期';
-  document.getElementById('snowlumaWarn').style.display = 'none';
+  // QQ 独立通道状态也一起过期：桥接都联系不上时，别让上一次的连接结论继续挂着。
+  document.getElementById('metricQQHealth').textContent = '未知';
+  document.getElementById('metricQQHealth').className = '';
+  document.getElementById('metricQQHealthHint').textContent = '当前状态可能已过期';
+  document.getElementById('qqHealthWarn').style.display = 'none';
   const alert = document.getElementById('connectionAlert');
   alert.textContent = error.message === '未授权' ? '访问令牌无效或已取消输入。请使用启动日志中的控制台链接重新打开。' : '无法连接桥接服务，当前显示的是上次同步结果。请检查桥接是否运行，再点击右上角刷新。';
   alert.hidden = false;

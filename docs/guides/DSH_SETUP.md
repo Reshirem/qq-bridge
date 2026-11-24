@@ -7,11 +7,9 @@
 ## 从旧版升级
 
 1. 在原仓库目录运行 `git pull --ff-only` 和 `npm install`。沿用现有 `config.json` 和 `state/`，其中保存角色会话、提醒、学习成果和记忆数据。
-2. 在重启桥接前确认 `config.json` 的 `qqBackend`。旧配置缺少这个字段时新版会启动 `native`。要继续沿用 OneBot，请显式设置 `"qqBackend": "snowluma"`。要切到独立方案，先准备原生依赖和当前账号的密钥。两套后端各自保留自己的提醒或未读数据，切换不会把旧未读转换成另一套的计数。[独立通道安装](NTQQ_ATTENTION.md#新机器安装)
+2. 如旧版 `config.json` 仍配置 `"qqBackend": "snowluma"`，请移除该字段或改为 `"native"`（新版已移除 SnowLuma 通道，显式配置非 `native` 会在启动时立即报错；旧的 `snowluma` 配置段落会被安全忽略）。首次切换到桌面 QQ 通道需准备原生依赖和当前账号的数据库密钥。[独立通道安装](NTQQ_ATTENTION.md#新机器安装)
 3. 在仓库根目录运行 `node scripts/setup-dsh.mjs desktop`（Web profile 用 `web`，自定义 profile 用实际名称）。脚本移除旧的 `mcp-snowluma`、`mcp-snowluma-host` 等桥接注册项，安装由 DSH MCP manager 纳管的 `mcp-qq` 和 `mcp-qq-memory`。需要 DSH 0.2.2 系列的 manager（已验证 0.2.2-rc.3）；旧宿主追加 `--legacy-mcp` 沿用直连模式。
-4. 等当前角色回合结束，完整退出并重新打开 DSH，然后用原来的方式重启 qq-bridge。桥接会接续原角色会话，工具名迁移本身无需重建会话。旧会话历史可能仍出现 `mcp__snowluma__*`。在新回合用 `mcp__qq__qq_status` 查看实际后端，并核对这次调用的回执。[验证](#验证)
-
-以后单独切换 QQ 后端时，在 WebUI「QQ 消息 → 提醒与发送」选择方案并点击「应用并重启桥接」。两种后端共用一套角色工具。通过 `start.bat` 运行时守护窗口会自动拉起桥接，前台运行则需再次执行 `npm start`。
+4. 等当前角色回合结束，完整退出并重新打开 DSH，然后用原来的方式重启 qq-bridge。桥接会接续原角色会话，工具名迁移本身无需重建会话。旧会话历史可能仍出现 `mcp__snowluma__*`。在新回合用 `mcp__qq__qq_status` 核对桌面 QQ 连接与原库只读状态。[验证](#验证)
 
 仅更新 WebUI 静态文件（例如长期记忆「浏览全部」的翻页修复）时，更新仓库后刷新浏览器即可。
 
@@ -25,7 +23,7 @@ cd qq-bridge
 npm install
 ```
 
-首次安装时在 Windows PowerShell 运行 `Copy-Item config.example.json config.json`。桌面 QQ 独立方案是默认值。SnowLuma 方案需设置 `qqBackend` 为 `snowluma`，并填写 OneBot 的 WebSocket、HTTP 和令牌。准备好所选通道后，将工具安装到实际使用的 profile。[选择 QQ 后端](../../README.md#完整启动流程从零开始) · [安装角色预设与工具](#安装角色预设与工具)
+首次安装时在 Windows PowerShell 运行 `Copy-Item config.example.json config.json`。准备好桌面 QQ 原生依赖后，将工具安装到实际使用的 profile。[准备桌面 QQ 通道](../../README.md#完整启动流程从零开始) · [安装角色预设与工具](#安装角色预设与工具)
 
 `ownerQQ` 用于按 QQ 号识别主人和验证私聊睡眠命令。在「系统运维 → 访问设置」保存后使用本地配置，旧安装首次保存前兼容 DSH 的 `qq-agent-presets.ownerQQ`。
 
@@ -117,9 +115,9 @@ node scripts/build-agent-preset-patches.mjs
 
 如果把仓库移动或重新 clone 到新路径，请再次运行 `setup-dsh.mjs`，以更新 profile 中的 MCP 路径和 bundle 链接。
 
-安装完成后，重启 DSH（或重新加载 profile），使 preset、ownerQQ 设置、工具会话绑定守卫和 MCP 工具生效。QQ 工具调用由 qq-bridge 校验会话凭证，不依赖 SnowLuma 修改。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置位于 `qq-agent-presets.ownerQQ`。
+安装完成后，重启 DSH（或重新加载 profile），使 preset、ownerQQ 设置、工具会话绑定守卫和 MCP 工具生效。QQ 工具调用由 qq-bridge 校验会话凭证。脚本不设置 DSH 运行模式，也不创建 `state/mode.json`。`ownerQQ` 设置位于 `qq-agent-presets.ownerQQ`。
 
-电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 QQ MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__qq__*` QQ 工具集、可选配置的 `mcp__qq-memory__*` 记忆工具。数字角色可访问账号中的 QQ 会话，不受提醒来源或 `ownerQQ` 限制。群名片和昵称不参与 owner 判断。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。未由本桥接注册的 SnowLuma 群管理 API 不在这套工具里。其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
+电脑操作能力要求目标 profile 已安装并启用 `dsh-computer-use-win`，并配置本项目的 QQ MCP servers。项目只读取 computer-use 插件的工具命名空间并在 preset 中授权，不复制或打包插件本体。`desktop-agent` 可使用 `mcp__wincu__*`、完整的当前 `mcp__qq__*` QQ 工具集、可选配置的 `mcp__qq-memory__*` 记忆工具。数字角色可访问账号中的 QQ 会话，不受提醒来源或 `ownerQQ` 限制。群名片和昵称不参与 owner 判断。记忆工具通过桥接 API 访问固定的 A_Memorix namespace，MCP 不接触 A_Memorix 数据文件或 namespace API key。完整的群管理 API 不在这套工具里，其它 MCP 和 DSH 本地执行工具仍被拒绝。会话可由 WebUI 任务或 QQ 注意信号懒创建；WebUI 也可单独创建持久会话而不启动模型回合。
 
 ### 图片与动图依赖
 
@@ -144,7 +142,7 @@ npm start
 
 ## 验证
 
-**核对当前部署。** 登录 WebUI，在「系统运维 → 诊断与维护」查看 DSH 和 QQ 消息通道。进入已有角色会话，让它调用一次 `mcp__qq__qq_status`。成功回执的 `backend` 应与所选的 `native` 或 `snowluma` 对应。
+**核对当前部署。** 登录 WebUI，在「系统运维 → 诊断与维护」查看 DSH 和 QQ 消息通道。进入已有角色会话，让它调用一次 `mcp__qq__qq_status`。成功回执应返回 `backend: "native"` 以及桌面 QQ 与原库只读连接状态。
 
 在 DSH、桥接和原角色会话均已就绪后，仓库根目录的 `npm run probe:tools` 可只读核对 DSH 实际加载的 QQ 注册和当前角色最近一次新工具回执。脚本不触发模型调用。若提示尚无回执，在角色调用后再查，并核对时间是否晚于本次重启。
 
@@ -164,7 +162,7 @@ node scripts/test-audit-setup-guards.mjs
 
 ## 常见问题
 
-- **QQ 来信没有唤醒角色**。先在「系统运维 → 诊断与维护」确认当前后端已连接，再看「QQ 消息 → 提醒与发送」的开关和群聊触发词。核对角色是否睡眠或已停止，以及 `desktop-agent` 是否出现在 DSH 的预设清单。
+- **QQ 来信没有唤醒角色**。先在「系统运维 → 诊断与维护」确认桌面 QQ 通道与原库连接状态，再看「QQ 消息 → 提醒与发送」的开关和群聊触发词。核对角色是否睡眠或已停止，以及 `desktop-agent` 是否出现在 DSH 的预设清单。
 - **数字角色会话不可用**：确认 `desktop-agent` 已出现在 DSH preset 清单，且 DSH profile 中的 `dsh-computer-use-win` 已启用；更新 bundle 后重启 DSH，再从 WebUI 提交任务或触发一条 QQ 注意信号。
 - **`cannot resolve profile bundle`**：从仓库目录运行 `dsh plugin --profile <profile> install`，确认 profile 的 `package.json` 已注册 `qq-agent-presets`，然后重启 DSH。
 - **MCP 工具不见了**：检查目标 profile 的 `cordis.patch.yml` 是否包含 `mcp-qq`、`mcp-qq-memory` 两个条目及当前仓库路径，重跑 `node scripts/setup-dsh.mjs <profile>` 并重启 DSH。
@@ -172,12 +170,11 @@ node scripts/test-audit-setup-guards.mjs
 - **更新后后台会话报「未知的后台 preset」**。更新前已启动的 DSH Desktop 可能仍缓存旧插件。待当前角色回合结束后完全退出并重新打开 DSH Desktop，桥接重连后会在下一批任务重新尝试 Host。预建失败的批次会走隔离的 headless。可运行 `node scripts/test-background-presets-dsh.mjs`，用临时 profile 和模拟模型验证四个后台 preset。
 - **401 / Cookie 鉴权失败**：确认 `DSH_HOME` 指向当前 DSH 根目录且本机凭据可读。`dsh.authToken` 通常应留空；详见根目录 README 的配置说明。
 - **DSH Desktop 重启后桥接连不上**。默认启用端口自动发现，桥接会重新查找桌面版 API。如果配置了固定地址、禁用了自动发现或发现多个 API，核对 `dsh.baseUrl` 和 `dsh.autoDetectPort` 后重启桥接。
-- **SnowLuma 收不到 QQ 事件**：桥接只探测 OneBot 网关，不启动或控制 SnowLuma。检查 SnowLuma 自己的日志、QQ 登录状态以及 OneBot HTTP/WebSocket 配置。
 
 ## 唤醒与消息读取模型
 
 - 私聊、真正发给机器人的原生 @、已验证回复/引用、群消息中提到当前选中的人格卡名称、可选关键词，以及他人对当前账号的 QQ 戳一戳功能事件只向全局数字角色发不含消息正文的提醒；是否处理由 agent 自行判断。
-- 普通群消息可以通过历史工具按需读取。独立模式保留提醒的位置和确认状态，SnowLuma 模式为每个来源保留最多 500 条未读。
+- 普通群消息可以通过历史工具按需读取；`state/ntqq-reminders-<account>.sqlite` 仅保存待阅读提醒的位置和确认状态。
 - 不靠长等待工具维持在线。每个活动回合必须以 `agent_rest`（或 `qq_agent_rest`）作为最后一个工具调用；休息限定为 1 至 15 分钟，省略时为 5 分钟，超出范围自动调整。用户可直接在 DSH 对话中发消息，或提交 WebUI 任务；有效 QQ 提醒也可提前结束休息并唤醒一轮。休息期间异常回合的指数恢复重试暂停。
 - 交流可能还有后续时可先按需等待；休息到期后会发起新的模型回合，数字角色可以按需访问 QQ。频繁定时恢复会增加模型调用。
 - 回合以 `completed` 正常结束却未调用 `agent_rest` 时，桥接首次立即发送收尾提醒，连续遗漏按 1、2、4、8、16 分钟递增补发（之后最长间隔 30 分钟）；中断或异常失败另走指数退避恢复。WebUI“停止自主运行”会取消当前和排队的 DSH 工作并持久停用自动恢复；只有从 WebUI 手动启动或提交任务才会恢复。

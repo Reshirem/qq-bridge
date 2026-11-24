@@ -6,7 +6,7 @@
 
 | 路径 | 用途 |
 | --- | --- |
-| `src/` | 桥接运行时、DSH/桌面 QQ 独立通道/OneBot 客户端、MCP 服务与独立辅助模块 |
+| `src/` | 桥接运行时、DSH/桌面 QQ 独立通道客户端、MCP 服务与独立辅助模块 |
 | `dsh/agent-presets/` | 唯一全局 `desktop-agent` preset 及固定前缀模块的权威源 |
 | `plugins/` | `qq-agent-presets` bundle：主会话与后台分组 preset patch、旧记忆回顾专用入口 `memory-curator.mjs`、后台模型选择命令 `background-model.mjs`、工具守卫、上下文压缩钩子、DSH 纳管 MCP、`ownerQQ` 设置及可选 Maa-Agent 接入 |
 | `public/` | 桥接本地控制台页面（运行总览、主会话、QQ 消息、长期记忆、学习与素材、令牌与花费、系统运维） |
@@ -22,8 +22,7 @@
 | 路径 | 职责 |
 | --- | --- |
 | `bridge.js` | 运行时组合与协调中心；全局会话生命周期、QQ 注意信号、消息缓冲、控制台和发送门禁仍有较多共享状态，改动时优先小步拆分 |
-| `native-qq.js` / `native-reminders.js` | 桌面 QQ 独立通道（Frida 命名管道消息服务 + 常驻 SQLCipher 原库只读查询）与按账号持久化的原生提醒水位存储 |
-| `snowluma-conn.js` / `qq-unread-store.js` | SnowLuma OneBot 端点/令牌自发现，以及每来源最多 500 条未读队列的 SQLite WAL 增量持久化 |
+| `native-qq.js` / `native-reminders.js` | 桌面 QQ 本地通道（Frida 命名管道消息服务 + 常驻 SQLCipher 原库只读查询）与按账号持久化的原生提醒水位存储 |
 | `qq-channel-config.js` | QQ 提醒、发送及表情配置的默认值与旧设置迁移 |
 | `qq-message-reference.js` / `qq-image-references.js` | QQ 消息定位（`id:` / `seq:本地序号@缓存标识`）解析，以及已读图片的会话内有界 `imageRef` 登记 |
 | `autonomy-policy.js` / `sleep-schedule.js` | 不依赖运行时状态的 QQ 注意信号分类规则，以及桥接本地时区的每日睡眠/起床闹钟计算 |
@@ -58,11 +57,10 @@
 | `a-memorix.ps1` / `a-memorix-readonly-list.py` | 本机 A_Memorix 部署/启停管理脚本与 WebUI 原始记忆段落 SQLite 只读分页读取器 | 运行数据保存在 `state/a-memorix/` |
 | `maa-agent.mjs` / `maa-agent-navigation.patch` | 可选明日方舟 Maa-Agent 模块的安装、诊断与禁用工具 | 按需启用，状态保存在 `state/maa-agent/install.json` |
 | `verify-*.mjs` / `scan-dsh-tool-names.mjs` | 配置、persona schema 与 DSH 工具名对账脚本 | `verify-dsh-current.mjs` 会创建真实会话并调用模型，仅在获准在线实测时执行 |
-| `probe-*.mjs` / `check-onebot-status.mjs` | 查询 DSH 或 SnowLuma 的实际协议与连接健康 | 按需执行；读取配置或连入运行服务前检查脚本行为 |
+| `probe-*.mjs` | 查询 DSH 的实际协议与连接健康 | 按需执行；读取配置或连入运行服务前检查脚本行为 |
 | `evaluate-memory-curator.mjs` / `test-memory-curator.mjs` | 本机存量只读模型评估与离线回归 | 前者调用配置的模型，后者仅用 fixture |
 | `console-ui-fixture.mjs` | 控制台离线预览桩服务（`npm run preview:console`） | 纯内存 mock，不读真实 `config.json` 或 `state/` |
 | `privacy-scan.mjs` | 发布前隐私与敏感信息扫描（`npm run privacy-scan`） | 提交或发布前必跑 |
-| `patch-*.mjs` | 构建或应用依赖补丁 | `patch-snowluma-sdk.mjs` 是 `postinstall` 依赖，不要随意删除 |
 
 `scripts/voice-tool-locator.mjs` 与 `test-voice-*` 面向仓库外的独立语音工具，不是桥接的运行入口。
 

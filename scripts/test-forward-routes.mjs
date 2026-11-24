@@ -12,11 +12,9 @@ const nodeId = '7700000000000000003';
 const digest = 'a'.repeat(32);
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=';
 
-async function routeFixture(t, backend = 'native', options = {}) {
-  const h = await bridgeHarness({...options, config:{...options.config, qqBackend:backend}});
-  if (backend === 'native') {
-    h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open');
-  }
+async function routeFixture(t, options = {}) {
+  const h = await bridgeHarness(options);
+  h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open');
   h.setReady(true);
   const session = await h.ensureDesktopAgentSession();
   const token = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/desktop-agent.json'), 'utf8')).agentToken;
@@ -40,45 +38,41 @@ async function routeFixture(t, backend = 'native', options = {}) {
   return {h, calls, request};
 }
 
-for (const backend of ['native', 'snowluma']) {
-  test(`${backend}: forward root and nested previews preserve backend parameters and content`, async t => {
-    const {h, calls, request} = await routeFixture(t, backend);
-    const id = backend === 'native' ? rootId : 'resource-root';
-    const child = backend === 'native' ? nestedId : 'resource-child';
-    const mediaContext = backend === 'native' ? {nativeForwardId:id, nativeMessageId:nodeId} : {};
-    h.bot.raw = async (action, params) => {
-      calls.push({action, params:structuredClone(params)});
-      assert.equal(action, 'get_forward_msg');
-      if (params.id === child) return {messages:[{message_id:'9', sender:{user_id:'456', nickname:'nested'},
-        message:[{type:'text', data:{text:'Nested content'}}]}]};
-      assert.equal(params.id, id);
-      return {messages:[{message_id:nodeId, sender:{user_id:'123', nickname:'author'}, time:1700000000,
-        message:[{type:'text', data:{text:'Forward text'}},
-          {type:'image', data:{file:digest, ...mediaContext}},
-          {type:'forward', data:{id:child}}]}]};
-    };
-    const response = await request('forward-message', {query:{key:'group:456', id}});
-    assert.equal(response.status, 200); assert.equal(response.ok, true);
-    assert.deepEqual(calls, [id, child].map(value => ({action:'get_forward_msg',
-      params:{id:value, ...(backend === 'native' ? {key:'group:456'} : {})}})));
-    assert.equal(response.total, 1);
-    assert.equal(response.messages[0].text, 'Forward text[图片][转发]');
-    assert.equal(response.messages[0].sender, 'author');
-    assert.equal(response.messages[0].userId, '123');
-    assert.equal(response.messages[0].messageId, nodeId);
-    const returnedMedia = response.messages[0].media[0];
-    if (backend === 'native') {
-      assert.match(returnedMedia.imageRef, /^qqimg:/);
-      assert.equal(returnedMedia.canFetchOriginal, true);
-    }
-    const {imageRef, canFetchOriginal, ...originalMedia} = returnedMedia;
-    assert.deepEqual(originalMedia, {kind:'image', file:digest, ...mediaContext});
-    assert.deepEqual(response.messages[0].nestedForwardIds, [child]);
-    assert.equal(response.nestedPreviews[0].id, child);
-    assert.equal(response.nestedPreviews[0].messages[0].text, 'Nested content');
-    assert.deepEqual(h.calls.sent, []);
-  });
-}
+test('native: forward root and nested previews preserve native parameters and content', async t => {
+  const {h, calls, request} = await routeFixture(t);
+  const id = rootId;
+  const child = nestedId;
+  const mediaContext = {nativeForwardId:id, nativeMessageId:nodeId};
+  h.bot.raw = async (action, params) => {
+    calls.push({action, params:structuredClone(params)});
+    assert.equal(action, 'get_forward_msg');
+    if (params.id === child) return {messages:[{message_id:'9', sender:{user_id:'456', nickname:'nested'},
+      message:[{type:'text', data:{text:'Nested content'}}]}]};
+    assert.equal(params.id, id);
+    return {messages:[{message_id:nodeId, sender:{user_id:'123', nickname:'author'}, time:1700000000,
+      message:[{type:'text', data:{text:'Forward text'}},
+        {type:'image', data:{file:digest, ...mediaContext}},
+        {type:'forward', data:{id:child}}]}]};
+  };
+  const response = await request('forward-message', {query:{key:'group:456', id}});
+  assert.equal(response.status, 200); assert.equal(response.ok, true);
+  assert.deepEqual(calls, [id, child].map(value => ({action:'get_forward_msg',
+    params:{id:value, key:'group:456'}})));
+  assert.equal(response.total, 1);
+  assert.equal(response.messages[0].text, 'Forward text[图片][转发]');
+  assert.equal(response.messages[0].sender, 'author');
+  assert.equal(response.messages[0].userId, '123');
+  assert.equal(response.messages[0].messageId, nodeId);
+  const returnedMedia = response.messages[0].media[0];
+  assert.match(returnedMedia.imageRef, /^qqimg:/);
+  assert.equal(returnedMedia.canFetchOriginal, true);
+  const {imageRef, canFetchOriginal, ...originalMedia} = returnedMedia;
+  assert.deepEqual(originalMedia, {kind:'image', file:digest, ...mediaContext});
+  assert.deepEqual(response.messages[0].nestedForwardIds, [child]);
+  assert.equal(response.nestedPreviews[0].id, child);
+  assert.equal(response.nestedPreviews[0].messages[0].text, 'Nested content');
+  assert.deepEqual(h.calls.sent, []);
+});
 
 test('native: a stalled optional nested preview still returns the root content', {timeout:12000}, async t => {
   const {h, request} = await routeFixture(t);
@@ -290,7 +284,7 @@ test('native forward images use two workers, retain partial success and preserve
 
 test('native forward media retires timed-out workers and bounds the whole batch without losing completed images', async t => {
   const clock = mediaClock(t), controlled = controlledImages(t);
-  const {h, request} = await routeFixture(t, 'native', {
+  const {h, request} = await routeFixture(t, {
     config:{socialV2:{media:{maxCount:8}}}, globals:clock.globals,
   });
   h.bot.getImage = controlled.getImage;
@@ -321,7 +315,7 @@ test('native forward media retires timed-out workers and bounds the whole batch 
 
 test('native concurrent forward media applies the shared byte limit in source order', async t => {
   const controlled = controlledImages(t);
-  const {h, request} = await routeFixture(t, 'native', {
+  const {h, request} = await routeFixture(t, {
     config:{socialV2:{media:{maxBytes:256 * 1024}}},
     globals:{normalizeImageForModel:async () => ({ok:true, buffer:Buffer.alloc(180 * 1024), mimeType:'image/png'})},
   });

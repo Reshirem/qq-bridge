@@ -14,7 +14,6 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
-import * as unreadStore from '../src/qq-unread-store.js';
 import * as autonomyPolicy from '../src/autonomy-policy.js';
 import * as qqMessageReference from '../src/qq-message-reference.js';
 import * as safeFetch from '../src/safe-fetch.js';
@@ -64,7 +63,7 @@ export function configRenameFailureFs() {
   };
 }
 
-export async function bridgeHarness({ config = {}, files = {}, globals = {}, onebot = {} } = {}) {
+export async function bridgeHarness({ config = {}, files = {}, globals = {}, onebot = {}, autoOpen = true } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
@@ -74,7 +73,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     fs.writeFileSync(fixturePatchFileFor(name), '# audit fixture generated patch\n');
   }
   fs.writeFileSync(path.join(temp, 'config.json'), JSON.stringify({
-    qqBackend: 'snowluma', dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
+    dsh: { authToken: 'fixture-only' }, ownerQQ: 123,
     allow: { private: ['123'], groups: ['456'] }, consolePort: 0,
     consoleToken: 'fixture-console-token', chatLearning: { enabled: false }, ...config,
   }));
@@ -140,7 +139,12 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
   class FakeBot extends EventEmitter {
-    constructor(options) { super(); Object.assign(this, options); }
+    constructor(options) {
+      super();
+      this.account = '42';
+      this.health = { connected: true, accountOnline: true, reader: 'ready', degraded: false };
+      Object.assign(this, options);
+    }
     onPrivateMessage(fn) { this.on('private', fn); }
     onGroupMessage(fn) { this.on('group', fn); }
     onNotice(kind, fn) { this.on('notice/' + kind, fn); }
@@ -151,15 +155,15 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       const response = await this.request(action, params);
       if (response && typeof response === 'object' && 'retcode' in response) {
         if (response.status !== 'ok' || response.retcode !== 0) {
-          throw new Error(response.wording || response.message || `OneBot ${action} 失败: ${response.retcode}`);
+          throw new Error(response.wording || response.message || `QQ ${action} 失败: ${response.retcode}`);
         }
         return response.data;
       }
       return response;
     }
-    async getLoginInfo() { return { user_id: 42, nickname: 'fixture' }; }
+    async getLoginInfo() { return { user_id: Number(this.account) || 42, nickname: 'fixture' }; }
     async connect() {}
-    close() {}
+    close() { this.closed = true; }
     async sendPrivateMessage(id, text) { calls.sent.push({ kind: 'private', id, text }); }
     async sendGroupMessage(id, text) { calls.sent.push({ kind: 'group', id, text }); }
     async getImage({ file }) {
@@ -174,7 +178,15 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
         const override = await onebot.request(action, params);
         if (override !== undefined) return override;
       }
-      // 群成员列表：v2 读工具 qq_get_group_members 会用到（含 WS 不可用时的 HTTP 兜底路径）。
+      if (action === 'send_group_msg' || action === 'send_private_msg') {
+        return { status: 'ok', retcode: 0, data: { message_id: 9001 } };
+      }
+      if (action === 'add_custom_face') {
+        return { status: 'ok', retcode: 0, data: { emoji_id: 'collected-1' } };
+      }
+      if (action === 'get_group_msg_history' || action === 'get_friend_msg_history') {
+        return { status: 'ok', retcode: 0, data: { messages: [] } };
+      }
       if (action === 'get_group_member_list') {
         return {
           status: 'ok', retcode: 0,
@@ -205,9 +217,8 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     return acc;
   }, { out: [], droppingImport: false }).out.join('\n');
   source = source.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(path.join(temp, 'src/bridge.js')).href));
-  source = source.replace("await import('@snowluma/sdk')", '({SnowLumaWebSocketClient:globalThis.SnowLumaWebSocketClient,text:globalThis.text})');
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
-  // Register the real SDK event handlers before stopping startup at the network boundary.
+  // Register the real channel event handlers before stopping startup at the network boundary.
   const connectStart = source.indexOf('  bot.connect().catch(');
   if (connectStart < 0) throw new Error('Cannot locate bridge connection startup in the offline fixture');
   source = source.slice(0, connectStart) + `
@@ -271,15 +282,10 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
         return api;
       }
     },
-    SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '',
     // The production runtime may discover DSH's randomly allocated Desktop API port.
     // The offline harness has no DSH process, so deterministically retain configured baseUrl.
     discoverDshBaseUrl: async (configuredBaseUrl) => ({ source: 'fallback', baseUrl: configuredBaseUrl }),
-    // Connection recovery must not probe a live SnowLuma instance from an offline fixture.
-    discoverSnowLumaConnection: async () => ({ ok: false, tried: [] }),
-    persistSnowLumaEndpoint: () => ({ updated: false, changed: {} }),
-    persistToken: () => ({ updated: false }),
     patchFileFor: fixturePatchFileFor,
     buildPatches: () => ['desktop-agent'].map((name) => ({ file: fixturePatchFileFor(name), changed: false })),
     unwrap, createTurnCollector, requireSequencedSessionProjection,
@@ -289,7 +295,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       restart: async () => { throw new Error('MCP manager is not configured in this fixture'); },
       close() {},
     }),
-    openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...unreadStore, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
+    openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...backgroundSessions, ...learningRunner, MARKET_PAGE_SIZE, ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...memoryCurator,
     memoryOrganizerDesktopProvider: () => null, memoryOrganizerCliLaunch: () => ({command:'fixture-dsh',args:[],env:{},shell:false}), ...sleepSchedule, ...dshDiagnostics,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...presetPrompt, ...desktopAgentPromptTemplates,
@@ -311,6 +317,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
   vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData, describeAge, QQ_READ_MAX_MODEL_BYTES, fitQQReadPayloadToByteBudget }; })());`, context);
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
+  if (autoOpen) bridge.bot.emit('open');
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {
     bridge.closeUnreadStore();

@@ -33,34 +33,33 @@
 
 ---
 
-## 二、QQ 接入方案、消息缓存与提醒投递
+## 二、QQ 接入、消息读取与提醒投递
 
-### 1. 双后端通道（`native` 与 `snowluma`）
+### 1. Windows 桌面 QQ 本地通道
 
-QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运行方式](NTQQ_ATTENTION.md)）：
-- **独立模式（`native`，默认）**：持有桌面 QQ 原生消息服务（Frida 命名管道）和账号对应的只读 SQLCipher 数据库连接（`scripts/ntqq_reader_service.py` + `ntqq_vfs.dll`），独立提醒库（`state/native-reminders.sqlite`）只记录按账号隔离的提醒位置与投递/确认水位，不复制聊天正文或好友历史。桌面 QQ 的[进程内诊断与发送测试工具](NTQQ_SEND.md)也可独立运行验证账号、收藏与收发回执。
-- **SnowLuma 模式（`snowluma`）**：使用 OneBot WebSocket 事件流、HTTP API，以及由 `src/qq-unread-store.js` 管理的 SQLite WAL 未读队列（`state/qq-unread.sqlite`，每个群和私聊最多保留 500 条未读，每条来信在单事务内维护新增序号、已读扣除与溢出淘汰；旧 `social-v2.json` 仅在数据库未初始化时一次性迁移并移除，格式损坏时停止启动并保留原件）。
-- **共享机制**：两种后端共用桥接的提醒分类（`src/autonomy-policy.js`）、会话生命周期、相同的 `mcp__qq__*` 工具面（`src/mcp-qq.js`）和出站内容检查与审计。全局数字角色可访问账号中的群聊和私聊，不按提醒来源限制会话；管理接口仅控制台可用，直接通过 QQ 桌面 GUI 发送不经过桥接 API 检查。
+桥接唯一运行在桌面 QQ 本地通道上（详见 [桌面 QQ 通道运行方式](NTQQ_ATTENTION.md)；原 SnowLuma / OneBot 支持已移除）：
+- **进程内消息与只读原库（`src/native-qq.js` + `src/native-reminders.js`）**：持有桌面 QQ 原生消息服务（Frida 命名管道）和账号对应的只读 SQLCipher 数据库连接（`scripts/ntqq_reader_service.py` + `ntqq_vfs.dll`），原生提醒库（`state/ntqq-reminders-<account>.sqlite`）按账号隔离保存待阅读提醒的位置与投递/确认水位，不复制聊天正文或好友历史。桌面 QQ 的[进程内诊断与发送测试工具](NTQQ_SEND.md)也可独立运行验证账号、收藏与收发回执。
+- **提醒分类与授权边界**：桥接在 `src/autonomy-policy.js` 中对来信做元数据分类，向全局会话提供统一的 `mcp__qq__*` 工具面（`src/mcp-qq.js`），并在 API 层强制执行全局凭证校验、敏感内容拦截与审计。全局数字角色可访问账号中的群聊和私聊，不按提醒来源限制会话；管理接口仅控制台可用，直接通过 QQ 桌面 GUI 发送不经过桥接 API 检查。
 
 ### 2. 六类注意信号与未读补提醒
 
 - **六类首次提醒与好友申请事件**：私聊（`private`）、真正发给机器人的原生 @（`atMention`）、已验证的回复/引用（`reply`）、群消息中提到当前选中的人格卡名称（`roleCardName`）、配置的 `socialV2.attentionKeywords` 命中（`keyword`），以及他人对当前账号的 QQ 戳一戳功能事件（`poke`），会向全局会话发送**不含消息正文**的元数据提醒；入站 QQ 好友申请（`friendRequest`，受 `socialV2.enabled` 与 `reminders.private` 约束）同样仅推送申请者 QQ 号等元数据，绝不把验证留言或昵称带入唤醒提示词，而是在内存 queue key `friendRequest:<userId>` 上聚合以避免覆盖同一 QQ 号的私聊消息未读提醒。
-- **独立开关、高频聚合与即时生效**：WebUI「QQ 消息 → 提醒与发送」中，提醒总开关（`socialV2.enabled`）、六类首次提醒（`socialV2.reminders.*`，默认全开）和未读补提醒（`socialV2.reminders.unreadFollowup`，默认开启）各用独立按钮，点击仅保存该项并立即生效；关键词列表另行保存。消息可匹配多个条件，只要还有已开启条件就能提醒。关闭分项时清理该类待发和未读补提醒，同一来源其他类型的提醒仍保留；原生模式同步确认已关闭类型的提醒位置，重连不会恢复这些位置。活动回合内对连续 QQ 提醒启用 30 秒投递冷却（`DESKTOP_ATTENTION_ACTIVE_COOLDOWN_MS`）在队列内合并后再通过 `steer` 送到当前回合下一步，回合结束或收尾时由 `0ms` 刷新立即抢占提前送达；休息期间收到新提醒先经 5 秒窗口（`DESKTOP_ATTENTION_BATCH_MS`）合并突发来信，再提前唤醒。
+- **独立开关、高频聚合与即时生效**：WebUI「QQ 消息 → 提醒与发送」中，提醒总开关（`socialV2.enabled`）、六类首次提醒（`socialV2.reminders.*`，默认全开）和未读补提醒（`socialV2.reminders.unreadFollowup`，默认开启）各用独立按钮，点击仅保存该项并立即生效；关键词列表另行保存。消息可匹配多个条件，只要还有已开启条件就能提醒。关闭分项时清理该类待发和未读补提醒，同一来源其他类型的提醒仍保留，并在原生提醒库确认已关闭类型的提醒位置，重连不会恢复这些位置。活动回合内对连续 QQ 提醒启用 30 秒投递冷却（`DESKTOP_ATTENTION_ACTIVE_COOLDOWN_MS`）在队列内合并后再通过 `steer` 送到当前回合下一步，回合结束或收尾时由 `0ms` 刷新立即抢占提前送达；休息期间收到新提醒先经 5 秒窗口（`DESKTOP_ATTENTION_BATCH_MS`）合并突发来信，再提前唤醒。
 - **未读补提醒与历史提醒退役**：桥接运行期间，角色读到触发提醒的消息（或读过最新一页历史并正常结束回合/进入休息）时确认对应提醒；若它仍未被覆盖，会话进入休息后由单一全局计时器每分钟检查一次，最多补发一次（指数退避恢复期间不补发）。已补发完毕的耗尽提醒（`stage >= 2`）以及超过 6 小时且未再被后续来信激活的首次提醒（`stage >= 1` 与 `NATIVE_REMINDER_TTL_MS`）会在回合正常结束与桥接启动/绑定原生账号（`bindNativeReminders`）时自动退役清理，避免历史遗留提醒长期堆积。关闭 `unreadFollowup` 会清除补提醒定时器与排队补提醒，保留未读定位和新事件的首次提醒。
 - **收尾检查与重复唤醒消除**：如果活动回合刚通过 QQ 回复某个来源，数字角色会在休息前用最近一次 `readThroughSeq` 检查该来源是否有新未读；桥接会清掉角色已读消息对应的排队提醒，避免同一消息重复唤醒。
 
 ### 3. 未读计数、读取水位与消息定位（`id:` / `seq:`）
 
 - **来源来信计数、自主向前翻页与回合水位提交**：主会话目录（`qq_list_conversations`）和休息唤醒摘要显示各来源自上次查看以来的来信数（最多显示 500）。不带 `messageId` 读取最新一页 `qq_get_conversation_history` 时，若返回的非截断最新页末尾仍标记为 `isNew=true` 且之前还有未读消息，响应会返回 `hasOlderUnread=true`、`olderUnreadCount` 与 `nextMessageId`（`id:...`），供数字角色自主决定是否传入 `messageId=nextMessageId` 继续往前翻阅或只看近期消息；角色读过最新历史或非空未读页后，桥接在 `agent_rest` 或回合正常结束时一并提交该来源的计数与早于读取起点的未读/提醒队列记录（`seq <= visit.unreadSeq`），读取开始之后新到达的消息与提醒继续保留。同轮复查保留原来的 `previousHandled` 和 `isNew` 判断基准；回合中断或桥接重启时保留尚未提交的计数。带消息 ID 往前翻历史、查看单条详情和 WebUI 预览均不会清掉整个来源的计数。
-- **未读确认与最近已读映射**：提醒与本地未读队列按实际返回的条目逐条确认（历史页按同一来源的 QQ 消息 ID 匹配；跳读保留间隙中的未读，补齐间隙后连续水位才前进）。每个来源在内存保留最近已读取的 100 条 `seq → messageId` 定位映射（独立模式仅保留序号到原生消息 ID 的映射，不保留正文或附件），使后续看图、查详情或引用仍能按原序号回查；映射在重启、切换账号或清缓存后失效，超出保留范围时改用读取结果中的 `id:<QQ消息ID>`。
-- **`id:` 与 `seq:` 前缀**：消息提醒与 QQ 工具使用 `id:` 和 `seq:`（无 QQ 消息 ID 时为 `seq:本地序号@缓存标识`）区分 QQ 消息 ID 与本地序号；有歧义的纯数字会返回明确提示。清空 QQ 缓存时同步丢弃待处理提醒，并更换缓存标识使之前的本地序号提醒失效，避免序号重新指向新消息。
+- **未读确认与最近已读映射**：提醒队列按实际返回的条目逐条确认（历史页按同一来源的 QQ 消息 ID 匹配；跳读保留间隙中的未读，补齐间隙后连续水位才前进）。每个来源在内存保留最近已读取的 100 条 `seq → messageId` 定位映射（仅保留序号到原生消息 ID 的映射，不保留正文或附件），使后续看图、查详情或引用仍能按原序号回查；映射在重启、切换账号或清缓存后失效，超出保留范围时改用读取结果中的 `id:<QQ消息ID>`。
+- **`id:` 与 `seq:` 前缀**：消息提醒与 QQ 工具使用 `id:` 和 `seq:`（未绑定 QQ 消息 ID 的本地序号可使用 `seq:本地序号@缓存标识`）区分 QQ 消息 ID 与本地序号；有歧义的纯数字会返回明确提示。清空 QQ 缓存时同步丢弃待处理提醒，并更换缓存标识使之前的本地序号提醒失效，避免序号重新指向新消息。
 - **出站分条节奏**：发送数量由模型决定，桥接无多条开关和数量上限。第一条直接发送，后续每条消息前等待 `min(1000, 下一条Unicode字符数 × delayPerCharMs)` 毫秒（默认 20 ms/字，设为 0 可连续发送）。
 
 ### 4. 戳一戳与好友申请处理
 
-- **结构化接收识别**：戳一戳识别使用结构化类型与参与者账号（SnowLuma 的 `notify/poke`，原生 QQ 的 JSON 灰条业务 `1061`），不使用可定制的动作文字或后缀；主会话提示与按需历史明确标为「QQ 戳一戳事件」。原生断线补查保留系统发送者的灰条记录，再按原消息 ID 向 QQ 查询结构化事件。自己发出或目标为其他人的事件不提醒角色；群聊和私聊共用 `poke` 开关，不依赖私聊消息开关。
-- **主动发送（`qq_send_poke`）**：沿用 `qq_send_poke` → `/api/socialV2/send-poke`。独立通道把 `group_poke` / `send_poke` 映射为 QQ 消息服务 `sendNudge(peer, targetUin, aioUin)`（群聊 peer 使用群号，私聊先解析 NT UID，两个 UIN 参数以十进制字符串传递）。发送前核验群成员或私聊目标一致性，成员查询及 UID 解析期间账号/凭证/连接切换会取消发送。仅 QQ 返回 `result: 0` 才确认原生调用成功，失败或超时不重发。主动发送与接收提醒开关独立。
-- **好友申请查看与同意/拒绝（`qq_list_friend_requests` / `qq_handle_friend_request`）**：通过 `GET /api/socialV2/friend-requests` 与 `POST /api/socialV2/friend-request/handle` 暴露给全局会话。SnowLuma 模式监听 OneBot `request/friend` 事件、尝试 `get_doubt_friends_add_request` 补充列表，处理时按是否疑问申请调用 `set_friend_add_request` / `set_doubt_friends_add_request`，并在同意且提供 `remark` 时调用 `set_friend_remark`。独立模式在桌面 QQ 进程内注册 `BuddyService.addKernelBuddyListener`（监听 `onBuddyReqChange` 与 `onDoubtBuddyReqChange`，连接关闭时 `removeKernelBuddyListener`），支持 `get_friend_requests`（调用 `getBuddyReq` / `getDoubtBuddyReq` 拉取）及 `set_friend_add_request`（普通申请调用 `approvalFriendRequest`，疑问申请同意/拒绝分别调用 `approvalDoubtBuddyReq` / `delDoubtBuddyReq`，同意后按需调用 `setBuddyRemark` 并更新 `privateChatTypes` 缓存为正式好友）。
+- **结构化接收识别**：戳一戳识别使用原生 QQ 的结构化灰条事件（JSON 灰条业务 `1061`）与参与者账号，不使用可定制的动作文字或后缀；主会话提示与按需历史明确标为「QQ 戳一戳事件」。原生断线补查保留系统发送者的灰条记录，再按原消息 ID 向 QQ 查询结构化事件。自己发出或目标为其他人的事件不提醒角色；群聊和私聊共用 `poke` 开关，不依赖私聊消息开关。
+- **主动发送（`qq_send_poke`）**：沿用 `qq_send_poke` → `/api/socialV2/send-poke`。桌面 QQ 通道把群聊/私聊戳一戳映射为 QQ 消息服务 `sendNudge(peer, targetUin, aioUin)`（群聊 peer 使用群号，私聊先解析 NT UID，两个 UIN 参数以十进制字符串传递）。发送前核验群成员或私聊目标一致性，成员查询及 UID 解析期间账号/凭证/连接切换会取消发送。仅 QQ 返回 `result: 0` 才确认原生调用成功，失败或超时不重发。主动发送与接收提醒开关独立。
+- **好友申请查看与同意/拒绝（`qq_list_friend_requests` / `qq_handle_friend_request`）**：通过 `GET /api/socialV2/friend-requests` 与 `POST /api/socialV2/friend-request/handle` 暴露给全局会话。在桌面 QQ 进程内注册 `BuddyService.addKernelBuddyListener`（监听 `onBuddyReqChange` 与 `onDoubtBuddyReqChange`，连接关闭时 `removeKernelBuddyListener`），支持 `get_friend_requests`（调用 `getBuddyReq` / `getDoubtBuddyReq` 拉取）及 `set_friend_add_request`（普通申请调用 `approvalFriendRequest`，疑问申请同意/拒绝分别调用 `approvalDoubtBuddyReq` / `delDoubtBuddyReq`，同意后按需调用 `setBuddyRemark` 并更新 `privateChatTypes` 缓存为正式好友）。
 
 ---
 
@@ -79,7 +78,7 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 ### 3. 分级看图（`preview` 与 `qq_get_image_detail`）
 
 - **默认预览与有界 `imageRef`**：普通消息与转发图片默认使用 `quality=preview`，优先 QQ 缓存的有效缩略图，无缩略图时可用合限原图生成预览（默认长边 1280、1 MiB 归一化，GIF 抽帧拼图）。`src/qq-image-references.js` 为实际从 QQ 读到的图片登记当前账号、来源、消息/转发节点及图片位置，返回会话内有界 `imageRef`（包括转发正文中未自动附图的项）；最多保留 2000 项，空闲 24 小时或断线/重启后失效。
-- **单图原图与归一化裁剪（`qq_get_image_detail`）**：通过 `POST /api/socialV2/image-detail` 按 `imageRef` 只读取一张图片，默认 `quality=original`，可指定 `preview` 或原图归一化 `crop={x,y,width,height}`（`0..1` 坐标）。原图补取由原生 QQ 通道提供，只接受文件头与 MD5 校验过的原件，缺失时请求 QQ 补取，绝不退回缩略图；SnowLuma/商城表情不冒称具备可验证原图通道。`src/media-detail.js` 独立于预览缩图策略：最多 32 MiB、64MP（单边 32768）原图优先原字节返回，超出 3 MiB 传输预算时保持分辨率重编码，仍超限则明确建议缩小裁剪区域，不暗中降采样。裁剪以 EXIF 正向图像为基准，先裁剪再编码；透明背景合白和动图仅首帧均明确说明，不修改 QQ 原缓存。并发细节转换最多两项并行，相同请求合并；已有缓存全部超限时明确报错，不重复下载同一大原图。
+- **单图原图与归一化裁剪（`qq_get_image_detail`）**：通过 `POST /api/socialV2/image-detail` 按 `imageRef` 只读取一张图片，默认 `quality=original`，可指定 `preview` 或原图归一化 `crop={x,y,width,height}`（`0..1` 坐标）。原图补取由原生 QQ 通道提供，只接受文件头与 MD5 校验过的原件，缺失时请求 QQ 补取，绝不退回缩略图；商城表情不冒称具备可验证原图通道。`src/media-detail.js` 独立于预览缩图策略：最多 32 MiB、64MP（单边 32768）原图优先原字节返回，超出 3 MiB 传输预算时保持分辨率重编码，仍超限则明确建议缩小裁剪区域，不暗中降采样。裁剪以 EXIF 正向图像为基准，先裁剪再编码；透明背景合白和动图仅首帧均明确说明，不修改 QQ 原缓存。并发细节转换最多两项并行，相同请求合并；已有缓存全部超限时明确报错，不重复下载同一大原图。
 - **下游缩放说明**：图片结果显式提供 `imageRef`、实际输出尺寸、原图尺寸、`representation`、`originalAvailable` 与 `canFetchOriginal`。这些描述的是桥接交付的字节；当前 DSH 附件归一化与 `llm-pi-ai` 请求预处理默认有 4,194,304 像素与 1 MiB 重编码预算，桥接不修改 DSH 全局图片限制，工具说明明确提示需要看清小字细节时应从原图读取更小的 `crop`。
 
 ---
@@ -93,7 +92,7 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 - **DSH MCP manager 纳管（`plugins/qq-agent-presets/managed-mcp.mjs` 与 `src/dsh-mcp-management.js`）**：仅把桥接的 `qq` 与 `qq-memory` 注册给 DSH 自身的 MCP manager，保留工具命名空间和调用超时。新安装脚本默认生成纳管条目，`--legacy-mcp` 保留旧直连模式，不覆盖其他 manager 配置。WebUI「系统运维 → 诊断与维护」共享一个按需建立的只读状态订阅，可显式探测（初始化、列工具并关闭临时连接）或定向重连选定服务，失败与超时不自动重试。
 - **上下文压缩钩子（`plugins/qq-agent-presets/compaction-persona.mjs` 与 `dsh-host-modules.mjs`）**：仅覆盖宿主 `dsh-compaction-basic` 的 `summarize()` 摘要生成钩子。`dsh-host-modules.mjs` 根据当前 DSH 宿主/CLI 运行入口动态加载同一模块树中的基础压缩引擎、流组装器和 `LlmError` 类（支持桌面版 `app.asar`），不从插件私有依赖猜测宿主版本；共享类身份保留图片卸载错误恢复并继承宿主模型切换前压缩保护，解析失败或实例分裂时 fail-closed 拒绝加载。
 - **DSH 内置网页工具**：`desktop-agent` 预设加载 `@deepseek-ai/dsh-tool-web`，默认注册 `web_search` 与 `web_fetch` 并通过 `qq-tool-restrict` 放行；它们调用当前 DSH profile 选择的 `ctx.web` 提供方（与桥接的 `webSearch` 模块分开，随附的 DSH `http` 抓取提供方允许访问本机和内网地址，不经过桥接 `safeFetch`）。
-- **电脑操作（`dsh-computer-use-win`）**：提供本机桌面操作与不抢焦点的后台浏览器通道（`browserLane` / `browserTab`）；前台键鼠操作支持用户按 Esc 中断。观察屏幕时看到 ChatGPT、DSH、qq-bridge、SnowLuma 或开发窗口属于正常现象，提示词要求不关闭、停止或篡改这些底层程序，也不外发内部凭据（详见 [RULES.md](../../RULES.md)）。
+- **电脑操作（`dsh-computer-use-win`）**：提供本机桌面操作与不抢焦点的后台浏览器通道（`browserLane` / `browserTab`）；前台键鼠操作支持用户按 Esc 中断。观察屏幕时看到 ChatGPT、DSH、qq-bridge 或开发窗口属于正常现象，提示词要求不关闭、停止或篡改这些底层程序，也不外发内部凭据（详见 [RULES.md](../../RULES.md)）。
 
 ### 2. 长期记忆、后台黑话/表情学习与商城表情
 
@@ -118,11 +117,10 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 
 `src/bridge.js` 仍是组合与协调中心，涵盖启动配置、QQ 事件接线、全局 DSH 生命周期、QQ 消息缓存、WebUI HTTP 路由和发送策略。已抽离的模块边界包括（完整列表见 [../FOLDER_MAP.md](../FOLDER_MAP.md)）：
 
-- `src/native-qq.js` / `src/native-reminders.js`：桌面 QQ 独立通道运行时、常驻 SQLCipher 只读查询连接与按账号持久化的原生提醒水位。
-- `src/snowluma-conn.js` / `src/qq-unread-store.js`：SnowLuma 端点/令牌自发现，以及每来源最多 500 条未读队列的 SQLite WAL 增量持久化。
+- `src/native-qq.js` / `src/native-reminders.js`：桌面 QQ 本地通道运行时、常驻 SQLCipher 只读查询连接与按账号持久化的原生提醒水位。
 - `src/autonomy-policy.js` / `src/sleep-schedule.js`：纯函数形式的 QQ 注意信号分类与每日睡眠/起床闹钟计算。
 - `src/dsh-client.js` / `src/dsh-diagnostics.js` / `src/dsh-mcp-management.js` / `src/background-sessions.js`：DSH API/鉴权/事件流、主会话有界诊断、MCP manager 状态/探测/重连，以及后台分组会话调度。
-- `src/mcp-qq.js`：以 `mcp__qq__*` 注册 QQ 消息、合并转发、分级看图、表情、戳一戳、状态和主动休息工具，桥接按所选后端执行。
+- `src/mcp-qq.js`：以 `mcp__qq__*` 注册 QQ 消息、合并转发、分级看图、表情、戳一戳、状态和主动休息工具。
 - `src/mcp-memory-safe.js` / `src/a-memorix-gateway.js` / `src/a-memorix-readonly.js` / `src/memory-organizer.js`：A_Memorix 长期记忆工具、Gateway 客户端、WebUI 原始记录 SQLite 只读浏览与休息后每日独立整理。
 - `src/chat-learning.js` / `src/learning-api.js` / `src/learning-runner.js` / `src/sticker-memory.js` / `src/market-packs.js`：后台黑话/表情学习、商城表情包收录与整包分析、表情语义索引投影。
 - `src/media-normalize.js` / `src/media-detail.js` / `src/qq-image-references.js` / `src/qq-message-reference.js`：预览归一化、单图原图/裁剪读取与消息/图片定位引用。
@@ -133,10 +131,10 @@ QQ 接入方案由启动配置 `qqBackend` 二选一（详见 [独立通道运�
 把以下职责作为可逐步明确的边界，不强制采用固定目录结构：
 
 1. **运行时组合**：启动、依赖接线与关闭流程。
-2. **QQ 网关**：独立通道与 OneBot 事件归一化、消息缓存和 QQ 出站传输。
+2. **QQ 通道**：桌面 QQ 事件与消息服务适配、媒体预取、好友申请与出站发送传输。
 3. **全局会话管理**：唯一 `desktop-agent` 会话的创建、恢复、停止与状态持久化。
 4. **自主调度**：休息、睡眠闹钟、异常恢复、注意信号与活动回合协调。
-5. **QQ 消息存储**：按来源索引、去重、水位和按需读取；保持独立提醒库与 SnowLuma 未读库的小接口。
+5. **QQ 提醒存储**：按账号与来源索引、去重、水位与确认状态（保持 `native-reminders.js` 的窄接口）。
 6. **控制台 API**：将管理路由与会话、消息和发送策略解耦。
 7. **动作策略**：集中说明桥接 API 发送的授权、内容检查和审计边界，并保留用户允许的桌面控制能力。
 

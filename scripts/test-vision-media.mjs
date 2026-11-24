@@ -19,14 +19,15 @@ test('running bridge resolves unread image metadata', {
   const consoleToken = config.consoleToken || read('state/console-token').trim();
   const { agentToken } = JSON.parse(read('state/desktop-agent.json'));
   assert.ok(agentToken && consoleToken, 'live probe requires initialized bridge credentials');
-  const db = new DatabaseSync(fileURLToPath(new URL('state/qq-unread.sqlite', root)), { readOnly: true });
+  const reminderFile = fs.readdirSync(fileURLToPath(new URL('state', root)))
+    .find(name => /^ntqq-reminders-\d+\.sqlite$/.test(name));
+  if (!reminderFile) return t.skip('no native reminder database yet');
+  const db = new DatabaseSync(fileURLToPath(new URL('state/' + reminderFile, root)), { readOnly: true });
   let row;
   try {
-    row = db.prepare(`SELECT source, json_extract(message, '$.messageId') AS id
-      FROM unread WHERE json_extract(message, '$.hasMedia') = 1 AND id IS NOT NULL
-      ORDER BY seq DESC LIMIT 1`).get();
+    row = db.prepare(`SELECT source, id FROM reminders ORDER BY seq DESC LIMIT 1`).get();
   } finally { db.close(); }
-  if (!row) return t.skip('no unread image with a QQ message ID');
+  if (!row) return t.skip('no pending reminder with a QQ message ID');
   const url = new URL('/api/images/message', 'http://127.0.0.1:' + (config.consolePort || 3100));
   url.search = new URLSearchParams({ key: row.source, messageId: 'id:' + row.id });
   const response = await fetch(url, {

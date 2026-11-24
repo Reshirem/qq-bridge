@@ -73,7 +73,7 @@ test('empty searches are rejected without calling the transport', async () => {
 
 /**
  * 用假 transport 加载 mcp-qq.js，拿到它的工具回调。
- * 只需要把 fetch（桥接 API / OneBot HTTP）、McpServer、zod、两个本地纯模块塞进上下文。
+ * 只需要把 fetch（桥接 API）、McpServer、zod、两个本地纯模块塞进上下文。
  */
 function loadQQTools(fetchImpl, fixtureConfig = null) {
   const tools = new Map();
@@ -175,7 +175,7 @@ test('denied group reads never reveal the group allowlist', async () => {
     if (String(url).includes('/api/socialV2/group-members')) {
       return Response.json({ ok: false, error: '目标不在当前模式允许范围内' }, { status: 403 });
     }
-    assert.fail('denied group read must not call OneBot');
+    assert.fail('denied group read must not call QQ API');
   }, fixtureConfig);
   const result = await callTool('qq_get_group_members', { key: 'group:999999' });
   assert.equal(result.isError, true);

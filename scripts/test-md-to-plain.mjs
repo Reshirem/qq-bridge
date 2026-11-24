@@ -1,4 +1,4 @@
-// md-to-plain 纯函数回归测试（不依赖 SnowLuma / DSH / QQ）。
+// md-to-plain 纯函数回归测试（不依赖 QQ / DSH）。
 // 用法：node scripts/test-md-to-plain.mjs
 import { mdToPlain, splitForQQ } from '../src/md-to-plain.js';
 

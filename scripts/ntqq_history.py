@@ -6,8 +6,6 @@ from pathlib import Path
 import re
 import sys
 import threading
-from urllib.parse import urlsplit
-from urllib.request import build_opener, HTTPRedirectHandler, ProxyHandler, Request
 
 import sqlcipher3.dbapi2 as sqlcipher
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
@@ -18,27 +16,6 @@ from ntqq_key import cached_key, key_header, key_identity, request_key, store_ke
 
 TABLES = {"group": "group_msg_table", "private": "c2c_msg_table"}
 ROOT = Path(__file__).resolve().parents[1]
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *args):
-        return None
-
-
-def local_action(config, action, params):
-    base = config.get("httpUrl") or "http://127.0.0.1:3000"
-    url = urlsplit(base)
-    if url.scheme not in ("http", "https") or url.hostname not in ("127.0.0.1", "::1", "localhost"):
-        raise ValueError("请配置本机 SnowLuma OneBot HTTP 地址")
-    headers = {"Content-Type": "application/json"}
-    if config.get("accessToken"):
-        headers["Authorization"] = "Bearer " + config["accessToken"]
-    request = Request(base.rstrip("/") + "/" + action, json.dumps(params).encode(), headers)
-    with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=20) as response:
-        result = json.load(response)
-    if result.get("status") != "ok":
-        raise ValueError(f"SnowLuma {action} 失败（retcode={result.get('retcode')}）")
-    return result["data"]
 
 
 def message_schema():

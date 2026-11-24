@@ -235,7 +235,7 @@ try {
   await page.goBack();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile overview fits the viewport');
   await page.setViewportSize({ width: 1440, height: 1000 });
-  fixture.state.snowluma = { connected: true, degraded: true, silent: true, good: true, hint: '测试网关心跳中断' };
+  fixture.state.qqHealth = { connected: true, accountOnline: true, reader: 'ready', degraded: true, hint: '测试 QQ 独立通道异常' };
   await page.goto(fixture.url);
   await page.waitForFunction(() => document.getElementById('desktopAgentStatus')?.textContent.length > 0);
 
@@ -328,17 +328,16 @@ try {
   assert.match(await page.locator('#metricUsagePerTurn').innerText(), /5,600/);
 
   await openPage('maintenance');
-  await page.locator('#snowlumaWarn').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#metricSnowluma').textContent(), '心跳中断');
-  assert.equal(await page.locator('#snowlumaWarnHint').textContent(), fixture.state.snowluma.hint);
-  assert.doesNotMatch(await page.locator('#snowlumaWarn').innerText(), /\[Hook\]/);
-  fixture.state.snowluma = { connected: true, degraded: true, good: false, hint: '测试网关接收异常' };
+  await page.locator('#qqHealthWarn').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#metricQQHealth').textContent(), '连接异常');
+  assert.equal(await page.locator('#qqHealthWarnHint').textContent(), fixture.state.qqHealth.hint);
+  fixture.state.qqHealth = { connected: false, accountOnline: false, reader: 'offline', degraded: false, hint: 'QQ 独立通道未连接' };
   await page.locator('#refreshConsole').click();
-  await page.waitForFunction(() => document.getElementById('metricSnowluma').textContent === '接收异常');
-  assert.equal(await page.locator('#snowlumaWarnHint').textContent(), fixture.state.snowluma.hint);
-  fixture.state.snowluma = { connected: true, degraded: false, good: true };
+  await page.waitForFunction(() => document.getElementById('metricQQHealth').textContent === '未连接');
+  await page.locator('#qqHealthWarn').waitFor({ state: 'hidden' });
+  fixture.state.qqHealth = { connected: true, accountOnline: true, reader: 'ready', degraded: false, hint: null };
   await page.locator('#refreshConsole').click();
-  await page.locator('#snowlumaWarn').waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => document.getElementById('metricQQHealth').textContent === '已连接');
   await openPage('access');
   await page.waitForFunction(() => document.getElementById('ownerQQ').value === '100001');
   assert.equal(await page.locator('#secInterceptNotify, #secSave').count(), 0, 'the obsolete interception notification control is absent');
@@ -493,14 +492,6 @@ try {
   ]);
   assert.ok(fixture.requests.some(request => request.path === '/api/socialV2/reset'), 'cache reset stays separate from the global session');
 
-  await page.waitForFunction(() => document.querySelector('#v2AllStatesOutput').textContent.includes('暂无缓冲消息'));
-  await openPage('qq-settings');
-  await page.locator('#qqBackend').selectOption('native');
-  await Promise.all([
-    page.waitForResponse(r => r.url().endsWith('/api/restart') && r.request().method() === 'POST'),
-    page.locator('#qqBackendForm button').click(),
-  ]);
-  assert.equal(fixture.state.qqBackend, 'native');
   await openPage('social-v2');
   await page.waitForFunction(() => document.getElementById('v2ResetBtn').textContent === '清空 QQ 提醒缓存');
   assert.match(await page.locator('#v2Summary').innerText(), /未读提醒/);

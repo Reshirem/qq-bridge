@@ -92,7 +92,7 @@ export function makeFixtureState() {
     desktopAgentSleepTimeZone: 'Asia/Shanghai',
     desktopAgentNextSleepAt: Date.parse('2026-11-14T15:00:00.000Z'),
     desktopAgentNextWakeAt: Date.parse('2026-11-14T23:00:00.000Z'),
-    snowluma: { connected: true, accountOnline: true, degraded: false, good: true },
+    qqHealth: { connected: true, accountOnline: true, reader: 'ready', degraded: false, hint: null },
     memorySettings: { enabled: true, namespace: 'demo', baseUrl: 'http://127.0.0.1:8080', apiKeyConfigured: true },
     memoryProviders: { embedding: { model: 'demo-embedding', dimension: 1024 }, llm: { model: 'demo-model' } },
     memoryRecords: [{ memoryId: 'demo-first', content: '离线记忆：记得周末整理书架。', metadata: { origin: 'assistant' }, observedAt: timestamp }],
@@ -190,8 +190,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
       if (method === 'GET') {
         switch (path) {
           case '/api/learning/market-packs/availability':
-            return json({ok:true, native:state.qqBackend === 'native'
-              ? {available:state.marketPack.items.length, total:state.marketPack.items.length} : null});
+            return json({ ok: true, native: { available: state.marketPack.items.length, total: state.marketPack.items.length } });
           case '/api/learning/market-packs': {
             const pack = state.marketPack, q = url.searchParams.get('query');
             const match = q ? pack.name.includes(q) || pack.id === q : pack.installed;
@@ -227,7 +226,7 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=', 'base64'));
           }
           case '/api/stickers': return json({ ok: true, stickers: [{ id: 'qq-fixture', desc: 'QQ 收藏示例' }], total: 1 });
-          case '/api/status': return json({ ok: true, dshReady: true, snowluma: state.snowluma, role: state.role, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
+          case '/api/status': return json({ ok: true, dshReady: true, qqBackend: 'native', qqHealth: state.qqHealth, role: state.role, ownerQQ: state.whitelist.ownerQQ, allowGroups: state.whitelist.allow.groups, allowPrivate: state.whitelist.allow.private, activity: '[08:30:00] 演示桥接已连接\n[08:30:12] desktop-agent 自主会话已就绪\n以上均为离线模拟数据。' });
           case '/api/roles': return json({
             roles: state.roles.slice(),
             summaries: state.roles.map((name) => {
@@ -323,11 +322,10 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
               records,
             });
           }
-          case '/api/qq-backend': return json({ok:true, active:state.qqBackend ?? 'snowluma', selected:state.qqBackend ?? 'snowluma'});
           case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: url.searchParams.get('failed') === '1' ? state.toolLog.filter(e => e.ok === false || e.imageAdmission?.rejected > 0) : state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });
-          case '/api/socialV2/states': return json({ ok: true, backend:state.qqBackend ?? 'snowluma', enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
+          case '/api/socialV2/states': return json({ ok: true, backend: 'native', enabled: state.v2.enabled, lifecycle: state.desktopAgentStopped ? 'stopped' : 'active', conversations: state.buffers });
           // 令牌与花费：全部为离线示例数据，不含任何真实用量。
           case '/api/tokens/summary': return json(usage.summary());
           case '/api/tokens/series': return json(usage.series({hours:Number(url.searchParams.get('hours')) || 24}));
@@ -438,7 +436,6 @@ export async function startConsoleFixture({ port = 0, htmlPath, logWrites = fals
             }
             return json({ ok: true, ...state.whitelist });
           }
-          case '/api/qq-backend': { const active = state.qqBackend ?? 'snowluma'; state.qqBackend = body.backend; return json({ok:true,active,selected:body.backend,requiresRestart:active !== body.backend}); }
           case '/api/socialV2/config': state.v2 = qqChannelConfig(state.v2, body); return json({ ok: true, config: state.v2 });
           case '/api/memory/settings': {
             const { apiKey, clearApiKey, timeoutSeconds, ...values } = body;

@@ -61,14 +61,20 @@ for (const [previousRest, expectedClamp] of [[0, 300000], [Date.now() + 3600000,
 {
   const image = Buffer.from('89504e470d0a1a0a00000000', 'hex');
   let body;
-  const h = await bridgeHarness({ globals: {
-    safeFetchBuffer: async () => ({ buffer: image }),
-    validateFetchUrl: async () => { throw new Error('must fetch validated bytes instead of passing a URL'); },
-    fetch: async (_url, init) => {
-      body = JSON.parse(init.body);
-      return { ok: true, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: 1 } }) };
+  const h = await bridgeHarness({
+    globals: {
+      safeFetchBuffer: async () => ({ buffer: image }),
+      validateFetchUrl: async () => { throw new Error('must fetch validated bytes instead of passing a URL'); },
     },
-  } });
+    onebot: {
+      request: async (action, params) => {
+        if (action === 'send_group_msg') {
+          body = JSON.parse(JSON.stringify(params));
+          return { status: 'ok', retcode: 0, data: { message_id: 1 } };
+        }
+      },
+    },
+  });
   try {
     h.setReady(true);
     await h.ensureDesktopAgentSession();
@@ -77,7 +83,7 @@ for (const [previousRest, expectedClamp] of [[0, 300000], [Date.now() + 3600000,
     await h.sendStickerV2('group:456', 'fixture-sticker');
     assert.deepEqual(body.message.map(part => part.type), ['image'], 'send one standalone sticker bubble');
     assert.equal(body.message[0].data.file, 'base64://' + image.toString('base64'));
-    console.log('PASS sticker sending gives OneBot validated bytes, never a URL to refetch');
+    console.log('PASS sticker sending gives QQ validated bytes, never a URL to refetch');
   } catch (error) { failures++; console.error('FAIL safe sticker sending:', error.message); }
   finally { await h.close(); }
 }

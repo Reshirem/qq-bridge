@@ -1,10 +1,10 @@
 // 合并转发消息（合并聊天记录）相关纯函数：
-// - 从 OneBot 消息段中提取并清洗 forward id
-// - 把 SnowLuma `get_forward_msg` 返回结果格式化为适合 AI 阅读的紧凑结构
+// - 从 QQ 消息段中提取并清洗 forward id
+// - 把 `get_forward_msg` 返回结果格式化为适合 AI 阅读的紧凑结构
 // - 暴露每条消息里的图片/表情元数据与嵌套 forward id，供桥接/MCP 进一步读取
 //
 // 安全原则：
-// - forward id 只允许安全字符，长度受限，避免把任意内容当参数传给 OneBot/日志
+// - forward id 只允许安全字符，长度受限，避免把任意内容当参数传给 QQ 读取接口或日志
 // - 只格式化，不访问网络；调用方负责“id 必须来自当前会话已见消息”的校验
 
 import { truncateText } from './md-to-plain.js';
@@ -12,7 +12,7 @@ import { truncateText } from './md-to-plain.js';
 export function sanitizeForwardId(value) {
   const s = String(value ?? '').trim();
   if (!s || s.length > 256) return '';
-  // 仅用于 OneBot JSON 参数：允许常见 QQ 资源 id 字符，拒绝空白/控制字符。
+  // 允许常见 QQ 资源 id / 原生转发 locator 字符，拒绝空白/控制字符。
   if (!/^[\w:.\-/=+@]+$/.test(s)) return '';
   return s;
 }
@@ -71,7 +71,7 @@ function contentToText(content) {
 
 export function nodeText(node) {
   if (!node || typeof node !== 'object') return '';
-  // 标准 OneBot 转发节点：{ type:'node', data:{ name, uin, time, content } }
+  // 转发节点：{ type:'node', data:{ name, uin, time, content } }
   const data = node.data && typeof node.data === 'object' ? node.data : {};
   const topContent = node.message ?? node.content ?? node.text;
   const dataContent = data.message ?? data.content ?? data.text;

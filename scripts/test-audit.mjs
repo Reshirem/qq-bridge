@@ -8,7 +8,7 @@ const tests = [
   'test-sleep-commands.mjs', 'test-sleep-schedule.mjs', 'test-sleep-schedule-routes.mjs',
   'test-attention-delivery.mjs', 'test-qq-message-reference.mjs', 'test-native-message-references.mjs',
   'test-poke-reminders.mjs', 'test-poke-send.mjs',
-  'test-qq-unread-store.mjs', 'test-qq-backends.mjs', 'test-maa-agent.mjs',
+  'test-qq-backends.mjs', 'test-maa-agent.mjs',
   'test-forward.mjs', 'test-native-forward.mjs', 'test-forward-routes.mjs',
   'test-image-references.mjs', 'test-image-detail-routes.mjs', 'test-media-detail.mjs', 'test-native-image-quality.mjs',
   'test-chat-learning.mjs', 'test-access.mjs',
@@ -23,7 +23,7 @@ const tests = [
   'test-md-to-plain.mjs', 'test-mux-reconnect.mjs',
   'test-qq-model-view.mjs', 'test-agent-preset-patches.mjs',
   'test-preset-prompt.mjs', 'test-preset-prompt-api.mjs',
-  // 图片/表情链路（动图/表情包字段、CDN 优先与 emoji_id 兜底）+ 联网搜索
+  // 图片/表情链路（动图/表情包字段、CDN 兜底）+ 联网搜索
   // （DSH 同一路 DeepSeek 搜索、Bing RSS 兜底、凭据优先级与端点安全；
   //  本轮新增：空结果 note 必须在写缓存之前生成，否则缓存命中丢掉提示）。
   'test-media-search.mjs', 'test-media-normalize.mjs',
@@ -31,21 +31,12 @@ const tests = [
   'test-token-usage.mjs', 'test-hardening.mjs',
   // 控制台静态契约（跑不了 Playwright 的环境下的替代回归）
   'test-console-static.mjs',
-  // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）
-  'test-snowluma-conn.mjs',
   // 全局 desktop-agent 的本地执行护栏：注册期断言——
-  //    preset 挂了守卫、守卫的 restrict 名单覆盖全部已知本地工具、且执行期一律拒绝。
-  //    这是唯一挡住"绕过桥接直连 OneBot HTTP"的东西（见 QSH_PLAN.md §0.1/§5.2），
-  //    所以纳入离线审计。
+  // preset 挂了守卫、守卫的 restrict 名单覆盖全部已知本地工具、且执行期一律拒绝，
+  // 防止绕过桥接与会话边界直接操作 QQ/主机。
   'test-preset-local-tools.mjs',
   // qq-agent-presets settings use the bundle entry id and exported Config schema.
   'test-qq-agent-presets-settings.mjs',
-  // SnowLuma 上游健康（被误诊成「qq-bridge 注入失败」的那个失败形态）：
-  //   · good 必须取自心跳 status.good / get_status —— 取自 get_login_info 会**静默失效**
-  //     （SDK 不校验 data 载荷，good 会永远停在 null，整条权威信号变成死分支）；
-  //   · 静默检测不得冒充 hook 检测（心跳是 SnowLuma 本地定时器无条件发的）；
-  //   · 客户端库版本不得低于 bot_status 出现的版本。
-  'test-snowluma-upstream-health.mjs',
 ];
 let failed = 0;
 for (const test of tests) {

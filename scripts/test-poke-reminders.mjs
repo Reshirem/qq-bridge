@@ -14,7 +14,7 @@ const poke = (extra = {}) => ({post_type:'notice',notice_type:'notify',sub_type:
 
 async function setup(config = {}, globals) {
   const h = await bridgeHarness({config, globals});
-  if (config.qqBackend === 'native') { h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open'); }
+  h.bot.account = '42'; h.bot.health = {connected:true}; h.bot.emit('open');
   h.setDesktopAgentLifecycle('active');
   h.setReady(false);
   const server = h.startConsoleServer();
@@ -40,78 +40,61 @@ async function setup(config = {}, globals) {
   return {h, settings, read};
 }
 
-for (const backend of ['native','snowluma']) {
-  test(`${backend}: poke wakes, deduplicates by QQ ID, and has an independent toggle`, async () => {
-    const {h,settings} = await setup({qqBackend:backend});
-    try {
-      await h.handlePokeNotice(poke());
-      await h.handlePokeNotice(poke());
-      assert.equal(h.attentionSnapshot().queue[0].count,1);
-      assert.equal(h.attentionSnapshot().queue[0].reason,'poke');
-      const row = h.getSocialV2State('group:456').unread[0];
-      if (backend === 'native') assert.equal(row.text,undefined,'native store holds references only');
-      else {
-        assert.match(row.text,/QQ 戳一戳事件/);
-        assert.doesNotMatch(row.text,/抱起|任意自定义/);
-      }
-      const saved = await settings({reminders:{poke:false}});
-      assert.equal(saved.reminders.atMention,true);
-      assert.equal(h.attentionSnapshot().queue.length,0);
-      assert.equal(h.attentionSnapshot().unresolved.length,0);
-      await h.handlePokeNotice(poke({message_id:'124'}));
-      assert.equal(h.attentionSnapshot().queue.length,0);
-      assert.equal(JSON.parse(fs.readFileSync(path.join(h.temp,'config.json'),'utf8')).socialV2.reminders.poke,false);
-      await settings({reminders:{poke:true,private:false}});
-      await h.handlePokeNotice(poke({group_id:undefined,message_id:'125'}));
-      assert.equal(h.attentionSnapshot().queue[0].key,'private:123','private poke does not depend on private-message toggle');
-      h.setReady(true);
-      await h.flushAttentionNow();
-      assert.match(h.calls.prompts.at(-1).content[0].text,/事件：QQ 戳一戳（功能事件）/);
-      assert.doesNotMatch(h.calls.prompts.at(-1).content[0].text,/任意自定义/);
-    } finally { await h.close(); }
-  });
-
-  test(`${backend}: other targets, self pokes, sleep, stop and master switch cannot wake`, async () => {
-    const {h,settings} = await setup({qqBackend:backend});
-    try {
-      for (const delta of [{target_id:'321'},{user_id:'42'},{target_id:''},{sub_type:'other'},{notice_type:'other'}]) await h.handlePokeNotice(poke(delta));
-      assert.equal(h.attentionSnapshot().queue.length,0);
-      for (const state of ['sleeping','stopped']) {
-        h.setDesktopAgentLifecycle(state);
-        await h.handlePokeNotice(poke());
-        assert.equal(h.attentionSnapshot().queue.length,0);
-      }
-      h.setDesktopAgentLifecycle('active');
-      await settings({enabled:false});
-      await h.handlePokeNotice(poke());
-      assert.equal(h.attentionSnapshot().queue.length,0);
-    } finally { await h.close(); }
-  });
-
-  test(`${backend}: disabling one trigger preserves another pending trigger from the same conversation`, async () => {
-    const {h,settings} = await setup({qqBackend:backend});
-    try {
-      await h.handleIncomingForTest('group',456,{self_id:'42',group_id:456,user_id:123,message_id:'111',message:[{type:'at',data:{qq:'42'}}]});
-      await h.handlePokeNotice(poke());
-      await settings({reminders:{poke:false}});
-      assert.equal(h.attentionSnapshot().queue[0].reason,'atMention');
-      assert.equal(h.attentionSnapshot().queue[0].messageId,'111');
-      h.setReady(true);
-      await h.flushAttentionNow();
-      assert.match(h.calls.prompts.at(-1).content[0].text,/消息 id:111/);
-      assert.doesNotMatch(h.calls.prompts.at(-1).content[0].text,/戳一戳/);
-    } finally { await h.close(); }
-  });
-}
-
-test('id-less SnowLuma poke remains readable and read acknowledgement removes pending attention', async () => {
-  const {h,read} = await setup();
+test('native: poke wakes, deduplicates by QQ ID, and has an independent toggle', async () => {
+  const {h,settings} = await setup();
   try {
-    await h.handlePokeNotice(poke({message_id:undefined}));
+    await h.handlePokeNotice(poke());
+    await h.handlePokeNotice(poke());
+    assert.equal(h.attentionSnapshot().queue[0].count,1);
+    assert.equal(h.attentionSnapshot().queue[0].reason,'poke');
     const row = h.getSocialV2State('group:456').unread[0];
-    const result = await read('/api/socialV2/message-detail?key=group:456&messageId=seq:' + row.seq);
-    assert.match(result.info.text,/QQ 戳一戳事件/);
+    assert.equal(row.text,undefined,'native store holds references only');
+    const saved = await settings({reminders:{poke:false}});
+    assert.equal(saved.reminders.atMention,true);
+    assert.equal(h.attentionSnapshot().queue.length,0);
     assert.equal(h.attentionSnapshot().unresolved.length,0);
+    await h.handlePokeNotice(poke({message_id:'124'}));
+    assert.equal(h.attentionSnapshot().queue.length,0);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(h.temp,'config.json'),'utf8')).socialV2.reminders.poke,false);
+    await settings({reminders:{poke:true,private:false}});
+    await h.handlePokeNotice(poke({group_id:undefined,message_id:'125'}));
+    assert.equal(h.attentionSnapshot().queue[0].key,'private:123','private poke does not depend on private-message toggle');
+    h.setReady(true);
+    await h.flushAttentionNow();
+    assert.match(h.calls.prompts.at(-1).content[0].text,/事件：QQ 戳一戳（功能事件）/);
+    assert.doesNotMatch(h.calls.prompts.at(-1).content[0].text,/任意自定义/);
+  } finally { await h.close(); }
+});
+
+test('native: other targets, self pokes, sleep, stop and master switch cannot wake', async () => {
+  const {h,settings} = await setup();
+  try {
+    for (const delta of [{target_id:'321'},{user_id:'42'},{target_id:''},{sub_type:'other'},{notice_type:'other'}]) await h.handlePokeNotice(poke(delta));
+    assert.equal(h.attentionSnapshot().queue.length,0);
+    for (const state of ['sleeping','stopped']) {
+      h.setDesktopAgentLifecycle(state);
+      await h.handlePokeNotice(poke());
+      assert.equal(h.attentionSnapshot().queue.length,0);
+    }
+    h.setDesktopAgentLifecycle('active');
+    await settings({enabled:false});
+    await h.handlePokeNotice(poke());
+    assert.equal(h.attentionSnapshot().queue.length,0);
+  } finally { await h.close(); }
+});
+
+test('native: disabling one trigger preserves another pending trigger from the same conversation', async () => {
+  const {h,settings} = await setup();
+  try {
+    await h.handleIncomingForTest('group',456,{self_id:'42',group_id:456,user_id:123,message_id:'111',message:[{type:'at',data:{qq:'42'}}]});
+    await h.handlePokeNotice(poke());
+    await settings({reminders:{poke:false}});
+    assert.equal(h.attentionSnapshot().queue[0].reason,'atMention');
+    assert.equal(h.attentionSnapshot().queue[0].messageId,'111');
+    h.setReady(true);
+    await h.flushAttentionNow();
+    assert.match(h.calls.prompts.at(-1).content[0].text,/消息 id:111/);
+    assert.doesNotMatch(h.calls.prompts.at(-1).content[0].text,/戳一戳/);
   } finally { await h.close(); }
 });
 
