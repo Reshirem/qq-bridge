@@ -56,7 +56,7 @@ import { createLearningAssets } from './learning-assets.js';
 import { runBackgroundTurn, backgroundAnswerText, collectLearningTurn, learningSessionTitle } from './background-sessions.js';
 import { memoryOrganizerDesktopProvider, memoryOrganizerCliLaunch } from './dsh-headless.js';
 import { createCurator, curatorTask } from './memory-curator.js';
-import { runLearningHeadless } from './learning-runner.js';
+import { runLearningHeadless, LEARNING_JSON_RETRY_PROMPT, isLearningJsonSyntaxError } from './learning-runner.js';
 import { createStickerMemory } from './sticker-memory.js';
 import { createMarketPacks, localMarketPackIds } from './market-packs.js';
 import { analyzeMarketPack, MARKET_PAGE_SIZE } from './market-analysis.js';
@@ -1329,6 +1329,8 @@ async function main() {
     const sessionIds = new Set();
     const preset = mode === 'market' ? 'market-analysis' : 'chat-learning';
     signal?.throwIfAborted();
+    const deadlineAt = Date.now() + 300000;
+    const remainingMs = () => Math.max(15000, deadlineAt - Date.now());
     const sessionId = await createBackgroundSession('chat-learning-workspace', '后台黑话与表情学习', preset);
     try {
       if (sessionId) {
@@ -1340,24 +1342,38 @@ async function main() {
         learningImageBatches.set(sessionId, { images, mode });
         const collector = collectLearningTurn(mode, images.length);
         const usage = { inputTokens: 0, outputTokens: 0 };
+        const runTurn = promptText => runBackgroundTurn({
+          api, sessionId, preset, model, task: promptText, signal, timeoutMs: remainingMs(), readRange: readMemoryOrganizerRange,
+          onEvent(event) {
+            const sample = usageOfEvent(event);
+            for (const key of Object.keys(usage)) usage[key] += Math.max(0, Number(sample?.[key]) || 0);
+            try { tokenLedger.ingestEvent({ sessionId, feature: 'learning', ...model, event }); }
+            catch (error) { log('后台学习用量记录失败', error.message); }
+            collector.event(event);
+          },
+        });
         try {
-          await runBackgroundTurn({ api, sessionId, preset, model, task, signal, timeoutMs: 300000, readRange: readMemoryOrganizerRange,
-            onEvent(event) {
-              const sample = usageOfEvent(event);
-              for (const key of Object.keys(usage)) usage[key] += Math.max(0, Number(sample?.[key]) || 0);
-              try { tokenLedger.ingestEvent({ sessionId, feature: 'learning', ...model, event }); }
-              catch (error) { log('后台学习用量记录失败', error.message); }
-              collector.event(event);
-            },
-          });
-          return { ...collector.result(), sessionId, usage };
+          await runTurn(task);
+          try {
+            return { ...collector.result(), sessionId, usage };
+          } catch (error) {
+            if (!isLearningJsonSyntaxError(error) || signal?.aborted) throw error;
+            log(`后台学习返回非法 JSON，同会话重试一次（${sessionId}）：${error.message}`);
+            collector.resetAnswer();
+            await runTurn(LEARNING_JSON_RETRY_PROMPT);
+            return { ...collector.result(), sessionId, usage };
+          }
         } catch (error) { error.usage = usage; throw error; }
       }
       const cli = memoryOrganizerCliLaunch(cfg.memoryOrganizer.cliPath);
       const capabilities = await getMemoryOrganizerCliCapabilities(cli);
-      return await runLearningHeadless({
+      const totalUsage = { inputTokens: 0, outputTokens: 0 };
+      const addTotalUsage = sample => {
+        for (const key of Object.keys(totalUsage)) totalUsage[key] += Math.max(0, Number(sample?.[key]) || 0);
+      };
+      const runHeadless = (promptText, requestedSessionId, timeoutMs) => runLearningHeadless({
         cli, approvalPolicy: capabilities.approvalPolicy, root: ROOT, stateDir: STATE_DIR,
-        model, provider: memoryOrganizerDesktopProvider(model), task, images, signal, mode,
+        model, provider: memoryOrganizerDesktopProvider(model), task: promptText, images, signal, mode, requestedSessionId, timeoutMs,
         onSession: sessionId => {
           sessionIds.add(sessionId);
           activeLearningSessions.add(sessionId);
@@ -1369,6 +1385,29 @@ async function main() {
           } catch (error) { log('后台学习用量记录失败', error.message); }
         },
       });
+      try {
+        const result = await runHeadless(task, '', 300000);
+        addTotalUsage(result.usage);
+        return { ...result, usage: totalUsage };
+      } catch (error) {
+        addTotalUsage(error.usage);
+        if (!isLearningJsonSyntaxError(error) || signal?.aborted) {
+          error.usage = totalUsage;
+          throw error;
+        }
+        log(`后台学习返回非法 JSON，headless 重试一次：${error.message}`);
+        try {
+          const retried = !images.length && error.sessionId
+            ? await runHeadless(LEARNING_JSON_RETRY_PROMPT, error.sessionId, remainingMs())
+            : await runHeadless(task, '', remainingMs());
+          addTotalUsage(retried.usage);
+          return { ...retried, usage: totalUsage };
+        } catch (retryError) {
+          addTotalUsage(retryError.usage);
+          retryError.usage = totalUsage;
+          throw retryError;
+        }
+      }
     } finally {
       learningImageBatches.delete(sessionId);
       for (const id of sessionIds) activeLearningSessions.delete(id);

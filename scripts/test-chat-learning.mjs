@@ -11,7 +11,7 @@ import { createStickerMemory } from '../src/sticker-memory.js';
 import { createLearningAssets } from '../src/learning-assets.js';
 import { createMarketPacks } from '../src/market-packs.js';
 import { analyzeMarketPack } from '../src/market-analysis.js';
-import { learningPatch, runLearningHeadless } from '../src/learning-runner.js';
+import { learningPatch, runLearningHeadless, LEARNING_JSON_RETRY_PROMPT, parseLearningResult } from '../src/learning-runner.js';
 import { apply as guard } from '../src/learning-tool-guard.mjs';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import { createTokenLedger } from '../src/token-ledger.js';
@@ -882,4 +882,168 @@ test('HTTP management isolation, source query and safe local sticker send use th
     assert.ok(path.basename(storeRoot).startsWith('qq-learning-test-'));
     fs.rmSync(storeRoot, { recursive: true, force: true });
   }
+});
+
+test('worker sends short m1..mN message aliases and resolves them back to canonical evidence ids', async t => {
+  const { store, assets } = fixture(t);
+  const sticker = assets.put(png);
+  const media = [{ kind: 'sticker', url: 'https://example.invalid/a' }];
+  const withMedia = { ...config, stickers: true, nativeAccount: '42' };
+  store.enqueue('group:123', { nativeAccount: '42', messageId: '7711295270068206642', plain: '今天又开始摸鱼了', media: [] }, withMedia);
+  store.enqueue('group:123', { nativeAccount: '42', messageId: '7711295275379190439', plain: '还有一张图', media }, withMedia);
+  let seenTask;
+  const worker = createChatLearningWorker({
+    store,
+    getConfig: () => withMedia,
+    hydrateBatch: async batch => {
+      batch.messages[0].text = '今天又开始摸鱼了';
+      batch.messages[1].text = '还有一张图';
+      batch.messages[1].media = media;
+    },
+    prepareImages: async batch => [{ ...sticker, mimeType: 'image/png', data: png.toString('base64'), evidence: { key: batch.key, messageId: batch.messages[1].messageId, id: batch.messages[1].id } }],
+    analyze: async task => {
+      seenTask = JSON.parse(task);
+      return {
+        slang: [{ content: '摸鱼', meaning: '偷闲', confidence: 0.9, evidenceIds: ['m1'] }],
+        stickers: [{ id: sticker.id, isSticker: true, description: '测试表情', tags: ['开心'], usage: '日常' }],
+      };
+    },
+  });
+  const outcome = await worker.tick(true);
+  assert.equal(outcome.words, 1);
+  assert.equal(outcome.pictures, 1);
+  assert.deepEqual(seenTask.messages.map(m => m.id), ['m1', 'm2']);
+  assert.equal(seenTask.images[0].evidenceId, 'm2');
+  const saved = store.snapshot();
+  assert.equal(saved.slang[0].evidence[0].id, 'ntqq:42:group:123:id:7711295270068206642');
+  assert.ok(saved.seen.includes('ntqq:42:group:123:id:7711295275379190439'));
+
+  enqueue(store, 'group:123', '9001', '又在摸鱼');
+  const nextBatch = store.batch(config, Date.now(), true);
+  assert.throws(() => store.complete(nextBatch, { slang: [{ content: '摸鱼', meaning: '偷闲', confidence: 0.9, evidenceIds: ['m99'] }], stickers: [] }, [], config), /证据/);
+  store.complete(nextBatch, { slang: [{ content: '摸鱼', meaning: '偷闲', confidence: 0.9, evidenceIds: [nextBatch.messages[0].id] }], stickers: [] }, [], config);
+  assert.equal(store.snapshot().slang[0].count, 2);
+});
+
+test('learning runner retries once in-session on invalid JSON without dropping images or repeating non-JSON errors', async t => {
+  const { store, assets } = fixture(t);
+  const sticker = assets.put(png);
+  enqueue(store, 'group:123', '1', '今天又开始摸鱼了', [{ kind: 'sticker', file: 'fixture.png' }]);
+  const h = await bridgeHarness({
+    config: { chatLearning: { enabled: true, slang: true, stickers: true, minMessages: 1 } },
+    files: { 'state/chat-learning.json': store.snapshot() },
+    globals: {
+      async runBackgroundTurn({ sessionId, task, onEvent }) {
+        turns.push({ sessionId, task });
+        const n = turns.length;
+        if (n === 1) {
+          onEvent({ type: 'tool/call', data: { callId: 'c1', name: 'mcp__qq-learning-images__learning_images' } });
+          onEvent({ type: 'tool/result', data: { message: { toolCallId: 'c1', content: [
+            { type: 'text', text: JSON.stringify({ id: sticker.id }) },
+            { type: 'image' },
+          ] } } });
+          onEvent({ type: 'assistant/message', data: { usage: { inputTokens: 10, outputTokens: 3 }, message: { content: [{ type: 'text', text: '{"slang":[{"content":"摸鱼","evidenceIds":["m1"]},"content":"寄"}]' }] } } });
+          return;
+        }
+        onEvent({ type: 'assistant/message', data: { usage: { inputTokens: 5, outputTokens: 4 }, message: { content: [{ type: 'text', text: JSON.stringify({
+          slang: [{ content: '摸鱼', meaning: '偷闲', confidence: 0.9, evidenceIds: ['m1'] }],
+          stickers: [{ id: sticker.id, isSticker: true, description: '摸鱼图', tags: ['开心'], usage: '闲聊' }],
+        }) }] } } });
+      },
+    },
+  });
+  t.after(() => h.close());
+  const turns = [];
+  h.api.sessions.rename = async () => ({ result: { ok: true, value: {} } });
+  h.setReady(true);
+  const outcome = await h.learningWorker.tick(true);
+  assert.ok(outcome, 'learningWorker.tick(true) should succeed after JSON retry');
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1].sessionId, turns[0].sessionId);
+  assert.equal(turns[1].task, LEARNING_JSON_RETRY_PROMPT);
+  assert.equal(outcome.words, 1);
+  assert.equal(outcome.pictures, 1);
+  assert.deepEqual({ ...outcome.usage }, { inputTokens: 15, outputTokens: 7 });
+
+  const afterOk = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/chat-learning.json'), 'utf8'));
+  assert.equal(afterOk.queue.length, 0);
+  assert.equal(afterOk.lastError, '');
+
+  // Double malformed JSON fails after 1 retry and preserves combined usage.
+  const brokenTurns = [];
+  const h2 = await bridgeHarness({
+    config: { chatLearning: { enabled: true, slang: true, stickers: false, minMessages: 1 } },
+    globals: {
+      async runBackgroundTurn({ onEvent }) {
+        brokenTurns.push(1);
+        onEvent({ type: 'assistant/message', data: { usage: { inputTokens: 6, outputTokens: 2 }, message: { content: [{ type: 'text', text: '{"slang":[}' }] } } });
+      },
+    },
+  });
+  t.after(() => h2.close());
+  h2.api.sessions.rename = async () => ({ result: { ok: true, value: {} } });
+  h2.setReady(true);
+  await h2.handleIncomingForTest('group', 456, { self_id: 999, user_id: 111, message_id: 77, sender: { nickname: 'a' }, message: [{ type: 'text', data: { text: '摸鱼了' } }] });
+  assert.equal(await h2.learningWorker.tick(true), null);
+  assert.equal(brokenTurns.length, 2);
+  const failedState = JSON.parse(fs.readFileSync(path.join(h2.temp, 'state/chat-learning.json'), 'utf8'));
+  assert.equal(failedState.queue[0].attempts, 1);
+  assert.deepEqual(failedState.usage, { inputTokens: 12, outputTokens: 4 });
+
+  // Non-JSON errors (such as missing sticker image read) do not trigger a JSON retry.
+  const unseenTurns = [];
+  const h3 = await bridgeHarness({
+    config: { chatLearning: { enabled: true, slang: true, stickers: true, minMessages: 1 } },
+    globals: {
+      async runBackgroundTurn({ onEvent }) {
+        unseenTurns.push(1);
+        onEvent({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: JSON.stringify({ slang: [], stickers: [{ id: sticker.id, isSticker: true, description: '未看图' }] }) }] } } });
+      },
+    },
+  });
+  t.after(() => h3.close());
+  h3.api.sessions.rename = async () => ({ result: { ok: true, value: {} } });
+  h3.setReady(true);
+  await assert.rejects(h3.runVisualLearning('{"key":"group:456"}', [{ id: sticker.id, mimeType: 'image/png', data: png.toString('base64') }], undefined, 'chat'), /未成功看图/);
+  assert.equal(unseenTurns.length, 1);
+
+  // Headless fallback retries once on invalid JSON and sums usage.
+  const headlessCalls = [];
+  const h4 = await bridgeHarness({
+    config: { chatLearning: { enabled: true, slang: true, stickers: false } },
+    globals: {
+      spawn() {
+        const child = new EventEmitter();
+        child.stdout = new PassThrough(); child.stderr = new PassThrough();
+        setImmediate(() => { child.stdout.end('--approval-policy'); child.emit('close', 0); });
+        return child;
+      },
+      async runLearningHeadless(opts) {
+        headlessCalls.push(opts);
+        if (headlessCalls.length === 1) {
+          throw Object.assign(new SyntaxError('bad json'), { code: 'LEARNING_INVALID_JSON', sessionId: 'hl-1', usage: { inputTokens: 11, outputTokens: 2 } });
+        }
+        return { slang: [], stickers: [], sessionId: 'hl-1', usage: { inputTokens: 7, outputTokens: 3 } };
+      },
+    },
+  });
+  t.after(() => h4.close());
+  h4.setReady(false);
+  const textOnlyRes = await h4.runVisualLearning('{"key":"group:456"}', [], undefined, 'chat');
+  assert.equal(headlessCalls.length, 2);
+  assert.equal(headlessCalls[1].requestedSessionId, 'hl-1');
+  assert.equal(headlessCalls[1].task, LEARNING_JSON_RETRY_PROMPT);
+  assert.deepEqual({ ...textOnlyRes.usage }, { inputTokens: 18, outputTokens: 5 });
+
+  // Headless fallback with images starts a fresh session with original task on JSON retry so images are read cleanly.
+  headlessCalls.length = 0;
+  const imgTask = '{"key":"group:456","images":[{"id":"' + sticker.id + '"}]}';
+  const withImgRes = await h4.runVisualLearning(imgTask, [{ id: sticker.id, mimeType: 'image/png', data: png.toString('base64') }], undefined, 'chat');
+  assert.equal(headlessCalls.length, 2);
+  assert.equal(headlessCalls[1].requestedSessionId, '');
+  assert.equal(headlessCalls[1].task, imgTask);
+  assert.deepEqual({ ...withImgRes.usage }, { inputTokens: 18, outputTokens: 5 });
+
+  assert.throws(() => parseLearningResult('{"slang":[}', 'chat'), err => err.code === 'LEARNING_INVALID_JSON' && err.name === 'SyntaxError');
+  assert.throws(() => parseLearningResult('{"stickers":"bad"}', 'chat'), err => err.code === 'LEARNING_INVALID_JSON');
 });

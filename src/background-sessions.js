@@ -64,6 +64,11 @@ export async function runBackgroundTurn({ api, sessionId, preset, model, task, t
           if (ev.type === 'turn/end') {
             submitted = false;
             if (ev.data?.reason?.kind !== 'completed') throw new Error('后台回合未正常完成');
+            let settled = live;
+            while (settled?.running) {
+              await delay(100, undefined, { signal: stop });
+              settled = await api.readSessionState(sessionId, { signal: stop });
+            }
             return;
           }
         }
@@ -131,6 +136,10 @@ export function collectLearningTurn(mode, imageCount) {
           if (number >= 1 && delivered === expected) pages.add(number);
         }
       }
+    },
+    resetAnswer() {
+      text = '';
+      calls.clear();
     },
     result() {
       const result = parseLearningResult(text, mode);

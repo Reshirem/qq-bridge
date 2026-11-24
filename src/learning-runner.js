@@ -35,9 +35,23 @@ export function learningPatch({ model, provider, imageServer, imageManifest, mod
   return yaml.dump(operations, { lineWidth: -1, noRefs: true });
 }
 
+export const LEARNING_JSON_RETRY_PROMPT = '上一次输出不是合法 JSON（存在语法或结构错误）。不要输出解释文字，请直接重新输出符合要求的完整合法 JSON。';
+
+export function isLearningJsonSyntaxError(error) {
+  return Boolean(error && (error.code === 'LEARNING_INVALID_JSON' || error.name === 'SyntaxError'));
+}
+
 export function parseLearningResult(text, mode = 'chat') {
-  const result = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, '$1'));
-  if (!result || (mode !== 'market' && !Array.isArray(result.slang)) || !Array.isArray(result.stickers)) throw new Error('学习模型返回的 JSON 格式不正确');
+  const cleaned = String(text).trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1');
+  let result;
+  try {
+    result = JSON.parse(cleaned);
+  } catch (error) {
+    throw Object.assign(new SyntaxError(error.message), { code: 'LEARNING_INVALID_JSON' });
+  }
+  if (!result || (mode !== 'market' && !Array.isArray(result.slang)) || !Array.isArray(result.stickers)) {
+    throw Object.assign(new Error('学习模型返回的 JSON 格式不正确'), { code: 'LEARNING_INVALID_JSON' });
+  }
   return result;
 }
 
@@ -133,7 +147,7 @@ export async function runLearningHeadless({ cli, approvalPolicy, root, stateDir,
           if (mode === 'market' && seenPages.size !== pages) throw new Error(`模型仅读取了 ${seenPages.size}/${pages} 页表情图`);
           if (result.stickers.length && !imageRead) throw new Error('模型未成功看图，拒绝保存表情描述');
           resolve({ ...result, sessionId, usage });
-        } catch (error) { error.usage = usage; reject(error); }
+        } catch (error) { error.usage = usage; if (sessionId) error.sessionId = sessionId; reject(error); }
       });
       child.stdin.end(task, 'utf8');
     });
