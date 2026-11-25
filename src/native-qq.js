@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { parseQQCard } from './qq-card.js';
 
 function imageQuality(value) {
   if (value !== undefined && value !== 'preview' && value !== 'original') {
@@ -206,6 +207,42 @@ export class NativeQQ extends EventEmitter {
         } catch {}
       }
       return list;
+    }
+    if (action === 'get_group_invites') {
+      const notifies = await this.call('get_group_invites', p).catch(error => {
+        if (!this.read) throw error;
+        return [];
+      });
+      const baseList = Array.isArray(notifies) ? notifies : [];
+      if (!this.read) return baseList;
+      const cardRows = await this.read('group_invite_cards', { days: 7, limit: 50 }).catch(() => []);
+      if (!Array.isArray(cardRows) || !cardRows.length) return baseList;
+      const seenSeq = new Set(baseList.map((item) => {
+        const seq = item?.seq || String(item?.flag || '').split(':').at(-1) || '';
+        return `${item?.group_id ?? ''}:${seq}`;
+      }));
+      const seenCardGroups = new Set();
+      const merged = [...baseList];
+      for (const row of cardRows) {
+        const card = parseQQCard(row?.data);
+        const invite = card?.invite;
+        if (!invite?.groupId || !invite?.seq) continue;
+        const seqKey = `${invite.groupId}:${invite.seq}`;
+        if (seenSeq.has(seqKey) || seenCardGroups.has(invite.groupId)) continue;
+        seenSeq.add(seqKey);
+        seenCardGroups.add(invite.groupId);
+        merged.push({
+          flag: `native-card:${invite.groupId}:${invite.seq}`,
+          group_id: invite.groupId,
+          group_name: invite.groupName || '',
+          user_id: invite.senderId || String(row?.user_id || ''),
+          nickname: '',
+          comment: card.desc || '',
+          source: 'card',
+          time: Number(row?.time) || 0,
+        });
+      }
+      return merged;
     }
     if (action === 'get_image') {
       const quality = imageQuality(p.quality);

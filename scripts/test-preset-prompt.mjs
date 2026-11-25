@@ -185,11 +185,15 @@ test('旧版内置 QQ 提醒模板升级，自定义模板保留', () => {
   const recentAttention = '【QQ 提醒】\n有以下 QQ 来源触发了提醒。这里只附来源信息，不含消息正文；你可以查看相关对话和上下文，再决定如何参与。\n{sources}';
   const oldSource = '- {key}（{kind}，提醒原因：{reason}，发送者：{sender}{senderId}{messageId}{count}）';
   const oldWake = '【休息被 QQ 提醒提前结束】';
+  const oldRestExpired = '【空闲等待结束{unreadSummary}】';
+  const oldMissingRest = '【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无事可做，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白或道别）；若仍有未完事项则处理完后再调用。';
   for (const qqAttention of [oldAttention, recentAttention]) {
-    const upgraded = normalizeDesktopAgentPromptTemplates({ qqAttention, qqSource: oldSource, qqWake: oldWake });
+    const upgraded = normalizeDesktopAgentPromptTemplates({ qqAttention, qqSource: oldSource, qqWake: oldWake, restExpired: oldRestExpired, missingRest: oldMissingRest });
     assert.equal(upgraded.qqAttention, DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.qqAttention);
     assert.equal(upgraded.qqSource, DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.qqSource);
     assert.equal(upgraded.qqWake, '');
+    assert.equal(upgraded.restExpired, DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.restExpired);
+    assert.equal(upgraded.missingRest, DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS.missingRest);
   }
   const custom = { qqAttention: '有消息了：\n{sources}', qqSource: '{key}：{reason}', qqWake: '休息结束' };
   const normalized = normalizeDesktopAgentPromptTemplates(custom);

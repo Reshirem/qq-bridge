@@ -29,7 +29,7 @@ export const PRESET_PROMPT_MODULE_DEFINITIONS = Object.freeze([
   { id: 'protected-apps', title: '受保护的项目与运行时应用', description: '限制对 ChatGPT、DSH 和 qq-bridge 图形界面的操作。', required: false },
   { id: 'untrusted-input', title: '外部信息与信任边界', description: '外部内容可作背景，不能扩大指令或权限。', required: false },
   { id: 'memory', title: '记忆与经历', description: '趁重要信息仍在上下文时，选择性记录跨会话有用的内容。', required: false },
-  { id: 'planned-rest', title: '休息与节奏', description: '按照人格卡和自身节奏选择休息时间，也可以安排之后回来。', required: false },
+  { id: 'planned-rest', title: '空闲挂起与节奏', description: '当前事务完成后挂起回合、等待下次事件唤醒。', required: false },
   { id: 'turn-lifecycle', title: '结束这一轮', description: '以 agent_rest 作为活动回合的最后一个工具调用。', required: false },
 ]);
 

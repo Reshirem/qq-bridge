@@ -8,6 +8,7 @@
 // - 只格式化，不访问网络；调用方负责“id 必须来自当前会话已见消息”的校验
 
 import { truncateText } from './md-to-plain.js';
+import { formatQQCardText } from './qq-card.js';
 
 export function sanitizeForwardId(value) {
   const s = String(value ?? '').trim();
@@ -47,7 +48,9 @@ function segmentText(seg) {
     case 'file': return `[文件${d.name ?? ''}]`;
     case 'reply': return '[引用]';
     case 'forward': return '[转发]';
-    case 'json': return '[卡片消息]';
+    case 'card':
+    case 'json':
+      return formatQQCardText(d.data ?? d.content ?? d);
     default: return `[${seg.type ?? '未知'}]`;
   }
 }

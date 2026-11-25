@@ -1,7 +1,26 @@
 // The same schema handles old config files and partial WebUI updates. Writing the
 // normalized result drops retired controls without rewriting unrelated settings.
 const defaults = {
-  reminders: { private: true, atMention: true, reply: true, roleCardName: true, keyword: true, poke: true, unreadFollowup: true },
+  reminders: {
+    private: true,
+    atMention: true,
+    reply: true,
+    roleCardName: true,
+    keyword: true,
+    poke: true,
+    groupFollowup: true,
+    groupActivity: true,
+    unreadFollowup: true,
+  },
+  groupAttention: {
+    hotWindowMs: 4 * 60_000,
+    hotDebounceMs: 5_000,
+    hotExtendMs: 3_000,
+    hotMaxDebounceMs: 10_000,
+    privateActiveMs: 3 * 60_000,
+    coldAggregateMs: 60_000,
+    coldCooldownMs: 20 * 60_000,
+  },
   send: { delayPerCharMs: 20 },
   feedback: { maxLength: 500 },
   sticker: { syncEnabled: true, syncTtlMs: 60000, maxListCount: 100 },
@@ -63,5 +82,13 @@ export function qqChannelConfig(saved = {}, changes = {}) {
   config.send.delayPerCharMs = Math.min(1000, config.send.delayPerCharMs);
   config.feedback.maxLength = Math.max(1, config.feedback.maxLength);
   config.sticker.maxListCount = Math.max(1, Math.min(500, config.sticker.maxListCount));
+  const ga = config.groupAttention;
+  ga.hotWindowMs = Math.max(30_000, Math.min(30 * 60_000, ga.hotWindowMs));
+  ga.hotDebounceMs = Math.max(1_000, Math.min(60_000, ga.hotDebounceMs));
+  ga.hotExtendMs = Math.max(0, Math.min(30_000, ga.hotExtendMs));
+  ga.hotMaxDebounceMs = Math.max(ga.hotDebounceMs, Math.min(120_000, ga.hotMaxDebounceMs));
+  ga.privateActiveMs = Math.max(0, Math.min(30 * 60_000, ga.privateActiveMs));
+  ga.coldAggregateMs = Math.max(5_000, Math.min(10 * 60_000, ga.coldAggregateMs));
+  ga.coldCooldownMs = Math.max(60_000, Math.min(4 * 60 * 60_000, ga.coldCooldownMs));
   return config;
 }

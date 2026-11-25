@@ -61,7 +61,7 @@ test('active turn receives QQ metadata at its next step; read messages need no r
   } finally { await h.close(); }
 });
 
-test('unread signal is reminded only once after a one-minute rest check', async () => {
+test('unread signal is reminded only once after a 5-second post-rest settle check', async () => {
   const { h, clock, setRunning } = await fixture();
   try {
     h.queueDesktopAttentionSignal(signal());
@@ -69,8 +69,8 @@ test('unread signal is reminded only once after a one-minute rest check', async 
     h.enterDesktopAgentRest();
     h.setDesktopAgentTurnActive(false);
     setRunning(false);
-    assert.equal(clock.has(60_000), true);
-    clock.run(60_000);
+    assert.equal(clock.has(5_000), true);
+    clock.run(5_000);
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 2);
     assert.equal(h.calls.prompts[1].content[0].text, '【QQ 提醒】\n- group:456，发送者 QQ 123，消息 id:55');
@@ -81,7 +81,7 @@ test('unread signal is reminded only once after a one-minute rest check', async 
   } finally { await h.close(); }
 });
 
-test('acceptance after entering rest is tracked for the later reminder', async () => {
+test('acceptance after entering rest is tracked for the 5-second reminder', async () => {
   const { h, clock } = await fixture();
   try {
     const entered = deferred();
@@ -102,7 +102,7 @@ test('acceptance after entering rest is tracked for the later reminder', async (
     assert.equal(state.lifecycle, 'resting');
     assert.equal(state.queue.length, 0);
     assert.equal(state.unresolved[0].promptedSeq, 1);
-    assert.equal(clock.has(60_000), true);
+    assert.equal(clock.has(5_000), true);
   } finally { await h.close(); }
 });
 
@@ -198,100 +198,45 @@ const turnEnd = (sessionId, kind = 'completed') => ({
   type: 'session/event', sessionId, event: { type: 'turn/end', data: { turn: 1, reason: { kind } } },
 });
 
-test('normal completion without agent_rest immediately sends a specific reminder, not automatic rest', async () => {
+test('normal completion without agent_rest automatically enters default 30-minute resting without missing-rest prompt', async () => {
   const { h, clock, sessionId, setRunning } = await fixture();
   try {
     setRunning(false);
     await deliverFrame(h, turnEnd(sessionId));
-    assert.equal(h.attentionSnapshot().lifecycle, 'active');
-    assert.equal(h.attentionSnapshot().restUntil, 0);
-    assert.equal(h.attentionSnapshot().pendingWakeReason, 'missing-rest');
-    assert.equal(clock.has(0), true);
-    assert.equal(clock.has(60_000), false);
-    await deliverFrame(h, turnEnd(sessionId));
-    await h.flushAttentionNow();
-    assert.equal(h.calls.prompts.length, 1, 'duplicate completion coalesces before delivery');
-    assert.equal(h.calls.prompts[0].sessionId, sessionId);
-    assert.equal(h.calls.prompts[0].mode, 'queue');
-    assert.match(h.calls.prompts[0].content[0].text, /回合收尾提醒.*agent_rest/);
-    assert.equal(h.attentionSnapshot().lifecycle, 'active');
-    assert.equal(h.attentionSnapshot().restUntil, 0, 'only the tool may enter rest');
-    assert.equal(JSON.parse(fs.readFileSync(h.temp + '/state/desktop-agent.json', 'utf8')).restReminderSent, true);
-    h.enterDesktopAgentRest(120_000);
     assert.equal(h.attentionSnapshot().lifecycle, 'resting');
-    assert.equal(JSON.parse(fs.readFileSync(h.temp + '/state/desktop-agent.json', 'utf8')).restReminderSent, false);
+    assert.equal(h.attentionSnapshot().pendingWakeReason, '');
+    const remaining = h.attentionSnapshot().restUntil - Date.now();
+    assert.ok(remaining <= 1_800_000 && remaining > 1_790_000, `expected 30m default implicit rest, got ${remaining}`);
+    assert.equal(h.calls.prompts.length, 0, 'no missing-rest nag prompt should be sent');
+    assert.equal(h.calls.cancelled.some((c) => c.method === 'session/cancel'), false, 'implicit rest must not send session/cancel after completed turn');
+    assert.equal(clock.has(1_800_000, 1000), true);
+    const saved = JSON.parse(fs.readFileSync(h.temp + '/state/desktop-agent.json', 'utf8'));
+    assert.equal(saved.lifecycle, 'resting');
   } finally { await h.close(); }
 });
 
-test('repeated missed rest backs off and retries the specific reminder', async () => {
-  const { h, clock, sessionId, setRunning } = await fixture();
+test('completion before a QQ attention submission returns enters implicit rest without losing turn/end', async () => {
+  const { h, sessionId, setRunning } = await fixture();
   try {
     setRunning(false);
-    await deliverFrame(h, turnEnd(sessionId));
+    h.queueDesktopAttentionSignal(signal());
+    h.api.sessions.prompt = async (params) => {
+      h.calls.prompts.push(params);
+      await deliverFrame(h, { type: 'session/event', sessionId, event: { type: 'turn/start' } });
+      await deliverFrame(h, turnEnd(sessionId));
+      return { result: { ok: true, value: {} } };
+    };
     await h.flushAttentionNow();
-    await deliverFrame(h, turnEnd(sessionId));
-    assert.equal(h.attentionSnapshot().lifecycle, 'recovering');
-    assert.equal(h.attentionSnapshot().pendingWakeReason, 'missing-rest');
-    assert.equal(clock.has(0), false);
-    await clock.run(60_000, 1000);
-    await h.flushAttentionNow();
-    assert.equal(h.calls.prompts.length, 2);
-    assert.match(h.calls.prompts[1].content[0].text, /回合收尾提醒/);
-    await deliverFrame(h, turnEnd(sessionId));
-    await clock.run(120_000, 1000);
-    await h.flushAttentionNow();
-    assert.equal(h.calls.prompts.length, 3);
-    assert.equal(h.attentionSnapshot().restUntil, 0);
-  } finally { await h.close(); }
-});
-
-for (const firstPrompt of ['rest reminder', 'QQ attention']) {
-  test(`completion before the ${firstPrompt} submission returns still schedules the next reminder`, async () => {
-    const { h, clock, sessionId, setRunning } = await fixture();
-    try {
-      setRunning(false);
-      if (firstPrompt === 'rest reminder') await deliverFrame(h, turnEnd(sessionId));
-      else h.queueDesktopAttentionSignal(signal());
-      h.api.sessions.prompt = async (params) => {
-        h.calls.prompts.push(params);
-        await deliverFrame(h, { type: 'session/event', sessionId, event: { type: 'turn/start' } });
-        await deliverFrame(h, turnEnd(sessionId));
-        return { result: { ok: true, value: {} } };
-      };
-      await h.flushAttentionNow();
-      const state = h.attentionSnapshot();
-      assert.equal(state.turnActive, false, 'the late RPC receipt cannot overwrite turn/end');
-      assert.equal(state.pendingWakeReason, 'missing-rest');
-      assert.equal(state.restUntil, 0);
-      assert.equal(state.lifecycle, firstPrompt === 'rest reminder' ? 'recovering' : 'active');
-      assert.equal(clock.has(60_000, 1000), firstPrompt === 'rest reminder');
-      assert.equal(clock.has(0), firstPrompt === 'QQ attention');
-      assert.equal(h.calls.prompts.length, 1);
-    } finally { await h.close(); }
-  });
-}
-
-test('a failed reminder submission keeps its purpose for a later retry', async () => {
-  const { h, clock, sessionId, setRunning } = await fixture();
-  try {
-    setRunning(false);
-    const prompt = h.api.sessions.prompt;
-    h.api.sessions.prompt = async () => ({ result: { ok: false, error: { code: 'offline', message: 'unavailable' } } });
-    await deliverFrame(h, turnEnd(sessionId));
-    await h.flushAttentionNow();
-    assert.equal(h.attentionSnapshot().lifecycle, 'recovering');
-    assert.equal(h.attentionSnapshot().pendingWakeReason, 'missing-rest');
-    assert.equal(h.attentionSnapshot().restUntil, 0);
-    h.api.sessions.prompt = prompt;
-    await clock.run(60_000, 1000);
-    await h.flushAttentionNow();
+    const state = h.attentionSnapshot();
+    assert.equal(state.turnActive, false, 'the late RPC receipt cannot overwrite turn/end');
+    assert.equal(state.lifecycle, 'resting');
+    assert.ok(state.restUntil > Date.now());
     assert.equal(h.calls.prompts.length, 1);
-    assert.match(h.calls.prompts[0].content[0].text, /回合收尾提醒/);
   } finally { await h.close(); }
 });
 
 test('disabling a QQ reminder during preparation does not swallow a concurrent turn end', async () => {
-  const { h, clock, sessionId, setRunning } = await fixture();
+  const { h, sessionId, setRunning } = await fixture();
   const server = h.startConsoleServer();
   if (!server.listening) await new Promise(resolve => server.once('listening', resolve));
   try {
@@ -311,12 +256,7 @@ test('disabling a QQ reminder during preparation does not swallow a concurrent t
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 0, 'the disabled QQ signal was not delivered');
     assert.equal(h.attentionSnapshot().turnActive, false);
-    assert.equal(h.attentionSnapshot().pendingWakeReason, 'missing-rest');
-    assert.equal(clock.has(0), true);
-    await h.flushAttentionNow();
-    assert.equal(h.calls.prompts.length, 1);
-    assert.match(h.calls.prompts[0].content[0].text, /回合收尾提醒/);
-    assert.doesNotMatch(h.calls.prompts[0].content[0].text, /group:456/);
+    assert.equal(h.attentionSnapshot().lifecycle, 'resting', 'concurrent completed turn still transitions cleanly to implicit rest');
   } finally { await new Promise(resolve => server.close(resolve)); await h.close(); }
 });
 
@@ -335,7 +275,7 @@ test('an interrupted turn keeps the ordinary recovery path', async () => {
 });
 
 for (const lifecycle of ['resting', 'sleeping', 'stopped', 'idle']) {
-  test(`${lifecycle}: completion does not send a missing-rest reminder`, async () => {
+  test(`${lifecycle}: completion does not send an unexpected prompt`, async () => {
     const { h, sessionId, setRunning } = await fixture();
     try {
       setRunning(false);
@@ -348,46 +288,18 @@ for (const lifecycle of ['resting', 'sleeping', 'stopped', 'idle']) {
   });
 }
 
-test('a completed snapshot corrects legacy recovery once and preserves the reminder guard after restart', async () => {
-  const { h, clock, sessionId, setRunning } = await fixture();
-  let restored;
+test('a completed snapshot resolves legacy recovery cleanly into implicit rest', async () => {
+  const { h, sessionId, setRunning } = await fixture();
   try {
     setRunning(false);
     h.setDesktopAgentTurnActive(false);
     h.scheduleDesktopAgentRecovery();
     const snapshot = { type: 'session/snapshot', sessionId, snapshot: { records: [{ event: turnEnd(sessionId).event }] } };
     await deliverFrame(h, snapshot);
-    assert.equal(clock.has(60_000), false);
-    assert.equal(h.attentionSnapshot().pendingWakeReason, 'missing-rest');
-    await h.flushAttentionNow();
-    await deliverFrame(h, turnEnd(sessionId));
-    const persisted = fs.readFileSync(h.temp + '/state/desktop-agent.json', 'utf8');
-    const restartClock = fakeTimers();
-    restored = await bridgeHarness({ files: { 'state/desktop-agent.json': persisted },
-      globals: { setTimeout: restartClock.setTimeout, clearTimeout: restartClock.clearTimeout } });
-    restored.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId, running: false, blank: false }] } } });
-    await deliverFrame(restored, snapshot);
-    assert.equal(restored.attentionSnapshot().lifecycle, 'recovering');
-    assert.equal(restored.attentionSnapshot().pendingWakeReason, 'missing-rest');
-    assert.equal(restartClock.has(0), false, 'reconnecting must not repeat the immediate reminder');
-    assert.equal(restored.calls.prompts.length, 0);
-  } finally { if (restored) await restored.close(); await h.close(); }
-});
-
-test('a pending rest reminder waits for a new running turn to finish', async () => {
-  const { h, sessionId, setRunning } = await fixture();
-  try {
-    setRunning(false);
-    await deliverFrame(h, turnEnd(sessionId));
-    setRunning(true);
-    await deliverFrame(h, { type: 'session/event', sessionId, event: { type: 'turn/start' } });
-    await h.flushAttentionNow();
+    assert.equal(h.attentionSnapshot().lifecycle, 'resting');
+    assert.equal(h.attentionSnapshot().pendingWakeReason, '');
+    assert.ok(h.attentionSnapshot().restUntil > Date.now());
     assert.equal(h.calls.prompts.length, 0);
-    setRunning(false);
-    await deliverFrame(h, turnEnd(sessionId));
-    await h.flushAttentionNow();
-    assert.equal(h.calls.prompts.length, 1);
-    assert.match(h.calls.prompts[0].content[0].text, /回合收尾提醒/);
   } finally { await h.close(); }
 });
 
@@ -440,7 +352,7 @@ test('lifecycle reconnect reads only the current session state and retains a col
   } finally { await h.close(); }
 });
 
-test('a reconnected session stream recovers a missed turn end while QQ is waiting to interrupt rest', async () => {
+test('a reconnected session stream recovers a missed turn end while QQ is waiting to interrupt rest (5s settle)', async () => {
   const { h, clock, sessionId, setRunning } = await fixture();
   try {
     h.enterDesktopAgentRest();
@@ -450,7 +362,8 @@ test('a reconnected session stream recovers a missed turn end while QQ is waitin
     const records = [{ type: 'event', event: { type: 'turn/end', seq: 10, data: { turn: 1 } } }];
     await deliverFrame(h, { type: 'session/snapshot', sessionId, snapshot: { records } });
     assert.equal(h.attentionSnapshot().lifecycle, 'active');
-    clock.run(0);
+    assert.equal(clock.has(5_000), true);
+    clock.run(5_000);
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 1);
     assert.match(h.calls.prompts[0].content[0].text, /消息 id:55/);
@@ -520,14 +433,14 @@ test('a persisted QQ wake without a surviving source batch still has a non-empty
   } finally { await h.close(); }
 });
 
-test('rest-expired wake includes compact unread summary when conversations are populated', async () => {
+test('rest-expired wake includes compact unread summary with hot groups first', async () => {
   const { h, setRunning } = await fixture();
   try {
     h.setDesktopAgentTurnActive(false);
     setRunning(false);
     h.setDesktopAgentPendingWakeReason('rest-expired');
     await h.flushAttentionNow();
-    assert.equal(h.calls.prompts.at(-1).content[0].text, '【空闲等待结束｜QQ 暂无新未读】');
+    assert.equal(h.calls.prompts.at(-1).content[0].text, '【自由活动时间｜QQ 暂无新未读】');
 
     h.queueDesktopAttentionSignal(signal('group:456', 1));
     await h.flushAttentionNow();
@@ -535,7 +448,7 @@ test('rest-expired wake includes compact unread summary when conversations are p
   } finally { await h.close(); }
 });
 
-test('active turn enforces 30s steer cooldown and coalesces bursts; turn end preempts immediately', async () => {
+test('active turn enforces 30s steer cooldown and coalesces bursts; turn end settles 5s before queueing', async () => {
   const { h, clock, sessionId, setRunning } = await fixture();
   try {
     h.queueDesktopAttentionSignal(signal('group:456', 1));
@@ -550,12 +463,12 @@ test('active turn enforces 30s steer cooldown and coalesces bursts; turn end pre
     h.queueDesktopAttentionSignal(signal('group:999', 3));
     assert.equal(h.calls.prompts.length, 1);
 
-    // Turn completion preempts the 30s timer immediately with 0ms and delivers as queue
+    // Turn completion replaces the 30s steer timer with a 5s post-turn settle before queueing
     setRunning(false);
     await deliverFrame(h, turnEnd(sessionId));
-    assert.equal(clock.has(0), true);
+    assert.equal(clock.has(5_000), true);
     assert.equal(clock.has(30_000, 1000), false);
-    clock.run(0);
+    clock.run(5_000);
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 2);
     assert.equal(h.calls.prompts[1].mode, 'queue');
@@ -661,9 +574,9 @@ test('aborted turn during rest requeues unseen pending steer and wakes DSH', asy
     await deliverFrame(h, turnEnd(sessionId, 'aborted'));
     assert.equal(h.attentionSnapshot().lifecycle, 'active');
     assert.equal(h.attentionSnapshot().queue.length, 1);
-    assert.equal(clock.has(0), true);
+    assert.equal(clock.has(5_000), true);
 
-    clock.run(0);
+    clock.run(5_000);
     await h.flushAttentionNow();
     assert.equal(h.calls.prompts.length, 2);
     assert.equal(h.calls.prompts[1].mode, 'queue');
@@ -728,9 +641,9 @@ test('flush awaits in-flight agent_rest session/cancel before submitting next pr
     setRunning(false);
     await deliverFrame(h, turnEnd(sessionId, 'completed'));
     assert.equal(h.attentionSnapshot().lifecycle, 'active');
-    assert.equal(clock.has(0), true);
+    assert.equal(clock.has(5_000), true);
 
-    clock.run(0);
+    clock.run(5_000);
     await Promise.resolve();
     await Promise.resolve();
     assert.equal(h.calls.prompts.length, 0, 'prompt submission must wait for in-flight session/cancel');
@@ -740,5 +653,131 @@ test('flush awaits in-flight agent_rest session/cancel before submitting next pr
     assert.equal(h.calls.prompts.length, 1);
     assert.equal(h.calls.prompts[0].mode, 'queue');
     assert.match(h.calls.prompts[0].content[0].text, /group:456/);
+  } finally { await h.close(); }
+});
+
+function fakeClockFixture() {
+  let offset = 0;
+  const RealDate = Date;
+  class FakeDate extends RealDate {
+    constructor(...args) {
+      if (args.length === 0) super(RealDate.now() + offset);
+      else super(...args);
+    }
+    static now() { return RealDate.now() + offset; }
+  }
+  const clock = fakeTimers();
+  return {
+    clock,
+    Date: FakeDate,
+    advance(ms) { offset += ms; },
+  };
+}
+
+test('independent hot group window debounces ordinary follow-ups, never steers mid-turn, and survives a private reply', async () => {
+  const { clock, Date: FakeDate, advance } = fakeClockFixture();
+  const h = await bridgeHarness({ globals: { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, Date: FakeDate } });
+  const sessionId = await h.ensureDesktopAgentSession();
+  let running = true;
+  h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId, running, blank: false }] } } });
+  h.setDesktopAgentLifecycle('active');
+  h.setDesktopAgentTurnActive(true);
+  try {
+    h.bot.account = '42';
+    h.bot.health = { connected: true, accountOnline: true, reader: 'ready' };
+    h.bot.emit('open');
+
+    // Send a reply in group:456 to open its independent 4m hot window
+    h.recordSentMessagesV2('group:456', ['测试回复']);
+    assert.equal(h.isGroupHot('group:456'), true);
+
+    // Replying to a private message must NOT evict group:456 from its hot window
+    h.recordSentMessagesV2('private:123', ['吃啦']);
+    assert.equal(h.isGroupHot('group:456'), true);
+
+    // While turn is active, ordinary group message in hot group must NOT steer or schedule flush
+    await h.handleIncomingForTest('group', 456, {
+      self_id: '42', group_id: 456, user_id: 222, message_id: '7001',
+      sender: { user_id: 222, nickname: '群友' },
+      message: [{ type: 'text', data: { text: '顺着接一句' } }],
+    });
+    assert.equal(h.calls.prompts.length, 0);
+    assert.equal(h.attentionSnapshot().flushScheduled, false);
+    assert.equal(h.attentionSnapshot().groupAttentionScheduled, false);
+
+    // Turn ends -> implicit rest -> hot group debounce wakes cleanly after 5s without @
+    running = false;
+    await deliverFrame(h, turnEnd(sessionId, 'completed'));
+    assert.equal(h.attentionSnapshot().lifecycle, 'resting');
+    assert.equal(h.attentionSnapshot().groupAttentionScheduled, true);
+
+    advance(6_000);
+    clock.run(5_000, 100);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.equal(h.calls.prompts[0].mode, 'queue');
+    assert.match(h.calls.prompts[0].content[0].text, /group:456.*id:7001（热群新消息）/);
+    assert.equal(h.attentionSnapshot().unresolved.length, 0, 'passive hot follow-up never enters unreadFollowup');
+  } finally { await h.close(); }
+});
+
+test('cold group low-priority alert yields while a hot group is active, and wakes after 60s aggregate when idle', async () => {
+  const { clock, Date: FakeDate, advance } = fakeClockFixture();
+  const h = await bridgeHarness({ globals: { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, Date: FakeDate } });
+  const sessionId = await h.ensureDesktopAgentSession();
+  h.api.sessions.list = async () => ({ result: { ok: true, value: { items: [{ sessionId, running: false, blank: false }] } } });
+  try {
+    h.bot.account = '42';
+    h.bot.health = { connected: true, accountOnline: true, reader: 'ready' };
+    h.bot.emit('open');
+    h.enterDesktopAgentRest();
+    h.setDesktopAgentTurnActive(false);
+
+    // Make group:456 hot so cold group:789 must yield
+    h.recordSentMessagesV2('group:456', ['正聊着呢']);
+    assert.equal(h.isGroupHot('group:456'), true);
+
+    await h.handleIncomingForTest('group', 789, {
+      self_id: '42', group_id: 789, user_id: 333, message_id: '8001',
+      sender: { user_id: 333, nickname: '路人' },
+      message: [{ type: 'text', data: { text: '冷群有人冒泡' } }],
+    });
+    // Should NOT schedule 60s cold timer while group:456 is hot (4m hot window defers P3)
+    assert.equal(clock.has(60_000, 1000), false);
+    assert.equal(clock.has(240_000, 2000), true);
+
+    // Once group:456 hot window naturally expires (advance > 4m), P3 wakes cleanly for group:789
+    advance(245_000);
+    clock.run(240_000, 2000);
+    await h.flushAttentionNow();
+    assert.equal(h.calls.prompts.length, 1);
+    assert.match(h.calls.prompts[0].content[0].text, /group:789.*id:8001（冷群新未读）/);
+    assert.equal(h.attentionSnapshot().unresolved.length, 0, 'cold group low-priority alert never enters unreadFollowup');
+  } finally { await h.close(); }
+});
+
+test('non-private wake attaches otherUnread metadata sorted hot-first; pure private wake omits cold-group unread', async () => {
+  const { h, setRunning } = await fixture();
+  try {
+    h.setDesktopAgentTurnActive(false);
+    setRunning(false);
+    const stHot = h.getSocialV2State('group:575');
+    stHot.unreadMessageCount = 3;
+    stHot.lastIncomingAt = Date.now() - 10_000;
+    h.markConversationActiveAfterSend('group:575', Date.now());
+    const stCold = h.getSocialV2State('group:906');
+    stCold.unreadMessageCount = 9;
+    stCold.lastIncomingAt = Date.now() - 5_000;
+
+    // Pure private wake must NOT attach cold/other group unread noise
+    h.queueDesktopAttentionSignal({ key: 'private:123', kind: 'private', id: '123', reason: 'private', sender: '哥哥', senderId: '123', messageId: '901', seq: 1 });
+    await h.flushAttentionNow();
+    assert.doesNotMatch(h.calls.prompts.at(-1).content[0].text, /其他未读/);
+
+    // Group wake attaches 【其他未读：...】 with hot group prioritized before cold group
+    h.setDesktopAgentTurnActive(false);
+    h.queueDesktopAttentionSignal({ key: 'group:456', kind: 'group', id: '456', reason: 'atMention', sender: '群友', senderId: '222', messageId: '902', seq: 2 });
+    await h.flushAttentionNow();
+    assert.match(h.calls.prompts.at(-1).content[0].text, /【其他未读：group:575\(3条,热\)、group:906\(9条\)】/);
   } finally { await h.close(); }
 });

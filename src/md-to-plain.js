@@ -115,3 +115,31 @@ export function truncateTextTail(value, max) {
   }
   return s.slice(start);
 }
+
+const QQ_MARKDOWN_LINK_RE = /\[[^\]\n]{1,300}\]\(https?:\/\/[^)\s]{1,2000}\)/;
+const QQ_MARKDOWN_BOLD_RE = /\*\*[^*\n]{1,300}\*\*/;
+const QQ_MARKDOWN_FENCE_RE = /```/;
+
+/**
+ * 校验发往 QQ 聊天的单条文本：命中乱码替换字符（U+FFFD）或明显 Markdown 排版语法时
+ * 返回结构化错误，由工具调用方打回给模型自行修正重发，不做静默改写。
+ */
+export function validateQQOutboundText(text, index = 0) {
+  const value = String(text ?? '');
+  const label = `第 ${index + 1} 条消息`;
+  if (value.includes('\uFFFD')) {
+    return {
+      ok: false,
+      code: 'replacement_char',
+      error: `${label}包含不可识别的乱码字符（\uFFFD），已阻止发送，请修正该字词并检查正常中文标点后重新发送`,
+    };
+  }
+  if (QQ_MARKDOWN_LINK_RE.test(value) || QQ_MARKDOWN_BOLD_RE.test(value) || QQ_MARKDOWN_FENCE_RE.test(value)) {
+    return {
+      ok: false,
+      code: 'markdown_syntax',
+      error: `${label}包含 Markdown 格式（如 [文字](链接)、**粗体** 或代码块），QQ 聊天请改为自然纯文本后再发送（可直接发纯文本或单独发送裸链接）`,
+    };
+  }
+  return { ok: true };
+}

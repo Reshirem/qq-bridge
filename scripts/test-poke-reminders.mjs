@@ -115,7 +115,7 @@ test('unread follow-up toggle cancels its timer and queued retry while preservin
     assert.equal(h.attentionSnapshot().reminderScheduled,false);
     assert.equal(h.attentionSnapshot().unresolved.length,1);
     await settings({reminders:{unreadFollowup:true}});
-    const timer = [...timers].find(t => t.ms === 60_000);
+    const timer = [...timers].find(t => t.ms === 5_000);
     assert.ok(timer);
     timers.delete(timer); timer.fn();
     assert.equal(h.attentionSnapshot().queue[0].reminder,true);

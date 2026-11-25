@@ -26,14 +26,14 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(status, 400);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
-await test('agent rest clamps durations (1-15 min) and defaults to five minutes', async (h) => {
+await test('agent rest clamps durations (1 min - 4 hours) and defaults to 30 minutes', async (h) => {
   h.setReady(true);
   await h.ensureDesktopAgentSession();
   const token = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'desktop-agent.json'), 'utf8')).agentToken;
   const server = h.startConsoleServer();
   if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
   try {
-    for (const [body, expected] of [[{}, 300000], [{ durationMs: 1000 }, 60000], [{ durationMs: 120000 }, 120000], [{ durationMs: 600000 }, 600000], [{ durationMs: 7200000 }, 900000]]) {
+    for (const [body, expected] of [[{}, 1800000], [{ durationMs: 1000 }, 60000], [{ durationMs: 120000 }, 120000], [{ durationMs: 7200000 }, 7200000], [{ durationMs: 28800000 }, 14400000]]) {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/api/desktop-agent/rest`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-console-token': 'fixture-console-token', 'x-agent-token': token },
@@ -47,7 +47,7 @@ await test('agent rest clamps durations (1-15 min) and defaults to five minutes'
     }
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
-for (const [previousRest, expectedClamp] of [[0, 300000], [Date.now() + 3600000, 900000]]) {
+for (const [previousRest, expectedClamp] of [[0, 1800000], [Date.now() + 28800000, 14400000]]) {
   const h = await bridgeHarness({ files: { 'state/desktop-agent.json': {
     sessionId: 'fixture-session', agentToken: 'fixture-agent-token', lifecycle: 'resting', restUntil: previousRest,
   } } });
@@ -58,6 +58,46 @@ for (const [previousRest, expectedClamp] of [[0, 300000], [Date.now() + 3600000,
   } catch (error) { failures++; console.error('FAIL old rest migration:', error.message); }
   finally { await h.close(); }
 }
+await test('send-message rejects U+FFFD garble and Markdown syntax with 400 while allowing plain text and bare URLs', async (h) => {
+  h.setReady(true);
+  const sessionId = await h.ensureDesktopAgentSession();
+  const token = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'desktop-agent.json'), 'utf8')).agentToken;
+  const server = h.startConsoleServer();
+  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+  const postSend = async (messages) => {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/socialV2/send-message`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-console-token': 'fixture-console-token',
+        'x-agent-call': '1',
+        'x-agent-session-id': sessionId,
+        'x-agent-token': token,
+      },
+      body: JSON.stringify({ key: 'group:456', messages }),
+    });
+    return { status: res.status, ...(await res.json()) };
+  };
+  try {
+    const garbled = await postSend(['正常第一条', '咕咚\uFFFD咚乱码']);
+    assert.equal(garbled.status, 400);
+    assert.equal(garbled.code, 'replacement_char');
+    assert.match(garbled.error, /第 2 条消息/);
+
+    const mdLink = await postSend('今天金价 [金价](https://example.com/price)');
+    assert.equal(mdLink.status, 400);
+    assert.equal(mdLink.code, 'markdown_syntax');
+
+    const mdBold = await postSend('这个 **加粗** 不行');
+    assert.equal(mdBold.status, 400);
+    assert.equal(mdBold.code, 'markdown_syntax');
+
+    const clean = await postSend('今天 8 块多，链接 https://example.com/price [表情]');
+    assert.equal(clean.status, 200);
+    assert.equal(clean.ok, true);
+    assert.equal(h.isGroupHot('group:456'), true, 'successful group send opens independent hot window');
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
 {
   const image = Buffer.from('89504e470d0a1a0a00000000', 'hex');
   let body;

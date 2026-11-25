@@ -347,3 +347,71 @@ test('pre-resolved reply source exposes structured replyTo across history, detai
   const imgPlain = await call('/api/images/message', {key:'group:906759656', messageId:`id:${msgWithEmptyTarget}`});
   assert.equal(imgPlain.note, '该消息没有可读取的图片/表情元数据');
 });
+
+test('conversation history preserves up to 1000 chars without redundant tail and message detail caps cleanly at 4000 chars', async t => {
+  const h = await bridgeHarness({config:{qqBackend:'native', socialV2:{media:{prefetchOnReceive:false}}}});
+  let server;
+  t.after(async () => {
+    if (server) await new Promise(resolve => server.close(resolve));
+    await h.close();
+  });
+  h.bot.account = '42';
+  h.bot.health = {connected:true};
+  h.bot.emit('open');
+  await settle();
+  const session = await h.ensureDesktopAgentSession();
+  h.setDesktopAgentLifecycle('active');
+  const token = JSON.parse(fs.readFileSync(path.join(h.temp,'state/desktop-agent.json'),'utf8')).agentToken;
+
+  const medText = '甲'.repeat(600);
+  const longText = '乙'.repeat(1200) + '结尾标记';
+  const hugeText = '丙'.repeat(4200) + '超限尾';
+  const rows = [
+    {self_id:'42', user_id:'123', message_id:'930000000000000001', sender:{user_id:'123', nickname:'tester'}, time:1795500001, message:[{type:'text', data:{text:medText}}]},
+    {self_id:'42', user_id:'123', message_id:'930000000000000002', sender:{user_id:'123', nickname:'tester'}, time:1795500002, message:[{type:'text', data:{text:longText}}]},
+    {self_id:'42', user_id:'123', message_id:'930000000000000003', sender:{user_id:'123', nickname:'tester'}, time:1795500003, message:[{type:'text', data:{text:hugeText}}]},
+  ];
+  h.bot.raw = async (_action, params) => ({
+    messages: structuredClone(params.message_id
+      ? rows.filter(r => r.message_id === String(params.message_id))
+      : rows.slice().reverse()),
+  });
+
+  server = h.startConsoleServer();
+  if (!server.listening) await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (route, query) => {
+    const url = new URL(route, base);
+    url.search = new URLSearchParams(query).toString();
+    const res = await fetch(url, {
+      headers:{'x-console-token':'fixture-console-token', 'x-agent-call':'1', 'x-agent-session-id':session, 'x-agent-token':token},
+      signal:AbortSignal.timeout(5000),
+    });
+    return {status:res.status, ...await res.json()};
+  };
+
+  const page = await call('/api/socialV2/conversation-history', {key:'private:123', count:'5'});
+  assert.equal(page.status, 200);
+  const med = page.messages.find(m => m.messageId === '930000000000000001');
+  const lng = page.messages.find(m => m.messageId === '930000000000000002');
+  assert.equal(med.text, medText);
+  assert.equal(med.tail, '', 'messages within 1000 chars should not duplicate tail');
+  assert.equal(lng.text.length, 1000);
+  assert.equal(lng.tail.length, 200);
+  assert.ok(lng.tail.endsWith('结尾标记'));
+
+  const detailMed = await call('/api/socialV2/message-detail', {key:'private:123', messageId:'id:930000000000000001'});
+  assert.equal(detailMed.status, 200);
+  assert.equal(detailMed.info.text, medText);
+  assert.equal(detailMed.info.textTruncated, false, '600-char detail must not be falsely flagged truncated');
+
+  const detailLong = await call('/api/socialV2/message-detail', {key:'private:123', messageId:'id:930000000000000002'});
+  assert.equal(detailLong.status, 200);
+  assert.equal(detailLong.info.text, longText);
+  assert.equal(detailLong.info.textTruncated, false);
+
+  const detailHuge = await call('/api/socialV2/message-detail', {key:'private:123', messageId:'id:930000000000000003'});
+  assert.equal(detailHuge.status, 200);
+  assert.equal(detailHuge.info.text.length, 4000);
+  assert.equal(detailHuge.info.textTruncated, true);
+});

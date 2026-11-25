@@ -2,6 +2,7 @@
 import json
 import re
 import sys
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -63,6 +64,8 @@ def format_row(db, table, peer, row, account, self_uid, resolve_reply=True, repl
         elif kind == "marketFace":
             kind, data = "mface", {"emoji_id": item.get("emojiId"), "emoji_package_id": item.get("packageId"),
                                    "summary": item.get("label", "")}
+        elif kind == "card":
+            data = {"data": item["data"]} if item.get("data") else {}
         elif kind == "forward":
             # Resolve through this source's original QQ message, not a guessed resource ID.
             data = {"id": "native:" + str(mid)}
@@ -122,6 +125,34 @@ def read(db, action, params, account, self_uid):
         peer_expr = peer_column(table)
         return [{("group_id" if group else "user_id"): str(row[0])} for row in db.execute(
             f"SELECT DISTINCT {peer_expr} FROM {table} WHERE {peer_expr}>0")]
+    if action == "group_invite_cards":
+        days = max(1, min(30, int(params.get("days", 7))))
+        limit = max(1, min(100, int(params.get("limit", 50))))
+        scan_limit = max(limit * 10, 500)
+        since = int(params["since"]) if params.get("since") is not None else int(time.time()) - days * 86400
+        self_num = int(account) if re.fullmatch(r"[1-9]\d*", str(account)) else 0
+        peer_expr = peer_column("c2c_msg_table")
+        rows = db.execute(
+            f"SELECT [40001],[40033],[40050],[40800],{peer_expr} FROM c2c_msg_table "
+            "WHERE [40050]>=? AND [40033]>0 AND [40033]!=? AND [40800] IS NOT NULL "
+            "ORDER BY [40050] DESC, [40001] DESC LIMIT ?",
+            (since, self_num, scan_limit)).fetchall()
+        cards = []
+        for mid, sender, stamp, blob, peer in rows:
+            for part in decode_segments(blob):
+                data = part.get("data") or ""
+                if part.get("type") == "card" and "mqqapi://group/invite_join" in data:
+                    cards.append({
+                        "message_id": str(mid),
+                        "user_id": str(sender),
+                        "peer_id": str(peer) if peer else str(sender),
+                        "time": stamp,
+                        "data": data,
+                    })
+                    break
+            if len(cards) >= limit:
+                break
+        return cards
     if action != "history":
         raise ValueError("未知的 QQ 数据库查询")
     table = TABLES[params["kind"]]

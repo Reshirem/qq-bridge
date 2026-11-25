@@ -28,6 +28,7 @@ def message_schema():
         ("quote_uid", 40020, 12), ("quote_seq", 47402, 3), ("private_quote_seq", 47419, 3),
         ("subtype", 45003, 5), ("size", 45405, 3), ("md5", 45406, 12),
         ("face_id", 47601, 5), ("face_label", 47602, 12),
+        ("ark_data", 47901, 12),
         ("package_id", 80810, 13), ("market_label", 80900, 12), ("emoji_id", 80903, 12),
     ):
         content.field.add(name=name, number=number, type=field_type, label=1)
@@ -66,6 +67,10 @@ def decode_segments(blob, cache=None):
                     item["faceId"] = str(part.face_id)
                 if part.face_label:
                     item["label"] = part.face_label.decode("utf-8", errors="replace")
+            elif part.kind == 10 and part.HasField("ark_data"):
+                raw_card = part.ark_data.decode("utf-8", errors="replace").strip()
+                if raw_card:
+                    item["data"] = raw_card
             elif part.kind == 11:
                 ident = digest_hex(part.emoji_id)
                 if ident:

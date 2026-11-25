@@ -5,10 +5,10 @@ export const DESKTOP_AGENT_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
   roleCard: '【当前角色卡：{roleName}】\n{roleContent}',
   qqAttention: '【QQ 提醒】\n{sources}',
   qqSource: '- {key}{senderId}{messageId}{count}',
-  restExpired: '【空闲等待结束{unreadSummary}】',
+  restExpired: '【自由活动时间{unreadSummary}】',
   qqWake: '',
   recovery: '【状态恢复检查】请结合当前上下文继续，避免重复已完成的操作。',
-  missingRest: '【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无事可做，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白或道别）；若仍有未完事项则处理完后再调用。',
+  missingRest: '【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无待处理事项，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白）；若仍有未完事项则处理完后再调用。',
   memoryBootstrap: '【长期记忆摘要｜来源为自身经历；用于延续经历与未完成事项，仍需按当前上下文判断】\n{entries}',
 });
 
@@ -84,6 +84,7 @@ const LEGACY_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
     '【回合等待结束】这一段等待已结束（等待期间既是你在电脑前活动与休息的自然间隙，也让群聊消息自然聚合）。请结合下方的未读概况与上一轮活动便签行动：若当前没有 QQ 新未读，或看完未读后觉得只是无需插嘴的日常闲聊，不要立刻调用 agent_rest 结束回合——顺着上一轮的便签、刚才群里勾起好奇心的话题、或你自己的兴趣，用后台浏览器通道（browserTab / new-tab）、网页搜索或桌面工具自己逛逛玩玩，本轮探索尽兴后再通过 agent_rest 留下新便签挂起回合。',
     '【回合等待结束】刚才的无事等待已结束。你可以按自己的心情去电脑/浏览器上探索感兴趣的事，或顺手瞄一眼聚合后的 QQ 未读；只要手头还有想看的网页、想点的帖子/视频或想搜的话题，就在当前回合一直连续运行下去把事情做完，不要留到“下一轮”，直到真正无事可做时再调用 agent_rest。',
     '【回合等待结束】刚才的空闲等待已结束。你可以顺手瞄一眼聚合后的 QQ 未读，或者带着你的求知欲与上进心，挑一个刚才群里没摸透的话题或自己感兴趣的小课题，在电脑/浏览器上顺藤摸瓜深入研究一番（在当前回合里一直连续运行把内容看透，有实质收获可存入 memory_save，完全尽兴且手头无事后再调用 agent_rest）。',
+    '【空闲等待结束{unreadSummary}】',
   ],
   recovery: [
     '【状态恢复检查】桥接需要重新确认会话状态。先查看当前会话和已有操作，避免重复已完成的事，再按当前情况继续。',
@@ -91,6 +92,7 @@ const LEGACY_PROMPT_TEMPLATE_DEFAULTS = Object.freeze({
   missingRest: [
     '【回合收尾提醒】上一轮已正常结束，但桥接尚未收到 agent_rest。不要重复刚才的回复或已完成的操作。若当前事项已处理完，请现在调用 agent_rest 作为最后一个工具调用，并自行选择 1 至 5 分钟的休息时间；若仍有未完成事项，处理完后再调用。',
     '【回合收尾提醒】上一轮已正常结束，但桥接尚未收到 agent_rest。不要重复刚才的回复或已完成的操作。若当前事项已处理完，请现在直接调用 agent_rest 作为最后一个工具调用（选择 1 至 5 分钟的等待间隔，无需向对话方发消息道别或声称去休息）；若仍有未完成事项，处理完后再调用。',
+    '【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无事可做，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白或道别）；若仍有未完事项则处理完后再调用。',
   ],
 });
 const PROMPT_TEMPLATE_MAX_CHARS = 16_000;

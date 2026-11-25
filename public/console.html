@@ -588,7 +588,17 @@
       <span class="meta" role="status"></span>
     </div>
     <div class="qq-reminder-row">
-      <div><strong id="qqReminderFollowupLabel">未读补提醒</strong><p class="meta">已提醒但仍未读的消息，在后续休息期间每分钟检查一次，最多补发一次。</p></div>
+      <div><strong id="qqReminderGroupFollowupLabel">热群跟进</strong><p class="meta">在群里发过消息或表情后，4 分钟热窗内整群新消息防抖 5–10 秒自动跟进，绝不中途打断运行中的回合。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderGroupFollowupLabel" data-reminder-setting="reminders.groupFollowup" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderGroupActivityLabel">冷群低优余光</strong><p class="meta">空闲且无热聊时，对有新未读的冷群聚合 60 秒并按 20 分钟冷却低优提醒看一眼，有热群或近期私聊时自动让路。</p></div>
+      <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderGroupActivityLabel" data-reminder-setting="reminders.groupActivity" disabled>读取中</button>
+      <span class="meta" role="status"></span>
+    </div>
+    <div class="qq-reminder-row">
+      <div><strong id="qqReminderFollowupLabel">未读补提醒</strong><p class="meta">已提醒但仍未读的强召唤，在进入休息且回合停稳 5 秒后检查一次，最多补发一次。</p></div>
       <button type="button" role="switch" aria-checked="false" aria-labelledby="qqReminderFollowupLabel" data-reminder-setting="reminders.unreadFollowup" disabled>读取中</button>
       <span class="meta" role="status"></span>
     </div>

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { classifyIncomingWake, isBootstrapWakeReason, shouldAttachWakeSnapshot, wakeReasonBase, isPokeToSelf, reminderEnabled } from '../src/autonomy-policy.js';
+import { classifyIncomingWake, isBootstrapWakeReason, isDirectWakeReason, shouldAttachWakeSnapshot, wakeReasonBase, isPokeToSelf, reminderEnabled } from '../src/autonomy-policy.js';
 import { qqChannelConfig } from '../src/qq-channel-config.js';
 
 const selfId = '999';
@@ -46,7 +46,17 @@ assert.equal(shouldAttachWakeSnapshot('timeout'), false, 'explicit timer wake do
 assert.equal(shouldAttachWakeSnapshot('admin'), false, 'manual background wake leaves reads to the session');
 
 const defaults = qqChannelConfig().reminders;
-assert.deepEqual(defaults, {private:true, atMention:true, reply:true, roleCardName:true, keyword:true, poke:true, unreadFollowup:true});
+assert.deepEqual(defaults, {
+  private: true, atMention: true, reply: true, roleCardName: true, keyword: true, poke: true,
+  groupFollowup: true, groupActivity: true, unreadFollowup: true,
+});
+const groupDefaults = qqChannelConfig().groupAttention;
+assert.deepEqual(groupDefaults, {
+  hotWindowMs: 240_000, hotDebounceMs: 5_000, hotExtendMs: 3_000, hotMaxDebounceMs: 10_000,
+  privateActiveMs: 180_000, coldAggregateMs: 60_000, coldCooldownMs: 1_200_000,
+});
+assert.equal(qqChannelConfig({}, { groupAttention: { hotWindowMs: 5000, hotDebounceMs: 8000, hotMaxDebounceMs: 2000 } }).groupAttention.hotWindowMs, 30_000);
+assert.equal(qqChannelConfig({}, { groupAttention: { hotDebounceMs: 8000, hotMaxDebounceMs: 2000 } }).groupAttention.hotMaxDebounceMs, 8_000);
 const disabled = qqChannelConfig({}, {reminders:{atMention:false, poke:false}});
 assert.equal(qqChannelConfig(disabled, {send:{delayPerCharMs:15}}).reminders.atMention, false);
 assert.equal(qqChannelConfig(disabled, {reminders:{poke:'true'}}).reminders.poke, false);
@@ -73,5 +83,19 @@ for (const change of [{sub_type:'other'}, {target_id:'124'}, {sender_id:selfId},
 assert.equal(reminderEnabled('friendRequest', defaults), true);
 assert.equal(reminderEnabled('friendRequest', { ...defaults, private: false }), false);
 assert.equal(reminderEnabled('friendRequest', { ...defaults, friendRequest: false }), false);
+assert.equal(reminderEnabled('groupInvite', defaults), true);
+assert.equal(reminderEnabled('groupInvite', { ...defaults, private: false }), false);
+assert.equal(reminderEnabled('groupInvite', { ...defaults, groupInvite: false }), false);
+assert.equal(reminderEnabled('groupFollowup', defaults), true);
+assert.equal(reminderEnabled('groupFollowup', { ...defaults, groupFollowup: false }), false);
+assert.equal(reminderEnabled('groupActivity', defaults), true);
+assert.equal(reminderEnabled('groupActivity', { ...defaults, groupActivity: false }), false);
+assert.equal(isDirectWakeReason('private'), true);
+assert.equal(isDirectWakeReason('atMention'), true);
+assert.equal(isDirectWakeReason('poke'), true);
+assert.equal(isDirectWakeReason('friendRequest'), true);
+assert.equal(isDirectWakeReason('groupInvite'), true);
+assert.equal(isDirectWakeReason('groupFollowup'), false);
+assert.equal(isDirectWakeReason('groupActivity'), false);
 
 console.log('Autonomous wake policy checks passed.');

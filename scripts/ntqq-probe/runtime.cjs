@@ -41,12 +41,23 @@ module.exports = function startChannel(receiver, endpoint) {
   };
   let listenerId;
   let buddyListenerId;
+  let groupListenerId;
   const buddySvc = typeof receiver.getBuddyService === 'function' ? receiver.getBuddyService() : null;
+  const groupSvc = typeof receiver.getGroupService === 'function' ? receiver.getGroupService() : null;
+  const GROUP_NOTIFY_TYPE_INVITED_BY_MEMBER = 1;
+  const GROUP_NOTIFY_STATUS_UNHANDLE = 1;
+  const GROUP_OPERATE_APPROVE = 1;
+  const GROUP_OPERATE_REJECT = 2;
   const buddyReqsByUid = new Map();
   const emittedBuddyReqFlags = new Set();
   const buddyReqWaiters = new Set();
   let pullingBuddyReqs = 0;
   let buddyReqSyncChain = Promise.resolve();
+  const groupInvitesByKey = new Map();
+  const emittedGroupInviteFlags = new Set();
+  const groupInviteWaiters = new Set();
+  let pullingGroupInvites = 0;
+  let groupInviteSyncChain = Promise.resolve();
   const number = value => /^[1-9]\d*$/.test(String(value)) ? String(value) : '';
   function checked(response) {
     if (response?.result !== 0) throw Error(response?.errMsg || 'QQ 调用失败 ' + String(response?.result));
@@ -163,6 +174,113 @@ module.exports = function startChannel(receiver, endpoint) {
         }
       });
   }
+  function rememberGroupInvite(key, entry) {
+    groupInvitesByKey.delete(key);
+    groupInvitesByKey.set(key, entry);
+    while (groupInvitesByKey.size > 200) {
+      groupInvitesByKey.delete(groupInvitesByKey.keys().next().value);
+    }
+  }
+  function rememberEmittedGroupInvite(flag) {
+    emittedGroupInviteFlags.add(flag);
+    while (emittedGroupInviteFlags.size > 500) {
+      emittedGroupInviteFlags.delete(emittedGroupInviteFlags.values().next().value);
+    }
+  }
+  function pickGroupInviter(row) {
+    const candidates = [row?.user1, row?.user2].filter(u => u && typeof u === 'object');
+    return candidates.find(u => typeof u.uid === 'string' && u.uid && u.uid !== self.uid)
+      || candidates.find(u => typeof u.uid === 'string' && u.uid)
+      || row?.user1
+      || row?.user2
+      || null;
+  }
+  function normalizeNotifyTime(actionTime, seq) {
+    const rawNum = Number(String(actionTime ?? '').trim());
+    if (Number.isFinite(rawNum) && rawNum > 0) {
+      return rawNum > 1e12 ? Math.floor(rawNum / 1000) : Math.floor(rawNum);
+    }
+    if (/^\d{16,}$/.test(seq)) {
+      const fromSeq = Math.floor(Number(seq) / 1e6);
+      if (Number.isFinite(fromSeq) && fromSeq > 1e9) return fromSeq;
+    }
+    return Math.floor(Date.now() / 1000);
+  }
+  async function ingestGroupNotifies(rows, { isDoubt = false, emitEvents = false } = {}) {
+    const pending = [];
+    for (const r of Array.isArray(rows) ? rows : []) {
+      if (Number(r?.type) !== GROUP_NOTIFY_TYPE_INVITED_BY_MEMBER) continue;
+      const groupCode = number(r?.group?.groupCode ?? r?.groupCode);
+      const seq = String(r?.seq ?? '').trim();
+      if (!groupCode || !/^[1-9]\d{0,24}$/.test(seq)) continue;
+      const key = `${groupCode}:${seq}`;
+      if (Number(r?.status) !== GROUP_NOTIFY_STATUS_UNHANDLE) {
+        groupInvitesByKey.delete(key);
+        continue;
+      }
+      const inviter = pickGroupInviter(r);
+      pending.push({ row: r, groupCode, seq, key, inviter });
+    }
+    if (!pending.length) return;
+    const profiles = await resolveBuddyProfiles(pending.map(item => item.inviter?.uid));
+    if (socket.destroyed || String(globalThis.authData?.uin) !== account) return;
+    for (const { row: r, groupCode, seq, key, inviter } of pending) {
+      const uid = typeof inviter?.uid === 'string' ? inviter.uid : '';
+      const prof = (uid && profiles.get(uid)) || { uin: '', nick: '' };
+      const inviterUin = number(inviter?.uin) || prof.uin || '';
+      const inviterNick = String(inviter?.nickName || inviter?.nick || prof.nick || '');
+      const groupName = String(r?.group?.groupName ?? r?.groupName ?? '');
+      const comment = String(r?.postscript ?? '');
+      const warningTips = String(r?.warningTips ?? '');
+      const timeSec = normalizeNotifyTime(r?.actionTime, seq);
+      const flag = `${isDoubt ? 'native-doubt' : 'native'}:${groupCode}:${seq}`;
+      const entry = {
+        flag,
+        group_id: groupCode,
+        group_name: groupName,
+        seq,
+        notify_type: GROUP_NOTIFY_TYPE_INVITED_BY_MEMBER,
+        user_id: inviterUin,
+        nickname: inviterNick,
+        comment,
+        warning_tips: warningTips,
+        is_doubt: Boolean(isDoubt),
+        time: timeSec,
+      };
+      rememberGroupInvite(key, entry);
+      if (emitEvents && !emittedGroupInviteFlags.has(flag)) {
+        rememberEmittedGroupInvite(flag);
+        send({
+          event: {
+            self_id: account,
+            post_type: 'request',
+            request_type: 'group_invite',
+            group_id: groupCode,
+            group_name: groupName,
+            user_id: inviterUin,
+            nickname: inviterNick,
+            comment,
+            ...(warningTips ? { warning_tips: warningTips } : {}),
+            flag,
+            time: timeSec,
+            ...(entry.is_doubt ? { is_doubt: true } : {}),
+          },
+        });
+      }
+    }
+  }
+  function queueGroupNotifyUpdate(rows, isDoubt) {
+    const emitEvents = pullingGroupInvites === 0;
+    const kind = isDoubt ? 'doubt' : 'regular';
+    groupInviteSyncChain = groupInviteSyncChain
+      .then(() => ingestGroupNotifies(rows, { isDoubt, emitEvents }))
+      .catch(() => {})
+      .finally(() => {
+        for (const waiter of [...groupInviteWaiters]) {
+          waiter(kind);
+        }
+      });
+  }
   async function message(row, context = null) {
     const group = row.chatType === 2;
     const msg = {
@@ -211,6 +329,7 @@ module.exports = function startChannel(receiver, endpoint) {
       }
       else if (element.videoElement) { type = 'video'; data = {}; }
       else if (element.fileElement) { type = 'file'; data = { name: element.fileElement.fileName }; }
+      else if (element.arkElement) { type = 'card'; data = { data: String(element.arkElement.bytesData || '') }; }
       else { type = '其他消息'; data = {}; }
       if (context && (type === 'image' || type === 'mface')) {
         data.nativeForwardId = context.id;
@@ -266,6 +385,18 @@ module.exports = function startChannel(receiver, endpoint) {
       if (String(globalThis.authData?.uin) !== account) return socket.destroy();
       queueBuddyReqUpdate(data?.doubtList, true);
     },
+  }, { get: (obj, prop) => prop in obj ? obj[prop] : typeof prop === 'string' && prop.startsWith('on') ? () => {} : undefined });
+  function handleGroupNotifyCallback(...args) {
+    if (String(globalThis.authData?.uin) !== account) return socket.destroy();
+    const isDoubt = typeof args[0] === 'boolean' ? args[0] : false;
+    const rows = args.find(Array.isArray);
+    if (rows) queueGroupNotifyUpdate(rows, isDoubt);
+  }
+  const groupListener = new Proxy({
+    onGroupSingleScreenNotifies: handleGroupNotifyCallback,
+    onGroupSingleScreenNotifiesV2: handleGroupNotifyCallback,
+    onGroupNotifiesUpdated: handleGroupNotifyCallback,
+    onGroupNotifiesUpdatedV2: handleGroupNotifyCallback,
   }, { get: (obj, prop) => prop in obj ? obj[prop] : typeof prop === 'string' && prop.startsWith('on') ? () => {} : undefined });
   async function findSharedGroupForUid(uid) {
     if (typeof receiver.getGroupService !== 'function') return null;
@@ -696,7 +827,7 @@ module.exports = function startChannel(receiver, endpoint) {
             const rows = args.find(Array.isArray);
             if (rows) resolve(rows.map(g => ({group_id:String(g.groupCode),group_name:g.groupName})));
           }}, {get:(target,key) => key in target ? target[key] : () => {}}));
-          Promise.resolve(groups.getGroupList(false)).catch(reject);
+          Promise.resolve(groups.getGroupList(Boolean(p?.force))).catch(reject);
         });
       } finally {
         clearTimeout(timer);
@@ -860,6 +991,138 @@ module.exports = function startChannel(receiver, endpoint) {
       checked(await buddySvc.setBuddyRemark({ uid, remark: String(p.remark ?? '') }));
       return { user_id: uin, remark: String(p.remark ?? '') };
     }
+    if (action === 'get_group_invites') {
+      if (!groupSvc || typeof groupSvc.getSingleScreenNotifies !== 'function') {
+        throw Error('当前 QQ 未提供群邀请查询接口');
+      }
+      pullingGroupInvites += 1;
+      let timer;
+      let graceTimer;
+      let waiter;
+      try {
+        let gotRegular = false;
+        let gotDoubt = false;
+        const waitForChange = new Promise((resolve) => {
+          const finish = () => {
+            if (waiter) groupInviteWaiters.delete(waiter);
+            clearTimeout(graceTimer);
+            resolve();
+          };
+          waiter = (kind) => {
+            if (kind === 'regular') gotRegular = true;
+            if (kind === 'doubt') gotDoubt = true;
+            if (gotRegular && gotDoubt) finish();
+            else if (!graceTimer) graceTimer = setTimeout(finish, 250);
+          };
+          groupInviteWaiters.add(waiter);
+          timer = setTimeout(finish, 1000);
+        });
+        if (typeof groupSvc.fetchGroupNotify === 'function') {
+          await groupSvc.fetchGroupNotify(false).catch(() => null);
+          await groupSvc.fetchGroupNotify(true).catch(() => null);
+        }
+        const regRes = checked(await groupSvc.getSingleScreenNotifies(false, '0', 50));
+        if (Array.isArray(regRes?.notifies)) {
+          queueGroupNotifyUpdate(regRes.notifies, false);
+        }
+        const doubtRes = await groupSvc.getSingleScreenNotifies(true, '0', 50).catch(() => null);
+        if (Array.isArray(doubtRes?.notifies)) {
+          queueGroupNotifyUpdate(doubtRes.notifies, true);
+        } else if (!doubtRes) {
+          gotDoubt = true;
+        }
+        await waitForChange;
+        await groupInviteSyncChain;
+        sameAccount();
+        return [...groupInvitesByKey.values()].map(item => ({
+          flag: item.flag,
+          group_id: item.group_id,
+          group_name: item.group_name,
+          user_id: item.user_id,
+          nickname: item.nickname,
+          comment: item.comment,
+          ...(item.warning_tips ? { warning_tips: item.warning_tips } : {}),
+          ...(item.is_doubt ? { is_doubt: true } : {}),
+          time: item.time,
+        }));
+      } finally {
+        if (waiter) groupInviteWaiters.delete(waiter);
+        clearTimeout(graceTimer);
+        clearTimeout(timer);
+        pullingGroupInvites = Math.max(0, pullingGroupInvites - 1);
+      }
+    }
+    if (action === 'set_group_invite_request') {
+      if (!groupSvc || typeof groupSvc.operateSysNotify !== 'function') {
+        throw Error('当前 QQ 未提供群邀请处理接口');
+      }
+      const approve = Boolean(p.approve);
+      const rawFlag = String(p.flag ?? '').trim();
+      const targetGroupId = number(p.group_id);
+      let entry = null;
+      const flagMatch = /^native(-doubt|-card)?:([1-9]\d{0,18}):([1-9]\d{0,24})$/.exec(rawFlag);
+      if (flagMatch) {
+        const groupCode = flagMatch[2];
+        const seq = flagMatch[3];
+        const cached = groupInvitesByKey.get(`${groupCode}:${seq}`);
+        entry = cached && cached.flag === rawFlag ? cached : {
+          flag: rawFlag,
+          group_id: groupCode,
+          seq,
+          notify_type: GROUP_NOTIFY_TYPE_INVITED_BY_MEMBER,
+          user_id: cached?.user_id || '',
+          is_doubt: flagMatch[1] === '-doubt',
+        };
+      } else if (targetGroupId) {
+        const findByGroup = () => [...groupInvitesByKey.values()]
+          .filter(item => item.group_id === targetGroupId)
+          .sort((a, b) => Number(b.time) - Number(a.time))[0] || null;
+        entry = findByGroup();
+        if (!entry) {
+          await perform('get_group_invites', {});
+          entry = findByGroup();
+        }
+      }
+      if (!entry?.group_id || !entry?.seq) throw Error('QQ 找不到对应的待处理群邀请');
+      sameAccount();
+      const isCardFlag = String(entry.flag || '').startsWith('native-card:');
+      let confirmedByGroupList = false;
+      try {
+        checked(await groupSvc.operateSysNotify(Boolean(entry.is_doubt), {
+          operateType: approve ? GROUP_OPERATE_APPROVE : GROUP_OPERATE_REJECT,
+          targetMsg: {
+            seq: String(entry.seq),
+            type: Number(entry.notify_type || GROUP_NOTIFY_TYPE_INVITED_BY_MEMBER),
+            groupCode: String(entry.group_id),
+            postscript: approve ? '' : String(p.reason ?? ''),
+          },
+        }));
+      } catch (err) {
+        const errMsg = String(err?.message || err);
+        const canConfirmByGroupList = approve && ((isCardFlag && /target_seq not found/i.test(errMsg)) || /already agree/i.test(errMsg));
+        if (!canConfirmByGroupList) throw err;
+        for (const delay of [0, 250, 600]) {
+          if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+          sameAccount();
+          const groups = await perform('get_group_list', { force: true }).catch(() => null);
+          sameAccount();
+          if (Array.isArray(groups) && groups.some(g => String(g?.group_id ?? '') === String(entry.group_id))) {
+            confirmedByGroupList = true;
+            break;
+          }
+        }
+        if (!confirmedByGroupList) throw err;
+      }
+      sameAccount();
+      groupInvitesByKey.delete(`${entry.group_id}:${entry.seq}`);
+      return {
+        flag: entry.flag,
+        group_id: entry.group_id,
+        user_id: entry.user_id || '',
+        approve,
+        ...(confirmedByGroupList ? { confirmedByGroupList: true } : {}),
+      };
+    }
     throw Error('QQ 独立通道尚不支持 ' + action);
   }
   socket.once('connect', () => {
@@ -868,6 +1131,11 @@ module.exports = function startChannel(receiver, endpoint) {
       try {
         if (typeof buddySvc?.addKernelBuddyListener === 'function') {
           buddyListenerId = buddySvc.addKernelBuddyListener(buddyListener);
+        }
+      } catch {}
+      try {
+        if (typeof groupSvc?.addKernelGroupListener === 'function') {
+          groupListenerId = groupSvc.addKernelGroupListener(groupListener);
         }
       } catch {}
       send({ hello: endpoint.token, account, uid: self.uid, pid: process.pid });
@@ -886,6 +1154,9 @@ module.exports = function startChannel(receiver, endpoint) {
     if (listenerId != null) svc.removeKernelMsgListener(String(listenerId));
     if (buddyListenerId != null && typeof buddySvc?.removeKernelBuddyListener === 'function') {
       try { buddySvc.removeKernelBuddyListener(String(buddyListenerId)); } catch {}
+    }
+    if (groupListenerId != null && typeof groupSvc?.removeKernelGroupListener === 'function') {
+      try { groupSvc.removeKernelGroupListener(String(groupListenerId)); } catch {}
     }
     for (const receipt of slides.values()) receipt.reject(Error('QQ 通道已断开，投递结果未知'));
     for (const download of mediaDownloads.values()) download.finish({error:'QQ 通道已断开，图片下载结果未知'});

@@ -11,6 +11,10 @@
     "allowRemote": false
   },
   "desktopAgent": {
+    "rest": {
+      "defaultMs": 1800000,
+      "maxMs": 14400000
+    },
     "sleepSchedule": {
       "enabled": false,
       "sleepTime": "",
@@ -20,10 +24,10 @@
       "roleCard": "【当前角色卡：{roleName}】\n{roleContent}",
       "qqAttention": "【QQ 提醒】\n{sources}",
       "qqSource": "- {key}{senderId}{messageId}{count}",
-      "restExpired": "【空闲等待结束{unreadSummary}】",
+      "restExpired": "【自由活动时间{unreadSummary}】",
       "qqWake": "",
       "recovery": "【状态恢复检查】请结合当前上下文继续，避免重复已完成的操作。",
-      "missingRest": "【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无事可做，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白或道别）；若仍有未完事项则处理完后再调用。",
+      "missingRest": "【回合收尾提醒】上一轮已结束但尚未收到 agent_rest。若当前已无待处理事项，请直接静默调用 agent_rest（勿重复已完成操作，勿输出挂机旁白）；若仍有未完事项则处理完后再调用。",
       "memoryBootstrap": "【长期记忆摘要｜来源为自身经历；用于延续经历与未完成事项，仍需按当前上下文判断】\n{entries}"
     }
   },
@@ -68,7 +72,16 @@
   "socialV2": {
     "enabled": true,
     "attentionKeywords": [],
-    "reminders": { "private": true, "atMention": true, "reply": true, "roleCardName": true, "keyword": true, "poke": true, "unreadFollowup": true },
+    "reminders": { "private": true, "atMention": true, "reply": true, "roleCardName": true, "keyword": true, "poke": true, "groupFollowup": true, "groupActivity": true, "unreadFollowup": true },
+    "groupAttention": {
+      "hotWindowMs": 240000,
+      "hotDebounceMs": 5000,
+      "hotExtendMs": 3000,
+      "hotMaxDebounceMs": 10000,
+      "privateActiveMs": 180000,
+      "coldAggregateMs": 60000,
+      "coldCooldownMs": 1200000
+    },
     "send": { "delayPerCharMs": 20 },
     "sticker": {
       "regularEnabled": true,

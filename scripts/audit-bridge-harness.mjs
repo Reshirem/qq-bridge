@@ -13,6 +13,7 @@ import yaml from 'js-yaml';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as markdown from '../src/md-to-plain.js';
+import * as qqCard from '../src/qq-card.js';
 import * as sensitive from '../src/sensitive.js';
 import * as autonomyPolicy from '../src/autonomy-policy.js';
 import * as qqMessageReference from '../src/qq-message-reference.js';
@@ -231,10 +232,12 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
     isDshReady() { return dshReady; },
     queueDesktopAttentionSignal, acknowledgeDesktopAttentionThrough, enterDesktopAgentRest,
     scheduleDesktopAgentRecovery, reconcileDesktopAgentLifecycle, pumpMux,
+    recordSentMessagesV2, markConversationActiveAfterSend, isGroupHot,
     checkDesktopAgentSleepSchedule, desktopAgentSleepScheduleInfo, stopDesktopAgentLifecycle,
     handleIncomingForTest(kind, id, event) { return handleIncoming(kind, id, event, cfg); },
     handlePokeNotice,
     handleFriendRequestEvent,
+    handleGroupInviteEvent,
     flushAttentionNow() {
       if (desktopAttentionFlushTimer) clearTimeout(desktopAttentionFlushTimer);
       desktopAttentionFlushTimer = null;
@@ -248,6 +251,8 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
         turnActive: desktopAgentTurnActive,
         flushScheduled: !!desktopAttentionFlushTimer,
         reminderScheduled: !!desktopAttentionReminderTimer,
+        groupAttentionScheduled: !!groupAttentionTimer,
+        hotGroups: [...socialV2.conversations.entries()].filter(([k, st]) => k.startsWith('group:') && Number(st?.hotUntil) > Date.now()).map(([k]) => k),
         queue: [...desktopAttentionQueue.values()].map((item) => ({ ...item })),
         unresolved: [...desktopAttentionUnresolved.values()].map((item) => ({ ...item })),
       };
@@ -295,7 +300,7 @@ export async function bridgeHarness({ config = {}, files = {}, globals = {}, one
       restart: async () => { throw new Error('MCP manager is not configured in this fixture'); },
       close() {},
     }),
-    openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...sensitive, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
+    openNativeReminders, NativeQQ: FakeBot, qqChannelConfig, ...markdown, ...qqCard, ...sensitive, ...autonomyPolicy, ...qqMessageReference, ...safeFetch, ...forward, ...sticker,
     ...backgroundSessions, ...learningRunner, MARKET_PAGE_SIZE, ...chatLearning, ...learningAssets, ...learningApi, ...learningSessions, ...memoryOrganizer, ...memoryCurator,
     memoryOrganizerDesktopProvider: () => null, memoryOrganizerCliLaunch: () => ({command:'fixture-dsh',args:[],env:{},shell:false}), ...sleepSchedule, ...dshDiagnostics,
     createModelCatalog, ...modelPrices, ...tokenLedger, ...memorixGateway, createStickerMemory, createMarketPacks, localMarketPackIds, analyzeMarketPack, ...presetPrompt, ...desktopAgentPromptTemplates,

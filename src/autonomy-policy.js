@@ -39,8 +39,20 @@ export function isPokeToSelf(event) {
 export function reminderEnabled(reason, reminders = {}) {
   if (String(reason ?? '').startsWith('未处理提醒（再次提醒）：') && reminders.unreadFollowup === false) return false;
   const base = wakeReasonBase(String(reason ?? '').replace(/^未处理提醒（再次提醒）：/, ''));
-  if (base === 'friendRequest') return reminders.friendRequest !== false && reminders.private !== false;
+  if (base === 'friendRequest' || base === 'groupInvite') {
+    return reminders[base] !== false && reminders.private !== false;
+  }
   return reminders[base] !== false;
+}
+
+/**
+ * Strong/direct wake signals (P1) may steer long-running turns and participate in
+ * unresolved unread follow-up checks. Passive group cues (groupFollowup / groupActivity)
+ * never steer mid-turn and never trigger unresolved re-reminders.
+ */
+export function isDirectWakeReason(reason) {
+  const base = wakeReasonBase(String(reason ?? '').replace(/^未处理提醒（再次提醒）：/, ''));
+  return base !== 'groupFollowup' && base !== 'groupActivity';
 }
 
 /** Whether this is the first-session prompt, optionally carrying its direct trigger. */

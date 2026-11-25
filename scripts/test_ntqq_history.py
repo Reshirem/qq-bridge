@@ -80,6 +80,42 @@ class NativeHistoryTest(unittest.TestCase):
                 self.assertIsNone(second["next"])
                 self.assertEqual(db.total_changes, before)
 
+    def test_card_ark_data_decoded_in_history_when_present(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE c2c_msg_table ([40001] INTEGER PRIMARY KEY, [40033] INTEGER, "
+                       "[40050] INTEGER, [40800] BLOB, [40027] INTEGER, [40030] INTEGER)")
+            msg = nt.MsgBody()
+            part = msg.segments.add(kind=10)
+            ark_json = '{"app":"com.tencent.tuwen.lua","prompt":"[链接]邀请你加入群聊"}'
+            part.ark_data = ark_json.encode("utf-8")
+            db.execute("INSERT INTO c2c_msg_table VALUES (301, 20001, 100, ?, 1, 20001)", (msg.SerializeToString(),))
+            rows = read_service(db, "history", {"kind": "private", "peer": "20001", "count": 5, "older": True}, "42", b"u_self")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["message"], [{"type": "card", "data": {"data": ark_json}}])
+
+    def test_group_invite_cards_query_filters_and_is_readonly(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE c2c_msg_table ([40001] INTEGER PRIMARY KEY, [40033] INTEGER, "
+                       "[40050] INTEGER, [40800] BLOB, [40027] INTEGER, [40030] INTEGER)")
+            def card_blob(payload):
+                m = nt.MsgBody()
+                p = m.segments.add(kind=10)
+                p.ark_data = payload.encode("utf-8")
+                return m.SerializeToString()
+
+            invite_json = '{"app":"com.tencent.tuwen.lua","meta":{"news":{"jumpUrl":"mqqapi://group/invite_join?groupcode=600010001&msgseq=9000000000000002"}}}'
+            bili_json = '{"app":"com.tencent.miniapp_01","meta":{"detail_1":{"qqdocurl":"https://b23.tv/abc"}}}'
+            db.execute("INSERT INTO c2c_msg_table VALUES (401, 20001, 1000, ?, 1, 20001)", (card_blob(invite_json),))
+            db.execute("INSERT INTO c2c_msg_table VALUES (402, 42, 1001, ?, 1, 20001)", (card_blob(invite_json),))
+            db.execute("INSERT INTO c2c_msg_table VALUES (403, 20001, 1002, ?, 1, 20001)", (card_blob(bili_json),))
+            before = db.total_changes
+            rows = read_service(db, "group_invite_cards", {"since": 0, "limit": 10}, "42", b"u_self")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["message_id"], "401")
+            self.assertEqual(rows[0]["user_id"], "20001")
+            self.assertEqual(rows[0]["data"], invite_json)
+            self.assertEqual(db.total_changes, before)
+
     def test_group_bucket_peer_for_self_messages_quotes_and_notices(self):
         with closing(sqlite3.connect(":memory:")) as db:
             db.execute("CREATE TABLE group_msg_table ([40001] INTEGER PRIMARY KEY, [40003] INTEGER, "

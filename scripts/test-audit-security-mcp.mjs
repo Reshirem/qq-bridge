@@ -354,8 +354,59 @@ test('friend request tools register by default, honor config toggle, validate in
   assert.equal(requests.length, 2);
 
   const disabled = loadQQTools(async () => assert.fail('disabled tool must not call bridge'), {
-    socialV2: { tools: { friendRequests: false } },
+    socialV2: { tools: { friendRequests: false, groupInvites: false } },
   });
   assert.equal(disabled.has('qq_list_friend_requests'), false);
   assert.equal(disabled.has('qq_handle_friend_request'), false);
+  assert.equal(disabled.has('qq_list_group_invites'), false);
+  assert.equal(disabled.has('qq_handle_group_invite'), false);
+});
+
+test('qq_list_group_invites and qq_handle_group_invite forward calls, enforce arguments, and respect tool switch', async () => {
+  const requests = [];
+  const callTool = loadQQTools(async (url, init = {}) => {
+    const parsedUrl = new URL(String(url));
+    requests.push({
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(init.body) : null,
+      headers: init.headers,
+    });
+    if (parsedUrl.pathname === '/api/socialV2/group-invites') {
+      return Response.json({ ok: true, count: 1, totalPending: 1, invites: [{ flag: 'native:600010001:999', groupId: '600010001' }] });
+    }
+    return Response.json({ ok: true, status: 'approved', flag: 'native:600010001:999', groupId: '600010001', approve: true });
+  });
+  assert.equal(callTool.has('qq_list_group_invites'), true);
+  assert.equal(callTool.has('qq_handle_group_invite'), true);
+
+  const listResult = await callTool('qq_list_group_invites', { status: 'all', limit: 10 });
+  assert.equal(listResult.isError, undefined);
+  assert.equal(requests[0].path, '/api/socialV2/group-invites?status=all&limit=10');
+
+  const handleResult = await callTool('qq_handle_group_invite', {
+    flag: 'native:600010001:999', groupId: 600010001, approve: true,
+  });
+  assert.equal(handleResult.isError, undefined);
+  assert.equal(requests[1].method, 'POST');
+  assert.equal(requests[1].path, '/api/socialV2/group-invite/handle');
+  assert.deepEqual(requests[1].body, { approve: true, flag: 'native:600010001:999', groupId: '600010001' });
+  assert.equal(requests[1].headers['x-agent-token'], 'a'.repeat(64));
+
+  const missingTarget = await callTool('qq_handle_group_invite', { approve: true });
+  assert.equal(missingTarget.isError, true);
+  assert.match(missingTarget.content[0].text, /flag 和 groupId 至少/);
+
+  const approveWithReason = await callTool('qq_handle_group_invite', { flag: 'native:600010001:999', approve: true, reason: '不应存在' });
+  assert.equal(approveWithReason.isError, true);
+  assert.match(approveWithReason.content[0].text, /不需要拒绝理由/);
+
+  await assert.rejects(callTool('qq_handle_group_invite', { flag: 'native:600010001:999', approve: false, reason: 'x'.repeat(101) }));
+  assert.equal(requests.length, 2);
+
+  const disabled = loadQQTools(async () => assert.fail('disabled tool must not call bridge'), {
+    socialV2: { tools: { groupInvites: false } },
+  });
+  assert.equal(disabled.has('qq_list_group_invites'), false);
+  assert.equal(disabled.has('qq_handle_group_invite'), false);
 });

@@ -88,5 +88,21 @@ check('转发图片保留原生来源与64位节点定位', nativeMedia[0].nativ
 check('转发图片保留表情类型', nativeMedia[0].kind === 'sticker' && nativeMedia[0].subType === '1');
 check('转发商城表情保留包与图片标识', nativeMedia[1].kind === 'sticker' && nativeMedia[1].emojiId === 'b'.repeat(32) && nativeMedia[1].emojiPackageId === '42');
 
+const cardForward = formatForwardResponse({
+  messages: [{
+    sender: '好友',
+    message: [{
+      type: 'card',
+      data: {
+        data: JSON.stringify({
+          app: 'com.tencent.miniapp_01',
+          meta: { detail_1: { title: '哔哩哔哩', desc: '测试视频卡片', qqdocurl: 'https://b23.tv/abc' } },
+        }),
+      },
+    }],
+  }],
+});
+check('转发内卡片消息格式化为可读摘要', cardForward.messages[0].text === '[卡片：哔哩哔哩 — 测试视频卡片 https://b23.tv/abc]', cardForward.messages[0].text);
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
 process.exitCode = failed > 0 ? 1 : 0;

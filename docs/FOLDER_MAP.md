@@ -24,6 +24,7 @@
 | `bridge.js` | 运行时组合与协调中心；全局会话生命周期、QQ 注意信号、消息缓冲、控制台和发送门禁仍有较多共享状态，改动时优先小步拆分 |
 | `native-qq.js` / `native-reminders.js` | 桌面 QQ 本地通道（Frida 命名管道消息服务 + 常驻 SQLCipher 原库只读查询）与按账号持久化的原生提醒水位存储 |
 | `qq-channel-config.js` | QQ 提醒、发送及表情配置的默认值与旧设置迁移 |
+| `qq-card.js` | QQ Ark/JSON 卡片消息的安全解析与单行摘要格式化 |
 | `qq-message-reference.js` / `qq-image-references.js` | QQ 消息定位（`id:` / `seq:本地序号@缓存标识`）解析，以及已读图片的会话内有界 `imageRef` 登记 |
 | `autonomy-policy.js` / `sleep-schedule.js` | 不依赖运行时状态的 QQ 注意信号分类规则，以及桥接本地时区的每日睡眠/起床闹钟计算 |
 | `dsh-client.js` / `dsh-diagnostics.js` / `dsh-mcp-management.js` | DSH API/鉴权/事件流客户端、主会话工具错误/图片接纳/模型重试有界诊断，以及 DSH MCP manager 状态订阅、探测与定向重连 |

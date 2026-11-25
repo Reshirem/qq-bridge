@@ -414,7 +414,7 @@ try {
   ]);
   await page.waitForFunction(() => document.querySelector('#qqMediaForm [role=status]').textContent === '已保存');
   assert.equal(fixture.state.v2.media.prefetchOnReceive, true);
-  const reminderNames = ['private','atMention','reply','roleCardName','keyword','poke','unreadFollowup'];
+  const reminderNames = ['private','atMention','reply','roleCardName','keyword','poke','groupFollowup','groupActivity','unreadFollowup'];
   const reminderButton = setting => page.locator(`#qqReminderControls [data-reminder-setting="${setting}"]`);
   const reminderStatus = setting => reminderButton(setting).locator('..').locator('[role=status]');
   const reminderValues = () => page.locator('#qqReminderControls [role=switch]').evaluateAll(buttons =>
@@ -431,7 +431,7 @@ try {
     assert.deepEqual(await reminderValues(), { ...before, [setting]: expected }, 'other switches keep their states');
     assert.equal(await reminderStatus(setting).innerText(), '已保存，立即生效');
   }
-  assert.equal(await page.locator('#qqReminderControls [role=switch]').count(), 8, 'one master and seven shared switches');
+  assert.equal(await page.locator('#qqReminderControls [role=switch]').count(), 10, 'one master and nine shared switches');
   for (const setting of ['enabled', ...reminderNames.map(name => 'reminders.' + name)]) {
     assert.equal(await reminderButton(setting).getAttribute('aria-checked'), 'true');
   }
