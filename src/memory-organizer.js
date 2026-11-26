@@ -333,7 +333,7 @@ export function organizerEvidenceVersion(job) {
   const hasChunks = Number.isSafeInteger(job.progress?.total)
     || Number(job.progress?.completed) > 0
     || Boolean(job.organizerSessionId) || Boolean(job.organizerSessionIds?.length);
-  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 5;
+  return hasChunks ? (job.progress?.evidenceVersion ?? 1) : 6;
 }
 
 function compactQQMessage(message, omitNoticePlaceholders) {
@@ -378,6 +378,19 @@ function addsDateToQQTime(dated, clock) {
   return typeof clock === 'string' && /^\d{2}-\d{2} (\d{2}:\d{2})$/.exec(dated)?.[1] === clock;
 }
 
+function isGenericCardPlaceholder(value) {
+  return value === '[card]' || value === '[卡片]';
+}
+
+function isDecodedCardSummary(value) {
+  return typeof value === 'string' && value.startsWith('[卡片：') && value.endsWith(']') && value.length > 5;
+}
+
+function isCardPlaceholderCompatible(a, b) {
+  return (isGenericCardPlaceholder(a) && (isDecodedCardSummary(b) || isGenericCardPlaceholder(b)))
+    || (isDecodedCardSummary(a) && isGenericCardPlaceholder(b));
+}
+
 function alignQQTextFields(previous, current, previousTool, currentTool) {
   if (previousTool === currentTool || previous.text === current.text) return current;
   // A detail read exposes only one rendering. History can put that exact
@@ -392,18 +405,28 @@ function alignQQTextFields(previous, current, previousTool, currentTool) {
   return detailMatchesAlternate || swappedPair ? { ...current, text: current.plain, plain: current.text } : current;
 }
 
-function conflictingQQMessageFields(previous, current) {
+function conflictingQQMessageFields(previous, current, { upgradeCardPlaceholders = false } = {}) {
   return QQ_MESSAGE_CONSISTENCY_FIELDS.filter((field) => {
     if (previous[field] === undefined || current[field] === undefined) return false;
     if (field === 'at' && (addsDateToQQTime(current.at, previous.at) || addsDateToQQTime(previous.at, current.at))) return false;
+    if (upgradeCardPlaceholders && QQ_TEXT_FIELDS.includes(field) && isCardPlaceholderCompatible(previous[field], current[field])) {
+      return false;
+    }
     return JSON.stringify(previous[field]) !== JSON.stringify(current[field]);
   });
 }
 
-function mergeQQMessageFields(previous, current) {
+function mergeQQMessageFields(previous, current, { upgradeCardPlaceholders = false } = {}) {
   const merged = { ...previous };
   for (const [key, value] of Object.entries(current ?? {})) {
-    if (merged[key] === undefined || merged[key] === null || merged[key] === '') merged[key] = value;
+    if (merged[key] === undefined || merged[key] === null || merged[key] === '') {
+      merged[key] = value;
+    } else if (upgradeCardPlaceholders && QQ_TEXT_FIELDS.includes(key) && (
+      (isGenericCardPlaceholder(merged[key]) && isDecodedCardSummary(value))
+      || (merged[key] === '[card]' && value === '[卡片]')
+    )) {
+      merged[key] = value;
+    }
   }
   if (addsDateToQQTime(current.at, previous.at)) merged.at = current.at;
   return merged;
@@ -672,7 +695,8 @@ function compactDesktopToolResult(value, sanitize) {
  */
 export function organizerTranscriptRecords(records, {
   sanitize = (value) => value, legacyChunkLayout = false, omitNoticePlaceholders = !legacyChunkLayout,
-  compactDesktopToolResults = !legacyChunkLayout, recoverSpilledQQReads = !legacyChunkLayout
+  compactDesktopToolResults = !legacyChunkLayout, recoverSpilledQQReads = !legacyChunkLayout,
+  upgradeCardPlaceholders = !legacyChunkLayout
 } = {}) {
   const ordered = (Array.isArray(records) ? records : [])
     .filter((record) => record && typeof record === 'object')
@@ -819,21 +843,24 @@ export function organizerTranscriptRecords(records, {
           if (identity && seenQQMessages.has(identity)) {
             const previous = seenQQMessages.get(identity);
             const aligned = alignQQTextFields(previous.message, compact, previous.bodyTool, toolLeaf);
-            const conflictingFields = conflictingQQMessageFields(previous.message, aligned);
+            const conflictingFields = conflictingQQMessageFields(previous.message, aligned, { upgradeCardPlaceholders });
             if (conflictingFields.length) {
               markIncomplete(`DSH 事件 ${previous.event.seq} 和 ${seq} 中重复 QQ 消息字段不一致（${conflictingFields.join('、')}）`);
             } else {
-              if (omitNoticePlaceholders && !QQ_TEXT_FIELDS.some(field => previous.message[field] !== undefined)
-                  && QQ_TEXT_FIELDS.some(field => aligned[field] !== undefined)) {
-                // The first read may have contained metadata only. Attribute the
-                // newly available body to the read that actually supplied it.
+              const upgradedFromNotice = omitNoticePlaceholders && !QQ_TEXT_FIELDS.some(field => previous.message[field] !== undefined)
+                && QQ_TEXT_FIELDS.some(field => aligned[field] !== undefined);
+              const upgradedFromCard = upgradeCardPlaceholders && QQ_TEXT_FIELDS.some(field =>
+                isGenericCardPlaceholder(previous.message[field]) && isDecodedCardSummary(aligned[field]));
+              if (upgradedFromNotice || upgradedFromCard) {
+                // The first read may have contained metadata or a placeholder only.
+                // Attribute the newly available body to the read that actually supplied it.
                 previous.bodyTool = toolLeaf;
                 previous.event.bodySourceSeq = seq;
               }
               // Detail and list tools expose different optional fields for the
               // same message. Keep the richer union while checking only fields
               // present in both results; sender is a display label, not identity.
-              previous.message = mergeQQMessageFields(previous.message, aligned);
+              previous.message = mergeQQMessageFields(previous.message, aligned, { upgradeCardPlaceholders });
               previous.event.message = sanitize(previous.message);
             }
             continue;

@@ -72,9 +72,9 @@ A_Memorix 的独立服务单独运行，Gateway 与 gRPC 服务只监听本机�
 
 QQ 读取结果的 `text`、`plain`、`tail` 若完整值恰为通用占位 `[notice]`，整理器只保留该次读取的消息身份、来源、发送者和时间等元数据，不把占位当成聊天正文。同一来源、同一消息在主会话其他成功读取中已有正文时，保留已读正文；先见占位、后见正文时可补全，并以 `bodySourceSeq` 标明实际提供正文的 DSH 事件。只有占位时不推测内容，也不解释为撤回。含 `[notice]` 的正常文字及其他括号标记不受影响；真实正文、账号、时间等字段冲突仍阻断任务，不推进游标。整理不会为此回查当前 QQ 数据补证据。
 
-上述占位处理从证据版本 3 开始。版本 4 还会压缩桌面工具结果：浏览器操作保留标签页、动作、目标和有界页面文字，OCR 保留识别文本摘要，控件树保留窗口信息；外部工具结果事件超过 16,000 字节时只保留脱敏预览。版本 5 额外支持对已被 DSH 溢出截断（含 `(Omitted ... bytes. Full formatted result stored at:` 页脚）的 QQ 消息列表读取（`qq_get_conversation_history` / `qq_get_unread_messages`）做严格失败关闭恢复：仅提取首尾完整可见的消息对象与 `readThroughSeq`，丢弃被 `[...]` 切断的残片及本机临时文件路径，标记 `partial=true` 与 `resultTruncated: true`，不读取临时文件也不回查 QQ 数据库；同时在 QQ 历史与未读接口中限制单页模型视图体积（默认 40,000 字节上限），超限时返回前段消息与翻页游标并仅确认实际返回的未读条数，从源头避免再次溢出。整理模型只能依据实际保留的内容，事件上的 `resultTruncated: true` 标明结果不完整。
+上述占位处理从证据版本 3 开始。版本 4 还会压缩桌面工具结果：浏览器操作保留标签页、动作、目标和有界页面文字，OCR 保留识别文本摘要，控件树保留窗口信息；外部工具结果事件超过 16,000 字节时只保留脱敏预览。版本 5 额外支持对已被 DSH 溢出截断（含 `(Omitted ... bytes. Full formatted result stored at:` 页脚）的 QQ 消息列表读取（`qq_get_conversation_history` / `qq_get_unread_messages`）做严格失败关闭恢复：仅提取首尾完整可见的消息对象与 `readThroughSeq`，丢弃被 `[...]` 切断的残片及本机临时文件路径，标记 `partial=true` 与 `resultTruncated: true`，不读取临时文件也不回查 QQ 数据库；同时在 QQ 历史与未读接口中限制单页模型视图体积（默认 40,000 字节上限），超限时返回前段消息与翻页游标并仅确认实际返回的未读条数，从源头避免再次溢出。整理模型只能依据实际保留的内容，事件上的 `resultTruncated: true` 标明结果不完整。版本 6 支持在同一来源、同一 `messageId` 的多次 QQ 读取间，当一侧为纯卡片占位符（`[card]` 或 `[卡片]`）且另一侧为已解码卡片摘要（`[卡片：...]`）时合并升级并保留已解码摘要（首次在后续读取看到已解码正文时记录 `bodySourceSeq`）；纯占位与普通正文冲突、不同卡片摘要冲突及发送者/时间/媒体等元数据冲突仍严格阻断。
 
-新任务和在切块前失败、尚未绑定整理会话的任务使用版本 5。已记录分段总数、完成进度或整理会话的任务继续使用原证据版本，重试沿用原分段边界和 `externalId`。除上述可严格恢复的 DSH 溢出 QQ 列表读取外，非溢出的 `[truncated]` 截断标记、`memory_*` / `agent_rest` / 单条详情工具截断，以及被替换过的工具结果（`surfaceOp !== 'append'`）仍会阻断整理。
+新任务和在切块前失败、尚未绑定整理会话的任务使用版本 6。已记录分段总数、完成进度或整理会话的任务继续使用原证据版本，重试沿用原分段边界和 `externalId`。除上述可严格恢复的 DSH 溢出 QQ 列表读取外，非溢出的 `[truncated]` 截断标记、`memory_*` / `agent_rest` / 单条详情工具截断，以及被替换过的工具结果（`surfaceOp !== 'append'`）仍会阻断整理。
 
 `memory_read` 只接受记忆工具实际返回的 ID，不能用描述、占位词或猜测的 ID。Gateway 明确返回 `HTTP 404`、`code=not_found`、`message=memory not found` 时，桥接按“记录不存在”处理，MCP 返回 `found=false`。模型可重新检索；未找到旧记录不表示相关事实不存在，也不能据此虚构旧内容或更正关系。namespace/路由不存在、鉴权失败、连接失败、服务异常及写入失败仍是错误，不会作为空结果吞掉。WebUI 读取不存在的记录得到 `result=null`，替换操作不会继续写入。
 
@@ -143,7 +143,7 @@ Windows 部署脚本将 A_Memorix `v2.0.0a4` 启动在 `127.0.0.1:8080`，创建
 
 离线回归已覆盖：
 - `scripts/test-memory-consolidation.mjs`：`memory_replace` 预读、同来源校验、`supersedes` 链延续、新写后删与检索去重；
-- `scripts/test-memory-organizer.mjs`：休息后每日整理证据提取（含 `[notice]` 占位、版本 4 桌面工具结果压缩与版本 5 溢出 QQ 列表严格恢复）、缺失记录 `found=false` 处理、真实 MCP stdio 往返、写入回执与重启游标恢复；
+- `scripts/test-memory-organizer.mjs`：休息后每日整理证据提取（含 `[notice]` 占位、版本 4 桌面工具结果压缩、版本 5 溢出 QQ 列表严格恢复与版本 6 卡片占位升级合并）、缺失记录 `found=false` 处理、真实 MCP stdio 往返、写入回执与重启游标恢复；
 - `scripts/test-a-memorix-readonly.mjs`：WebUI 原始段落 SQLite 只读分页、筛选、越界拒绝与数据库零修改保证；
 - `scripts/test-background-presets-dsh.mjs`：`memory-organizer` Host preset 工具隔离与会话归档。
 

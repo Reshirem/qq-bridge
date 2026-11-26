@@ -22,6 +22,15 @@ function imageMaxBytes(value, quality) {
   return value;
 }
 
+function videoMaxBytes(value) {
+  const maximum = 100 * 1024 * 1024;
+  if (value === undefined) return 50 * 1024 * 1024;
+  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+    throw Error(`视频 maxBytes 必须是 1 至 ${maximum} 之间的整数`);
+  }
+  return value;
+}
+
 // Every request belongs to one connection. Never resubmit an interrupted send.
 function rpcStream(output, input, notification) {
   const pending = new Map();
@@ -65,6 +74,7 @@ export class NativeQQ extends EventEmitter {
     this.pipe = '\\\\.\\pipe\\qq-bridge-' + randomUUID();
     this.token = randomUUID();
     this.imageRequests = new Map();
+    this.videoRequests = new Map();
     this.forwardRequests = new Map();
     this.health = { mode: 'native', connected: false, readerReady: false, hint: '等待桌面 QQ 登录' };
   }
@@ -367,6 +377,117 @@ export class NativeQQ extends EventEmitter {
       }
       throw Error(quality === 'original' ? 'QQ 未能在规定时间内完成原图缓存，未使用预览代替' : 'QQ 未能在规定时间内完成图片缓存');
     }
+    if (action === 'get_video') {
+      const maxBytes = videoMaxBytes(p.maxBytes);
+      if (!this.read) throw Error('QQ 媒体库尚未连接');
+      const { read, call, account } = this;
+      const checkConnection = () => {
+        if (this.closed || this.read !== read || this.call !== call || this.account !== account) {
+          throw Error('QQ 视频读取期间账号或连接已改变，请重新读取');
+        }
+      };
+      const md5 = String(p.file ?? '').toLowerCase();
+      if (!/^[a-f0-9]{32}$/.test(md5)) throw Error('QQ 视频标识无效');
+      const key = String(p.key ?? '').trim();
+      const messageId = String(p.messageId ?? '').trim();
+      const source = /^(group|private):([1-9]\d{0,18})$/.exec(key);
+      const hasLocator = !!source && /^-?[1-9]\d{0,19}$/.test(messageId);
+      let forwardPeer;
+      if (p.forwardId) {
+        const match = /^(group|private):([1-9]\d{0,18})$/.exec(key);
+        if (!match) throw Error('QQ 转发视频来源无效');
+        forwardPeer = await this.peer(match[1], match[2]);
+        checkConnection();
+        await call('check_forward_video', {
+          peer: forwardPeer, forwardId: p.forwardId, messageId, md5,
+        });
+        checkConnection();
+      }
+      const cached0 = await read('media', { type: 'video', md5, maxBytes });
+      checkConnection();
+      if (cached0?.file || cached0?.oversized) {
+        return {
+          file: cached0.file || null,
+          cover: cached0.cover || null,
+          sizeBytes: cached0.sizeBytes ?? null,
+          oversized: cached0.oversized === true,
+        };
+      }
+      if (!hasLocator) {
+        return {
+          file: null,
+          cover: cached0?.cover || null,
+          sizeBytes: cached0?.sizeBytes ?? null,
+          oversized: false,
+        };
+      }
+      const peer = forwardPeer || await this.peer(source[1], source[2]);
+      checkConnection();
+      const fetched = await call('fetch_message_video', {
+        peer, messageId, md5, maxBytes,
+        ...(p.forwardId ? { forwardId: p.forwardId } : {}),
+      }, 40000);
+      checkConnection();
+      const meta = {
+        ...(fetched?.duration ? { duration: fetched.duration } : {}),
+        ...(fetched?.width ? { width: fetched.width } : {}),
+        ...(fetched?.height ? { height: fetched.height } : {}),
+        ...(fetched?.sizeBytes ? { sizeBytes: fetched.sizeBytes } : {}),
+      };
+      const queryParams = {
+        type: 'video', md5, maxBytes,
+        ...(typeof fetched?.verifiedVideoPath === 'string' ? { verifiedVideoPath: fetched.verifiedVideoPath } : {}),
+        ...(typeof fetched?.verifiedCoverPath === 'string' ? { verifiedCoverPath: fetched.verifiedCoverPath } : {}),
+      };
+      if (fetched?.oversized) {
+        const coverOnly = typeof fetched.verifiedCoverPath === 'string'
+          ? await read('media', queryParams).catch(() => null)
+          : null;
+        return {
+          file: null,
+          cover: coverOnly?.cover || cached0?.cover || null,
+          oversized: true,
+          ...meta,
+        };
+      }
+      let lastCached = cached0;
+      const deadline = Date.now() + 15000;
+      do {
+        checkConnection();
+        const cached = await read('media', queryParams);
+        checkConnection();
+        lastCached = cached;
+        if (cached?.file) {
+          return {
+            file: cached.file,
+            cover: cached.cover || null,
+            oversized: false,
+            ...meta,
+            ...(cached.sizeBytes ? { sizeBytes: cached.sizeBytes } : {}),
+          };
+        }
+        if (cached?.oversized) {
+          return {
+            file: null,
+            cover: cached.cover || cached0?.cover || null,
+            oversized: true,
+            ...meta,
+            ...(cached.sizeBytes ? { sizeBytes: cached.sizeBytes } : {}),
+          };
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } while (!this.closed && this.read && Date.now() < deadline);
+      if (lastCached?.cover) {
+        return {
+          file: null,
+          cover: lastCached.cover,
+          oversized: false,
+          downloadTimedOut: true,
+          ...meta,
+        };
+      }
+      throw Error('QQ 未能在规定时间内完成视频缓存');
+    }
     if (action === 'get_group_msg_history' || action === 'get_friend_msg_history') {
       const kind = action === 'get_group_msg_history' ? 'group' : 'private';
       const id = p.group_id ?? p.user_id;
@@ -444,6 +565,20 @@ export class NativeQQ extends EventEmitter {
     this.imageRequests.set(key, request);
     const clear = () => { if (this.imageRequests.get(key) === request) this.imageRequests.delete(key); };
     // Prefetch and a simultaneous role read share one download; failures remain retryable.
+    void request.promise.then(clear, clear);
+    return request.promise;
+  }
+  getVideo(params = {}) {
+    let maxBytes;
+    try { maxBytes = videoMaxBytes(params.maxBytes); }
+    catch (error) { return Promise.reject(error); }
+    const key = JSON.stringify([this.account, String(params.file ?? '').toLowerCase(),
+      params.key, params.messageId, params.forwardId, maxBytes]);
+    const previous = this.videoRequests.get(key);
+    if (previous && previous.read === this.read && previous.call === this.call) return previous.promise;
+    const request = { read: this.read, call: this.call, promise: this.raw('get_video', params) };
+    this.videoRequests.set(key, request);
+    const clear = () => { if (this.videoRequests.get(key) === request) this.videoRequests.delete(key); };
     void request.promise.then(clear, clear);
     return request.promise;
   }

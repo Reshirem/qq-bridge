@@ -132,6 +132,24 @@ function imageMetadataText(image) {
   return Object.keys(metadata).length ? `\n媒体信息：${serializeModelData(metadata)}\n以上尺寸与形态指桥接输出；DSH/模型服务可能再次缩放，细节不足请从原图裁剪更小区域。` : '';
 }
 
+function videoMetadataText(video) {
+  const metadata = {};
+  if (typeof video?.videoRef === 'string' && video.videoRef) metadata.videoRef = video.videoRef;
+  if (Number.isFinite(video?.duration) && video.duration > 0) metadata.duration = video.duration;
+  if (Number.isFinite(video?.sizeBytes) && video.sizeBytes > 0) metadata.sizeBytes = video.sizeBytes;
+  for (const field of ['width', 'height', 'originalWidth', 'originalHeight', 'frameCount']) {
+    const value = video?.[field];
+    if (Number.isFinite(value) && value > 0) metadata[field] = value;
+  }
+  if (Array.isArray(video?.frameTimestamps) && video.frameTimestamps.length) {
+    metadata.frameTimestamps = video.frameTimestamps;
+  }
+  if (video?.fallbackCover === true) metadata.fallbackCover = true;
+  return Object.keys(metadata).length
+    ? `\n视频信息：${serializeModelData(metadata)}\n如需细看某段画面，可用 videoRef 搭配 startSec/endSec/frames 再次调用 qq_get_message_video。`
+    : '';
+}
+
 async function agentApi(path, init = {}) {
   const timeoutMs = init.timeoutMs || 15000;
   const { timeoutMs: _omit, ...rest } = init;
@@ -724,7 +742,7 @@ server.tool(
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
     'qq_get_message_images',
-    '按需获取指定 QQ 消息中的图片/表情预览，并直接以图像内容返回。支持一条消息里的多张图片/表情。预览附 imageRef、实际尺寸及原图可用状态；预览不清、需要读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或原图局部，不猜测，也不为省 token 跳过必要检查。representation 表示实际返回的形态，缩放或裁剪不等于已读完整原图。动图（GIF/动态表情）会被桥接抽帧拼成多格图：说明里会写「动图 N 帧/…s，已抽 X 帧拼成 A×B 网格，行优先 左上→右下」，按格子顺序理解动作即可，不要当成九宫格照片；无此说明即为静态图。若错误提示缺少 FFmpeg，如实告知部署依赖未配置（FFMPEG_PATH）；图无法提供时如实说明，不编造画面。',
+    '按需获取指定 QQ 消息中的图片/表情（及视频画面拼图）预览，并直接以图像内容返回。支持一条消息里的多张图片/表情。预览附 imageRef、实际尺寸及原图可用状态；预览不清、需要读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或原图局部，不猜测，也不为省 token 跳过必要检查。representation 表示实际返回的形态，缩放或裁剪不等于已读完整原图。动图（GIF/动态表情）与视频会被桥接抽帧拼成多格图：说明里会写「…已抽 X 帧拼成 A×B 网格，行优先 左上→右下」，按格子顺序理解动作即可，不要当成九宫格照片；纯视频或需指定时间段细看请优先调用 qq_get_message_video。若错误提示缺少 FFmpeg，如实告知部署依赖未配置（FFMPEG_PATH）；图无法提供时如实说明，不编造画面。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数'),
@@ -742,11 +760,13 @@ if (cfg.socialV2?.tools?.getImages !== false) {
         const content = [];
         const textParts = [];
         for (const img of images) {
+          const kindLabel = img.kind === 'face' ? '表情' : (img.kind === 'video' ? '视频' : '图片');
+          const metaSuffix = img.kind === 'video' ? videoMetadataText(img) : imageMetadataText(img);
           if (img?.data && img?.mimeType) {
-            textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]${imageMetadataText(img)}`);
+            textParts.push(`[${kindLabel}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]${metaSuffix}`);
             content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
           } else {
-            textParts.push(`[${img.kind === 'face' ? '表情' : '图片'}${img.index ?? ''}${img.text ? ' ' + img.text : '（获取失败）'}]${imageMetadataText(img)}`);
+            textParts.push(`[${kindLabel}${img.index ?? ''}${img.text ? ' ' + img.text : '（获取失败）'}]${metaSuffix}`);
           }
         }
         if (textParts.length) {
@@ -797,6 +817,55 @@ if (cfg.socialV2?.tools?.getImages !== false || cfg.socialV2?.tools?.getForwardM
         return { content, ...(available ? {} : { isError: true }) };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取图片详情失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.getVideo !== false) {
+  server.tool(
+    'qq_get_message_video',
+    '按需下载并抽帧查看指定 QQ 消息或合并转发中的视频（仅提取多帧画面拼图，不包含音频，不会识别语音或配乐）。默认自动按视频时长抽取 3~9 帧按行优先（左上→右下）拼成一张多格图，并返回时长、尺寸、videoRef 与各格时间戳。如需细看某段动作或特定秒数，可带 videoRef 或 messageId 传入 startSec / endSec / frames（最多 12 帧）重新局部抽帧。若视频下载失败或超出读取上限但存在封面，仅会提供封面图并明确标注；无法提供时如实说明，不得编造视频内容或声音。',
+    {
+      key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
+      messageId: z.union([z.number(), z.string()]).optional().describe('普通消息定位：id:<QQ消息ID> 或 seq:<本地序号>；与 videoRef 至少填一个'),
+      videoRef: z.string().trim().min(1).optional().describe('合并转发或此前媒体结果中的 videoRef；转发视频与细看片段时优先传入'),
+      startSec: z.number().min(0).optional().describe('可选片段起始秒数（>= 0），用于细看局部画面'),
+      endSec: z.number().positive().optional().describe('可选片段结束秒数（> startSec）'),
+      frames: z.number().int().min(1).max(12).optional().describe('可选抽帧数量（1..12），省略时按时长自动选取')
+    },
+    async ({ key, messageId, videoRef, startSec, endSec, frames }) => {
+      try {
+        const cleanMessageId = messageId !== undefined && messageId !== null ? String(messageId).trim() : '';
+        const cleanVideoRef = videoRef != null ? String(videoRef).trim() : '';
+        if (!cleanMessageId && !cleanVideoRef) throw new Error('messageId 和 videoRef 至少需要提供一个');
+        if (startSec !== undefined && endSec !== undefined && endSec <= startSec) {
+          throw new Error('endSec 必须大于 startSec');
+        }
+        const payload = {
+          key,
+          ...(cleanMessageId ? { messageId: cleanMessageId } : {}),
+          ...(cleanVideoRef ? { videoRef: cleanVideoRef } : {}),
+          ...(startSec !== undefined ? { startSec } : {}),
+          ...(endSec !== undefined ? { endSec } : {}),
+          ...(frames !== undefined ? { frames } : {}),
+        };
+        const data = await agentApi('/api/socialV2/message-video', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          timeoutMs: 180000
+        });
+        const video = data?.video;
+        if (!video) throw new Error(data?.error || '未返回视频结果');
+        const available = Boolean(video?.data && video?.mimeType);
+        const content = [{
+          type: 'text',
+          text: `[视频${video.index ?? ''}${video.text ? ' ' + video.text : available ? '' : '（获取失败）'}]${videoMetadataText(video)}`
+        }];
+        if (available) content.push({ type: 'image', mimeType: video.mimeType, data: video.data });
+        return { content, ...(available ? {} : { isError: true }) };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `获取视频失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
@@ -934,7 +1003,7 @@ if (cfg.socialV2?.tools?.getStickerImage !== false) {
 if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   server.tool(
     'qq_get_forward_msg',
-    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_conversation_history` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、media（图片/表情元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接返回最多 5 张图片预览，附 imageRef、实际尺寸及原图可用状态。预览不清晰、读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或局部，不猜测，也不要为省 token 跳过必要检查；缩放或裁剪不等于已读完整原图。如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
+    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_conversation_history` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、media（图片/表情/视频元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接返回最多 5 张图片预览，附 imageRef、实际尺寸及原图可用状态。预览不清晰、读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或局部，不猜测，也不要为省 token 跳过必要检查；缩放或裁剪不等于已读完整原图。若转发里包含视频，media 中会给出 videoRef，需要看视频画面时再按需调用 qq_get_message_video（打开转发时不会自动下载大视频）。如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       id: z.string().describe('完整复制消息里的 [转发消息 id=...] 或 forwardIds 数组中的值（原生 QQ 为 native:...）；不要用发送者 QQ 号或猜测资源 ID')
@@ -946,7 +1015,7 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
           timeoutMs: 120000
         });
         const content = [{ type: 'text', text: serializeModelData(data) }];
-        // 收集所有层级的图片/表情元数据（含嵌套预览），最多返回 5 张。
+        // 收集所有层级的图片/表情元数据（含嵌套预览），最多返回 5 张；视频仅保留 videoRef 供按需读取。
         const images = [];
         const seen = new Set();
         const collectMedia = (msgs) => {
@@ -954,7 +1023,7 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
           for (const m of msgs) {
             if (!m || typeof m !== 'object') continue;
             for (const media of Array.isArray(m.media) ? m.media : []) {
-              if (!media || typeof media !== 'object') continue;
+              if (!media || typeof media !== 'object' || media.kind === 'video') continue;
               const keyId = media.url || media.file || media.faceId || media.emojiId || '';
               if (!keyId || seen.has(keyId)) continue;
               seen.add(keyId);

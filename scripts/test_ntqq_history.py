@@ -93,6 +93,121 @@ class NativeHistoryTest(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["message"], [{"type": "card", "data": {"data": ark_json}}])
 
+    def test_video_protobuf_fields_decoded_in_history(self):
+        digest = bytes.fromhex("ab" * 16)
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE group_msg_table ([40001] INTEGER PRIMARY KEY, [40003] INTEGER, [40033] INTEGER, "
+                       "[40050] INTEGER, [40800] BLOB, [40027] INTEGER, [40030] INTEGER)")
+            msg = nt.MsgBody()
+            msg.segments.add(
+                kind=5,
+                md5=digest,
+                size=2048,
+                video_duration=15,
+                thumb_width=640,
+                thumb_height=360,
+                video_width=1920,
+                video_height=1080,
+            )
+            payload = msg.SerializeToString()
+            decoded = nt.decode_segments(payload)
+            self.assertEqual(len(decoded), 1)
+            self.assertEqual(decoded[0]["type"], "video")
+            self.assertEqual(decoded[0]["md5"], digest.hex())
+            self.assertEqual(decoded[0]["sizeBytes"], 2048)
+            self.assertEqual(decoded[0]["durationSec"], 15)
+            self.assertEqual(decoded[0]["width"], 1920)
+            self.assertEqual(decoded[0]["height"], 1080)
+
+            db.execute("INSERT INTO group_msg_table VALUES (302, 7, 20001, 101, ?, 575, 575)", (payload,))
+            rows = read_service(db, "history", {"kind": "group", "peer": "575", "count": 5, "older": True}, "42", b"u_self")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["message"], [{
+                "type": "video",
+                "data": {
+                    "file": digest.hex(),
+                    "duration": 15,
+                    "size": 2048,
+                    "width": 1920,
+                    "height": 1080,
+                },
+            }])
+
+    def test_resolve_video_cache_path_and_limits(self):
+        from ntqq_media import MediaCache, resolve_media
+
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"v" * 96
+        digest_hex = hashlib.md5(mp4_bytes).hexdigest()
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ori_rel = Path("Video/2026-11/Ori") / f"{digest_hex}.mp4"
+            thumb_rel = Path("Video/2026-11/Thumb") / f"{digest_hex}_0.png"
+            ori_path = root / ori_rel
+            thumb_path = root / thumb_rel
+            ori_path.parent.mkdir(parents=True, exist_ok=True)
+            thumb_path.parent.mkdir(parents=True, exist_ok=True)
+            ori_path.write_bytes(mp4_bytes)
+            thumb_path.write_bytes(png)
+
+            cache = MediaCache(root)
+            resolved = resolve_media(cache, {
+                "type": "video",
+                "md5": digest_hex,
+                "maxBytes": 4096,
+                "verifiedVideoPath": str(ori_path),
+                "verifiedCoverPath": str(thumb_path),
+            })
+            self.assertEqual(resolved["file"], str(ori_path.resolve()))
+            self.assertEqual(resolved["cover"], str(thumb_path.resolve()))
+            self.assertEqual(resolved["sizeBytes"], len(mp4_bytes))
+            self.assertFalse(resolved["oversized"])
+
+            oversized = resolve_media(cache, {
+                "type": "video",
+                "md5": digest_hex,
+                "maxBytes": len(mp4_bytes) - 1,
+                "verifiedVideoPath": str(ori_path),
+                "verifiedCoverPath": str(thumb_path),
+            })
+            self.assertIsNone(oversized["file"])
+            self.assertEqual(oversized["cover"], str(thumb_path.resolve()))
+            self.assertEqual(oversized["sizeBytes"], len(mp4_bytes))
+            self.assertTrue(oversized["oversized"])
+
+            outside = root / "outside.mp4"
+            outside.write_bytes(mp4_bytes)
+            with self.assertRaises(ValueError):
+                resolve_media(cache, {
+                    "type": "video",
+                    "md5": digest_hex,
+                    "maxBytes": 4096,
+                    "verifiedVideoPath": str(outside),
+                })
+
+            # Server-transcoded video whose bytes/MD5 differ from message metadata and non-ftyp container (e.g. MKV/WebM)
+            # are accepted when matching the account-scoped Ori file and size bounds.
+            transcoded_mkv = b"\x1a\x45\xdf\xa3" + b"x" * 120
+            ori_path.write_bytes(transcoded_mkv)
+            transcoded = resolve_media(MediaCache(root), {
+                "type": "video",
+                "md5": digest_hex,
+                "maxBytes": 4096,
+            })
+            self.assertEqual(transcoded["file"], str(ori_path.resolve()))
+            self.assertEqual(transcoded["sizeBytes"], len(transcoded_mkv))
+            self.assertFalse(transcoded["oversized"])
+
+            ori_path.write_bytes(b"")
+            empty_file = resolve_media(MediaCache(root), {
+                "type": "video",
+                "md5": digest_hex,
+                "maxBytes": 4096,
+                "verifiedVideoPath": str(ori_path),
+            })
+            self.assertIsNone(empty_file["file"])
+
     def test_group_invite_cards_query_filters_and_is_readonly(self):
         with closing(sqlite3.connect(":memory:")) as db:
             db.execute("CREATE TABLE c2c_msg_table ([40001] INTEGER PRIMARY KEY, [40033] INTEGER, "

@@ -8,6 +8,8 @@ import re
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_ORIGINAL_BYTES = 32 * 1024 * 1024
 DEFAULT_PREVIEW_BYTES = 8 * 1024 * 1024
+DEFAULT_VIDEO_BYTES = 50 * 1024 * 1024
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
 MAX_HEADER_BYTES = 256 * 1024
 MAX_PREVIEW_PIXELS = 64_000_000
 MAX_SOURCE_EDGE = 32768
@@ -142,14 +144,19 @@ class MediaCache:
                 resolved = path.resolve(strict=True)
                 if not resolved.is_relative_to(self.root) or not resolved.is_file():
                     continue
-                if max_bytes is not None and resolved.stat().st_size > max_bytes:
+                size = resolved.stat().st_size
+                if size <= 0:
+                    continue
+                if max_bytes is not None and size > max_bytes:
                     # QQ may have several Thumb sizes. A large original or first
                     # preview must not hide a later preview that fits the limit.
                     oversized = True
                     continue
+                if original and kind == "video":
+                    found[field] = str(resolved)
+                    continue
                 with resolved.open("rb") as stream:
-                    expected = "video" if original and kind == "video" else "image"
-                    if media_header(stream.read(32)) != expected:
+                    if media_header(stream.read(32)) != "image":
                         continue
                     if original:
                         stream.seek(0)
@@ -174,7 +181,7 @@ class MediaCache:
         Both require a full decode by the caller before use.
         """
         candidate = Path(path)
-        directory = r"Pic" if source_dimensions else r"(?:Pic|Emoji/emoji-recv)"
+        directory = r"(?:Pic|Emoji/emoji-recv)"
         filename = re.escape(digest) + ("" if source_dimensions else r"(?:_\d+)?")
         role = "Ori" if source_dimensions else "(?:Ori|Thumb)"
         location = re.compile(rf"{directory}/\d{{4}}-(?:0[1-9]|1[0-2])/{role}/{filename}\.[a-z0-9]+", re.I)
@@ -311,8 +318,93 @@ class MediaCache:
         self.results[key] = result
         return result
 
+    def resolve_video(self, digest, max_bytes, verified_video_path=None, verified_cover_path=None):
+        """Resolve an account-scoped original video and optional cover thumbnail within size bounds."""
+        key = ("video", digest, max_bytes, verified_video_path, verified_cover_path)
+        if key in self.results:
+            return self.results[key]
+        candidates = list(self.index(True).get(digest, ()))
+        for role, raw_path, pattern in (
+            ("Ori", verified_video_path, r"Video/\d{4}-(?:0[1-9]|1[0-2])/Ori/[^/\\]+\.[a-z0-9]+"),
+            ("Thumb", verified_cover_path, r"Video/\d{4}-(?:0[1-9]|1[0-2])/Thumb/[^/\\]+\.[a-z0-9]+"),
+        ):
+            if not raw_path:
+                continue
+            cand = Path(raw_path)
+            if not cand.is_absolute():
+                raise ValueError("QQ 已核验视频路径不属于当前视频缓存")
+            try:
+                rel = cand.relative_to(self.root).as_posix()
+            except ValueError:
+                raise ValueError("QQ 已核验视频路径不属于当前视频缓存")
+            if not re.fullmatch(pattern, rel, re.I):
+                raise ValueError("QQ 已核验视频路径不属于当前视频缓存")
+            candidates.insert(0, (role, cand, pattern))
+
+        video_file = None
+        video_size = None
+        cover_file = None
+        oversized = False
+        seen_paths = set()
+        for entry in candidates:
+            role, path = entry[0], entry[1]
+            expected_pattern = entry[2] if len(entry) > 2 else None
+            is_ori = role == "Ori"
+            if (is_ori and video_file) or (not is_ori and cover_file):
+                continue
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(self.root) or not resolved.is_file():
+                    continue
+                if expected_pattern and not re.fullmatch(expected_pattern, resolved.relative_to(self.root).as_posix(), re.I):
+                    continue
+                if resolved in seen_paths:
+                    continue
+                seen_paths.add(resolved)
+                size = resolved.stat().st_size
+                if size <= 0:
+                    continue
+                if is_ori:
+                    if size > max_bytes:
+                        oversized = True
+                        if video_size is None:
+                            video_size = size
+                        continue
+                    video_file = str(resolved)
+                    video_size = size
+                else:
+                    if size <= MAX_MEDIA_BYTES:
+                        with resolved.open("rb") as stream:
+                            if media_header(stream.read(32)) == "image":
+                                cover_file = str(resolved)
+            except OSError:
+                continue
+        result = {
+            "file": video_file,
+            "cover": cover_file,
+            "sizeBytes": video_size,
+            "oversized": oversized and video_file is None,
+        }
+        if video_file:
+            self.results[key] = result
+        return result
+
 
 def resolve_media(cache, params):
+    if params.get("type") == "video":
+        digest = str(params.get("md5", "")).lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", digest):
+            raise ValueError("无效的视频标识")
+        max_bytes = params.get("maxBytes", DEFAULT_VIDEO_BYTES)
+        if type(max_bytes) is not int or not 0 < max_bytes <= MAX_VIDEO_BYTES:
+            raise ValueError(f"视频 maxBytes 必须是 1 至 {MAX_VIDEO_BYTES} 之间的整数")
+        verified_video = params.get("verifiedVideoPath")
+        if verified_video is not None and (not isinstance(verified_video, str) or not verified_video or "\x00" in verified_video):
+            raise ValueError("verifiedVideoPath 必须是有效的本地路径")
+        verified_cover = params.get("verifiedCoverPath")
+        if verified_cover is not None and (not isinstance(verified_cover, str) or not verified_cover or "\x00" in verified_cover):
+            raise ValueError("verifiedCoverPath 必须是有效的本地路径")
+        return cache.resolve_video(digest, max_bytes, verified_video, verified_cover)
     quality = params.get("quality")
     if "quality" in params and quality not in ("preview", "original"):
         raise ValueError("图片 quality 必须是 preview 或 original")

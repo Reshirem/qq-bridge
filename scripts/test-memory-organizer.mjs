@@ -676,11 +676,11 @@ test('external previews are sanitized and flagged while QQ, memory and replaced 
   assert.equal(organizerTranscriptRecords([{ ...records[0], surfaceOp: 'replace' }]).incomplete, true);
 });
 
-test('existing chunk receipts retain evidence layout while unread jobs adopt version 5', () => {
+test('existing chunk receipts retain evidence layout while unread jobs adopt version 6', () => {
   for (const job of [{}, { progress: { evidenceVersion: 2, total: null, completed: 0 } }]) {
-    assert.equal(organizerEvidenceVersion(job), 5);
+    assert.equal(organizerEvidenceVersion(job), 6);
   }
-  for (const evidenceVersion of [1, 2, 3, 4, 5]) {
+  for (const evidenceVersion of [1, 2, 3, 4, 5, 6]) {
     for (const checkpoint of [{ total: 5 }, { completed: 1 }]) {
       assert.equal(organizerEvidenceVersion({ progress: { evidenceVersion, ...checkpoint } }), evidenceVersion);
     }
@@ -694,6 +694,53 @@ test('existing chunk receipts retain evidence layout while unread jobs adopt ver
     assert.equal(organizerTranscriptRecords(qqReadRecords([
       { message: { text: '原文' } }, { message: { text: '[notice]' } }
     ]), options).incomplete, true);
+  }
+});
+
+test('version 6 upgrades card placeholders to decoded card summaries fail-closed', () => {
+  const decoded = '[卡片：邀请加群｜邀请你加入群聊 — 测试群（群号 600010001）]';
+  for (const placeholder of ['[card]', '[卡片]']) {
+    for (const forward of [true, false]) {
+      const reads = forward
+        ? [{ message: { text: placeholder, sender: '甲' } }, { message: { text: decoded, sender: '甲' } }]
+        : [{ message: { text: decoded, sender: '甲' } }, { message: { text: placeholder, sender: '甲' } }];
+      const records = qqReadRecords(reads);
+      const before = structuredClone(records);
+      const result = organizerTranscriptRecords(records);
+      assert.equal(result.incomplete, false);
+      assert.deepEqual(result.incompleteReasons, []);
+      const messages = result.events.filter(event => event.kind === 'qq-message');
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].message.text, decoded);
+      assert.equal(messages[0].bodySourceSeq, forward ? 3 : undefined);
+      assert.deepEqual(records, before);
+      for (const disabled of [{ upgradeCardPlaceholders: false }, { legacyChunkLayout: true }]) {
+        assert.equal(organizerTranscriptRecords(records, disabled).incomplete, true);
+      }
+    }
+  }
+
+  // [card] <-> [卡片] merges cleanly to [卡片] without reporting a conflict.
+  for (const reads of [
+    [{ message: { text: '[card]' } }, { message: { text: '[卡片]' } }],
+    [{ message: { text: '[卡片]' } }, { message: { text: '[card]' } }]
+  ]) {
+    const res = organizerTranscriptRecords(qqReadRecords(reads));
+    assert.equal(res.incomplete, false);
+    assert.equal(res.events.find(e => e.kind === 'qq-message').message.text, '[卡片]');
+  }
+
+  // Non-card text, empty summary '[卡片：]', conflicting card summaries, and metadata conflicts still fail closed.
+  const base = { text: '[card]', userId: '7', time: 100, at: '04:56', media: [{ kind: 'image' }] };
+  for (const conflict of [
+    [{ message: { text: '[card]' } }, { message: { text: '普通正文' } }],
+    [{ message: { text: '[card]' } }, { message: { text: '[卡片：]' } }],
+    [{ message: { text: '[卡片：群A]' } }, { message: { text: '[卡片：群B]' } }],
+    [{ message: base }, { message: { ...base, text: decoded, userId: '9' } }],
+    [{ message: base }, { message: { ...base, text: decoded, time: 101 } }],
+    [{ message: base }, { message: { ...base, text: decoded, media: [{ kind: 'video' }] } }]
+  ]) {
+    assert.equal(organizerTranscriptRecords(qqReadRecords(conflict)).incomplete, true);
   }
 });
 

@@ -1274,3 +1274,238 @@ test('native set_group_invite_request verifies target_seq not found and already 
   assert.equal(alreadyAgreed.confirmedByGroupList, true);
   assert.deepEqual(groupListForceCalls, [true]);
 });
+
+test('native video end-to-end: decode, on-demand download with MD5 check, ffmpeg storyboard, cover fallback, and route guards', async t => {
+  const { execFileSync } = await import('node:child_process');
+  const crypto = await import('node:crypto');
+  const net = await import('node:net');
+  const { NativeQQ } = await import('../src/native-qq.js');
+  const { resolveFfmpeg } = await import('../src/ffmpeg-resolve.js');
+  const { default: startNativeRuntime } = await import('./ntqq-probe/runtime.cjs');
+
+  const ffmpeg = resolveFfmpeg();
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'qqb-vid-home-'));
+  const oldUserProfile = process.env.USERPROFILE;
+  const oldHome = process.env.HOME;
+  const oldAuth = globalThis.authData;
+  process.env.USERPROFILE = fakeHome;
+  process.env.HOME = fakeHome;
+  t.after(() => {
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldUserProfile;
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+    if (oldAuth === undefined) delete globalThis.authData; else globalThis.authData = oldAuth;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  const oriDir = path.join(fakeHome, 'Documents', 'Tencent Files', '42', 'nt_qq', 'nt_data', 'Video', '2026-11', 'Ori');
+  const thumbDir = path.join(fakeHome, 'Documents', 'Tencent Files', '42', 'nt_qq', 'nt_data', 'Video', '2026-11', 'Thumb');
+  fs.mkdirSync(oriDir, { recursive: true });
+  fs.mkdirSync(thumbDir, { recursive: true });
+
+  const tmpMp4 = path.join(fakeHome, 'raw.mp4');
+  const tmpCover = path.join(fakeHome, 'raw.png');
+  execFileSync(ffmpeg, [
+    '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=10:duration=4',
+    '-pix_fmt', 'yuv420p', tmpMp4
+  ], { stdio: 'ignore', timeout: 20000 });
+  execFileSync(ffmpeg, [
+    '-v', 'error', '-y', '-ss', '0.5', '-i', tmpMp4, '-frames:v', '1', tmpCover
+  ], { stdio: 'ignore', timeout: 10000 });
+
+  const mp4Bytes = fs.readFileSync(tmpMp4);
+  const md5 = crypto.createHash('md5').update(mp4Bytes).digest('hex');
+  const targetMp4 = path.join(oriDir, `${md5}.mp4`);
+  const coverPng = path.join(thumbDir, `${md5}_0.png`);
+  fs.copyFileSync(tmpCover, coverPng);
+
+  // 1. NativeQQ + runtime: downloadRichMedia on demand + Python MediaCache verification
+  const bot = new NativeQQ('.');
+  bot.startReader = () => {};
+  const msgRemoved = Promise.withResolvers();
+  let msgListener;
+  const downloadCalls = [];
+  const videoRow = {
+    msgId: '95001',
+    msgTime: '1700000500',
+    chatType: 2,
+    peerUid: '456',
+    peerUin: '456',
+    senderUin: '200010001',
+    elements: [{
+      elementId: 'e-vid-1',
+      videoElement: {
+        videoMd5: md5,
+        fileSize: String(mp4Bytes.length),
+        fileTime: 4,
+        videoWidth: 320,
+        videoHeight: 240,
+        filePath: '',
+        thumbPath: new Map([[0, coverPng]]),
+      },
+    }],
+  };
+  const svc = {
+    addKernelMsgListener: l => { msgListener = l; return 'm-vid'; },
+    removeKernelMsgListener: () => msgRemoved.resolve(),
+    getMsgsByMsgId: async (_peer, ids) => ({ result: 0, msgList: ids[0] === '95001' ? [videoRow] : [] }),
+    downloadRichMedia: async (req) => {
+      downloadCalls.push(req);
+      // Simulate QQ writing the video file after downloadRichMedia triggers
+      fs.writeFileSync(targetMp4, mp4Bytes);
+      setImmediate(() => msgListener?.onRichMediaDownloadComplete?.({
+        msgId: req.msgId,
+        msgElementId: req.elementId,
+        fileErrCode: '0',
+        fileSrvErrCode: '0',
+        filePath: targetMp4,
+      }));
+      return { result: 0 };
+    },
+  };
+  const receiver = { getMsgService: () => svc };
+  let clientSocket;
+  const opened = Promise.withResolvers();
+  bot.once('open', () => opened.resolve());
+  const server = net.createServer(peer => { clientSocket = peer; bot.accept(peer); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    clientSocket?.destroy();
+    bot.close();
+    await new Promise(resolve => server.close(resolve));
+    await msgRemoved.promise;
+  });
+  globalThis.authData = { uid: 'u_self', uin: '42' };
+  startNativeRuntime(receiver, { pipe: { host: '127.0.0.1', port: server.address().port }, token: bot.token });
+  await opened.promise;
+
+  // Verify live incoming video element decoded properly
+  const recvPromise = Promise.withResolvers();
+  bot.once('group', ev => recvPromise.resolve(ev));
+  await msgListener.onRecvMsg([videoRow]);
+  const recvEvent = await recvPromise.promise;
+  assert.deepEqual(recvEvent.message, [{
+    type: 'video',
+    data: { file: md5, duration: 4, size: mp4Bytes.length, width: 320, height: 240 },
+  }]);
+
+  bot.read = async (action, params) => {
+    if (action === 'media' && params.type === 'video') {
+      const exists = fs.existsSync(targetMp4);
+      if (params.maxBytes < mp4Bytes.length && exists) {
+        return { file: null, cover: coverPng, sizeBytes: mp4Bytes.length, oversized: true };
+      }
+      return {
+        file: exists ? targetMp4 : null,
+        cover: coverPng,
+        sizeBytes: exists ? mp4Bytes.length : null,
+        oversized: false,
+      };
+    }
+    return [];
+  };
+
+  const fetchedVideo = await bot.getVideo({ file: md5, key: 'group:456', messageId: '95001' });
+  assert.equal(downloadCalls.length, 1);
+  assert.equal(downloadCalls[0].elementId, 'e-vid-1');
+  assert.equal(fetchedVideo.file, targetMp4);
+  assert.equal(fetchedVideo.duration, 4);
+
+  // 2. Bridge /api/socialV2/message-video, /api/images/message, and oversized cover fallback
+  const h = await bridgeHarness({
+    config: { qqBackendSince: Date.now(), allow: { groups: ['456'] } },
+    globals: { setTimeout: () => ({ unref() {} }), clearTimeout() {} },
+  });
+  h.bot.account = '42';
+  h.bot.health = { connected: true };
+  h.bot.emit('open');
+  h.setDesktopAgentLifecycle('active');
+  h.setReady(true);
+  const httpServer = h.startConsoleServer();
+  if (!httpServer.listening) await new Promise(resolve => httpServer.once('listening', resolve));
+  t.after(async () => {
+    await new Promise(resolve => httpServer.close(resolve));
+    await h.close();
+  });
+  const session = await h.ensureDesktopAgentSession();
+  const token = JSON.parse(fs.readFileSync(path.join(h.temp, 'state/desktop-agent.json'), 'utf8')).agentToken;
+  const base = `http://127.0.0.1:${httpServer.address().port}`;
+  const headers = {
+    'content-type': 'application/json',
+    'x-console-token': 'fixture-console-token',
+    'x-agent-call': '1',
+    'x-agent-session-id': session,
+    'x-agent-token': token,
+  };
+
+  let videoBackendMode = 'ok';
+  h.bot.raw = async (action) => {
+    if (action === 'get_group_msg_history') {
+      return {
+        messages: [{
+          message_id: '95001',
+          group_id: '456',
+          user_id: '200010001',
+          time: 1700000500,
+          sender: { user_id: '200010001', nickname: '好友' },
+          message: [{ type: 'video', data: { file: md5, duration: 4, size: mp4Bytes.length, width: 320, height: 240 } }],
+        }],
+      };
+    }
+    return {};
+  };
+  h.bot.getVideo = async () => videoBackendMode === 'oversized'
+    ? { file: null, cover: coverPng, sizeBytes: 90 * 1024 * 1024, oversized: true, duration: 4, width: 320, height: 240 }
+    : { file: targetMp4, cover: coverPng, sizeBytes: mp4Bytes.length, oversized: false, duration: 4, width: 320, height: 240 };
+
+  assert.equal((await fetch(`${base}/api/socialV2/message-video`, {
+    method: 'POST', headers: { ...headers, 'x-agent-token': '' }, body: JSON.stringify({ key: 'group:456', messageId: 'id:95001' }),
+  })).status, 403);
+
+  const vidRes = await fetch(`${base}/api/socialV2/message-video`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ key: 'group:456', messageId: 'id:95001', startSec: 0.5, endSec: 3.5, frames: 4 }),
+  });
+  const vidText = await vidRes.text();
+  assert.equal(vidRes.status, 200, vidText);
+  const vidData = JSON.parse(vidText);
+  assert.equal(vidData.ok, true);
+  assert.match(vidData.video.videoRef, /^qqvid:[0-9a-f-]{36}$/);
+  assert.equal(vidData.video.mimeType, 'image/jpeg');
+  assert.equal(vidData.video.frameCount, 4);
+  assert.match(vidData.video.text, /片段 00:01–00:04.*2×2 网格/);
+  assert.doesNotMatch(JSON.stringify(vidData), /Tencent Files|fakeHome/);
+
+  // Re-query by videoRef alone
+  const vidByRef = await (await fetch(`${base}/api/socialV2/message-video`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ key: 'group:456', videoRef: vidData.video.videoRef, frames: 2 }),
+  })).json();
+  assert.equal(vidByRef.ok, true);
+  assert.equal(vidByRef.video.frameCount, 2);
+
+  // /api/images/message also returns storyboard for video message
+  const msgMediaRes = await (await fetch(`${base}/api/images/message?key=group:456&messageId=id:95001`, { headers })).json();
+  assert.equal(msgMediaRes.images.length, 1);
+  assert.equal(msgMediaRes.images[0].kind, 'video');
+  assert.equal(msgMediaRes.images[0].mimeType, 'image/jpeg');
+
+  // Forged videoRef rejected
+  assert.equal((await fetch(`${base}/api/socialV2/message-video`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ key: 'group:456', videoRef: 'qqvid:00000000-0000-4000-8000-000000000000' }),
+  })).status, 404);
+
+  // Oversized video safely falls back to verified Thumb cover frame
+  videoBackendMode = 'oversized';
+  const fallbackData = await (await fetch(`${base}/api/socialV2/message-video`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ key: 'group:456', messageId: 'id:95001' }),
+  })).json();
+  assert.equal(fallbackData.ok, true);
+  assert.equal(fallbackData.video.fallbackCover, true);
+  assert.match(fallbackData.video.text, /仅提供视频封面帧/);
+});

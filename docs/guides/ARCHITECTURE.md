@@ -81,11 +81,12 @@
 - **按需展开（`qq_get_forward_msg`）**：历史和实时事件提供 `native:<原消息ID>` 句柄，桥接核验来源中的原消息后调用 QQ 的 `getMultiMsg` 获取记录，无需先手动在 QQ 点开。嵌套转发使用同一根消息和已读取节点的句柄。转发正文不会随提醒自动送入主会话，也不受表情学习开关控制。
 - **转发图片补取（`downloadRichMedia`）**：转发子节点不一定存在于普通消息表，因此转发内图片走 QQ 的 `downloadRichMedia`，使用已核验的最外层来源、根消息 ID 及内部图片元素 ID（嵌套转发沿用同一根定位）。内存仅保留有界、按来源登记的嵌套引用、媒体身份与缓存定位，断线即失效。下载完成事件匹配根消息与图片元素，下载失败码与缓存未完成分开处理，实际成功以媒体读取器验证的文件为准；图片批次使用两路并发与总时限（单张 45 秒、整批 135 秒），部分失败不丢弃已完成结果。
 
-### 3. 分级看图（`preview` 与 `qq_get_image_detail`）
+### 3. 分级看图与视频抽帧（`preview`、`qq_get_image_detail` 与 `qq_get_message_video`）
 
 - **默认预览与有界 `imageRef`**：普通消息与转发图片默认使用 `quality=preview`，优先 QQ 缓存的有效缩略图，无缩略图时可用合限原图生成预览（默认长边 1280、1 MiB 归一化，GIF 抽帧拼图）。`src/qq-image-references.js` 为实际从 QQ 读到的图片登记当前账号、来源、消息/转发节点及图片位置，返回会话内有界 `imageRef`（包括转发正文中未自动附图的项）；最多保留 2000 项，空闲 24 小时或断线/重启后失效。
 - **单图原图与归一化裁剪（`qq_get_image_detail`）**：通过 `POST /api/socialV2/image-detail` 按 `imageRef` 只读取一张图片，默认 `quality=original`，可指定 `preview` 或原图归一化 `crop={x,y,width,height}`（`0..1` 坐标）。原图补取由原生 QQ 通道提供，只接受文件头与 MD5 校验过的原件，缺失时请求 QQ 补取，绝不退回缩略图；商城表情不冒称具备可验证原图通道。`src/media-detail.js` 独立于预览缩图策略：最多 32 MiB、64MP（单边 32768）原图优先原字节返回，超出 3 MiB 传输预算时保持分辨率重编码，仍超限则明确建议缩小裁剪区域，不暗中降采样。裁剪以 EXIF 正向图像为基准，先裁剪再编码；透明背景合白和动图仅首帧均明确说明，不修改 QQ 原缓存。并发细节转换最多两项并行，相同请求合并；已有缓存全部超限时明确报错，不重复下载同一大原图。
-- **下游缩放说明**：图片结果显式提供 `imageRef`、实际输出尺寸、原图尺寸、`representation`、`originalAvailable` 与 `canFetchOriginal`。这些描述的是桥接交付的字节；当前 DSH 附件归一化与 `llm-pi-ai` 请求预处理默认有 4,194,304 像素与 1 MiB 重编码预算，桥接不修改 DSH 全局图片限制，工具说明明确提示需要看清小字细节时应从原图读取更小的 `crop`。
+- **视频消息与转发视频多帧抽帧（`qq_get_message_video` / `src/media-video.js`）**：原生通道从 `videoElement`（以及只读原库 protobuf 字段 `45410..45414`）解析视频 MD5、时长、体积和尺寸，来信与打开合并转发均不自动下载视频；角色调用 `qq_get_message_video`（`POST /api/socialV2/message-video`，支持消息定位或转发/前次返回的有界 `videoRef`，并支持 `startSec`/`endSec`/`frames` 局部细分）或 `qq_get_message_images` 时，原生通道按需通过 `downloadRichMedia` 下载（默认上限 50 MiB、硬上限 100 MiB）并由读取器校验账号视频缓存路径、对应文件名与体积上限，再由 `src/media-video.js` 解析 MP4 `mvhd` 时长并通过固定安全参数的单线程 FFmpeg 抽取 1–12 帧（默认短片 6 帧、长片 9 帧）拼成 ≤ 1 MiB JPEG 多格图（仅含画面不含音频）；下载超限/超时或解码失败但存在可信封面缩略图时，仅回退封面帧并明确标注。并发视频抽帧最多 2 项并行。
+- **下游缩放说明**：图片结果显式提供 `imageRef`、实际输出尺寸、原图尺寸、`representation`、`originalAvailable` 与 `canFetchOriginal`；视频结果提供 `videoRef`、时长、输出尺寸、原视频尺寸与 `frameTimestamps`。这些描述的是桥接交付的字节；当前 DSH 附件归一化与 `llm-pi-ai` 请求预处理默认有 4,194,304 像素与 1 MiB 重编码预算，桥接不修改 DSH 全局图片限制，工具说明明确提示需要看清小字细节时应从原图读取更小的 `crop`，看视频片段细节时可用 `startSec`/`endSec` 缩小范围。
 
 ---
 
@@ -129,7 +130,7 @@
 - `src/mcp-qq.js`：以 `mcp__qq__*` 注册 QQ 消息、合并转发、分级看图、表情、戳一戳、状态和主动休息工具。
 - `src/mcp-memory-safe.js` / `src/a-memorix-gateway.js` / `src/a-memorix-readonly.js` / `src/memory-organizer.js`：A_Memorix 长期记忆工具、Gateway 客户端、WebUI 原始记录 SQLite 只读浏览与休息后每日独立整理。
 - `src/chat-learning.js` / `src/learning-api.js` / `src/learning-runner.js` / `src/sticker-memory.js` / `src/market-packs.js`：后台黑话/表情学习、商城表情包收录与整包分析、表情语义索引投影。
-- `src/media-normalize.js` / `src/media-detail.js` / `src/qq-image-references.js` / `src/qq-message-reference.js`：预览归一化、单图原图/裁剪读取与消息/图片定位引用。
+- `src/media-normalize.js` / `src/media-detail.js` / `src/media-video.js` / `src/qq-image-references.js` / `src/qq-message-reference.js`：预览归一化、单图原图/裁剪读取、视频多帧 FFmpeg 抽帧拼图与消息/媒体定位引用。
 - 角色卡与提示模板、安全网络抓取、敏感内容检查和 SQLite token 账本等独立模块。
 
 ### 2. 渐进式重构顺序与改动原则

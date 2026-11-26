@@ -273,6 +273,32 @@ await test('ordinary source previews require an exact account cache file and bou
   realpathError = undefined;
   regularFile = false;
   await checkDownloadOnly();
+
+  pic.picSubType = 1;
+  const stickerPath = imagePath.replace('Pic', path.join('Emoji', 'emoji-recv'));
+  pic.sourcePath = real = stickerPath;
+  regularFile = true;
+  assert.deepEqual((await h.rpc('fetch_message_image',params)).data,{requested:true,
+    verifiedSourcePreview:{path:stickerPath,width:1920,height:1080}},'custom stickers can also use converted Ori JPEGs');
+  pic.sourcePath = real = stickerPath.replace('Ori','Thumb');
+  await checkDownloadOnly();
+});
+
+await test('custom stickers with blank sourcePath fall back to scanning account Emoji/emoji-recv Ori cache', async t => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'qqb-stk-home-'));
+  t.after(() => fs.rmSync(tmpHome, {recursive:true, force:true}));
+  t.mock.method(os, 'homedir', () => tmpHome);
+  const oriDir = path.join(tmpHome, 'Documents/Tencent Files/999/nt_qq/nt_data/Emoji/emoji-recv/2026-11/Ori');
+  fs.mkdirSync(oriDir, {recursive:true});
+  const stickerFile = path.join(oriDir, `${digest}.png`);
+  fs.writeFileSync(stickerFile, Buffer.from('not-empty'));
+  const h = await harness();
+  t.after(() => h.close());
+  const row = picture();
+  Object.assign(row.elements[0].picElement, {picSubType:1, sourcePath:'', picWidth:512, picHeight:512});
+  h.setOrdinaryRows([row]);
+  const res = await h.rpc('fetch_message_image', {peer:{chatType:2,peerUid:'456'},messageId:'202',md5:digest,quality:'preview'});
+  assert.deepEqual(res.data, {requested:true, verifiedSourcePreview:{path:fs.realpathSync(stickerFile), width:512, height:512}});
 });
 
 await test('native forward downloads match completion events and propagate server failures with retry', async () => {

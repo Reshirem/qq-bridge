@@ -27,6 +27,8 @@ def message_schema():
         ("at_type", 45102, 5), ("at_uin", 45103, 4), ("at_uid", 45105, 12),
         ("quote_uid", 40020, 12), ("quote_seq", 47402, 3), ("private_quote_seq", 47419, 3),
         ("subtype", 45003, 5), ("size", 45405, 3), ("md5", 45406, 12),
+        ("video_duration", 45410, 5), ("thumb_width", 45411, 5), ("thumb_height", 45412, 5),
+        ("video_width", 45413, 5), ("video_height", 45414, 5),
         ("face_id", 47601, 5), ("face_label", 47602, 12),
         ("ark_data", 47901, 12),
         ("package_id", 80810, 13), ("market_label", 80900, 12), ("emoji_id", 80903, 12),
@@ -62,6 +64,15 @@ def decode_segments(blob, cache=None):
                     item["md5"] = md5
                 if part.HasField("size"):
                     item["sizeBytes"] = part.size
+                if part.kind == 5:
+                    if part.HasField("video_duration") and part.video_duration > 0:
+                        item["durationSec"] = part.video_duration
+                    width = part.video_width if part.HasField("video_width") and part.video_width > 0 else part.thumb_width
+                    height = part.video_height if part.HasField("video_height") and part.video_height > 0 else part.thumb_height
+                    if width > 0:
+                        item["width"] = width
+                    if height > 0:
+                        item["height"] = height
             elif part.kind == 6:
                 if part.HasField("face_id"):
                     item["faceId"] = str(part.face_id)

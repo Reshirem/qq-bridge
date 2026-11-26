@@ -59,6 +59,14 @@ def format_row(db, table, peer, row, account, self_uid, resolve_reply=True, repl
                 data["source"] = format_row(db, table, peer, matched, account, self_uid, resolve_reply=False)
         elif kind in ("image", "sticker"):
             kind, data = "image", {"file": item.get("md5"), "sub_type": item.get("subType")}
+        elif kind == "video":
+            data = {
+                **({"file": item["md5"]} if item.get("md5") else {}),
+                **({"duration": item["durationSec"]} if item.get("durationSec") else {}),
+                **({"size": item["sizeBytes"]} if item.get("sizeBytes") else {}),
+                **({"width": item["width"]} if item.get("width") else {}),
+                **({"height": item["height"]} if item.get("height") else {}),
+            }
         elif kind == "face":
             data = {"id": item.get("faceId")}
         elif kind == "marketFace":

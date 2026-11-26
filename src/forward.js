@@ -162,6 +162,24 @@ function segmentMedia(seg) {
     const faceId = String(d.id ?? d.face_id ?? '');
     if (faceId) return { kind: 'face', faceId };
   }
+  if (seg.type === 'video') {
+    const file = String(d.file ?? d.file_id ?? d.md5 ?? '');
+    if (file) {
+      const duration = Number(d.duration);
+      const size = Number(d.size);
+      const width = Number(d.width);
+      const height = Number(d.height);
+      return {
+        kind: 'video',
+        file,
+        ...(Number.isFinite(duration) && duration > 0 ? { duration: Math.round(duration) } : {}),
+        ...(Number.isFinite(size) && size > 0 ? { size: Math.round(size) } : {}),
+        ...(Number.isFinite(width) && width > 0 ? { width: Math.round(width) } : {}),
+        ...(Number.isFinite(height) && height > 0 ? { height: Math.round(height) } : {}),
+        ...(d.nativeForwardId ? { nativeForwardId: String(d.nativeForwardId), nativeMessageId: String(d.nativeMessageId ?? '') } : {}),
+      };
+    }
+  }
   return null;
 }
 

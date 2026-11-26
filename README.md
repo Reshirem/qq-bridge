@@ -22,7 +22,7 @@ QQ 消息 ──► Windows 桌面 QQ 本地通道 ──元数据提醒──�
 - **QQ 通道**：桥接唯一使用 Windows 桌面 QQ 本地通道（`NativeQQ` + `openNativeReminders`），通过 Frida 命名管道连接已登录的桌面 QQ 处理来信与发送，按需只读查询 QQ 原库，只在 `state/ntqq-reminders-<account>.sqlite` 保存提醒位置与确认状态（已移除 SnowLuma / OneBot 支持）。[桌面 QQ 通道安装与可用范围](docs/guides/NTQQ_ATTENTION.md)
 - **DSH 侧**：使用当前 DSH Web API 的 Cookie 鉴权、斜杠 RPC 与 `/api/remote.mux` 事件流；全局会话创建后，桥接按 `config.json` 的 `dsh.provider`、`dsh.model` 和 `dsh.reasoningEffort` 选择模型（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
 - **agent 自主收发 QQ**：DSH 从当前 profile 的 `cordis.patch.yml` 接入 QQ 和长期记忆两个 MCP 服务。
-  - `qq`（`src/mcp-qq.js`）提供 `mcp__qq__*` 工具。全局角色用它们读取和发送群聊、私聊消息（含 Ark/JSON 卡片安全摘要），查看并处理 QQ 好友申请（`qq_list_friend_requests` / `qq_handle_friend_request`）与邀请加群通知（`qq_list_group_invites` / `qq_handle_group_invite`），用 `mcp__qq__qq_status` 查看桌面 QQ 连接与原库只读状态（`src/mcp-qq.js` 不含进程控制原语）。桥接在发送及操作前校验会话凭证并记录审计。
+  - `qq`（`src/mcp-qq.js`）提供 `mcp__qq__*` 工具。全局角色用它们读取和发送群聊、私聊消息（含 Ark/JSON 卡片安全摘要、图片/动图分级看图与 FFmpeg 视频多帧抽帧拼图），查看并处理 QQ 好友申请（`qq_list_friend_requests` / `qq_handle_friend_request`）与邀请加群通知（`qq_list_group_invites` / `qq_handle_group_invite`），用 `mcp__qq__qq_status` 查看桌面 QQ 连接与原库只读状态（`src/mcp-qq.js` 不含进程控制原语）。桥接在发送及操作前校验会话凭证并记录审计。
   - `qq-memory`（桥接自带 `src/mcp-memory-safe.js`）：可选的 A_Memorix 长期记忆接口。QQ 内容只有被 agent 实际读取并选择保存后才写入；自身经历由 agent 自行选择记录。QQ 与自身经历共用固定 namespace，工具提供搜索（`memory_search`）、读取（`memory_read`）、保存（`memory_save`）、合并替换（`memory_replace`）和删除（`memory_forget`），并校验全局 agent 令牌；普通内容检索默认使用 `SEARCH_MODE_SEARCH`，`SEARCH_MODE_TIME` 和 `SEARCH_MODE_HYBRID` 至少需要提供 `timeStart` 或 `timeEnd`；`agent_rest` 不限制记忆工具调用。WebUI 的“长期记忆 → 检索与记录”页支持 Gateway 相关度检索，也可按正文、时间和来源只读分页浏览本机账本中的全部活动原始记录；编辑和删除仍走 Gateway。“长期记忆 → 服务设置”页配置连接、启动摘要上限、Embedding/LLM Provider 和服务状态。Provider 地址、模型和密钥由用户手动填写。Windows 部署见 [记忆部署说明](docs/guides/DSH_SETUP.md#长期记忆)；官方 `v2.0.0a4` 发布文件及校验值由部署脚本固定，运行数据留在 `state/a-memorix/`。
 - **会话模型**：所有自主活动共用一个持久的 `desktop-agent` DSH 会话。人格卡决定数字角色的具体身份；QQ 群和私聊 ID 只作为消息来源/目标，不拆分会话上下文。固定前缀引导数字角色区分聊天场合：当前场合的普通交流可以正常参与；其他 QQ 会话的内容不主动带入，也不因当前场合第三方的请求而复述、概括或确认聊天、人物、观点、关系、群内梗或个人经历。同一当事人主动提起自己先前私聊说过的事时，需能确认当前说话人与原私聊对象一致，再结合当前问题所需内容自然回应。QQ 好友只表示平台联系人关系，不自动代表信任等级或信息分享授权；来源内持续互动形成的关系扮演可以自然延续，但不代表实际账号身份或权限。来源边界也适用于上下文、记忆和工具结果；这是模型行为约定，并非程序级隔离。全局数字角色可通过 `qq_list_conversations` 发现账号中的群和好友，再按需读写。桥接不再创建或管理逐 QQ DSH 会话。
 - **全局数字角色活动**：WebUI 的“主会话”页可启动/继续自主探索、提交任务或持久停止；QQ 私聊、原生 @、已验证回复/引用、群消息中提到当前选中的人格卡名称、`socialV2.attentionKeywords` 命中、他人对当前账号的 QQ 戳一戳功能事件，以及收到的 QQ 好友申请 / 邀请加群事件（仅携带申请者/群号元数据，不含验证留言、群名称与昵称正文；受提醒总开关与私聊开关控制），构成 P1 强召唤元数据提醒；此外，角色向群发送文字或表情包后该群独立进入 4 分钟自然超时热窗（P2 热群跟进，`reminders.groupFollowup`，空闲 5–10 秒防抖），不在热窗的冷群则在无热聊空闲时聚合 60 秒并按 20 分钟冷却低优提醒（P3 冷群低优余光，`reminders.groupActivity`）；P2/P3 均只传元数据、绝不中途 `steer` 打断活动回合。默认提醒包含会话标识、消息定位（`id:` 为 QQ 消息 ID；没有 QQ 消息 ID 时为 `seq:本地序号@缓存标识`）和合并数量；群聊类唤醒入口会附带一行极简其他未读概况（热群标 `,热` 置顶），纯私聊唤醒保持纯粹不附冷群未读。桥接按账号在 `state/ntqq-reminders-<account>.sqlite` 保留待处理 P1 提醒的位置、投递进度和确认状态。回合正常完成未调 `agent_rest` 时，桥接自动进入默认 30 分钟（`desktopAgent.rest.defaultMs`）后台自运转待机，不再发收尾催促；角色也可按需调用可选的 `agent_rest`（或同义 `qq_agent_rest`）自定义 1 分钟至 4 小时待机时长。未读的 P1 提醒会在进入待机且回合停稳 **5 秒**后检查一次，最多补发一次；中断或异常失败仍走指数退避恢复。WebUI 停止会取消当前/排队任务并阻断自动恢复，只有 WebUI 手动任务能解除。
@@ -40,7 +40,7 @@ QQ 消息 ──► Windows 桌面 QQ 本地通道 ──元数据提醒──�
   - 全局数字角色通过 DSH 当前的用户交互流程与管理员沟通
   - DSH 自带的斜杠命令（如 `/model`）仍由 DSH 界面处理。桥接仅在已配置的 ownerQQ 私聊中识别纯文本 `/睡觉` 和 `/起床`：前者持久进入睡眠，取消当前与排队任务、清除已有提醒，并暂停 QQ 提醒与自动唤醒；后者结束睡眠并恢复一轮。WebUI「主会话」还可配置每日睡眠与起床闹钟（`desktopAgent.sleepSchedule`）。睡眠中的消息仍会缓冲，但不会积压提醒。WebUI 显示睡眠状态；重新启动桥接仍保持睡眠。其他 QQ 内容不解析为管理命令
   - 群聊中只有明确引用/回复到当前账号时才会触发群聊元数据唤醒（唤醒不代表必须发言）；角色按需读取历史、未读或单条详情时，引用/回复会解析为 `plain` 中的 `[引用 被引用人：原文]` 并附带结构化 `replyTo`（含精确 `messageId`、`sender`、`text`、`at`/`ago`、`hasMedia`、`forwardIds`），便于直接看图或定位原消息并避免把群友之间引用第三方的对话误当成指向自己
-  - **分级看图与表情（含动图 GIF）**：普通消息和合并转发图片默认先返回归一化预览（长边 1280、1 MiB 以内，GIF 经 FFmpeg 抽帧拼图）及会话内有界 `imageRef`；需要辨认小字或核对细节时，角色可调用 `qq_get_image_detail` 按 `imageRef` 获取单张原图或按 `0..1` 归一化坐标裁剪局部（`crop`）。桌面 QQ 通道默认在收到新图片时后台预取补齐缓存（WebUI 可关闭），缺失时按需向 QQ 请求补取并校验原图 MD5；商城表情优先读取 QQ 预览缓存与原生发送资料，缺图时走 SSRF 防护的 CDN 回退（**IPv4 优先 + 逐地址故障切换**）。单条消息默认上限 8MB / 64MP / 5 张（`socialV2.media`）
+  - **分级看图、表情与视频抽帧（含动图 GIF）**：普通消息和合并转发图片默认先返回归一化预览（长边 1280、1 MiB 以内，GIF 经 FFmpeg 抽帧拼图）及会话内有界 `imageRef`；需要辨认小字或核对细节时，角色可调用 `qq_get_image_detail` 按 `imageRef` 获取单张原图或按 `0..1` 归一化坐标裁剪局部（`crop`）。视频消息与转发内视频默认不自动预取，角色可按需调用 `qq_get_message_video`（或经 `qq_get_message_images` / `videoRef` 指定 `startSec`/`endSec`/`frames`）按需下载并通过 FFmpeg 抽取多帧画面拼图（最多 12 帧、单张 ≤ 1 MiB、仅含画面不含音频；下载失败或超限时若有封面可退回封面并明确说明）。桌面 QQ 通道默认在收到新图片时后台预取补齐缓存（WebUI 可关闭），缺失时按需向 QQ 请求补取并校验原图 MD5，视频按账号缓存路径、对应文件名与体积上限核验；商城表情优先读取 QQ 预览缓存与原生发送资料，缺图时走 SSRF 防护的 CDN 回退（**IPv4 优先 + 逐地址故障切换**）。图片单条消息默认上限 8MB / 64MP / 5 张，视频单条下载上限 50MB（`socialV2.media`）
   - MCP 发送工具支持可选 `replyToMessageId`，并提供专用 `qq_reply` 工具：AI 可以先用 `qq_get_conversation_history` 拿到真实消息定位，再引用/回复某条消息
   - `qq_send_message` 可用字符串发送一条，或用数组分开发送多条；多条发送时，数组中的某一项可写成 `{text, replyToMessageId}`，由数字角色选择哪条消息带引用，各条也可引用不同的消息。群聊单条发送仍可使用 `qq_reply`；统一发送的顶层 `replyToMessageId` 兼容旧写法，分多条时默认用于第一条。工具调用是唯一的 QQ 发送路径
 
@@ -74,7 +74,7 @@ npm install
 | 会话 preset | 全局 DSH 会话固定使用 `desktop-agent` |
 | `desktopAgent.rest` | 自运转待机时长配置：`defaultMs` 默认 `1800000`（30 分钟，回合自然结束未调 `agent_rest` 时自动采用），`maxMs` 默认 `14400000`（4 小时，上限 8 小时） |
 | `desktopAgent.sleepSchedule` | 可选的每日睡眠与起床闹钟（`enabled`、`sleepTime`、`wakeTime`），默认关闭；采用桥接机器本地时区，可在 WebUI「主会话」配置 |
-| `socialV2.media` | 图片/表情设置：`prefetchOnReceive` 默认 `true`，原生 QQ 通道收到新图片消息后后台检查并补齐缓存；设为 `false` 后仅在角色读取图片时补取。`maxBytes`（单条消息总字节，默认 8MB）、`maxPixels`（单张像素，默认 64MP）、`maxCount`（单条最多处理几张，默认 5）限制读取。交给模型前默认将单图控制在 1MiB；大图缩放与动图抽帧需要 FFmpeg。部署检查见 [DSH 端安装说明](docs/guides/DSH_SETUP.md#图片与动图依赖) |
+| `socialV2.media` | 图片/表情/视频设置：`prefetchOnReceive` 默认 `true`，原生 QQ 通道收到新图片消息后后台检查并补齐缓存（视频仅按需下载，不后台预取）；设为 `false` 后仅在角色读取图片时补取。`maxBytes`（单条图片总字节，默认 8MB）、`maxPixels`（单张像素，默认 64MP）、`maxCount`（单条最多处理几张，默认 5）、`maxVideoBytes`（单个视频下载上限，默认 50MB，硬顶 100MB）、`videoFrames`（视频默认抽帧数，默认 9，最多 12）与 `videoTile`（视频拼图单格尺寸，默认 360）限制读取。交给模型前默认将单图/视频拼图控制在 1MiB；大图缩放、动图抽帧与视频抽帧拼图需要 FFmpeg。部署检查见 [DSH 端安装说明](docs/guides/DSH_SETUP.md#图片与动图依赖) |
 | `socialV2.sticker` | `regularEnabled`（普通表情：聊天学习库与 QQ 账号收藏）和 `marketEnabled`（管理员收录的商城表情包）默认均开启，可在 WebUI「学习与素材」独立控制 |
 | `webSearch.provider` | 桥接内置搜索模块（`src/web-search.js`）后端：`auto`（默认，优先 DeepSeek、失败回退 Bing）/ `deepseek` / `bing`。注：全局 `desktop-agent` 会话现默认使用 DSH 内置 `@deepseek-ai/dsh-tool-web`（`web_search` / `web_fetch`，在 DSH「插件 → 网页搜索」配置），不再挂载旧版桥接搜索 MCP |
 | `webSearch.apiKeyEnv` / `apiKey` | 搜索凭据的环境变量名（默认 `DEEPSEEK_API_KEY`）/ 直接写死 key（不推荐）。都不设置时读 DSH 的 `$DSH_HOME/.credentials.yaml` 里同名 ref |
@@ -246,6 +246,6 @@ qq-bridge/
 ## 已知限制
 
 - 角色通过 QQ 发送工具选择每条消息的内容。多条发送间隔由 `socialV2.send.delayPerCharMs` 决定，每条最多等待 1000 ms。
-- 图片及部分表情可以通过安全读取接入多模态模型；视频和其它不支持的媒体类型不做内容解析
+- 图片、部分表情及视频画面可通过安全读取接入多模态模型（视频通过 FFmpeg 按需抽帧拼图，不包含音频轨道；其它不支持的媒体类型不做内容解析）
 - 当前桥接运行时不提供 QQ 语音发送、接收或转写能力
 - agent 的 Markdown 回复会转成纯文本（链接保留 `文字 (url)` 形式）

@@ -25,16 +25,16 @@
 | `native-qq.js` / `native-reminders.js` | 桌面 QQ 本地通道（Frida 命名管道消息服务 + 常驻 SQLCipher 原库只读查询）与按账号持久化的原生提醒水位存储 |
 | `qq-channel-config.js` | QQ 提醒、发送及表情配置的默认值与旧设置迁移 |
 | `qq-card.js` | QQ Ark/JSON 卡片消息的安全解析与单行摘要格式化 |
-| `qq-message-reference.js` / `qq-image-references.js` | QQ 消息定位（`id:` / `seq:本地序号@缓存标识`）解析，以及已读图片的会话内有界 `imageRef` 登记 |
+| `qq-message-reference.js` / `qq-image-references.js` | QQ 消息定位（`id:` / `seq:本地序号@缓存标识`）解析，以及已读图片/视频的会话内有界 `imageRef`/`videoRef` 登记 |
 | `autonomy-policy.js` / `sleep-schedule.js` | 不依赖运行时状态的 QQ 注意信号分类规则，以及桥接本地时区的每日睡眠/起床闹钟计算 |
 | `dsh-client.js` / `dsh-diagnostics.js` / `dsh-mcp-management.js` | DSH API/鉴权/事件流客户端、主会话工具错误/图片接纳/模型重试有界诊断，以及 DSH MCP manager 状态订阅、探测与定向重连 |
 | `background-sessions.js` | DSH Host 后台分组会话（长期记忆整理、后台学习、商城整包分析）创建、模型选择、持久事件读取与空闲归档 |
-| `mcp-qq.js` | `mcp__qq__*` QQ 消息、合并转发、分级看图、表情、戳一戳、当前通道状态及主动休息工具 |
+| `mcp-qq.js` | `mcp__qq__*` QQ 消息、合并转发、分级看图、视频抽帧、表情、戳一戳、当前通道状态及主动休息工具 |
 | `mcp-web-search-safe.js` / `web-search.js` / `safe-fetch.js` | 桥接侧安全搜索、网页抓取和 SSRF/DNS rebinding 网络目标校验 |
 | `mcp-memory-safe.js` / `a-memorix-gateway.js` / `a-memorix-readonly.js` | A_Memorix Gateway 客户端、受全局 agent token 保护的 DSH 五个记忆工具，以及 WebUI 全量原始段落的本机 SQLite 只读适配器 |
 | `memory-curator.js` / `curator-tool-guard.mjs` / `dsh-headless.js` | 存量记忆分组、版本核验、可恢复写入与撤销，无工具回顾守卫，以及后台任务共享的 CLI 和模型选择 |
 | `memory-organizer.js` / `memory-organizer-tool-guard.mjs` | 休息后每日独立长期记忆整理队列、DSH 持久事件证据提取（含桌面工具结果压缩）与整理专用工具守卫 |
-| `media-normalize.js` / `media-detail.js` / `ffmpeg-resolve.js` / `forward.js` | 预览缩图与 GIF 抽帧拼图、`qq_get_image_detail` 单图原图读取/重编码/EXIF 正向裁剪、通用 FFmpeg 路径解析与合并转发处理 |
+| `media-normalize.js` / `media-detail.js` / `media-video.js` / `ffmpeg-resolve.js` / `forward.js` | 预览缩图与 GIF 抽帧拼图、`qq_get_image_detail` 单图原图读取/重编码/EXIF 正向裁剪、`qq_get_message_video` 视频 FFmpeg 多帧抽帧拼图、通用 FFmpeg 路径解析与合并转发处理 |
 | `sticker-lib.js` / `sticker-memory.js` | QQ 账号收藏表情读取/发送辅助，以及表情目录到独立 A_Memorix `qq-bridge-stickers` 空间的语义索引投影 |
 | `market-packs.js` / `market-analysis.js` | 腾讯商城表情包目录读取、收录/移除管理，以及整包视觉分析会话调度 |
 | `chat-learning.js` / `learning-api.js` / `learning-sessions.js` | 后台黑话/表情学习队列、知识存储与淘汰规则、控制台管理路由及已登记学习会话归档清理 |

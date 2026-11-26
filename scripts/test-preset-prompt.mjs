@@ -46,7 +46,9 @@ test('图片细节规则来自 QQ 固定前缀模块，不替换动态人格卡'
   assert.match(qq.content, /imageRef/);
   assert.match(qq.content, /originalAvailable\/canFetchOriginal/);
   assert.match(qq.content, /不因为省 token 而跳过必要的图片检查/);
-  assert.match(qq.content, /重编码、缩放或裁剪不等于已读完整原图/);
+  assert.match(qq.content, /qq_get_message_video/);
+  assert.match(qq.content, /videoRef/);
+  assert.match(qq.content, /重编码、缩放、裁剪或抽帧拼图不等于已读完整原图\/原视频/);
   assert.equal(composePresetPromptModules(saved), originalPrefix);
   assert.match(originalPrefix, /\{\{qq_bridge_active_role_card\}\}/);
 });

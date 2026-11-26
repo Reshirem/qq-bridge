@@ -405,8 +405,109 @@ test('qq_list_group_invites and qq_handle_group_invite forward calls, enforce ar
   assert.equal(requests.length, 2);
 
   const disabled = loadQQTools(async () => assert.fail('disabled tool must not call bridge'), {
-    socialV2: { tools: { groupInvites: false } },
+    socialV2: { tools: { groupInvites: false, getVideo: false } },
   });
   assert.equal(disabled.has('qq_list_group_invites'), false);
   assert.equal(disabled.has('qq_handle_group_invite'), false);
+  assert.equal(disabled.has('qq_get_message_video'), false);
+});
+
+test('qq_get_message_video validates inputs, forwards options, and qq_get_forward_msg skips video auto-batching', async () => {
+  const requests = [];
+  const sampleBase64 = Buffer.from('jpeg-fixture').toString('base64');
+  const callTool = loadQQTools(async (url, init = {}) => {
+    const parsedUrl = new URL(String(url));
+    requests.push({
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(init.body) : null,
+      headers: init.headers,
+    });
+    if (parsedUrl.pathname === '/api/socialV2/message-video') {
+      return Response.json({
+        ok: true,
+        key: 'group:600010001',
+        video: {
+          index: 1,
+          kind: 'video',
+          videoRef: 'qqvid:11111111-1111-4111-8111-111111111111',
+          mimeType: 'image/jpeg',
+          data: sampleBase64,
+          duration: 16,
+          sizeBytes: 958857,
+          width: 728,
+          height: 488,
+          originalWidth: 360,
+          originalHeight: 640,
+          frameCount: 6,
+          frameTimestamps: [1.3, 3.9, 6.5, 9.1, 11.7, 14.3],
+          text: '视频 16s，360×640，0.91MB；已抽 6 帧拼成 3×2 网格，行优先 左上→右下；仅含画面不含音频',
+        },
+      });
+    }
+    if (parsedUrl.pathname === '/api/socialV2/forward-message') {
+      return Response.json({
+        ok: true,
+        total: 2,
+        messages: [
+          {
+            sender: '用户A',
+            messageId: '101',
+            text: '[视频]',
+            media: [{ kind: 'video', file: 'a'.repeat(32), videoRef: 'qqvid:22222222-2222-4222-8222-222222222222' }],
+            nestedForwardIds: [],
+          },
+          {
+            sender: '用户B',
+            messageId: '102',
+            text: '[图片]',
+            media: [{ kind: 'image', file: 'b'.repeat(32), nativeForwardId: 'native:999', nativeMessageId: '102' }],
+            nestedForwardIds: [],
+          },
+        ],
+      });
+    }
+    if (parsedUrl.pathname === '/api/socialV2/forward-media') {
+      return Response.json({ ok: true, images: [] });
+    }
+    return Response.json({ ok: true });
+  });
+
+  assert.equal(callTool.has('qq_get_message_video'), true);
+  const res = await callTool('qq_get_message_video', {
+    key: 'group:600010001',
+    videoRef: 'qqvid:11111111-1111-4111-8111-111111111111',
+    startSec: 2,
+    endSec: 8,
+    frames: 6,
+  });
+  assert.equal(res.isError, undefined);
+  assert.equal(requests[0].method, 'POST');
+  assert.equal(requests[0].path, '/api/socialV2/message-video');
+  assert.deepEqual(requests[0].body, {
+    key: 'group:600010001',
+    videoRef: 'qqvid:11111111-1111-4111-8111-111111111111',
+    startSec: 2,
+    endSec: 8,
+    frames: 6,
+  });
+  assert.equal(res.content[1].type, 'image');
+  assert.equal(res.content[1].data, sampleBase64);
+  assert.match(res.content[0].text, /videoRef/);
+
+  const missingArgs = await callTool('qq_get_message_video', { key: 'group:600010001' });
+  assert.equal(missingArgs.isError, true);
+  assert.match(missingArgs.content[0].text, /messageId 和 videoRef 至少/);
+
+  const badWindow = await callTool('qq_get_message_video', {
+    key: 'group:600010001', messageId: 'id:100', startSec: 5, endSec: 5,
+  });
+  assert.equal(badWindow.isError, true);
+  assert.match(badWindow.content[0].text, /大于 startSec/);
+
+  await callTool('qq_get_forward_msg', { key: 'group:600010001', id: 'native:999' });
+  const batchReq = requests.find(r => r.path === '/api/socialV2/forward-media');
+  assert.ok(batchReq);
+  assert.equal(batchReq.body.media.length, 1);
+  assert.equal(batchReq.body.media[0].kind, 'image');
 });

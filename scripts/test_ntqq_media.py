@@ -554,7 +554,8 @@ class NativeMediaCacheTest(unittest.TestCase):
             source = {"path":str(allowed), "width":4, "height":4}
             for invalid in (allowed.with_name("b" * 32 + ".png"), allowed.with_name(f"{digest}_0.png"),
                             root / "Pic/2026-11/Thumb" / allowed.name,
-                            root / "Emoji/emoji-recv/2026-11/Ori" / allowed.name,
+                            root / "Emoji/emoji-recv/2026-11/Thumb" / allowed.name,
+                            root / "Emoji/emoji-recv/2026-13/Ori" / allowed.name,
                             root / "Pic/2026-13/Ori" / allowed.name,
                             Path(folder) / "account-b/nt_data/Pic/2026-11/Ori" / allowed.name):
                 with self.subTest(path=invalid):
@@ -565,6 +566,26 @@ class NativeMediaCacheTest(unittest.TestCase):
             alias = root / "Pic/2026-12/Ori" / allowed.name
             with patch.object(Path, "resolve", return_value=alias), self.assertRaisesRegex(ValueError, "当前图片缓存"):
                 resolve_media(cache, {**params, "verifiedSourcePreview":source})
+
+            # Converted JPEG cached under Emoji/emoji-recv/YYYY-MM/Ori/<digest>.png resolves only as preview with exact dimensions.
+            sticker_data = png_size(4, 4, 200)
+            sticker_digest = hashlib.md5(sticker_data).hexdigest()
+            sticker = root / "Emoji/emoji-recv/2026-11/Ori" / f"{sticker_digest}.png"
+            sticker.parent.mkdir(parents=True, exist_ok=True)
+            sticker.write_bytes(JPEG)
+            sticker_source = {"path": str(sticker), "width": 4, "height": 4}
+            sticker_params = {"type": "image", "md5": sticker_digest, "quality": "preview"}
+            resolved = resolve_media(MediaCache(root), {**sticker_params, "verifiedSourcePreview": sticker_source})
+            self.assertEqual(resolved["file"], str(sticker.resolve()))
+            self.assertEqual((resolved["representation"], resolved["width"], resolved["height"]), ("preview", 4, 4))
+            self.assertTrue(resolved["requiresDecode"])
+            self.assertTrue(resolved["sourcePreview"])
+            self.assertFalse(resolved["originalAvailable"])
+            mismatch = resolve_media(MediaCache(root), {**sticker_params, "verifiedSourcePreview": {"path": str(sticker), "width": 3, "height": 4}})
+            self.assertIsNone(mismatch["file"])
+            sticker.write_bytes(png_size(4, 4))
+            non_jpeg = resolve_media(MediaCache(root), {**sticker_params, "verifiedSourcePreview": sticker_source})
+            self.assertIsNone(non_jpeg["file"])
 
     def test_quality_and_limits_are_strict_and_market_previews_have_no_original(self):
         with tempfile.TemporaryDirectory() as folder:

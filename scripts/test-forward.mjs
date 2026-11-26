@@ -104,5 +104,35 @@ const cardForward = formatForwardResponse({
 });
 check('转发内卡片消息格式化为可读摘要', cardForward.messages[0].text === '[卡片：哔哩哔哩 — 测试视频卡片 https://b23.tv/abc]', cardForward.messages[0].text);
 
+const videoForward = formatForwardResponse({
+  messages: [{
+    sender: '群友A',
+    message: [{
+      type: 'video',
+      data: {
+        file: '0123456789abcdef0123456789abcdef.mp4',
+        duration: 12,
+        size: 1048576,
+        width: 1280,
+        height: 720,
+        nativeForwardId: '76543210987654321',
+        nativeMessageId: '1234567890',
+      },
+    }],
+  }],
+});
+const videoItem = videoForward.messages[0]?.media?.[0];
+check('转发内视频消息保留文本占位与完整视频元数据', (
+  videoForward.messages[0]?.text === '[视频]'
+  && videoItem?.kind === 'video'
+  && videoItem?.file === '0123456789abcdef0123456789abcdef.mp4'
+  && videoItem?.duration === 12
+  && videoItem?.size === 1048576
+  && videoItem?.width === 1280
+  && videoItem?.height === 720
+  && videoItem?.nativeForwardId === '76543210987654321'
+  && videoItem?.nativeMessageId === '1234567890'
+), videoForward.messages[0]);
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
 process.exitCode = failed > 0 ? 1 : 0;

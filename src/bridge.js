@@ -43,6 +43,7 @@ import { compactModelMessage, describeAge, fitQQReadPayloadToByteBudget } from '
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import { normalizeImageForModel, sniffImage, validateImageDecode } from './media-normalize.js';
 import { prepareImageDetail } from './media-detail.js';
+import { extractVideoStoryboard, VIDEO_DEFAULTS } from './media-video.js';
 import { createQQImageReferences } from './qq-image-references.js';
 import { normalizeSleepSchedule, planSleepSchedule, sleepScheduleTimeZone } from './sleep-schedule.js';
 import { isFfmpegAvailable } from './ffmpeg-resolve.js';
@@ -1179,6 +1180,21 @@ function extractMediaFromSegments(segments) {
         faceId: String(d.id ?? ''),
         url: String(d.url ?? ''),
         summary: sanitizeMediaSummary(d.summary)
+      });
+    } else if (seg.type === 'video') {
+      const file = String(d.file ?? d.file_id ?? d.md5 ?? '').trim();
+      const duration = Number(d.duration);
+      const size = Number(d.size);
+      const width = Number(d.width);
+      const height = Number(d.height);
+      media.push({
+        kind: 'video',
+        file,
+        ...(Number.isFinite(duration) && duration > 0 ? { duration: Math.round(duration) } : {}),
+        ...(Number.isFinite(size) && size > 0 ? { size: Math.round(size) } : {}),
+        ...(Number.isFinite(width) && width > 0 ? { width: Math.round(width) } : {}),
+        ...(Number.isFinite(height) && height > 0 ? { height: Math.round(height) } : {}),
+        ...(d.nativeForwardId ? { nativeForwardId: String(d.nativeForwardId), nativeMessageId: String(d.nativeMessageId ?? '') } : {}),
       });
     }
   }
@@ -2920,7 +2936,7 @@ async function main() {
     const transcript = organizerTranscriptRecords(range.records, {
       sanitize: redactSensitive, legacyChunkLayout: evidenceVersion === 1,
       omitNoticePlaceholders: evidenceVersion >= 3, compactDesktopToolResults: evidenceVersion >= 4,
-      recoverSpilledQQReads: evidenceVersion >= 5
+      recoverSpilledQQReads: evidenceVersion >= 5, upgradeCardPlaceholders: evidenceVersion >= 6
     });
     if (transcript.incomplete) {
       const reasons = transcript.incompleteReasons?.slice(0, 5).join('；');
@@ -6473,6 +6489,90 @@ async function main() {
           }
           return;
         }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/message-video') {
+          const body = await readBody();
+          const key = canonicalV2Key(body.key);
+          const agentToken = String(req.headers['x-agent-token'] ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 格式无效' }, 400); return; }
+          const [, keyKind, keyNum] = /^(group|private):(\d+)$/.exec(key);
+          if (!agentToken || !agentTokenOk(key, agentToken) || !v2SessionAllowed(key, agentToken)
+              || !sessionAllowed(keyKind, Number(keyNum), agentToken)) {
+            sendJson({ ok: false, error: 'agent token 无效或目标不允许读取' }, 403); return;
+          }
+          const rawVideoRef = body.videoRef == null ? '' : String(body.videoRef).trim();
+          const rawMessageId = body.messageId == null ? '' : String(body.messageId).trim();
+          if (!rawVideoRef && !rawMessageId) {
+            sendJson({ ok: false, error: 'messageId 和 videoRef 至少需要提供一个' }, 400); return;
+          }
+          let startSec;
+          if (body.startSec !== undefined && body.startSec !== null) {
+            startSec = Number(body.startSec);
+            if (!Number.isFinite(startSec) || startSec < 0) {
+              sendJson({ ok: false, error: 'startSec 必须是非负数字（秒）' }, 400); return;
+            }
+          }
+          let endSec;
+          if (body.endSec !== undefined && body.endSec !== null) {
+            endSec = Number(body.endSec);
+            if (!Number.isFinite(endSec) || endSec <= 0 || (startSec !== undefined && endSec <= startSec)) {
+              sendJson({ ok: false, error: 'endSec 必须是正数且大于 startSec' }, 400); return;
+            }
+          }
+          let frames;
+          if (body.frames !== undefined && body.frames !== null) {
+            frames = Number(body.frames);
+            if (!Number.isInteger(frames) || frames < 1 || frames > VIDEO_DEFAULTS.maxFrames) {
+              sendJson({ ok: false, error: `frames 必须是 1 至 ${VIDEO_DEFAULTS.maxFrames} 之间的整数` }, 400); return;
+            }
+          }
+          const account = String(selfUserId || '');
+          let targetMedia = null;
+          let targetContext = null;
+          let targetIndex = 1;
+          if (rawVideoRef) {
+            const reference = videoReferences.resolve(rawVideoRef, { account, key });
+            if (!reference) {
+              sendJson({ ok: false, error: '视频引用已失效或不属于当前账号/来源，请重新读取原消息或转发内容' }, 404); return;
+            }
+            targetMedia = { ...reference.media, videoRef: rawVideoRef };
+            targetContext = { ...reference.context };
+            targetIndex = reference.index;
+          } else {
+            const msg = await findQQMediaMessage(key, rawMessageId);
+            if (!msg) {
+              sendJson({ ok: false, error: '该来源中未找到该消息；请使用会话历史返回的 id:<QQ消息ID>' }, 404); return;
+            }
+            const mediaList = Array.isArray(msg.media) ? msg.media : [];
+            const vidIdx = mediaList.findIndex(item => item?.kind === 'video');
+            if (vidIdx < 0) {
+              sendJson({ ok: false, error: '该消息不包含可读取的视频元素' }, 404); return;
+            }
+            targetContext = { key, messageId: String(msg.messageId ?? rawMessageId) };
+            targetMedia = withImageReference(mediaList[vidIdx], targetContext, vidIdx + 1, account);
+            targetIndex = vidIdx + 1;
+          }
+          const jobKey = JSON.stringify([account, key, targetMedia.videoRef || targetContext.messageId, targetMedia.file || '', startSec ?? null, endSec ?? null, frames ?? null]);
+          if (!videoDetailJobs.has(jobKey) && videoDetailJobs.size >= 2) {
+            sendJson({ ok: false, error: '正在处理其他视频抽帧，请稍后重试' }, 429); return;
+          }
+          try {
+            let pending = videoDetailJobs.get(jobKey);
+            if (!pending) {
+              pending = fetchQQVideo(targetMedia, targetContext, { startSec, endSec, frames, index: targetIndex });
+              videoDetailJobs.set(jobKey, pending);
+              pending.finally(() => { if (videoDetailJobs.get(jobKey) === pending) videoDetailJobs.delete(jobKey); }).catch(() => {});
+            }
+            const video = await pending;
+            if (account !== String(selfUserId || '') || (rawVideoRef && !videoReferences.resolve(rawVideoRef, { account, key }))) {
+              sendJson({ ok: false, error: 'QQ 账号或连接已变化，请重新读取视频' }, 409); return;
+            }
+            sendJson({ ok: !!video?.data, key, video, ...(!video?.data ? { error: video?.text || '视频读取失败' } : {}) });
+          } catch (error) {
+            log('[media] 视频读取失败:', error?.message ?? error);
+            sendJson({ ok: false, error: safeVideoReadError(error) || '视频读取失败；视频可能尚未下载完成或超出大小限制' }, 500);
+          }
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/forward-media') {
           const body = await readBody();
           const key = String(body.key ?? '').trim();
@@ -6954,6 +7054,9 @@ async function main() {
       maxLongEdge: m.maxLongEdge,
       gifFrames: m.gifFrames,
       gifTile: m.gifTile,
+      maxVideoBytes: m.maxVideoBytes,
+      videoFrames: m.videoFrames,
+      videoTile: m.videoTile,
       timeoutMs: m.normalizeTimeoutMs,
       ffmpegPath: process.env.FFMPEG_PATH || null
     };
@@ -6982,6 +7085,10 @@ async function main() {
 
   function withImageReference(media, context, index, account = String(selfUserId || '')) {
     if (!media || typeof media !== 'object' || account !== String(selfUserId || '')) return media;
+    if (media.kind === 'video') {
+      const videoRef = videoReferences.remember({ account, key: context.key, media, context, index });
+      return videoRef ? { ...media, videoRef } : media;
+    }
     const imageRef = imageReferences.remember({account, key:context.key, media, context, index});
     return imageRef ? {...media, imageRef, canFetchOriginal:canRequestOriginal(media, context)} : media;
   }
@@ -7004,6 +7111,23 @@ async function main() {
       ...(['not_cached','invalid_cache','source_too_large','unsupported'].includes(value.originalUnavailableReason)
         ? {originalUnavailableReason:value.originalUnavailableReason} : {})
     };
+  }
+
+  function safeVideoReadError(error) {
+    const text = String(error?.message ?? '');
+    const download = /^QQ 视频下载失败（(?:QQ -?\d+(?:，服务端 -?\d+)?|服务端 -?\d+)）/.exec(text);
+    if (download) return download[0];
+    return [
+      'QQ 视频标识无效',
+      'QQ 媒体库尚未连接',
+      'QQ 视频读取期间账号或连接已改变，请重新读取',
+      'QQ 未能在规定时间内完成视频缓存',
+      '当前 QQ 不支持按原消息下载视频',
+      'QQ 返回的视频缓存位置无效',
+      'QQ 转发视频尚未在此来源读取，请先重新读取该转发',
+      'QQ 此转发节点中找不到对应的视频',
+      'QQ 原消息中找不到对应的视频元素',
+    ].includes(text) ? text : null;
   }
 
   function safeImageReadError(error) {
@@ -7302,6 +7426,123 @@ async function main() {
     return parts;
   }
 
+  async function fetchQQVideo(media, messageContext = {}, options = {}) {
+    const account = String(selfUserId || '');
+    const index = options.index ?? 1;
+    const baseMeta = {
+      index,
+      kind: 'video',
+      ...(media.videoRef ? { videoRef: media.videoRef } : {}),
+    };
+    const file = String(media.file ?? '').trim();
+    if (!/^[a-f0-9]{32}$/i.test(file)) {
+      return { ...baseMeta, text: '（该视频缺少有效 MD5 标识，无法从 QQ 下载）' };
+    }
+    const maxVideoBytes = modelMediaLimits.maxVideoBytes ?? VIDEO_DEFAULTS.maxVideoBytes;
+    const fetched = await bot.getVideo({
+      file,
+      maxBytes: maxVideoBytes,
+      ...(messageContext.key && messageContext.messageId
+        ? { key: String(messageContext.key), messageId: String(messageContext.messageId) }
+        : {}),
+      ...(messageContext.forward ? {
+        key: String(messageContext.key),
+        forwardId: String(media.nativeForwardId || messageContext.forwardId || ''),
+        messageId: String(media.nativeMessageId || messageContext.messageId || ''),
+      } : {}),
+    });
+    if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取视频');
+
+    let prep = null;
+    let failureReason = '';
+    if (fetched?.oversized) {
+      const mb = fetched.sizeBytes ? `${(fetched.sizeBytes / 1024 / 1024).toFixed(2)}MB` : '未知大小';
+      failureReason = `视频体积（${mb}）超过读取上限 ${(maxVideoBytes / 1024 / 1024).toFixed(0)}MB`;
+    } else if (fetched?.file && isSafeNativeMediaPath(fetched.file)) {
+      prep = await extractVideoStoryboard(fetched.file, {
+        ...modelMediaLimits,
+        startSec: options.startSec,
+        endSec: options.endSec,
+        frames: options.frames,
+        durationSec: media.duration ?? fetched.duration,
+        width: media.width ?? fetched.width,
+        height: media.height ?? fetched.height,
+      });
+      if (!prep.ok) {
+        failureReason = prep.error || '视频抽帧失败';
+      } else {
+        log(`[media] 视频${index}: ${prep.note}`);
+      }
+    } else if (fetched?.downloadTimedOut) {
+      failureReason = 'QQ 未能在规定时间内完成视频缓存';
+    } else {
+      failureReason = '未能获取到经过校验的视频缓存';
+    }
+    if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取视频');
+
+    const origWidth = media.width ?? fetched?.width ?? null;
+    const origHeight = media.height ?? fetched?.height ?? null;
+    const origDuration = Number(prep?.durationSec || media.duration || fetched?.duration || 0);
+    const origSize = prep?.sizeBytes ?? fetched?.sizeBytes ?? media.size ?? null;
+
+    if (prep?.ok) {
+      return {
+        ...baseMeta,
+        mimeType: prep.mimeType,
+        data: prep.buffer.toString('base64'),
+        width: prep.width,
+        height: prep.height,
+        originalWidth: Number.isFinite(origWidth) && origWidth > 0 ? origWidth : null,
+        originalHeight: Number.isFinite(origHeight) && origHeight > 0 ? origHeight : null,
+        duration: origDuration > 0 ? Math.round(origDuration) : null,
+        sizeBytes: Number.isFinite(origSize) && origSize > 0 ? origSize : null,
+        frameCount: prep.frameCount,
+        frameTimestamps: prep.timestamps,
+        windowStart: prep.windowStart,
+        windowEnd: prep.windowEnd,
+        text: prep.note,
+      };
+    }
+
+    if (fetched?.cover && isSafeNativeMediaPath(fetched.cover)) {
+      try {
+        const stat = fs.statSync(fetched.cover);
+        if (stat.isFile() && stat.size > 0 && stat.size <= MAX_MEDIA_BYTES) {
+          const accepted = acceptImageBuffer(fs.readFileSync(fetched.cover), `视频${index}封面`);
+          if (accepted) {
+            const coverPrep = await toModelMedia(accepted.buffer, accepted.mimeType, `视频${index}封面`);
+            if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取视频');
+            if (coverPrep?.ok) {
+              const dims = sniffImage(coverPrep.buffer);
+              return {
+                ...baseMeta,
+                fallbackCover: true,
+                mimeType: coverPrep.mimeType,
+                data: coverPrep.buffer.toString('base64'),
+                width: dims?.width ?? null,
+                height: dims?.height ?? null,
+                originalWidth: Number.isFinite(origWidth) && origWidth > 0 ? origWidth : null,
+                originalHeight: Number.isFinite(origHeight) && origHeight > 0 ? origHeight : null,
+                duration: origDuration > 0 ? Math.round(origDuration) : null,
+                sizeBytes: Number.isFinite(origSize) && origSize > 0 ? origSize : null,
+                text: `（${failureReason}；仅提供视频封面帧，不含后续画面与音频）`,
+              };
+            }
+          }
+        }
+      } catch (err) {
+        if (String(err?.message || '').includes('账号已变化')) throw err;
+      }
+    }
+
+    return {
+      ...baseMeta,
+      ...(origDuration > 0 ? { duration: Math.round(origDuration) } : {}),
+      ...(Number.isFinite(origSize) && origSize > 0 ? { sizeBytes: origSize } : {}),
+      text: `（视频获取失败：${failureReason}）`,
+    };
+  }
+
   async function fetchMediaData(mediaList, messageContext = {}) {
     const out = [];
     let index = 0;
@@ -7312,12 +7553,20 @@ async function main() {
     for (let media of Array.isArray(mediaList) ? mediaList : []) {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
-        out.push({ index, kind: media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : 'image'), text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
+        out.push({ index, kind: media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : (media?.kind === 'video' ? 'video' : 'image')), text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
         continue;
       }
       if (!media || typeof media !== 'object') continue;
       let sourceContext = {...messageContext, quality};
-      if (media.imageRef) {
+      if (media.videoRef) {
+        const reference = videoReferences.resolve(media.videoRef, { account, key: messageContext.key });
+        if (!reference) {
+          out.push({ index, kind: 'video', text: '（视频引用已失效，请重新读取原消息或转发）' });
+          continue;
+        }
+        media = { ...reference.media, videoRef: media.videoRef };
+        sourceContext = { ...sourceContext, ...reference.context };
+      } else if (media.imageRef) {
         const reference = imageReferences.resolve(media.imageRef, {account, key:messageContext.key});
         if (!reference) {
           out.push({index, kind:'image', text:'（图片引用已失效，请重新读取原消息或转发）'});
@@ -7325,6 +7574,20 @@ async function main() {
         }
         media = {...reference.media, imageRef:media.imageRef};
         sourceContext = {...sourceContext, ...reference.context};
+      }
+      if (media.kind === 'video') {
+        const vid = await fetchQQVideo(media, sourceContext, { index });
+        if (vid.data) {
+          const byteLen = Buffer.byteLength(vid.data, 'base64');
+          if (totalBytes + byteLen > byteBudget) {
+            const { data: _omitData, mimeType: _omitMime, ...vidMeta } = vid;
+            out.push({ ...vidMeta, text: '（视频画面总大小超限，已跳过）' });
+            continue;
+          }
+          totalBytes += byteLen;
+        }
+        out.push(vid);
+        continue;
       }
       if (media.kind === 'face') {
         const face = await fetchFaceMedia(media);
@@ -7401,6 +7664,14 @@ async function main() {
 
   function mediaHintFor(key, messageRef, mediaList) {
     if (!Array.isArray(mediaList) || mediaList.length === 0 || !messageRef) return '';
+    const hasVideo = mediaList.some((m) => m?.kind === 'video');
+    const onlyVideo = hasVideo && mediaList.every((m) => m?.kind === 'video');
+    if (onlyVideo) {
+      return `\n【视频】本条消息包含 ${mediaList.length} 个视频（消息ID=${messageRef}）。如需要查看视频画面，请调用 mcp__qq__qq_get_message_video，参数 key="${key}", messageId="${messageRef}"。`;
+    }
+    if (hasVideo) {
+      return `\n【媒体】本条消息包含 ${mediaList.length} 个图片/表情/视频（消息ID=${messageRef}）。如需要查看图片请调用 mcp__qq__qq_get_message_images，查看视频请调用 mcp__qq__qq_get_message_video，参数 key="${key}", messageId="${messageRef}"。`;
+    }
     return `\n【图片/表情】本条消息包含 ${mediaList.length} 个图片/表情（消息ID=${messageRef}）。如需要查看/识别，请调用 mcp__qq__qq_get_message_images，参数 key="${key}", messageId="${messageRef}"。`;
   }
 
@@ -9208,7 +9479,9 @@ async function main() {
   // 会话见过的 forward id（有界，避免提醒移出队列后无法读取刚见过的转发）
   const seenForwardIds = new Map(); // key -> Set<string>
   const imageReferences = createQQImageReferences();
+  const videoReferences = createQQImageReferences({ prefix: 'qqvid:', allowKinds: ['video'] });
   const imageDetailJobs = new Map();
+  const videoDetailJobs = new Map();
 
   function getSocialV2State(key) {
     // 只允许内部约定的会话 key 格式，并统一成无前导零的正整数形式，防止同一会话分裂成多个状态。
@@ -10532,7 +10805,7 @@ async function main() {
     selfUserId = bot.account;
     log('已连接 QQ 独立通道');
   });
-  bot.on('close', () => { imageReferences.clear(); friendRequests.clear(); groupInvites.clear(); clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; log('QQ 独立通道已断开，等待重连'); });
+  bot.on('close', () => { imageReferences.clear(); videoReferences.clear(); friendRequests.clear(); groupInvites.clear(); clearIncomingImagePrefetchQueue(); clearInterval(coverageTimer); clearTimeout(catchupRetry); selfUserId = ''; log('QQ 独立通道已断开，等待重连'); });
   process.once('exit', () => bot.close());
 
   // Restore the latest due alarm before DSH recovery can resume a model turn.

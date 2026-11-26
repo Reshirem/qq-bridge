@@ -327,11 +327,26 @@ module.exports = function startChannel(receiver, endpoint) {
         type = 'forward';
         data = {id: context ? `native:${context.rootId}:${row.msgId}` : `native:${row.msgId}`};
       }
-      else if (element.videoElement) { type = 'video'; data = {}; }
+      else if (element.videoElement) {
+        const v = element.videoElement;
+        const md5 = String(v.videoMd5 || v.fileMd5 || '').toLowerCase();
+        const duration = Number(v.fileTime);
+        const size = Number(v.fileSize);
+        const width = Number(v.videoWidth || v.thumbWidth);
+        const height = Number(v.videoHeight || v.thumbHeight);
+        type = 'video';
+        data = {
+          ...(/^[a-f0-9]{32}$/.test(md5) ? { file: md5 } : {}),
+          ...(Number.isFinite(duration) && duration > 0 ? { duration: Math.round(duration) } : {}),
+          ...(Number.isFinite(size) && size > 0 ? { size: Math.round(size) } : {}),
+          ...(Number.isFinite(width) && width > 0 ? { width: Math.round(width) } : {}),
+          ...(Number.isFinite(height) && height > 0 ? { height: Math.round(height) } : {}),
+        };
+      }
       else if (element.fileElement) { type = 'file'; data = { name: element.fileElement.fileName }; }
       else if (element.arkElement) { type = 'card'; data = { data: String(element.arkElement.bytesData || '') }; }
       else { type = '其他消息'; data = {}; }
-      if (context && (type === 'image' || type === 'mface')) {
+      if (context && (type === 'image' || type === 'mface' || type === 'video')) {
         data.nativeForwardId = context.id;
         data.nativeMessageId = String(row.msgId);
       }
@@ -508,13 +523,21 @@ module.exports = function startChannel(receiver, endpoint) {
     if (!rows.length) throw Error('QQ 返回的转发节点无效');
     const entry = {rootId, parentId, rows:new Map(rows.map(row => [String(row.msgId), {
       msgId:String(row.msgId),
-      elements:(row.elements || []).filter(e => e.picElement || e.marketFaceElement).slice(0,100).map(e => ({
+      elements:(row.elements || []).filter(e => e.picElement || e.marketFaceElement || e.videoElement).slice(0,100).map(e => ({
         elementId:e.elementId,
         ...(e.picElement ? {picElement:{md5HexStr:e.picElement.md5HexStr, picSubType:e.picElement.picSubType,
           sourcePath:e.picElement.sourcePath, fileSize:e.picElement.fileSize,
           thumbPath:new Map([[0, e.picElement.thumbPath instanceof Map ? e.picElement.thumbPath.get(0) : undefined]])}} : {}),
         ...(e.marketFaceElement ? {marketFaceElement:{emojiId:e.marketFaceElement.emojiId,
           emojiPackageId:e.marketFaceElement.emojiPackageId}} : {}),
+        ...(e.videoElement ? {videoElement:{
+          videoMd5:e.videoElement.videoMd5, fileMd5:e.videoElement.fileMd5,
+          filePath:e.videoElement.filePath, fileSize:e.videoElement.fileSize,
+          fileTime:e.videoElement.fileTime, thumbWidth:e.videoElement.thumbWidth,
+          thumbHeight:e.videoElement.thumbHeight, videoWidth:e.videoElement.videoWidth,
+          videoHeight:e.videoElement.videoHeight,
+          thumbPath:new Map([[0, e.videoElement.thumbPath instanceof Map ? e.videoElement.thumbPath.get(0) : (typeof e.videoElement.thumbPath === 'string' ? e.videoElement.thumbPath : undefined)]]),
+        }} : {}),
       })),
     }]))};
     const messages = [];
@@ -549,6 +572,18 @@ module.exports = function startChannel(receiver, endpoint) {
         String(item.marketFaceElement.emojiId).toLowerCase() === emojiId &&
         String(item.marketFaceElement.emojiPackageId) === packageId));
     if (!element) throw Error('QQ 此转发节点中找不到对应的图片');
+    return {row, element, rootId:entry.rootId};
+  }
+  function forwardVideo(p) {
+    forwardReference(p.peer, p.forwardId);
+    const entry = forwards.get(forwardKey(p.peer, p.forwardId));
+    const row = entry?.rows.get(String(p.messageId ?? ''));
+    if (!row) throw Error('QQ 转发视频尚未在此来源读取，请先重新读取该转发');
+    const digest = String(p.md5 ?? '').toLowerCase();
+    if (!/^[a-f0-9]{32}$/.test(digest)) throw Error('QQ 视频标识无效');
+    const element = (row.elements || []).find(item => item.videoElement &&
+      String(item.videoElement.videoMd5 || item.videoElement.fileMd5 || '').toLowerCase() === digest);
+    if (!element) throw Error('QQ 此转发节点中找不到对应的视频');
     return {row, element, rootId:entry.rootId};
   }
   async function marketResources(packId, faceIds) {
@@ -603,22 +638,51 @@ module.exports = function startChannel(receiver, endpoint) {
   }
   function ordinarySourcePreview(pic, root, digest) {
     const {sourcePath, picWidth:width, picHeight:height} = pic;
-    if (![0, '0'].includes(pic.picSubType) || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
-        width < 1 || height < 1 || width > 32768 || height > 32768 || width * height > 64_000_000 ||
-        typeof sourcePath !== 'string' || !path.isAbsolute(sourcePath)) return null;
-    const relative = path.relative(root, sourcePath).split(path.sep).join('/');
-    if (!new RegExp(`^Pic/[0-9]{4}-(?:0[1-9]|1[0-2])/Ori/${digest}\\.[a-z0-9]+$`, 'i').test(relative)) return null;
-    let real;
-    try {
-      real = fs.realpathSync(sourcePath);
-      if (path.relative(sourcePath, real) === '' && fs.statSync(real).isFile()) {
-        return {path:real, width, height};
+    const isOrdinary = [0, '0'].includes(pic.picSubType);
+    const isSticker = [1, '1'].includes(pic.picSubType);
+    if ((!isOrdinary && !isSticker) || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+        width < 1 || height < 1 || width > 32768 || height > 32768 || width * height > 64_000_000) return null;
+    const dirPrefix = isSticker ? 'Emoji/emoji-recv' : 'Pic';
+    const oriRegex = new RegExp(`^${dirPrefix}/[0-9]{4}-(?:0[1-9]|1[0-2])/Ori/${digest}\\.[a-z0-9]+$`, 'i');
+    const rawSource = typeof sourcePath === 'string' ? sourcePath : '';
+    const checkCandidate = (candidatePath, allowEnoent) => {
+      if (!candidatePath || !path.isAbsolute(candidatePath)) return null;
+      const relative = path.relative(root, candidatePath).split(path.sep).join('/');
+      if (!oriRegex.test(relative)) return null;
+      let real;
+      try {
+        real = fs.realpathSync(candidatePath);
+        if (path.relative(candidatePath, real) === '' && fs.statSync(real).isFile()) {
+          return {path:real, width, height};
+        }
+      } catch (error) {
+        // QQ writes some files after acknowledging the download. The reader
+        // repeats the realpath and file checks on each poll before opening one.
+        if (allowEnoent && real === undefined && error.code === 'ENOENT') return {path:candidatePath, width, height};
       }
-    } catch (error) {
-      // QQ writes some files after acknowledging the download. The reader
-      // repeats the realpath and file checks on each poll before opening one.
-      if (real === undefined && error.code === 'ENOENT') return {path:sourcePath, width, height};
-    }
+      return null;
+    };
+    if (rawSource) return checkCandidate(rawSource, true);
+    if (!isSticker) return null;
+    try {
+      const baseDir = path.join(root, 'Emoji', 'emoji-recv');
+      const months = fs.readdirSync(baseDir, {withFileTypes:true})
+        .filter(d => d.isDirectory() && /^[0-9]{4}-(?:0[1-9]|1[0-2])$/.test(d.name))
+        .map(d => d.name)
+        .sort()
+        .reverse();
+      const nameRegex = new RegExp(`^${digest}\\.[a-z0-9]+$`, 'i');
+      for (const month of months) {
+        const oriDir = path.join(baseDir, month, 'Ori');
+        let entries;
+        try { entries = fs.readdirSync(oriDir, {withFileTypes:true}); } catch { continue; }
+        for (const entry of entries) {
+          if (!entry.isFile() || !nameRegex.test(entry.name)) continue;
+          const found = checkCandidate(path.join(oriDir, entry.name), false);
+          if (found) return found;
+        }
+      }
+    } catch {}
     return null;
   }
   async function fetchMessageImage(p) {
@@ -686,6 +750,133 @@ module.exports = function startChannel(receiver, endpoint) {
     const verifiedSourcePreview = p.quality !== 'original' && ordinarySourcePreview(element.picElement, root, digest);
     return {requested:true, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {}),
       ...(verifiedSourcePreview ? {verifiedSourcePreview} : {})};
+  }
+
+  async function fetchMessageVideo(p) {
+    const peer = p.peer;
+    const msgId = String(p.messageId ?? '');
+    if (!peer || !isSupportedChat(Number(peer.chatType)) || !peer.peerUid ||
+        !/^-?[1-9]\d{0,19}$/.test(msgId)) throw Error('QQ 视频定位信息无效');
+    const digest = String(p.md5 ?? '').toLowerCase();
+    if (!/^[a-f0-9]{32}$/.test(digest)) throw Error('QQ 视频标识无效');
+    const maxBytes = Number.isInteger(p.maxBytes) && p.maxBytes > 0 ? p.maxBytes : null;
+    const verified = p.forwardId ? forwardVideo(p) : null;
+    const row = verified?.row || await original(peer, msgId);
+    const element = verified?.element || (row.elements || []).find(item => item.videoElement &&
+      String(item.videoElement.videoMd5 || item.videoElement.fileMd5 || '').toLowerCase() === digest);
+    sameAccount();
+    if (!element?.elementId || !element?.videoElement) throw Error('QQ 原消息中找不到对应的视频元素');
+    const v = element.videoElement;
+    const duration = Number(v.fileTime) > 0 ? Math.round(Number(v.fileTime)) : null;
+    const width = Number(v.videoWidth || v.thumbWidth) > 0 ? Math.round(Number(v.videoWidth || v.thumbWidth)) : null;
+    const height = Number(v.videoHeight || v.thumbHeight) > 0 ? Math.round(Number(v.videoHeight || v.thumbHeight)) : null;
+    const declaredSize = Number(v.fileSize) > 0 ? Math.round(Number(v.fileSize)) : null;
+    const root = path.join(os.homedir(), 'Documents', 'Tencent Files', account, 'nt_qq', 'nt_data');
+    const validVideoRel = (value, pattern) => {
+      if (typeof value !== 'string' || !value || !path.isAbsolute(value)) return false;
+      const rel = path.relative(root, value).split(path.sep).join('/');
+      return pattern.test(rel);
+    };
+    const oriPattern = /^Video\/[0-9]{4}-[0-9]{2}\/Ori\/[^/\\]+\.[a-z0-9]+$/i;
+    const thumbPattern = /^Video\/[0-9]{4}-[0-9]{2}\/Thumb\/[^/\\]+\.[a-z0-9]+$/i;
+
+    let verifiedCoverPath;
+    const rawThumb = v.thumbPath instanceof Map ? v.thumbPath.get(0) : (typeof v.thumbPath === 'string' ? v.thumbPath : null);
+    if (validVideoRel(rawThumb, thumbPattern)) {
+      try {
+        const realCover = fs.realpathSync(rawThumb);
+        if (validVideoRel(realCover, thumbPattern) && fs.statSync(realCover).isFile()) verifiedCoverPath = realCover;
+      } catch (error) {
+        if (error.code === 'ENOENT') verifiedCoverPath = rawThumb;
+      }
+    }
+
+    const meta = {
+      ...(duration ? { duration } : {}),
+      ...(width ? { width } : {}),
+      ...(height ? { height } : {}),
+      ...(declaredSize ? { sizeBytes: declaredSize } : {}),
+      ...(verifiedCoverPath ? { verifiedCoverPath } : {}),
+    };
+
+    const rawTarget = typeof v.filePath === 'string' ? v.filePath.trim() : '';
+    if (rawTarget && !validVideoRel(rawTarget, oriPattern)) {
+      throw Error('QQ 返回的视频缓存位置无效');
+    }
+    if (maxBytes && declaredSize && declaredSize > maxBytes) {
+      return { requested: false, oversized: true, ...meta };
+    }
+    if (rawTarget) {
+      try {
+        const realVideo = fs.realpathSync(rawTarget);
+        if (validVideoRel(realVideo, oriPattern) && fs.statSync(realVideo).isFile() && fs.statSync(realVideo).size > 0) {
+          sameAccount();
+          return { requested: false, verifiedVideoPath: realVideo, ...meta };
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw Error('QQ 视频缓存检查失败');
+      }
+    }
+
+    const targetMsgId = verified ? verified.rootId : String(row.msgId);
+    const key = mediaKey(targetMsgId, element.elementId);
+    const existingDownload = mediaDownloads.get(key);
+    let downloadEntry = existingDownload;
+    if (!downloadEntry) {
+      let finish;
+      const complete = new Promise(resolve => { finish = resolve; });
+      const timer = setTimeout(() => finish(null), 25000);
+      downloadEntry = { finish, promise: null };
+      mediaDownloads.set(key, downloadEntry);
+      downloadEntry.promise = (async () => {
+        try {
+          let result;
+          if (typeof svc.downloadRichMedia === 'function') {
+            result = await svc.downloadRichMedia({
+              fileModelId: '0', downSourceType: 0, triggerType: 0,
+              msgId: targetMsgId, chatType: Number(row.chatType || peer.chatType), peerUid: String(peer.peerUid),
+              elementId: String(element.elementId), thumbSize: 0, downloadType: 1,
+              filePath: rawTarget,
+            });
+          } else if (typeof svc.getRichMediaElement === 'function') {
+            result = await svc.getRichMediaElement({
+              downSourceType: 1,
+              msgId: targetMsgId,
+              peerUid: String(peer.peerUid), chatType: Number(row.chatType || peer.chatType),
+              elementId: String(element.elementId), downloadType: 1,
+              thumbSize: 0, ...(rawTarget ? { filePath: rawTarget } : {}),
+            });
+          } else {
+            throw Error('当前 QQ 不支持按原消息下载视频');
+          }
+          if (result?.result != null) checked(result);
+          const info = await complete;
+          sameAccount();
+          if (info?.error) throw Error(info.error);
+          const failed = code => code != null && code !== '' && String(code) !== '0';
+          if (info && (failed(info.fileErrCode) || failed(info.fileSrvErrCode))) {
+            const codes = [failed(info.fileErrCode) && `QQ ${info.fileErrCode}`,
+              failed(info.fileSrvErrCode) && `服务端 ${info.fileSrvErrCode}`].filter(Boolean).join('，');
+            throw Error(`QQ 视频下载失败（${codes}）${info.fileErrMsg ? '：' + String(info.fileErrMsg).slice(0, 300) : ''}`);
+          }
+          let verifiedVideoPath = rawTarget || undefined;
+          const completedPath = typeof info?.filePath === 'string' ? info.filePath.trim() : '';
+          if (completedPath && validVideoRel(completedPath, oriPattern)) {
+            try {
+              const real = fs.realpathSync(completedPath);
+              if (validVideoRel(real, oriPattern) && fs.statSync(real).isFile()) verifiedVideoPath = real;
+            } catch (error) {
+              if (error.code === 'ENOENT') verifiedVideoPath = completedPath;
+            }
+          }
+          return { requested: true, ...(verifiedVideoPath ? { verifiedVideoPath } : {}), ...meta };
+        } finally {
+          clearTimeout(timer);
+          if (mediaDownloads.get(key) === downloadEntry) mediaDownloads.delete(key);
+        }
+      })();
+    }
+    return downloadEntry.promise;
   }
 
   async function sendMessage(p) {
@@ -764,6 +955,7 @@ module.exports = function startChannel(receiver, endpoint) {
     if (action === 'get_login_info') return {user_id: account, nickname: self.nickName || self.nickname || ''};
     if (action === 'get_forward_msg') return getForwardMessage(p);
     if (action === 'check_forward_image') { forwardImage(p); return {verified:true}; }
+    if (action === 'check_forward_video') { forwardVideo(p); return {verified:true}; }
     if (action === 'poke') {
       const {peer, targetUin, aioUin} = p;
       if (!peer || !isSupportedChat(peer.chatType) || typeof peer.peerUid !== 'string' || !peer.peerUid
@@ -792,6 +984,7 @@ module.exports = function startChannel(receiver, endpoint) {
       return Promise.all(rows.map(message));
     }
     if (action === 'fetch_message_image') return fetchMessageImage(p);
+    if (action === 'fetch_message_video') return fetchMessageVideo(p);
     if (action === 'resolveUid') {
       const map = await receiver.getUixConvertService?.().getUid([p.uin]);
       const uid = map?.uidInfo?.get(p.uin) || '';
