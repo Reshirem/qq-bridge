@@ -28,13 +28,15 @@ test('long messages, resolved quotes and whitespace differences are not truncate
     seq: 22, text: '群友说：' + '很长的正文'.repeat(100),
     plain: '引用[小明]：上一条消息；' + '很长的正文'.repeat(100),
     tail: '最后的约定：明晚八点再聊', replyToMessageId: '-2026',
-    quoteTargetIsSelf: true, quote: { sender: '我', text: '等你回复' }
+    quoteTargetIsSelf: true, quote: { sender: '我', text: '等你回复' },
+    cards: [{ tag: '哔哩哔哩', desc: '测试视频', url: 'https://b23.tv/abc', hasCover: true }],
   };
   assert.deepEqual(compactModelMessage(message), message);
   assert.deepEqual(compactModelMessage({ text: '好', plain: '好 ', tail: ' 好' }), {
     text: '好', plain: '好 ', tail: ' 好'
   });
   assert.deepEqual(compactModelMessage({ plain: '只有 plain', tail: '只有 plain' }), { plain: '只有 plain' });
+  assert.deepEqual(compactModelMessage({ text: '[卡片]', cards: [] }), { text: '[卡片]' });
 });
 
 test('local media preserve message handles, ordering, face IDs, captions and forward IDs', () => {
@@ -64,7 +66,8 @@ test('forwarded messages retain otherwise unresolvable media references', () => 
     text: '转发图片', nestedForwardIds: ['nested-id'],
     media: [
       { kind: 'image', url: 'https://example.invalid/1', file: 'https://example.invalid/1' },
-      { kind: 'image', url: 'https://example.invalid/2', file: 'different-file-id' }
+      { kind: 'image', url: 'https://example.invalid/2', file: 'different-file-id' },
+      { kind: 'cardCover', url: 'https://cdn.example.invalid/cover.jpg?sign=secret', file: 'should-drop', imageRef: 'qqimg:11111111-1111-4111-8111-111111111111', summary: '哔哩哔哩卡片封面' },
     ]
   };
   const compact = compactModelMessage(message);
@@ -72,6 +75,19 @@ test('forwarded messages retain otherwise unresolvable media references', () => 
   assert.equal(compact.media[0].url, message.media[0].url);
   assert.equal('file' in compact.media[0], false);
   assert.deepEqual(compact.media[1], message.media[1]);
+  assert.deepEqual(compact.media[2], {
+    kind: 'cardCover',
+    imageRef: 'qqimg:11111111-1111-4111-8111-111111111111',
+    summary: '哔哩哔哩卡片封面',
+    index: 3,
+  });
+  // Even without seq on direct history/detail messages, cardCover never exposes raw CDN url/file.
+  const historyCardCover = compactModelMessage({
+    messageId: '999',
+    text: '[卡片：哔哩哔哩 — 标题 https://b23.tv/x]',
+    media: [{ kind: 'cardCover', url: 'https://cdn.example.invalid/secret.jpg', file: 'leak', summary: '哔哩哔哩卡片封面' }],
+  });
+  assert.deepEqual(historyCardCover.media, [{ kind: 'cardCover', summary: '哔哩哔哩卡片封面', index: 1 }]);
 });
 
 test('self/owner flags, poke context and unknown extensions survive; only known empty values disappear', () => {

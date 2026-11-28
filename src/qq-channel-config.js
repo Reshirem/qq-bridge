@@ -59,7 +59,7 @@ export function qqChannelConfig(saved = {}, changes = {}) {
     attentionKeywords: [...names.values()],
     media: {
       maxBytes: 8 * 1024 * 1024, maxPixels: 64000000, maxCount: 5,
-      maxVideoBytes: 50 * 1024 * 1024, videoFrames: 9, videoTile: 360,
+      maxVideoBytes: 50 * 1024 * 1024, videoFrames: 9, videoMaxSheets: 4, videoTile: 360,
       ...saved.media, ...changes.media,
       prefetchOnReceive: [changes.media?.prefetchOnReceive, saved.media?.prefetchOnReceive, true]
         .find(value => typeof value === 'boolean'),
@@ -85,6 +85,7 @@ export function qqChannelConfig(saved = {}, changes = {}) {
   config.sticker.maxListCount = Math.max(1, Math.min(500, config.sticker.maxListCount));
   config.media.maxVideoBytes = Math.max(1024 * 1024, Math.min(100 * 1024 * 1024, Math.round(Number(config.media.maxVideoBytes) || 50 * 1024 * 1024)));
   config.media.videoFrames = Math.max(2, Math.min(12, Math.round(Number(config.media.videoFrames) || 9)));
+  config.media.videoMaxSheets = Math.max(1, Math.min(6, Math.round(Number(config.media.videoMaxSheets) || 4)));
   config.media.videoTile = Math.max(128, Math.min(480, Math.round(Number(config.media.videoTile) || 360)));
   const ga = config.groupAttention;
   ga.hotWindowMs = Math.max(30_000, Math.min(30 * 60_000, ga.hotWindowMs));

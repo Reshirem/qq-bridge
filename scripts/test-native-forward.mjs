@@ -220,7 +220,8 @@ await test('ordinary previews can use the exact native source and dimensions aft
   assert.deepEqual((await h.rpc('fetch_message_image',{...params,quality:'original'})).data,{requested:true});
   pic.thumbPath.clear();
   await h.rpc('get_forward_msg',{peer:origin,id:'native:101'});
-  assert.deepEqual((await h.rpc('fetch_message_image',{...params,peer:origin,forwardId:'native:101'})).data,{requested:true});
+  assert.deepEqual((await h.rpc('fetch_message_image',{...params,peer:origin,forwardId:'native:101'})).data,{requested:true,verifiedSourcePreview:locator});
+  assert.deepEqual((await h.rpc('fetch_message_image',{...params,peer:origin,forwardId:'native:101',quality:'original'})).data,{requested:true});
   for (const change of [{peer:origin}, {messageId:'404'}, {md5:'b'.repeat(32)}]) {
     assert.ok((await h.rpc('fetch_message_image',{...params,...change,verifiedSourcePreview:locator})).error);
   }
@@ -301,7 +302,7 @@ await test('custom stickers with blank sourcePath fall back to scanning account 
   assert.deepEqual(res.data, {requested:true, verifiedSourcePreview:{path:fs.realpathSync(stickerFile), width:512, height:512}});
 });
 
-await test('native forward downloads match completion events and propagate server failures with retry', async () => {
+await test('native forward downloads match completion events and propagate server failures with retry', async t => {
   const h = await harness();
   try {
     await h.rpc('get_forward_msg',{peer:origin,id:'native:101'});
@@ -325,6 +326,32 @@ await test('native forward downloads match completion events and propagate serve
     assert.match((await h.rpc('fetch_message_image',p)).error,/fixture native download failed/);
     h.setDownloadMode('success');
     assert.deepEqual((await h.rpc('fetch_message_image',p)).data,{requested:true});
+
+    // Forward download completion carrying a verified account-cache filePath provides
+    // verifiedPreviewPath for preview reads, omits it for original, and rejects out-of-cache paths.
+    t.mock.method(fs, 'realpathSync', file => file);
+    t.mock.method(fs, 'statSync', () => ({isFile:() => true}));
+    h.setDownloadMode('pending');
+    const waitDownloadCount = async (prevCount) => {
+      while (h.forwardDownloads.length <= prevCount) await new Promise(resolve => setTimeout(resolve, 5));
+    };
+    let dlCount = h.forwardDownloads.length;
+    const prevReq = h.rpc('fetch_message_image', {...p, quality:'preview'});
+    await waitDownloadCount(dlCount);
+    h.completeDownload({filePath:imagePath});
+    assert.deepEqual((await prevReq).data, {requested:true, verifiedPreviewPath:imagePath});
+
+    dlCount = h.forwardDownloads.length;
+    const origReq = h.rpc('fetch_message_image', {...p, quality:'original'});
+    await waitDownloadCount(dlCount);
+    h.completeDownload({filePath:imagePath});
+    assert.deepEqual((await origReq).data, {requested:true});
+
+    dlCount = h.forwardDownloads.length;
+    const outsideReq = h.rpc('fetch_message_image', {...p, quality:'preview'});
+    await waitDownloadCount(dlCount);
+    h.completeDownload({filePath:path.join(os.tmpdir(), 'outside.jpg')});
+    assert.deepEqual((await outsideReq).data, {requested:true});
   } finally { await h.close(); }
 });
 

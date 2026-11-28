@@ -8,7 +8,7 @@
 // - 只格式化，不访问网络；调用方负责“id 必须来自当前会话已见消息”的校验
 
 import { truncateText } from './md-to-plain.js';
-import { formatQQCardText } from './qq-card.js';
+import { formatQQCardText, parseQQCard, extractCardsFromSegments } from './qq-card.js';
 
 export function sanitizeForwardId(value) {
   const s = String(value ?? '').trim();
@@ -180,6 +180,16 @@ function segmentMedia(seg) {
       };
     }
   }
+  if (seg.type === 'card' || seg.type === 'json') {
+    const card = parseQQCard(d.data ?? d.content ?? d);
+    if (card?.previewUrl && !card.invite) {
+      return {
+        kind: 'cardCover',
+        url: card.previewUrl,
+        summary: card.tag ? `${card.tag}卡片封面` : '卡片封面',
+      };
+    }
+  }
   return null;
 }
 
@@ -188,18 +198,19 @@ function segmentNestedForwardId(seg) {
   return forwardIdFromData(seg.data);
 }
 
-// 从一段消息内容（数组）中提取图片/表情与嵌套转发 id。
+// 从一段消息内容（数组）中提取图片/表情、卡片与嵌套转发 id。
 function collectSegmentMeta(content) {
   const media = [];
   const nestedForwardIds = [];
-  if (!Array.isArray(content)) return { media, nestedForwardIds };
+  if (!Array.isArray(content)) return { media, cards: [], nestedForwardIds };
   for (const seg of content) {
     const m = segmentMedia(seg);
     if (m) media.push(m);
     const nested = segmentNestedForwardId(seg);
     if (nested && !nestedForwardIds.includes(nested)) nestedForwardIds.push(nested);
   }
-  return { media, nestedForwardIds };
+  const cards = extractCardsFromSegments(content);
+  return { media, cards, nestedForwardIds };
 }
 
 export function formatForwardResponse(data, options = {}) {
@@ -237,6 +248,7 @@ export function formatForwardResponse(data, options = {}) {
       messageSeq: nodeMessageSeq(node),
       text,
       media: meta.media,
+      ...(meta.cards.length ? { cards: meta.cards } : {}),
       nestedForwardIds: meta.nestedForwardIds
     };
   });

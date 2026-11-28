@@ -26,6 +26,7 @@
 | [guides/MAA_AGENT.md](guides/MAA_AGENT.md) | 安装、验证或禁用可选的明日方舟游戏工具 |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | 桌面版与 Web 版安装、旧版迁移、原会话工具验收及可选模块入口 |
 | [../roles/README.md](../roles/README.md) | 人格卡格式与编辑说明 |
+| [guides/PROMPT_TUNING.md](guides/PROMPT_TUNING.md) | 模型提示词调优原则、反模式、长会话漂移归因与对话审计方法 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | 安全机制、残余风险与安全相关改动的工程基线 |
 | [guides/PRIVACY.md](guides/PRIVACY.md) | 发布前隐私扫描方法 |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台令牌与花费看板的数据来源和口径 |
@@ -44,6 +45,7 @@
 | 核对仓库内某个目录或脚本的用途 | [FOLDER_MAP.md](FOLDER_MAP.md) |
 | 区分 fork 前原作者与后续新增功能，查看尚未验证的风险 | [guides/PROJECT_AUDIT.md](guides/PROJECT_AUDIT.md) |
 | 查看 token 消耗与计价方式 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) |
+| 审计角色对话表现、排查风格漂移与优化提示词 | [guides/PROMPT_TUNING.md](guides/PROMPT_TUNING.md) |
 | 修改控制台并了解 UI 回归 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) |
 | 了解改代码后必须同步更新哪些文档与门禁 | [开发与文档同步规范](../README.md#开发与文档同步规范接手必读) · [../AGENTS.md](../AGENTS.md) |
 

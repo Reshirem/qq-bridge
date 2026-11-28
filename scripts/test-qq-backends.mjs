@@ -1476,7 +1476,7 @@ test('native video end-to-end: decode, on-demand download with MD5 check, ffmpeg
   assert.match(vidData.video.text, /片段 00:01–00:04.*2×2 网格/);
   assert.doesNotMatch(JSON.stringify(vidData), /Tencent Files|fakeHome/);
 
-  // Re-query by videoRef alone
+  // Re-query by videoRef alone (both single-sheet 2-frame and multi-sheet 12-frame)
   const vidByRef = await (await fetch(`${base}/api/socialV2/message-video`, {
     method: 'POST',
     headers,
@@ -1484,6 +1484,18 @@ test('native video end-to-end: decode, on-demand download with MD5 check, ffmpeg
   })).json();
   assert.equal(vidByRef.ok, true);
   assert.equal(vidByRef.video.frameCount, 2);
+  assert.equal(vidByRef.video.sheetCount, 1);
+
+  const vidMulti = await (await fetch(`${base}/api/socialV2/message-video`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ key: 'group:456', videoRef: vidData.video.videoRef, frames: 12 }),
+  })).json();
+  assert.equal(vidMulti.ok, true);
+  assert.equal(vidMulti.video.frameCount, 12);
+  assert.equal(vidMulti.video.sheetCount, 2);
+  assert.equal(vidMulti.video.sheets.length, 2);
+  assert.ok(vidMulti.video.sheets.every(s => s.mimeType === 'image/jpeg' && s.data));
 
   // /api/images/message also returns storyboard for video message
   const msgMediaRes = await (await fetch(`${base}/api/images/message?key=group:456&messageId=id:95001`, { headers })).json();

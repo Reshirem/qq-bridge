@@ -352,7 +352,7 @@ export class NativeQQ extends EventEmitter {
       checkConnection();
       // Only QQ's matched message element may supply either preview locator.
       const previewPath = quality !== 'original' && fetched?.verifiedPreviewPath;
-      const sourcePreview = quality !== 'original' && !p.forwardId && fetched?.verifiedSourcePreview;
+      const sourcePreview = quality !== 'original' && fetched?.verifiedSourcePreview;
       const verifiedPreview = typeof previewPath === 'string' || !!sourcePreview;
       const retryImage = verifiedPreview ? {
         ...image, quality:'preview', maxBytes:maxBytes ?? 20 * 1024 * 1024,

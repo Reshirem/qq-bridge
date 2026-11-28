@@ -5,6 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { test } from 'node:test';
 import { z } from 'zod';
+import { serializeModelData } from '../src/qq-model-view.js';
 
 function loadWebTools({ safeFetch, webSearch }) {
   const tools = new Map();
@@ -115,7 +116,7 @@ function loadQQTools(fetchImpl, fixtureConfig = null) {
     path,
     fs: fixtureFs,
     SENSITIVE_RE: { test: () => false },
-    serializeModelData: (value) => JSON.stringify(value),
+    serializeModelData,
   });
   const callTool = async (name, arguments_ = {}) => {
     const tool = tools.get(name);
@@ -424,6 +425,36 @@ test('qq_get_message_video validates inputs, forwards options, and qq_get_forwar
       headers: init.headers,
     });
     if (parsedUrl.pathname === '/api/socialV2/message-video') {
+      const reqFrames = JSON.parse(init.body || '{}')?.frames;
+      if (reqFrames === 27) {
+        return Response.json({
+          ok: true,
+          key: 'group:600010001',
+          video: {
+            index: 1,
+            kind: 'video',
+            videoRef: 'qqvid:11111111-1111-4111-8111-111111111111',
+            mimeType: 'image/jpeg',
+            data: sampleBase64,
+            duration: 60,
+            sizeBytes: 3000000,
+            width: 728,
+            height: 488,
+            originalWidth: 720,
+            originalHeight: 1280,
+            frameCount: 27,
+            sheetCount: 3,
+            sheets: [1, 2, 3].map((idx) => ({
+              index: idx,
+              mimeType: 'image/jpeg',
+              data: Buffer.from(`jpeg-sheet-${idx}`).toString('base64'),
+              frameCount: 9,
+              text: `第 ${idx}/3 张（9 帧 3×3 网格）`,
+            })),
+            text: '视频 60s，720×1280，2.86MB；共抽 27 帧分 3 张网格图按时间顺序排列；仅含画面不含音频',
+          },
+        });
+      }
       return Response.json({
         ok: true,
         key: 'group:600010001',
@@ -510,4 +541,94 @@ test('qq_get_message_video validates inputs, forwards options, and qq_get_forwar
   assert.ok(batchReq);
   assert.equal(batchReq.body.media.length, 1);
   assert.equal(batchReq.body.media[0].kind, 'image');
+
+  const multiRes = await callTool('qq_get_message_video', {
+    key: 'group:600010001',
+    videoRef: 'qqvid:11111111-1111-4111-8111-111111111111',
+    frames: 27,
+  });
+  assert.equal(multiRes.isError, undefined);
+  assert.equal(multiRes.content.filter(c => c.type === 'image').length, 3);
+  assert.match(multiRes.content[0].text, /sheetCount":3/);
+  assert.match(multiRes.content[1].text, /第 1\/3 张/);
+  await assert.rejects(callTool('qq_get_message_video', {
+    key: 'group:600010001',
+    messageId: 'id:100',
+    frames: 37,
+  }));
+});
+
+test('qq_get_message_images, qq_get_image_detail, and qq_get_forward_msg label cardCover cleanly without forwarding raw CDN URLs', async () => {
+  const requests = [];
+  const sampleBase64 = Buffer.from('jpeg-cover').toString('base64');
+  const coverRef = 'qqimg:33333333-3333-4333-8333-333333333333';
+  const callTool = loadQQTools(async (url, init = {}) => {
+    const parsedUrl = new URL(String(url));
+    requests.push({
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(init.body) : null,
+    });
+    if (parsedUrl.pathname === '/api/images/message') {
+      return Response.json({
+        ok: true,
+        images: [{
+          index: 1, kind: 'cardCover', imageRef: coverRef, mimeType: 'image/jpeg', data: sampleBase64,
+          representation: 'preview', width: 640, height: 360, originalWidth: 640, originalHeight: 360,
+          originalAvailable: true, canFetchOriginal: true,
+        }],
+      });
+    }
+    if (parsedUrl.pathname === '/api/socialV2/image-detail') {
+      return Response.json({
+        ok: true,
+        images: [{
+          index: 1, kind: 'cardCover', imageRef: coverRef, mimeType: 'image/jpeg', data: sampleBase64,
+          representation: 'original', width: 640, height: 360, originalWidth: 640, originalHeight: 360,
+          originalAvailable: true, canFetchOriginal: true,
+        }],
+      });
+    }
+    if (parsedUrl.pathname === '/api/socialV2/forward-message') {
+      return Response.json({
+        ok: true,
+        total: 1,
+        messages: [{
+          sender: '用户A',
+          messageId: '101',
+          text: '[卡片：哔哩哔哩 — 标题 https://b23.tv/x]',
+          cards: [{ tag: '哔哩哔哩', desc: '标题', url: 'https://b23.tv/x', hasCover: true }],
+          media: [{ kind: 'cardCover', imageRef: coverRef, url: 'https://cdn.example.invalid/should-not-forward.jpg', summary: '哔哩哔哩卡片封面' }],
+          nestedForwardIds: [],
+        }],
+      });
+    }
+    if (parsedUrl.pathname === '/api/socialV2/forward-media') {
+      return Response.json({
+        ok: true,
+        images: [{
+          index: 1, kind: 'cardCover', imageRef: coverRef, mimeType: 'image/jpeg', data: sampleBase64,
+          representation: 'preview', width: 640, height: 360, originalWidth: 640, originalHeight: 360,
+          originalAvailable: true, canFetchOriginal: true,
+        }],
+      });
+    }
+    return Response.json({ ok: true });
+  });
+
+  const msgImg = await callTool('qq_get_message_images', { key: 'group:600010001', messageId: 'id:101' });
+  assert.match(msgImg.content[0].text, /\[卡片封面1\]/);
+  assert.equal(msgImg.content[1].type, 'image');
+
+  const detail = await callTool('qq_get_image_detail', { key: 'group:600010001', imageRef: coverRef });
+  assert.match(detail.content[0].text, /^\[卡片封面1\]/);
+  assert.equal(detail.content[1].type, 'image');
+
+  const fwd = await callTool('qq_get_forward_msg', { key: 'group:600010001', id: 'native:888' });
+  const batchReq = requests.find(r => r.path === '/api/socialV2/forward-media');
+  assert.deepEqual(batchReq.body.media, [{ kind: 'cardCover', imageRef: coverRef }]);
+  assert.match(fwd.content[0].text, /\[转发内卡片封面 1\]/);
+  const jsonText = fwd.content.filter(c => c.type === 'text').at(-1).text;
+  assert.doesNotMatch(jsonText, /should-not-forward\.jpg/);
+  assert.match(jsonText, /"url":"https:\/\/b23\.tv\/x"/);
 });

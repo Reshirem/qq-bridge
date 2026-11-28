@@ -1,6 +1,22 @@
 import { truncateText } from './md-to-plain.js';
 
 const QQ_CARD_MAX_RAW_CHARS = 32_768;
+const QQ_CARD_MAX_PER_MESSAGE = 4;
+
+// Pure analytics / share-sheet tracking query params that never carry content identity or auth.
+const PURE_TRACKING_PARAMS = new Set([
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+  'spm_id_from', 'from_spmid',
+  'share_source', 'share_medium', 'share_plat', 'share_session_id',
+  'share_tag', 'share_from', 'share_times', 'share_id', 'share_copy_from',
+  'bbid', 'buvid', 'vd_source', 'unique_k', 'is_story_h5', 'plat_id',
+  'xsec_source', 'seid',
+]);
+const SHARE_TRACKING_PARAMS = new Set([
+  'share_source', 'share_medium', 'share_plat', 'share_session_id',
+  'share_tag', 'share_from', 'share_times', 'share_id', 'share_copy_from',
+  'bbid', 'buvid', 'vd_source', 'unique_k',
+]);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -18,9 +34,12 @@ function cleanCardText(value, max = 240) {
   return text ? truncateText(text, max) : '';
 }
 
-function safeHttpUrl(value, max = 300) {
-  const raw = cleanCardText(value, 1024);
+function safeHttpUrl(value, { max = 512, stripTracking = false } = {}) {
+  let raw = cleanCardText(value, 2048);
   if (!raw) return '';
+  if (raw.startsWith('//') && raw.length > 2 && !raw.startsWith('///')) {
+    raw = `https:${raw}`;
+  }
   let parsed;
   try {
     parsed = new URL(raw);
@@ -29,7 +48,24 @@ function safeHttpUrl(value, max = 300) {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
   if (parsed.username || parsed.password) return '';
-  return cleanCardText(parsed.toString(), max);
+  if (stripTracking && parsed.searchParams.size > 0) {
+    let strippedShare = false;
+    for (const key of [...parsed.searchParams.keys()]) {
+      const lower = key.toLowerCase();
+      if (PURE_TRACKING_PARAMS.has(lower)) {
+        if (SHARE_TRACKING_PARAMS.has(lower)) strippedShare = true;
+        parsed.searchParams.delete(key);
+      }
+    }
+    if (strippedShare) {
+      for (const key of [...parsed.searchParams.keys()]) {
+        if (key.toLowerCase() === 'ts') parsed.searchParams.delete(key);
+      }
+    }
+  }
+  const normalized = parsed.toString();
+  // Reject instead of emitting a broken half-truncated URL.
+  return normalized.length <= max ? normalized : '';
 }
 
 function parseGroupInviteUrl(value) {
@@ -94,17 +130,22 @@ export function parseQQCard(raw) {
   const prompt = cleanCardText(obj.prompt, 160);
   const { key: metaKey, obj: metaObj } = pickMetaEntry(obj.meta);
 
-  let tag = cleanCardText(metaObj?.tag ?? '', 40);
+  let tag = cleanCardText(metaObj?.tag ?? metaObj?.source_name ?? metaObj?.app_name ?? '', 40);
   let title = cleanCardText(metaObj?.title ?? '', 160);
   if (metaKey === 'detail_1' && !tag && title) {
     tag = cleanCardText(title, 40);
     title = '';
   }
-  const desc = cleanCardText(metaObj?.desc ?? metaObj?.summary ?? obj.desc ?? '', 240);
+  const desc = cleanCardText(metaObj?.desc ?? metaObj?.summary ?? metaObj?.brief ?? obj.desc ?? '', 240);
+  // Only read explicit content-author fields; metaObj.host.nick is the QQ sharer.
+  const author = cleanCardText(metaObj?.author ?? metaObj?.creator ?? metaObj?.authorName ?? '', 60);
 
   let url = '';
-  for (const candidate of [metaObj?.jumpUrl, metaObj?.qqdocurl, metaObj?.url, metaObj?.musicUrl, obj.sourceUrl]) {
-    const valid = safeHttpUrl(candidate);
+  for (const candidate of [
+    metaObj?.jumpUrl, metaObj?.qqdocurl, metaObj?.url, metaObj?.musicUrl,
+    metaObj?.targetUrl, metaObj?.webUrl, obj.sourceUrl,
+  ]) {
+    const valid = safeHttpUrl(candidate, { max: 512, stripTracking: true });
     if (valid) {
       url = valid;
       break;
@@ -113,7 +154,21 @@ export function parseQQCard(raw) {
 
   const invite = parseGroupInviteUrl(metaObj?.jumpUrl) || parseGroupInviteUrl(obj.meta?.news?.jumpUrl) || null;
 
-  if (!tag && !title && !desc && !prompt && !url && !invite) return null;
+  // Keep CDN signed query params intact; never read app icons or group invite avatars.
+  let previewUrl = '';
+  if (!invite) {
+    for (const candidate of [
+      metaObj?.preview, metaObj?.picUrl, metaObj?.cover, metaObj?.image, metaObj?.img,
+    ]) {
+      const valid = safeHttpUrl(candidate, { max: 1024, stripTracking: false });
+      if (valid) {
+        previewUrl = valid;
+        break;
+      }
+    }
+  }
+
+  if (!tag && !title && !desc && !author && !prompt && !url && !previewUrl && !invite) return null;
 
   return {
     ...(app ? { app } : {}),
@@ -121,8 +176,10 @@ export function parseQQCard(raw) {
     ...(tag ? { tag } : {}),
     ...(title ? { title } : {}),
     ...(desc ? { desc } : {}),
+    ...(author ? { author } : {}),
     ...(prompt ? { prompt } : {}),
     ...(url ? { url } : {}),
+    ...(previewUrl ? { previewUrl } : {}),
     ...(invite ? { invite } : {}),
   };
 }
@@ -134,16 +191,19 @@ function normForDedup(text) {
     .toLocaleLowerCase();
 }
 
+function isParsedCardObject(value) {
+  return isPlainObject(value) && (
+    'tag' in value || 'title' in value || 'desc' in value || 'author' in value
+    || 'prompt' in value || 'url' in value || 'previewUrl' in value || 'invite' in value
+  );
+}
+
 /**
  * Format a QQ Ark/JSON card payload into a concise, single-line summary string.
+ * Preserves the full cleaned URL intact whenever a URL is present.
  */
 export function formatQQCardText(rawOrCard) {
-  const card = isPlainObject(rawOrCard) && (
-    'tag' in rawOrCard || 'title' in rawOrCard || 'desc' in rawOrCard
-    || 'prompt' in rawOrCard || 'url' in rawOrCard || 'invite' in rawOrCard
-  )
-    ? rawOrCard
-    : parseQQCard(rawOrCard);
+  const card = isParsedCardObject(rawOrCard) ? rawOrCard : parseQQCard(rawOrCard);
   if (!card) return '[卡片消息]';
 
   const parts = [];
@@ -157,6 +217,12 @@ export function formatQQCardText(rawOrCard) {
 
   if (card.desc && normForDedup(card.desc) !== normForDedup(card.title) && normForDedup(card.desc) !== normForDedup(header)) {
     parts.push(card.desc);
+  }
+
+  if (card.author) {
+    const authorNorm = normForDedup(card.author);
+    const covered = parts.some((p) => normForDedup(p).includes(authorNorm));
+    if (!covered) parts.push(`作者：${card.author}`);
   }
 
   if (card.prompt) {
@@ -180,8 +246,47 @@ export function formatQQCardText(rawOrCard) {
     body = body ? `${body}${groupSuffix}` : `群邀请${groupSuffix}`;
   }
 
-  const tail = card.url ? (body ? ` ${card.url}` : card.url) : '';
-  const summary = `${body}${tail}`.trim();
-  if (!summary) return '[卡片消息]';
-  return truncateText(`[卡片：${summary}]`, 420);
+  if (!body && !card.url) return '[卡片消息]';
+  if (!card.url) {
+    return truncateText(`[卡片：${body}]`, 420);
+  }
+
+  const wrapperOverhead = 5; // `[卡片：` + `]`
+  const urlLead = body ? ' ' : '';
+  const totalBudget = Math.max(420, card.url.length + 60);
+  const bodyBudget = Math.max(40, totalBudget - wrapperOverhead - urlLead.length - card.url.length);
+  const fittedBody = body ? truncateText(body, bodyBudget) : '';
+  const summary = fittedBody ? `${fittedBody} ${card.url}` : card.url;
+  return `[卡片：${summary}]`;
+}
+
+/**
+ * Extract compact, structured card metadata from message segments for model/tool consumption.
+ * Exposes clean untruncated URLs and hasCover flag without leaking raw CDN preview URLs or tokens.
+ */
+export function extractCardsFromSegments(segments) {
+  if (!Array.isArray(segments)) return [];
+  const cards = [];
+  for (const seg of segments) {
+    if (!seg || typeof seg !== 'object') continue;
+    if (seg.type !== 'card' && seg.type !== 'json') continue;
+    const d = seg.data ?? {};
+    const card = parseQQCard(d.data ?? d.content ?? d);
+    if (!card) continue;
+    const entry = {
+      ...(card.tag ? { tag: card.tag } : {}),
+      ...(card.title && normForDedup(card.title) !== normForDedup(card.tag) ? { title: card.title } : {}),
+      ...(card.desc && normForDedup(card.desc) !== normForDedup(card.title) ? { desc: card.desc } : {}),
+      ...(card.author ? { author: card.author } : {}),
+      ...(!card.title && !card.desc && card.prompt ? { prompt: card.prompt } : {}),
+      ...(card.url ? { url: card.url } : {}),
+      ...(card.previewUrl ? { hasCover: true } : {}),
+      ...(card.invite?.groupId ? { inviteGroupId: card.invite.groupId } : {}),
+    };
+    if (Object.keys(entry).length > 0) {
+      cards.push(entry);
+      if (cards.length >= QQ_CARD_MAX_PER_MESSAGE) break;
+    }
+  }
+  return cards;
 }

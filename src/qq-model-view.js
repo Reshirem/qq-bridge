@@ -5,7 +5,7 @@ const DEFAULT_FALSE_FIELDS = new Set([
 ]);
 const OPTIONAL_FIELDS = new Set([
   'seq', 'messageId', 'sender', 'userId', 'text', 'plain', 'tail', 'kind',
-  'ownerLabel', 'media', 'forwardIds', 'nestedForwardIds', 'replyTo'
+  'ownerLabel', 'media', 'cards', 'forwardIds', 'nestedForwardIds', 'replyTo'
 ]);
 
 // ── 时间视图：裸 epoch 换成「本地时间 + 距现在多久」 ──────────────────────────
@@ -68,7 +68,12 @@ function compactMedia(media, canResolveByMessage) {
     // A local seq is a bridge message handle accepted by qq_get_message_images.
     // Forwarded nodes only have messageSeq, and may not be locally resolvable:
     // keep their transport references, even when they happen to have messageId.
-    if (canResolveByMessage) {
+    // Card covers are fetched server-side via messageId/imageRef; never expose raw CDN URLs.
+    if (result.kind === 'cardCover') {
+      delete result.file;
+      delete result.url;
+      if (result.index == null) result.index = index + 1;
+    } else if (canResolveByMessage) {
       delete result.file;
       delete result.url;
       // Match the image tool's one-based ordering; never filter/reorder items.

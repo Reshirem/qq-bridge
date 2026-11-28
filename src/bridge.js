@@ -31,7 +31,7 @@ import {
 import { fileURLToPath } from 'node:url';
 import { NodeApiClient, unwrap, discoverDshLaunchToken, discoverDshBaseUrl, requireSequencedSessionProjection } from './dsh-client.js';
 import { mdToPlain, truncateText, truncateTextTail, validateQQOutboundText } from './md-to-plain.js';
-import { parseQQCard, formatQQCardText } from './qq-card.js';
+import { parseQQCard, formatQQCardText, extractCardsFromSegments } from './qq-card.js';
 import { SENSITIVE_RE } from './sensitive.js';
 const QQ_UNREAD_LIMIT = 500;
 const QQ_HISTORY_TEXT_MAX_CHARS = 1000;
@@ -1196,6 +1196,15 @@ function extractMediaFromSegments(segments) {
         ...(Number.isFinite(height) && height > 0 ? { height: Math.round(height) } : {}),
         ...(d.nativeForwardId ? { nativeForwardId: String(d.nativeForwardId), nativeMessageId: String(d.nativeMessageId ?? '') } : {}),
       });
+    } else if (seg.type === 'card' || seg.type === 'json') {
+      const card = parseQQCard(d.data ?? d.content ?? d);
+      if (card?.previewUrl && !card.invite) {
+        media.push({
+          kind: 'cardCover',
+          url: card.previewUrl,
+          summary: card.tag ? `${card.tag}卡片封面` : '卡片封面',
+        });
+      }
     }
   }
   return media;
@@ -1676,8 +1685,13 @@ async function main() {
     if (!found) throw new Error('找不到这条消息，请确认 messageId/seq 有效且属于当前会话');
     if (found.isSelf) throw new Error('不能收藏自己发的表情，只能收藏群友发的');
     const mediaList = Array.isArray(found.media) ? found.media : [];
-    if (!mediaList.length) throw new Error('这条消息没有可收藏的图片/表情');
-    const media = mediaList[0];
+    const media = mediaList.find((item) => ['image', 'sticker', 'face'].includes(item?.kind));
+    if (!media) {
+      if (mediaList.some((item) => item?.kind === 'cardCover')) {
+        throw new Error('卡片封面图不能收藏为 QQ 表情');
+      }
+      throw new Error('这条消息没有可收藏的图片/表情');
+    }
     let file = '';
     if (media?.kind === 'image' || media?.kind === 'sticker') {
       // 取图片字节转 base64 后入库，避免原图直链失效并防止 SSRF/本地文件越权读取。
@@ -3321,6 +3335,30 @@ async function main() {
         res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
         res.end(JSON.stringify(obj, null, 2));
       };
+      const stripCardCoverMediaUrls = (list) => {
+        if (!Array.isArray(list)) return list;
+        let changed = false;
+        const out = list.map((m) => {
+          if (m?.kind === 'cardCover' && ('url' in m || 'file' in m)) {
+            changed = true;
+            const { url: _omitUrl, file: _omitFile, ...rest } = m;
+            return rest;
+          }
+          return m;
+        });
+        return changed ? out : list;
+      };
+      const stripCardCoverUrlsInMessages = (messages) => Array.isArray(messages)
+        ? messages.map((msg) => {
+          if (!msg || typeof msg !== 'object') return msg;
+          const nextMedia = stripCardCoverMediaUrls(msg.media);
+          const nextReply = msg.replyTo && typeof msg.replyTo === 'object' && Array.isArray(msg.replyTo.media)
+            ? { ...msg.replyTo, media: stripCardCoverMediaUrls(msg.replyTo.media) }
+            : msg.replyTo;
+          if (nextMedia === msg.media && nextReply === msg.replyTo) return msg;
+          return { ...msg, media: nextMedia, ...(nextReply !== msg.replyTo ? { replyTo: nextReply } : {}) };
+        })
+        : messages;
       // A console preview is passive. Only a completed agent response consumes its rows.
       const sendQQReadResult = (key, st, result, offered, visit) => {
         const displayed = new Set(req.headers['x-agent-token'] ? offered : []);
@@ -3337,7 +3375,10 @@ async function main() {
             } catch (error) { log('保存 QQ 已读记录失败：', error?.message ?? error); }
           });
         }
-        sendJson({ ...result, bufferId: st.bufferId, unreadCount: remaining.length, readThroughSeq: readThroughSeqV2(st, remaining) });
+        const safeResult = Array.isArray(result?.messages)
+          ? { ...result, messages: stripCardCoverUrlsInMessages(result.messages) }
+          : result;
+        sendJson({ ...safeResult, bufferId: st.bufferId, unreadCount: remaining.length, readThroughSeq: readThroughSeqV2(st, remaining) });
       };
       const readBody = () => new Promise((resolve, reject) => {
         const MAX_BODY_BYTES = 1_000_000;
@@ -6423,7 +6464,7 @@ async function main() {
                 for (const nm of nfmt.messages || []) {
                   for (const nfid of nm.nestedForwardIds || []) remember(nfid);
                 }
-                nestedPreviews.push({ id: fid, ...nfmt });
+                nestedPreviews.push({ id: fid, ...nfmt, messages: stripCardCoverUrlsInMessages(nfmt.messages) });
               } catch (error) {
                 log(`嵌套转发预览失败 ${key} ${fid}:`, error?.message ?? error);
                 nestedPreviews.push({ id: fid, error: error?.message ?? '嵌套转发读取失败' });
@@ -6432,7 +6473,7 @@ async function main() {
               }
             }
             if (mediaAccount !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取转发');
-            sendJson({ ok: true, key, id, ...formatted, nestedPreviews });
+            sendJson({ ok: true, key, id, ...formatted, messages: stripCardCoverUrlsInMessages(formatted.messages), nestedPreviews });
           } catch (error) {
             log(`合并转发查询失败 ${key} ${id}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `合并转发查询失败：${error?.message ?? error}` }, 500);
@@ -6518,11 +6559,14 @@ async function main() {
               sendJson({ ok: false, error: 'endSec 必须是正数且大于 startSec' }, 400); return;
             }
           }
+          const framesPerSheet = Math.max(2, Math.min(12, Math.round(Number(modelMediaLimits.videoFrames) || VIDEO_DEFAULTS.framesPerSheet)));
+          const maxSheets = Math.max(1, Math.min(VIDEO_DEFAULTS.hardMaxSheets, Math.round(Number(modelMediaLimits.videoMaxSheets) || VIDEO_DEFAULTS.defaultMaxSheets)));
+          const maxVideoFrames = Math.min(VIDEO_DEFAULTS.hardMaxFrames, framesPerSheet * maxSheets);
           let frames;
           if (body.frames !== undefined && body.frames !== null) {
             frames = Number(body.frames);
-            if (!Number.isInteger(frames) || frames < 1 || frames > VIDEO_DEFAULTS.maxFrames) {
-              sendJson({ ok: false, error: `frames 必须是 1 至 ${VIDEO_DEFAULTS.maxFrames} 之间的整数` }, 400); return;
+            if (!Number.isInteger(frames) || frames < 1 || frames > maxVideoFrames) {
+              sendJson({ ok: false, error: `frames 必须是 1 至 ${maxVideoFrames} 之间的整数` }, 400); return;
             }
           }
           const account = String(selfUserId || '');
@@ -6576,14 +6620,30 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/socialV2/forward-media') {
           const body = await readBody();
           const key = String(body.key ?? '').trim();
-          const media = Array.isArray(body.media) ? body.media : [];
+          const rawMedia = Array.isArray(body.media) ? body.media : [];
           if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
           if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
           if (req.headers['x-agent-token'] && !v2SessionAllowed(key, req.headers["x-agent-token"])) { sendJson({ ok: false, error: '目标未通过白名单/拒绝名单策略' }, 403); return; }
-          if (!canonicalV2Key(key) || media.some(m => m?.kind !== 'face' &&
-              (!/^native:-?[1-9]\d{0,19}(?::-?[1-9]\d{0,19})?$/.test(String(m?.nativeForwardId ?? '')) ||
-               !/^-?[1-9]\d{0,19}$/.test(String(m?.nativeMessageId ?? ''))))) {
+          if (!canonicalV2Key(key)) {
             sendJson({ ok: false, error: '转发图片缺少有效的原生转发与节点定位，请重新读取转发内容' }, 400); return;
+          }
+          const media = [];
+          const account = String(selfUserId || '');
+          for (const m of rawMedia) {
+            if (m?.kind === 'cardCover') {
+              const ref = typeof m.imageRef === 'string' ? imageReferences.resolve(m.imageRef, { account, key }) : null;
+              if (!ref || ref.media?.kind !== 'cardCover' || ref.context?.forward !== true) {
+                sendJson({ ok: false, error: '转发卡片封面缺少有效的 imageRef，请重新读取转发内容' }, 400); return;
+              }
+              media.push({ kind: 'cardCover', imageRef: m.imageRef });
+              continue;
+            }
+            if (m?.kind !== 'face' &&
+                (!/^native:-?[1-9]\d{0,19}(?::-?[1-9]\d{0,19})?$/.test(String(m?.nativeForwardId ?? '')) ||
+                 !/^-?[1-9]\d{0,19}$/.test(String(m?.nativeMessageId ?? '')))) {
+              sendJson({ ok: false, error: '转发图片缺少有效的原生转发与节点定位，请重新读取转发内容' }, 400); return;
+            }
+            media.push(m);
           }
           if (!media.length) { sendJson({ ok: true, key, media: [], images: [] }); return; }
           try {
@@ -6595,7 +6655,9 @@ async function main() {
             let next = 0;
             const failed = (index, text) => ({
               index: index + 1,
-              kind: media[index]?.kind === 'face' ? 'face' : (media[index]?.kind === 'sticker' ? 'sticker' : 'image'),
+              kind: media[index]?.kind === 'face' ? 'face'
+                : (media[index]?.kind === 'sticker' ? 'sticker'
+                  : (media[index]?.kind === 'cardCover' ? 'cardCover' : 'image')),
               text,
             });
             const worker = async () => {
@@ -6787,7 +6849,7 @@ async function main() {
           try {
             const images = await fetchMediaData(media, {key, messageId:String(message.messageId ?? messageId)});
             if (mediaAccount !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取图片');
-            sendJson({ ok: true, messageId, media, images });
+            sendJson({ ok: true, messageId, media: stripCardCoverMediaUrls(media), images });
           } catch (error) {
             log(`图片查询失败 ${key} ${messageId}: ${error?.message ?? error}`);
             sendJson({ ok: false, error: `图片查询失败：${error?.message ?? error}` }, 500);
@@ -7056,6 +7118,7 @@ async function main() {
       gifTile: m.gifTile,
       maxVideoBytes: m.maxVideoBytes,
       videoFrames: m.videoFrames,
+      videoMaxSheets: m.videoMaxSheets,
       videoTile: m.videoTile,
       timeoutMs: m.normalizeTimeoutMs,
       ffmpegPath: process.env.FFMPEG_PATH || null
@@ -7079,8 +7142,12 @@ async function main() {
   }
 
   function canRequestOriginal(media, context) {
-    return !!(context.key && (context.messageId || context.forward) &&
-      /^[a-f0-9]{32}$/i.test(String(media.file ?? '')) && !media.emojiPackageId);
+    if (!context?.key || !(context.messageId || context.forward)) return false;
+    if (media?.kind === 'cardCover') {
+      return /^https?:\/\//i.test(String(media.url ?? ''));
+    }
+    return !!(
+      /^[a-f0-9]{32}$/i.test(String(media?.file ?? '')) && !media?.emojiPackageId);
   }
 
   function withImageReference(media, context, index, account = String(selfUserId || '')) {
@@ -7143,6 +7210,44 @@ async function main() {
       'QQ 图片读取期间账号或连接已改变，请重新读取',
       'QQ 媒体读取器未返回有效画质信息，请重新连接'
     ].includes(text) ? text : null;
+  }
+
+  function safeCardCoverError(error) {
+    const text = String(error?.message ?? '');
+    if (text.includes('禁止访问内网') || text.includes('解析到内网')) return '封面地址属于内网或本机受限地址';
+    if (text.includes('URL 无效') || text.includes('仅允许 http/https') || text.includes('凭据')) return '封面地址格式无效';
+    if (text.includes('图片超过大小限制')) return text;
+    if (text.includes('不是有效图片')) return '封面返回内容不是有效图片';
+    if (text.includes('像素超限')) return '封面图片像素超出读取上限';
+    if (text.includes('操作超时') || text.includes('请求超时')) return '封面下载超时';
+    if (text.includes('重定向次数过多')) return '封面重定向次数过多';
+    const httpMatch = /^图片抓取失败：HTTP (\d{3})$/.exec(text);
+    if (httpMatch) return `封面下载失败（HTTP ${httpMatch[1]}）`;
+    return '封面下载失败';
+  }
+
+  async function fetchCardCoverImage(coverUrl, maxSourceBytes, label = '卡片封面') {
+    const cleanUrl = String(coverUrl ?? '').trim();
+    if (!/^https?:\/\//i.test(cleanUrl)) {
+      return { error: '封面地址无效' };
+    }
+    try {
+      const fetched = await safeFetchBuffer(cleanUrl, maxSourceBytes);
+      const accepted = acceptImageBuffer(fetched.buffer, label);
+      if (!accepted) {
+        return { error: '封面不是有效图片或像素超限' };
+      }
+      const dims = getImageDimensions(accepted.buffer);
+      return {
+        ...accepted,
+        representation: 'original',
+        originalAvailable: true,
+        canFetchOriginal: true,
+        ...(dims ? { width: dims.width, height: dims.height, originalWidth: dims.width, originalHeight: dims.height } : {}),
+      };
+    } catch (error) {
+      return { error: safeCardCoverError(error) };
+    }
   }
 
   function isSafeNativeMediaPath(filePath) {
@@ -7401,6 +7506,24 @@ async function main() {
         } else {
           parts.push({ type: 'text', text: face.text || `[表情#${media.faceId}]` });
         }
+      } else if (media.kind === 'cardCover') {
+        const label = `[卡片封面${index}]`;
+        const fetched = await fetchCardCoverImage(media.url, MAX_MEDIA_BYTES, `卡片封面${index}`);
+        const prep = fetched.buffer ? await toModelMedia(fetched.buffer, fetched.mimeType, label) : null;
+        if (prep?.ok) {
+          if (totalBytes + prep.buffer.length > MAX_MEDIA_BYTES) {
+            parts.push({ type: 'text', text: `${label}（图片总大小超限，已跳过）` });
+            continue;
+          }
+          totalBytes += prep.buffer.length;
+          parts.push({ type: 'text', text: label });
+          if (prep.note) parts.push({ type: 'text', text: `（${prep.note}）` });
+          parts.push({ type: 'image', mediaType: prep.mimeType, data: prep.buffer.toString('base64'), name: `qq-card-cover-${index}.${(prep.mimeType || 'image/jpeg').split('/')[1]}` });
+        } else if (prep && !prep.ok) {
+          parts.push({ type: 'text', text: `${label}（${prep.error}）` });
+        } else {
+          parts.push({ type: 'text', text: `${label}（${fetched.error || '获取失败'}）` });
+        }
       } else {
         const img = await fetchOneBotImage(media);
         const sticker = media.kind === 'sticker' || String(media.subType || '') === '1';
@@ -7486,17 +7609,48 @@ async function main() {
     const origSize = prep?.sizeBytes ?? fetched?.sizeBytes ?? media.size ?? null;
 
     if (prep?.ok) {
+      const sheets = Array.isArray(prep.sheets) && prep.sheets.length
+        ? prep.sheets.map((sheet, idx) => ({
+            index: sheet.index ?? idx + 1,
+            mimeType: sheet.mimeType || prep.mimeType,
+            data: sheet.buffer.toString('base64'),
+            width: sheet.width ?? null,
+            height: sheet.height ?? null,
+            frameCount: sheet.frameCount,
+            cols: sheet.cols,
+            rows: sheet.rows,
+            frameTimestamps: sheet.timestamps,
+            windowStart: sheet.windowStart,
+            windowEnd: sheet.windowEnd,
+            text: sheet.note,
+          }))
+        : [{
+            index: 1,
+            mimeType: prep.mimeType,
+            data: prep.buffer.toString('base64'),
+            width: prep.width,
+            height: prep.height,
+            frameCount: prep.frameCount,
+            cols: prep.cols,
+            rows: prep.rows,
+            frameTimestamps: prep.timestamps,
+            windowStart: prep.windowStart,
+            windowEnd: prep.windowEnd,
+            text: prep.note,
+          }];
       return {
         ...baseMeta,
-        mimeType: prep.mimeType,
-        data: prep.buffer.toString('base64'),
-        width: prep.width,
-        height: prep.height,
+        mimeType: sheets[0].mimeType,
+        data: sheets[0].data,
+        width: sheets[0].width,
+        height: sheets[0].height,
         originalWidth: Number.isFinite(origWidth) && origWidth > 0 ? origWidth : null,
         originalHeight: Number.isFinite(origHeight) && origHeight > 0 ? origHeight : null,
         duration: origDuration > 0 ? Math.round(origDuration) : null,
         sizeBytes: Number.isFinite(origSize) && origSize > 0 ? origSize : null,
         frameCount: prep.frameCount,
+        sheetCount: sheets.length,
+        sheets,
         frameTimestamps: prep.timestamps,
         windowStart: prep.windowStart,
         windowEnd: prep.windowEnd,
@@ -7553,7 +7707,14 @@ async function main() {
     for (let media of Array.isArray(mediaList) ? mediaList : []) {
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
-        out.push({ index, kind: media?.kind === 'face' ? 'face' : (media?.kind === 'sticker' ? 'sticker' : (media?.kind === 'video' ? 'video' : 'image')), text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });
+        out.push({
+          index,
+          kind: media?.kind === 'face' ? 'face'
+            : (media?.kind === 'sticker' ? 'sticker'
+              : (media?.kind === 'video' ? 'video'
+                : (media?.kind === 'cardCover' ? 'cardCover' : 'image'))),
+          text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）`,
+        });
         continue;
       }
       if (!media || typeof media !== 'object') continue;
@@ -7577,16 +7738,84 @@ async function main() {
       }
       if (media.kind === 'video') {
         const vid = await fetchQQVideo(media, sourceContext, { index });
-        if (vid.data) {
+        if (Array.isArray(vid.sheets) && vid.sheets.length > 1) {
+          const kept = [];
+          for (const sheet of vid.sheets) {
+            if (!sheet?.data) continue;
+            const byteLen = Buffer.byteLength(sheet.data, 'base64');
+            if (totalBytes + byteLen > byteBudget) break;
+            totalBytes += byteLen;
+            kept.push(sheet);
+          }
+          if (!kept.length) {
+            const { data: _omitData, mimeType: _omitMime, sheets: _omitSheets, ...vidMeta } = vid;
+            out.push({ ...vidMeta, text: '（视频画面总大小超限，已跳过）' });
+            continue;
+          }
+          if (kept.length < vid.sheets.length) {
+            vid.sheets = kept;
+            vid.sheetCount = kept.length;
+            vid.frameCount = kept.reduce((sum, s) => sum + (Number(s.frameCount) || 0), 0);
+            if (kept.every(s => Array.isArray(s.frameTimestamps))) {
+              vid.frameTimestamps = kept.flatMap(s => s.frameTimestamps);
+            }
+            vid.text = `${vid.text || ''}（仅附带前 ${kept.length} 张网格图，其余因大小上限跳过）`;
+          }
+        } else if (vid.data) {
           const byteLen = Buffer.byteLength(vid.data, 'base64');
           if (totalBytes + byteLen > byteBudget) {
-            const { data: _omitData, mimeType: _omitMime, ...vidMeta } = vid;
+            const { data: _omitData, mimeType: _omitMime, sheets: _omitSheets, ...vidMeta } = vid;
             out.push({ ...vidMeta, text: '（视频画面总大小超限，已跳过）' });
             continue;
           }
           totalBytes += byteLen;
         }
         out.push(vid);
+        continue;
+      }
+      if (media.kind === 'cardCover') {
+        const maxSourceBytes = quality ? MAX_ORIGINAL_SOURCE_BYTES : MAX_MEDIA_BYTES;
+        const fetched = await fetchCardCoverImage(media.url, maxSourceBytes, `卡片封面${index}`);
+        if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取图片');
+        const base = {
+          index: messageContext.detailIndex || index,
+          kind: 'cardCover',
+          ...(media.imageRef ? { imageRef: media.imageRef } : {}),
+          ...safeImageMetadata(fetched.buffer ? fetched : { canFetchOriginal: canRequestOriginal(media, sourceContext) }),
+          ...(media.summary ? { summary: String(media.summary) } : {}),
+        };
+        const prep = fetched.buffer ? (quality === 'original'
+          ? await prepareImageDetail(fetched.buffer, fetched.mimeType, {
+            crop: messageContext.crop,
+            ffmpegPath: modelMediaLimits.ffmpegPath,
+            timeoutMs: modelMediaLimits.timeoutMs,
+          })
+          : await toModelMedia(fetched.buffer, fetched.mimeType, `卡片封面${index}`)) : null;
+        if (prep?.ok) {
+          if (account !== String(selfUserId || '')) throw Error('QQ 账号已变化，请重新读取图片');
+          if (totalBytes + prep.buffer.length > byteBudget) {
+            out.push({ ...base, text: '（卡片封面总大小超限，已跳过）' });
+            continue;
+          }
+          totalBytes += prep.buffer.length;
+          const dimensions = sniffImage(prep.buffer);
+          out.push({
+            ...base,
+            representation: quality === 'original' ? prep.representation
+              : (fetched.representation === 'original' && prep.buffer === fetched.buffer ? 'original' : 'preview'),
+            width: dimensions?.width ?? prep.width ?? null,
+            height: dimensions?.height ?? prep.height ?? null,
+            originalWidth: prep.originalWidth ?? base.originalWidth,
+            originalHeight: prep.originalHeight ?? base.originalHeight,
+            mimeType: prep.mimeType,
+            data: prep.buffer.toString('base64'),
+            text: prep.note ? `（${prep.note}）` : '',
+          });
+        } else if (prep && !prep.ok) {
+          out.push({ ...base, text: `（卡片封面获取失败：${prep.error}）` });
+        } else {
+          out.push({ ...base, text: `（卡片封面获取失败：${fetched.error || '未知原因'}）` });
+        }
         continue;
       }
       if (media.kind === 'face') {
@@ -7666,11 +7895,15 @@ async function main() {
     if (!Array.isArray(mediaList) || mediaList.length === 0 || !messageRef) return '';
     const hasVideo = mediaList.some((m) => m?.kind === 'video');
     const onlyVideo = hasVideo && mediaList.every((m) => m?.kind === 'video');
+    const onlyCardCover = mediaList.every((m) => m?.kind === 'cardCover');
     if (onlyVideo) {
       return `\n【视频】本条消息包含 ${mediaList.length} 个视频（消息ID=${messageRef}）。如需要查看视频画面，请调用 mcp__qq__qq_get_message_video，参数 key="${key}", messageId="${messageRef}"。`;
     }
     if (hasVideo) {
       return `\n【媒体】本条消息包含 ${mediaList.length} 个图片/表情/视频（消息ID=${messageRef}）。如需要查看图片请调用 mcp__qq__qq_get_message_images，查看视频请调用 mcp__qq__qq_get_message_video，参数 key="${key}", messageId="${messageRef}"。`;
+    }
+    if (onlyCardCover) {
+      return `\n【卡片封面】本条消息包含 ${mediaList.length} 张卡片封面图（消息ID=${messageRef}）。如需要查看，请调用 mcp__qq__qq_get_message_images，参数 key="${key}", messageId="${messageRef}"。`;
     }
     return `\n【图片/表情】本条消息包含 ${mediaList.length} 个图片/表情（消息ID=${messageRef}）。如需要查看/识别，请调用 mcp__qq__qq_get_message_images，参数 key="${key}", messageId="${messageRef}"。`;
   }
@@ -7726,6 +7959,7 @@ async function main() {
       const text = await segmentsToText(segments, { resolveAtName, resolveReply, includeReply: false });
       const plain = await segmentsToText(segments, { resolveAtName, resolveReply, includeReply: true });
       const media = extractMediaFromSegments(segments);
+      const cards = extractCardsFromSegments(segments);
       const forwardIds = (Array.isArray(segments) ? segments : [])
         .filter((seg) => seg?.type === 'forward')
         .map((seg) => sanitizeForwardId(forwardIdFromData(seg?.data ?? {})))
@@ -7771,6 +8005,7 @@ async function main() {
         ownerLabel: owner ? `配置关系对象（ownerQQ ${cfg.ownerQQ ?? ''}）` : '',
         isSelf: self,
         media,
+        ...(cards.length ? { cards } : {}),
         hasMedia: media.length > 0,
         forwardIds,
         hasForward: forwardIds.length > 0,
@@ -9807,6 +10042,7 @@ async function main() {
     const sender = senderObj.card || senderObj.nickname || row?.sender_name || (userId != null ? String(userId) : '未知');
     const text = truncateText(await segmentsToText(segments, { includeReply: false }), 200);
     const media = extractMediaFromSegments(segments);
+    const cards = extractCardsFromSegments(segments);
     const forwardIds = extractForwardIds(segments);
     const rawTime = Number(row?.time);
     const time = Number.isFinite(rawTime) && rawTime > 0 ? (rawTime > 1e12 ? rawTime : rawTime * 1000) : 0;
@@ -9816,6 +10052,7 @@ async function main() {
       ...(userId != null ? { userId: String(userId) } : {}),
       text,
       ...(time > 0 ? { time } : {}),
+      ...(cards.length ? { cards } : {}),
       hasMedia: media.length > 0,
       forwardIds,
       hasForward: forwardIds.length > 0,
@@ -9843,6 +10080,9 @@ async function main() {
     const row = await fetchSingleQQRow(kind, convId, messageId);
     if (!row) return null;
     const forwardIds = extractForwardIds(row.message);
+    const media = extractMediaFromSegments(row.message);
+    const compactedMedia = media.length ? compactModelMessage({ media }).media : undefined;
+    const cards = extractCardsFromSegments(row.message);
     const senderObj = row?.sender && typeof row?.sender === 'object' ? row.sender : {};
     const rawUserId = senderObj.user_id ?? senderObj.userId ?? row?.user_id ?? row?.userId;
     const sender = senderObj.card || senderObj.nickname || row?.sender_name || String(rawUserId);
@@ -9854,6 +10094,9 @@ async function main() {
       userId: String(rawUserId),
       text: await segmentsToText(row.message, { includeReply: false }),
       messageId: String(messageId),
+      ...(compactedMedia?.length ? { media: compactedMedia } : {}),
+      ...(media.length ? { hasMedia: true } : {}),
+      ...(cards.length ? { cards } : {}),
       forwardIds,
       hasForward: forwardIds.length > 0,
       ...(replyTo ? { replyTo: compactModelMessage(replyTo, { now: Date.now() }) } : {}),

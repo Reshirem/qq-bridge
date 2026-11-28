@@ -31,6 +31,17 @@ function loadConfig() {
 
 const cfg = loadConfig();
 
+const videoMediaLimits = (() => {
+  const m = cfg.socialV2?.media ?? {};
+  const clamp = (v, min, max, fallback) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+  };
+  const framesPerSheet = clamp(m.videoFrames, 2, 12, 9);
+  const maxSheets = clamp(m.videoMaxSheets, 1, 6, 4);
+  return { framesPerSheet, maxSheets, maxFrames: Math.min(54, framesPerSheet * maxSheets) };
+})();
+
 function getConfig() {
   return loadConfig();
 }
@@ -140,6 +151,9 @@ function videoMetadataText(video) {
   for (const field of ['width', 'height', 'originalWidth', 'originalHeight', 'frameCount']) {
     const value = video?.[field];
     if (Number.isFinite(value) && value > 0) metadata[field] = value;
+  }
+  if (Number.isFinite(video?.sheetCount) && video.sheetCount > 1) {
+    metadata.sheetCount = video.sheetCount;
   }
   if (Array.isArray(video?.frameTimestamps) && video.frameTimestamps.length) {
     metadata.frameTimestamps = video.frameTimestamps;
@@ -336,7 +350,7 @@ server.tool(
 // ── 全局 desktop-agent 使用的 QQ 工具 ───────────────────────────────
 server.tool(
   'qq_get_unread_messages',
-  '列出待阅读的 QQ 提醒，普通聊天与完整上下文请用 qq_get_conversation_history 读取。若消息引用/回复了其他消息，会在 replyTo 中给出被引用消息的精确 messageId（id:...）、sender、text、at/ago、hasMedia 与 forwardIds（如需查看被引用消息的图片或转发内容，可直接拿 replyTo.messageId 或 replyTo.forwardIds[0] 调用对应工具）。返回的消息自动计为已读；本工具的 unreadCount 是提醒队列剩余条数。读取非空页后，休息或回合正常结束时会清掉该会话读取前的未读计数。hasMore=true 时用 nextAfterSeq 翻页；单页体积过大时会自动按字节上限截断并标记 partial=true，可用返回的 nextAfterSeq 继续翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
+  '列出待阅读的 QQ 提醒，普通聊天与完整上下文请用 qq_get_conversation_history 读取。若消息引用/回复了其他消息，会在 replyTo 中给出被引用消息的精确 messageId（id:...）、sender、text、at/ago、hasMedia 与 forwardIds（如需查看被引用消息的图片或转发内容，可直接拿 replyTo.messageId 或 replyTo.forwardIds[0] 调用对应工具）。若消息包含 Ark/JSON 卡片，会在结构化 cards 中附带清洗后的完整链接 url 与 hasCover 标记；有封面图时可用该消息 ID 调 qq_get_message_images 查看。返回的消息自动计为已读；本工具的 unreadCount 是提醒队列剩余条数。读取非空页后，休息或回合正常结束时会清掉该会话读取前的未读计数。hasMore=true 时用 nextAfterSeq 翻页；单页体积过大时会自动按字节上限截断并标记 partial=true，可用返回的 nextAfterSeq 继续翻页。刚回复这个来源时，可用最近一次 readThroughSeq 作为 afterSeq 做一次收尾检查。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     limit: z.number().optional().describe('最多返回条数，默认 30，最大 100'),
@@ -354,7 +368,7 @@ server.tool(
 
 server.tool(
   'qq_get_conversation_history',
-  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandled（本轮前上次处理该会话的时间）、lastAiReply 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示背景消息；同一回合内多次读取不会冲掉 previousHandled 与 isNew）。若某条消息引用/回复了其他消息，附带结构化 replyTo（含被引用消息的 messageId=id:...、sender、text、at/ago、hasMedia、forwardIds）；被引用消息带图或带转发时，直接使用 replyTo.messageId 调用 qq_get_message_images / qq_get_message_detail，或使用 replyTo.forwardIds 展开转发。默认 reverseOrder=true 时 messages 数组按倒序（最新在前、最旧在后）排列，阅读时请从后往前按时间顺序串联上下文。积压时可先读最新一页；若之前仍有未读新消息，返回 hasOlderUnread=true、olderUnreadCount 与 nextMessageId（id:...），可按需传入 messageId=nextMessageId 往前翻页；单页超出字节上限时会自动截断并标记 partial=true，同样可用 nextMessageId 翻页。读过最新一页后，调用 agent_rest 或回合正常结束时会自动清掉读取前的未读计数与早期提醒，读取开始后新到的消息保留为未读；带 messageId 查旧页只确认实际返回的队列条目。每条消息正文最多返回 1000 字符（超出时附带尾段 tail）；需查超长消息全文可用 qq_get_message_detail。',
+  '按需读取目标会话的 QQ 消息历史。默认按未读数+10（最少 20，最大 500）获取最新记录，也可自行指定 count，或传 messageId 从指定消息附近读取。返回 previousHandled（本轮前上次处理该会话的时间）、lastAiReply 及每条消息的 isNew 标记（true 表示上次处理后新到的消息，false 表示背景消息；同一回合内多次读取不会冲掉 previousHandled 与 isNew）。若某条消息引用/回复了其他消息，附带结构化 replyTo（含被引用消息的 messageId=id:...、sender、text、at/ago、hasMedia、forwardIds）；被引用消息带图或带转发时，直接使用 replyTo.messageId 调用 qq_get_message_images / qq_get_message_detail，或使用 replyTo.forwardIds 展开转发。若消息包含卡片，会在结构化 cards 中附带清洗后的完整链接 url 与 hasCover 标记；需要查看卡片封面图时可按该消息 ID 调 qq_get_message_images。默认 reverseOrder=true 时 messages 数组按倒序（最新在前、最旧在后）排列，阅读时请从后往前按时间顺序串联上下文。积压时可先读最新一页；若之前仍有未读新消息，返回 hasOlderUnread=true、olderUnreadCount 与 nextMessageId（id:...），可按需传入 messageId=nextMessageId 往前翻页；单页超出字节上限时会自动截断并标记 partial=true，同样可用 nextMessageId 翻页。读过最新一页后，调用 agent_rest 或回合正常结束时会自动清掉读取前的未读计数与早期提醒，读取开始后新到的消息保留为未读；带 messageId 查旧页只确认实际返回的队列条目。每条消息正文最多返回 1000 字符（超出时附带尾段 tail）；需查超长消息全文可用 qq_get_message_detail。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).optional().describe('历史锚点：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；省略时从最新记录开始'),
@@ -706,7 +720,7 @@ server.tool(
 
 server.tool(
   'qq_get_message_detail',
-  '按 id:QQ消息ID 或 seq:本地序号查看单条消息的发送者、引用信息（若存在引用则附带结构化 replyTo，含被引用消息的 messageId=id:...、sender、text、at/ago、hasMedia、forwardIds）与正文。正文最多返回 4000 字符，textTruncated=true 表示超出上限被截断。返回本地队列中的消息详情时，只确认该条队列记录。',
+  '按 id:QQ消息ID 或 seq:本地序号查看单条消息的发送者、引用信息（若存在引用则附带结构化 replyTo，含被引用消息的 messageId=id:...、sender、text、at/ago、hasMedia、forwardIds）、结构化卡片 cards（含完整链接 url 与 hasCover）与正文。正文最多返回 4000 字符，textTruncated=true 表示超出上限被截断。返回本地队列中的消息详情时，只确认该条队列记录。',
   {
     key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
     messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数')
@@ -742,7 +756,7 @@ server.tool(
 if (cfg.socialV2?.tools?.getImages !== false) {
   server.tool(
     'qq_get_message_images',
-    '按需获取指定 QQ 消息中的图片/表情（及视频画面拼图）预览，并直接以图像内容返回。支持一条消息里的多张图片/表情。预览附 imageRef、实际尺寸及原图可用状态；预览不清、需要读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或原图局部，不猜测，也不为省 token 跳过必要检查。representation 表示实际返回的形态，缩放或裁剪不等于已读完整原图。动图（GIF/动态表情）与视频会被桥接抽帧拼成多格图：说明里会写「…已抽 X 帧拼成 A×B 网格，行优先 左上→右下」，按格子顺序理解动作即可，不要当成九宫格照片；纯视频或需指定时间段细看请优先调用 qq_get_message_video。若错误提示缺少 FFmpeg，如实告知部署依赖未配置（FFMPEG_PATH）；图无法提供时如实说明，不编造画面。',
+    '按需获取指定 QQ 消息中的图片/表情（以及卡片封面图 cardCover、视频画面拼图）预览，并直接以图像内容返回。支持一条消息里的多张图片/表情。预览附 imageRef、实际尺寸及原图可用状态；预览不清、需要读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或原图局部，不猜测，也不为省 token 跳过必要检查。representation 表示实际返回的形态，缩放或裁剪不等于已读完整原图。动图（GIF/动态表情）与视频会被桥接抽帧拼成多格图：说明里会写「…已抽 X 帧拼成 A×B 网格，行优先 左上→右下」，按格子顺序理解动作即可，不要当成九宫格照片；纯视频或需指定时间段细看请优先调用 qq_get_message_video。若错误提示缺少 FFmpeg，如实告知部署依赖未配置（FFMPEG_PATH）；图无法提供时如实说明，不编造画面。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).describe('消息定位：id:<QQ消息ID> 或 seq:<本地序号>（带 @缓存标识时完整保留）；QQ 消息 ID 可为负数'),
@@ -760,9 +774,19 @@ if (cfg.socialV2?.tools?.getImages !== false) {
         const content = [];
         const textParts = [];
         for (const img of images) {
-          const kindLabel = img.kind === 'face' ? '表情' : (img.kind === 'video' ? '视频' : '图片');
+          const kindLabel = img.kind === 'face' ? '表情'
+            : (img.kind === 'video' ? '视频' : (img.kind === 'cardCover' ? '卡片封面' : '图片'));
           const metaSuffix = img.kind === 'video' ? videoMetadataText(img) : imageMetadataText(img);
-          if (img?.data && img?.mimeType) {
+          const videoSheets = img.kind === 'video' && Array.isArray(img.sheets)
+            ? img.sheets.filter(s => s?.data && s?.mimeType)
+            : [];
+          if (videoSheets.length > 1) {
+            textParts.push(`[${kindLabel}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]${metaSuffix}`);
+            for (const sheet of videoSheets) {
+              if (sheet.text) textParts.push(sheet.text);
+              content.push({ type: 'image', mimeType: sheet.mimeType, data: sheet.data });
+            }
+          } else if (img?.data && img?.mimeType) {
             textParts.push(`[${kindLabel}${img.index ?? ''}${img.text ? ' ' + img.text : ''}]${metaSuffix}`);
             content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
           } else {
@@ -811,7 +835,7 @@ if (cfg.socialV2?.tools?.getImages !== false || cfg.socialV2?.tools?.getForwardM
         const available = Boolean(img?.data && img?.mimeType);
         const content = [{
           type: 'text',
-          text: `[${img?.kind === 'face' ? '表情' : '图片'}${img?.index ?? ''}${img?.text ? ' ' + img.text : available ? '' : '（获取失败）'}]${imageMetadataText(img)}`,
+          text: `[${img?.kind === 'face' ? '表情' : (img?.kind === 'cardCover' ? '卡片封面' : '图片')}${img?.index ?? ''}${img?.text ? ' ' + img.text : available ? '' : '（获取失败）'}]${imageMetadataText(img)}`,
         }];
         if (available) content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
         return { content, ...(available ? {} : { isError: true }) };
@@ -825,14 +849,14 @@ if (cfg.socialV2?.tools?.getImages !== false || cfg.socialV2?.tools?.getForwardM
 if (cfg.socialV2?.tools?.getVideo !== false) {
   server.tool(
     'qq_get_message_video',
-    '按需下载并抽帧查看指定 QQ 消息或合并转发中的视频（仅提取多帧画面拼图，不包含音频，不会识别语音或配乐）。默认自动按视频时长抽取 3~9 帧按行优先（左上→右下）拼成一张多格图，并返回时长、尺寸、videoRef 与各格时间戳。如需细看某段动作或特定秒数，可带 videoRef 或 messageId 传入 startSec / endSec / frames（最多 12 帧）重新局部抽帧。若视频下载失败或超出读取上限但存在封面，仅会提供封面图并明确标注；无法提供时如实说明，不得编造视频内容或声音。',
+    `按需下载并抽帧查看指定 QQ 消息或合并转发中的视频（仅提取多帧画面拼图，不包含音频，不会识别语音或配乐）。默认按视频时长自适应抽取 6~36 帧（短片 1 张，较长视频按时间顺序自动拆成最多 ${videoMediaLimits.maxSheets} 张 ${videoMediaLimits.framesPerSheet} 格网格图，每张行优先 左上→右下），并返回时长、尺寸、videoRef 与各格时间戳。如需细看某段动作或特定秒数，可带 videoRef 或 messageId 传入 startSec / endSec / frames（最多 ${videoMediaLimits.maxFrames} 帧）重新局部抽帧。若视频下载失败或超出读取上限但存在封面，仅会提供封面图并明确标注；无法提供时如实说明，不得编造视频内容或声音。`,
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       messageId: z.union([z.number(), z.string()]).optional().describe('普通消息定位：id:<QQ消息ID> 或 seq:<本地序号>；与 videoRef 至少填一个'),
       videoRef: z.string().trim().min(1).optional().describe('合并转发或此前媒体结果中的 videoRef；转发视频与细看片段时优先传入'),
       startSec: z.number().min(0).optional().describe('可选片段起始秒数（>= 0），用于细看局部画面'),
       endSec: z.number().positive().optional().describe('可选片段结束秒数（> startSec）'),
-      frames: z.number().int().min(1).max(12).optional().describe('可选抽帧数量（1..12），省略时按时长自动选取')
+      frames: z.number().int().min(1).max(videoMediaLimits.maxFrames).optional().describe(`可选总抽帧数量（1..${videoMediaLimits.maxFrames}），超过单张上限时自动按时间顺序拆成多张网格图`)
     },
     async ({ key, messageId, videoRef, startSec, endSec, frames }) => {
       try {
@@ -857,12 +881,25 @@ if (cfg.socialV2?.tools?.getVideo !== false) {
         });
         const video = data?.video;
         if (!video) throw new Error(data?.error || '未返回视频结果');
-        const available = Boolean(video?.data && video?.mimeType);
+        const sheets = Array.isArray(video?.sheets)
+          ? video.sheets.filter(s => s?.data && s?.mimeType)
+          : [];
+        const available = sheets.length > 0 || Boolean(video?.data && video?.mimeType);
         const content = [{
           type: 'text',
           text: `[视频${video.index ?? ''}${video.text ? ' ' + video.text : available ? '' : '（获取失败）'}]${videoMetadataText(video)}`
         }];
-        if (available) content.push({ type: 'image', mimeType: video.mimeType, data: video.data });
+        if (sheets.length > 1) {
+          for (let i = 0; i < sheets.length; i += 1) {
+            const sheet = sheets[i];
+            content.push({ type: 'text', text: sheet.text || `第 ${i + 1}/${sheets.length} 张视频网格图` });
+            content.push({ type: 'image', mimeType: sheet.mimeType, data: sheet.data });
+          }
+        } else if (sheets.length === 1) {
+          content.push({ type: 'image', mimeType: sheets[0].mimeType, data: sheets[0].data });
+        } else if (available) {
+          content.push({ type: 'image', mimeType: video.mimeType, data: video.data });
+        }
         return { content, ...(available ? {} : { isError: true }) };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取视频失败：${error?.message ?? error}` }], isError: true };
@@ -1003,7 +1040,7 @@ if (cfg.socialV2?.tools?.getStickerImage !== false) {
 if (cfg.socialV2?.tools?.getForwardMsg !== false) {
   server.tool(
     'qq_get_forward_msg',
-    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_conversation_history` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、media（图片/表情/视频元数据）与 nestedForwardIds；如果合并转发里有图片，工具会直接返回最多 5 张图片预览，附 imageRef、实际尺寸及原图可用状态。预览不清晰、读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或局部，不猜测，也不要为省 token 跳过必要检查；缩放或裁剪不等于已读完整原图。若转发里包含视频，media 中会给出 videoRef，需要看视频画面时再按需调用 qq_get_message_video（打开转发时不会自动下载大视频）。如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
+    '查看当前会话中出现的合并转发消息/聊天记录内容（只读）。当消息文本里出现 `[转发消息 id=...]`，或 `qq_get_unread_messages` / `qq_get_conversation_history` / `qq_get_message_detail` 返回的某条消息带 `forwardIds` / `hasForward: true` 时调用。按需读取指定会话提供的转发消息 id。返回内容会包含每条消息的 text、cards（若含分享卡片则附完整链接 url 与 hasCover）、media（图片/表情/卡片封面/视频元数据）与 nestedForwardIds；如果合并转发里有图片或卡片封面，工具会直接返回最多 5 张图片预览，附 imageRef、实际尺寸及原图可用状态。预览不清晰、读小字或核对数字时，主动用 qq_get_image_detail 按 imageRef 读取单张原图或局部，不猜测，也不要为省 token 跳过必要检查；缩放或裁剪不等于已读完整原图。若转发里包含视频，media 中会给出 videoRef，需要看视频画面时再按需调用 qq_get_message_video（打开转发时不会自动下载大视频）。如果里面有嵌套合并转发，会附带嵌套转发 id 和前几条预览，必要时可继续用本工具查看嵌套 id。',
     {
       key: z.string().describe('目标 QQ 会话 key，格式 group:群号 或 private:QQ号'),
       id: z.string().describe('完整复制消息里的 [转发消息 id=...] 或 forwardIds 数组中的值（原生 QQ 为 native:...）；不要用发送者 QQ 号或猜测资源 ID')
@@ -1024,7 +1061,13 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
             if (!m || typeof m !== 'object') continue;
             for (const media of Array.isArray(m.media) ? m.media : []) {
               if (!media || typeof media !== 'object' || media.kind === 'video') continue;
-              const keyId = media.url || media.file || media.faceId || media.emojiId || '';
+              if (media.kind === 'cardCover') {
+                if (!media.imageRef || seen.has(media.imageRef)) continue;
+                seen.add(media.imageRef);
+                images.push({ kind: 'cardCover', imageRef: media.imageRef });
+                continue;
+              }
+              const keyId = media.imageRef || media.url || media.file || media.faceId || media.emojiId || '';
               if (!keyId || seen.has(keyId)) continue;
               seen.add(keyId);
               images.push(media);
@@ -1046,11 +1089,12 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
             });
             const mediaImages = Array.isArray(mediaRes?.images) ? mediaRes.images : [];
             for (const img of mediaImages) {
+              const label = img?.kind === 'cardCover' ? '转发内卡片封面' : '转发内图片';
               if (img?.data && img?.mimeType) {
                 content.push({ type: 'image', mimeType: img.mimeType, data: img.data });
-                imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}${img.text ? ' ' + img.text : ''}]${imageMetadataText(img)}`);
+                imageTexts.push(`[${label}${img.index != null ? ' ' + img.index : ''}${img.text ? ' ' + img.text : ''}]${imageMetadataText(img)}`);
               } else {
-                imageTexts.push(`[转发内图片${img.index != null ? ' ' + img.index : ''}（${img.text || '获取失败'}）]${imageMetadataText(img)}`);
+                imageTexts.push(`[${label}${img.index != null ? ' ' + img.index : ''}（${img.text || '获取失败'}）]${imageMetadataText(img)}`);
               }
             }
           } catch (error) {

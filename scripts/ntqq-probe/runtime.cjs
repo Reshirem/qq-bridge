@@ -527,6 +527,7 @@ module.exports = function startChannel(receiver, endpoint) {
         elementId:e.elementId,
         ...(e.picElement ? {picElement:{md5HexStr:e.picElement.md5HexStr, picSubType:e.picElement.picSubType,
           sourcePath:e.picElement.sourcePath, fileSize:e.picElement.fileSize,
+          picWidth:e.picElement.picWidth, picHeight:e.picElement.picHeight,
           thumbPath:new Map([[0, e.picElement.thumbPath instanceof Map ? e.picElement.thumbPath.get(0) : undefined]])}} : {}),
         ...(e.marketFaceElement ? {marketFaceElement:{emojiId:e.marketFaceElement.emojiId,
           emojiPackageId:e.marketFaceElement.emojiPackageId}} : {}),
@@ -628,7 +629,8 @@ module.exports = function startChannel(receiver, endpoint) {
             failed(info.fileSrvErrCode) && `服务端 ${info.fileSrvErrCode}`].filter(Boolean).join('，');
           throw Error(`QQ 转发图片下载失败（${codes}）${info.fileErrMsg ? '：' + String(info.fileErrMsg).slice(0,300) : ''}`);
         }
-        return {requested:true};
+        const completedPath = typeof info?.filePath === 'string' ? info.filePath.trim() : '';
+        return {requested:true, ...(completedPath ? {completedFilePath:completedPath} : {})};
       } finally {
         clearTimeout(timer);
         if (mediaDownloads.get(key) === entry) mediaDownloads.delete(key);
@@ -703,36 +705,49 @@ module.exports = function startChannel(receiver, endpoint) {
     const target = element.picElement.sourcePath;
     const relative = typeof target === 'string' && path.isAbsolute(target) ? path.relative(root, target) : '..';
     const sticker = Number(element.picElement.picSubType) === 1;
+    const validPreviewPath = value => {
+      if (typeof value !== 'string' || !path.isAbsolute(value)) return false;
+      const rel = path.relative(root, value).split(path.sep).join('/');
+      return new RegExp(`^(?:Pic|Emoji/emoji-recv)/[0-9]{4}-(?:0[1-9]|1[0-2])/(?:Ori|Thumb)/${digest}(?:_[0-9]+)?\\.[a-z0-9]+$`, 'i').test(rel);
+    };
+    const resolveVerifiedPreviewCandidate = value => {
+      if (!validPreviewPath(value)) return null;
+      try {
+        const real = fs.realpathSync(value);
+        if (validPreviewPath(real) && fs.statSync(real).isFile()) {
+          sameAccount();
+          return {file:real, exists:true};
+        }
+      } catch (error) {
+        // QQ may populate this exact native destination asynchronously. The
+        // reader repeats realpath, identity, byte and pixel checks on use.
+        if (error.code === 'ENOENT') return {file:value, exists:false};
+      }
+      return null;
+    };
     // QQ can store a converted JPEG in Ori under the source PNG's digest.
     // Prefer the exact native element's thumbnail mapping when available.
     let verifiedPreviewPath;
     if (p.quality !== 'original') {
       const thumbnail = element.picElement.thumbPath instanceof Map ? element.picElement.thumbPath.get(0) : null;
-      const validPreviewPath = value => {
-        if (typeof value !== 'string' || !path.isAbsolute(value)) return false;
-        const rel = path.relative(root, value).split(path.sep).join('/');
-        return new RegExp(`^(?:Pic|Emoji/emoji-recv)/[0-9]{4}-[0-9]{2}/(?:Ori|Thumb)/${digest}(?:_[0-9]+)?\\.[a-z0-9]+$`, 'i').test(rel);
-      };
-      if (validPreviewPath(thumbnail)) {
-        try {
-          const real = fs.realpathSync(thumbnail);
-          if (validPreviewPath(real) && fs.statSync(real).isFile()) {
-            sameAccount();
-            return {requested:false, verifiedPreviewPath:real};
-          }
-        } catch (error) {
-          // QQ may populate this exact native destination asynchronously. The
-          // reader repeats realpath, identity, byte and pixel checks on use.
-          if (error.code === 'ENOENT') verifiedPreviewPath = thumbnail;
-        }
-      }
+      const resolvedThumb = resolveVerifiedPreviewCandidate(thumbnail);
+      if (resolvedThumb?.exists) return {requested:false, verifiedPreviewPath:resolvedThumb.file};
+      if (resolvedThumb) verifiedPreviewPath = resolvedThumb.file;
     }
     if (!sticker && (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))) {
       throw Error('QQ 返回的图片缓存位置无效');
     }
     if (verified) {
-      const result = await fetchForwardImage(peer, verified.rootId, element);
-      return {...result, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {})};
+      const {completedFilePath, ...result} = await fetchForwardImage(peer, verified.rootId, element);
+      if (p.quality !== 'original' && !verifiedPreviewPath && completedFilePath) {
+        const resolvedCompleted = resolveVerifiedPreviewCandidate(completedFilePath);
+        if (resolvedCompleted) verifiedPreviewPath = resolvedCompleted.file;
+      }
+      const verifiedSourcePreview = p.quality !== 'original' && !verifiedPreviewPath
+        ? ordinarySourcePreview(element.picElement, root, digest)
+        : null;
+      return {...result, ...(verifiedPreviewPath ? {verifiedPreviewPath} : {}),
+        ...(verifiedSourcePreview ? {verifiedSourcePreview} : {})};
     }
     if (typeof svc.getRichMediaElement !== 'function') throw Error('当前 QQ 不支持按原消息下载图片');
     const result = await svc.getRichMediaElement({
